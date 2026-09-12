@@ -31,7 +31,7 @@ squash merge с ожидаемым HEAD B. Вердикты фиксируютс
 | 1 | Skeleton | DONE |
 | 2 | Text end-to-end | DONE |
 | 3 | Web ingestion | DONE |
-| 4 | Architecture checkpoint | IN_REVIEW |
+| 4 | Architecture checkpoint | DONE |
 | 5 | Voice/audio | NOT_STARTED |
 | 6 | YouTube | NOT_STARTED |
 | 7 | Video visual analysis | NOT_STARTED |
@@ -217,9 +217,13 @@ resume восстанавливает полный NormalizedContent, дедуп
 smoke: живой процесс — WEB item https://example.com прошёл SSRF → download →
 trafilatura → WEB_TEXT → LLM-граница (401 → FAILED/LLM_FAILED); SIGINT graceful
 
-### Phase 4 — Architecture checkpoint — IN_REVIEW
+### Phase 4 — Architecture checkpoint — DONE
 
-Аудит-фаза: без новых фич, без косметического rewrite. Проверено по чек-листу плана.
+APPROVED @ a1c0e1b1c7684b72fc4bf2ed6c8ad8345007f6c7 (Orchestrator, GitHub review
+pullrequestreview-5188485235). Аудит подтвердил каркас; по ходу ревью закрыты
+2 MAJOR: FAILED сохраняет durable checkpoint (retry без повторных download/LLM),
+сходящаяся дедупликация URL. Урок: заявления в REVIEW REQUEST проверять фактическим
+diff/запуском до отправки.
 
 Completed:
 ✓ E2E control flow: один канонический пайплайн (Telegram → ingestion → Item →

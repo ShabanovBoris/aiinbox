@@ -277,6 +277,16 @@
 - Урок зафиксирован агенту: каждое заявление в REVIEW REQUEST проверять
   фактическим diff/запуском ДО отправки.
 
+## 2026-09-13 — PR #5 — a1c0e1b — APPROVED
+
+- Phase 04 — Architecture checkpoint. Reviewer: Orchestrator; вердикт также на GitHub:
+  https://github.com/ShabanovBoris/aiinbox/pull/5#pullrequestreview-5188485235 (commit a1c0e1b).
+- Reviewed HEAD: a1c0e1b1c7684b72fc4bf2ed6c8ad8345007f6c7. mergeable/clean.
+- Все blockers закрыты: FAILED сохраняет durable checkpoint (retry без повторных
+  download/LLM), конкурентная URL-дедупликация сходится, документация соответствует
+  фактическому состоянию. Урок о проверке заявлений перед REVIEW REQUEST
+  зафиксирован в журнале (см. запись aaaa75a).
+
 ## Шаблон записи
 
 ```text
