@@ -191,8 +191,6 @@ Completed:
   с настоящим network boundary
 ✓ PinningTransport: aclose() делегируется внутреннему транспорту; Connection:
   close — переиспользование соединений по IP-origin исключено
-✓ ingest_voice(too_large=...): oversized media персистится атомарно как
-  FAILED/TOO_LARGE без claimable промежуточного состояния (ТЗ §66)
 ✓ WebPageExtractor: httpx (timeout, max size) → trafilatura (в thread) →
   недостаточно текста → Playwright fallback → trafilatura; лимит извлечения
   MIN_EXTRACTED_TEXT_LENGTH
@@ -278,7 +276,10 @@ Completed:
 ✓ Retry policy на Telegram boundary: transient 3 attempts с backoff, permanent
   (TOO_LARGE/4xx/not-found) — одна попытка
 ✓ Oversized media: атомарный durable FAILED/TOO_LARGE Item с file_id/duration
-  (ТЗ §66), пользователю — реальный лимит из конфига
+  (ТЗ §66), пользователю — реальный лимит из конфига; ingest_voice(too_large=...)
+  создаёт его сразу, без claimable QUEUED-состояния (race-fix по вердикту adb43fe)
+✓ Resume-тест: pydantic equality initial/resumed NormalizedContent, включая
+  duration_seconds; user_note пустая строка нормализуется в None
 ✓ Миграция d1b5bdba99a3 (source_file_id, content_duration_seconds)
 
 Remaining:
@@ -287,9 +288,10 @@ Remaining:
 
 Last verification:
 ruff check . → pass; ruff format --check . → pass; pytest → 98 passed
-(+ downloader: transient 503→success, not-found→1 attempt, oversized streaming
-без file_size, partial cleanup; атомарный oversized Item; resume с полным
-equality NormalizedContent включая duration; STT TIMEOUT маппинг)
+(+ downloader: transient 503→success (реальные 2 HTTP-попытки), not-found →
+1 attempt, oversized streaming без file_size, partial cleanup; атомарный
+oversized Item; resume с полным equality NormalizedContent включая duration;
+STT TIMEOUT маппинг)
 smoke: headless старт без токена — bot disabled, SIGINT graceful
 
 ### Шаблон фазы в работе

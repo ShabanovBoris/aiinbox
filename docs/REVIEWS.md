@@ -339,6 +339,32 @@
   4. → resume-тест проверяет pydantic equality initial/resumed (включая duration).
   5. → IMPLEMENTATION_STATE/REVIEWS обновлены только после фактических правок.
 
+## 2026-09-13 — PR #6 — adb43fe — CHANGES REQUIRED (re-review 2)
+
+- Reviewer: Orchestrator; вердикт также на GitHub:
+  https://github.com/ShabanovBoris/aiinbox/pull/6#pullrequestreview-5188598631 (commit adb43fe).
+- Findings:
+  1. MAJOR: oversized race — ingest_voice коммитил QUEUED, mark_oversized шёл
+     отдельной транзакцией (worker мог claim'нуть между ними).
+  2. MAJOR: TIMEOUT-фикс отсутствовал на HEAD (патч не применился после reformat,
+     а заявление было отправлено без проверки).
+  3. MAJOR: retry-тесты фиктивны (transient не создавался) + get_file generic
+     exceptions ретраились, включая permanent 4xx.
+  4. MINOR: не было equality-теста resume с duration.
+  5. MINOR: docs опережали код.
+- Resolved (коммиты после adb43fe):
+  1. → ingest_voice(too_large=...): атомарное FAILED/TOO_LARGE при создании,
+     mark_oversized удалён; тест проверяет состояние после одного commit.
+  2. → except APITimeoutError → TIMEOUT (grep + unit-тест с фейковым клиентом).
+  3. → TelegramNotFound/BadRequest/Unauthorized/Forbidden/EntityTooLarge →
+     permanent; сетевые/5xx — transient. Тесты: реальный 503→retry→success;
+     not-found → 1 attempt; сетевой сбой → 3 attempts.
+  4. → resume-тест: pydantic equality initial/resumed, включая duration_seconds
+     (найдено расхождение user_note "" vs None — нормализовано в None).
+  5. → docs обновлены только после фактических правок (misplaced Phase-3 строка
+     перемещена в Phase 5).
+- Урок процесса: правки через must_replace с assert'ом на каждое применение.
+
 ## Шаблон записи
 
 ```text

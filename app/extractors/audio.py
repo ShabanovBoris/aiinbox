@@ -41,5 +41,8 @@ class AudioExtractor:
         return NormalizedContent(
             source_type=item.source_type,
             text=transcript,
+            # пустая заметка нормализуется в None: resume должен давать
+            # эквивалентный NormalizedContent (pydantic equality)
+            user_note=item.user_note or None,
             duration_seconds=item.content_duration_seconds,
         )

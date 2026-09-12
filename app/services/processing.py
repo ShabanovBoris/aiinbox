@@ -143,9 +143,7 @@ class ProcessingPipeline:
             text=row.text,
             url=url,
             duration_seconds=meta.get("duration_seconds"),
-            user_note=meta.get("user_note")
-            if meta.get("user_note") is not None
-            else item.user_note,
+            user_note=meta.get("user_note") or (item.user_note or None),
             author=meta.get("author"),
             language=meta.get("language"),
         )

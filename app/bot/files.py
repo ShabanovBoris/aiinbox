@@ -6,7 +6,13 @@ from typing import Protocol
 from uuid import uuid4
 
 import httpx
-from aiogram.exceptions import TelegramNotFound
+from aiogram.exceptions import (
+    TelegramBadRequest,
+    TelegramEntityTooLarge,
+    TelegramForbiddenError,
+    TelegramNotFound,
+    TelegramUnauthorizedError,
+)
 
 from app.errors import AppError
 
@@ -47,17 +53,36 @@ class TelegramFileDownloader:
             lambda: httpx.AsyncClient(follow_redirects=False, timeout=60.0)
         )
 
+    async def _get_file(self, file_id: str):
+        """get_file с permanent-классификацией aiogram client errors (4xx-семантика):
+        not found / bad request / unauthorized / forbidden / entity too large —
+        повтор бессмыслен; сетевые и серверные (5xx) ошибки остаются transient."""
+        try:
+            return await self._bot.get_file(file_id)
+        except (
+            TelegramBadRequest,
+            TelegramUnauthorizedError,
+            TelegramForbiddenError,
+            TelegramNotFound,
+            TelegramEntityTooLarge,
+        ) as exc:
+            raise AppError(
+                "DOWNLOAD_FAILED", f"telegram client error: {exc}", permanent=True
+            ) from exc
+
     async def download(self, file_id: str, dest_dir: Path) -> Path:
         last_exc: AppError | None = None
         for attempt in range(self._max_attempts):
             dest = Path(dest_dir) / f"{uuid4().hex}.bin"
             try:
                 try:
-                    tg_file = await self._bot.get_file(file_id)
-                except TelegramNotFound as exc:
-                    # not found / bad request — permanent, повтор бессмыслен
+                    tg_file = await self._get_file(file_id)
+                except AppError:
+                    # permanent-классификация уже проставлена (_get_file)
+                    raise
+                except Exception as exc:
                     raise AppError(
-                        "DOWNLOAD_FAILED", f"file not found: {exc}", permanent=True
+                        "DOWNLOAD_FAILED", f"get_file failed: {exc}", permanent=False
                     ) from exc
                 if tg_file.file_size and tg_file.file_size > self._max_bytes:
                     raise AppError(

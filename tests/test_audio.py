@@ -122,8 +122,10 @@ async def test_transcript_resume_skips_stt_and_download(tmp_path, session_factor
     transcriber = FakeTranscriber()
     worker = make_worker(session_factory, transcriber, FakeDownloader(), tmp_path / "audio")
 
+    provider = worker.pipeline.analyzer.provider
     await worker.process_one()  # первый прогон успешен → TRANSCRIPT в БД
     assert transcriber.calls == 1
+    first_content = provider.calls[0][0]
 
     async with session_factory() as session:
         row = await session.get(Item, item.id)
@@ -133,14 +135,14 @@ async def test_transcript_resume_skips_stt_and_download(tmp_path, session_factor
 
     downloader2 = FakeDownloader()
     transcriber2 = FakeTranscriber()
-    assert (
-        await make_worker(
-            session_factory, transcriber2, downloader2, tmp_path / "audio"
-        ).process_one()
-        is True
-    )
+    worker2 = make_worker(session_factory, transcriber2, downloader2, tmp_path / "audio")
+    provider2 = worker2.pipeline.analyzer.provider
+    assert await worker2.process_one() is True
     assert transcriber2.calls == 0  # STT не повторялся
     assert downloader2.calls == 0  # файл не скачивался
+    second_content = provider2.calls[0][0]
+    # pydantic equality по всем полям, включая duration_seconds
+    assert second_content == first_content
 
 
 async def test_download_failure_marks_item_failed(tmp_path, session_factory):
@@ -213,9 +215,13 @@ class FakeTgBot:
         return SimpleNamespace(file_size=self.file_size, file_path="voice/file_123.ogg")
 
     def serve_file(self, request):
-        # файл отдаётся в два чанка — проверяет инкрементальный byte-cap
+        # файл отдаётся в два чанка — проверяет инкрементальный byte-cap;
+        # fail_first_requests раз отдаёт 503 (проверка transient retry)
 
         if request.url.path.endswith("file_123.ogg"):
+            if self.fail_first_requests > 0:
+                self.fail_first_requests -= 1
+                return httpx.Response(503)
 
             async def chunks():
                 yield b"x" * 300_000
