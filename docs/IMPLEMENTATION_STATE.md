@@ -31,7 +31,7 @@ squash merge с ожидаемым HEAD B. Вердикты фиксируютс
 | 1 | Skeleton | DONE |
 | 2 | Text end-to-end | DONE |
 | 3 | Web ingestion | DONE |
-| 4 | Architecture checkpoint | NOT_STARTED |
+| 4 | Architecture checkpoint | IN_REVIEW |
 | 5 | Voice/audio | NOT_STARTED |
 | 6 | YouTube | NOT_STARTED |
 | 7 | Video visual analysis | NOT_STARTED |
@@ -216,6 +216,37 @@ streaming без Content-Length, кастомный timeout, normalization по�
 resume восстанавливает полный NormalizedContent, дедупликация URL, web pipeline e2e)
 smoke: живой процесс — WEB item https://example.com прошёл SSRF → download →
 trafilatura → WEB_TEXT → LLM-граница (401 → FAILED/LLM_FAILED); SIGINT graceful
+
+### Phase 4 — Architecture checkpoint — IN_REVIEW
+
+Аудит-фаза: без новых фич, без косметического rewrite. Проверено по чек-листу плана.
+
+Completed:
+✓ E2E control flow: один канонический пайплайн (Telegram → ingestion → Item →
+  claim → pipeline.extract/analyze/prioritize → READY → notify); параллельных
+  pipelines нет — WEB/TEXT расходятся только в extract-шаге
+✓ Abstractions: LlmProvider и injectable-зависимости имеют реальных потребителей
+  (Fake в тестах + OpenAI в prod); бесполезных интерфейсов/wrapper-ов не найдено
+✓ Worker correctness: atomic claim (UPDATE...RETURNING + условие QUEUED),
+  concurrent-тесты, requeue stale с сохранением стадии, FAILED с error_code —
+  реализовано в Phase 1–3, подтверждено
+✓ Database: FK pragma, unique (user_id, message_id, source_index) и
+  (user_id, source_url), transactions на переходах, fresh+upgrade миграции
+✓ Web security: SSRF pinning/redirects/byte-cap; prompt injection изоляция в
+  system prompt; content-analysis модель без инструментов
+✓ Error recovery: WEB_TEXT персистент, LLM retry не перекачивает страницу
+✓ Dead code: удалена мёртвая ветка _render_with_playwright (всегда-raise метод
+  после жёсткого отключения playwright) — упрощён _fallback
+✓ Честность race-resolve: повторный IntegrityError в _resolve_after_race больше
+  не глотается
+✓ Test quality: усилены слабые assert'ы (processing_status is QUEUED; убран
+  бессмысленный assert second is not None)
+
+Remaining:
+□ — нет (ждёт вердикта Orchestrator'а)
+
+Last verification:
+ruff check . → pass; ruff format --check . → pass; pytest → 81 passed
 
 ### Шаблон фазы в работе
 

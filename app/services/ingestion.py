@@ -155,8 +155,6 @@ async def _resolve_after_race(
         items.append(_make_web_item(user_id, message_id, index, normalized, note))
         session.add(items[-1])
     if items:
-        try:
-            await session.commit()
-        except IntegrityError:
-            await session.rollback()
+        # Повторный конфликт здесь — реальная проблема, скрывать её нельзя.
+        await session.commit()
     return items, duplicates

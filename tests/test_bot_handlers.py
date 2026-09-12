@@ -6,6 +6,7 @@ from aiogram.types import User as TgUser
 from sqlalchemy import func, select
 
 from app.bot.handlers import on_start, on_text
+from app.domain.enums import ProcessingStatus
 from app.storage.models import Item, User
 
 
@@ -36,7 +37,7 @@ async def test_authorized_text_creates_item_and_replies(settings, session_factor
     async with session_factory() as session:
         item = await session.scalar(select(Item))
         assert item is not None
-        assert item.processing_status is not None
+        assert item.processing_status is ProcessingStatus.QUEUED
         assert item.user_note == "hello"
 
 
