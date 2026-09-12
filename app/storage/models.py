@@ -1,10 +1,21 @@
 from datetime import datetime
 
-from sqlalchemy import BigInteger, DateTime, ForeignKey, String, Text, UniqueConstraint, func
+from sqlalchemy import (
+    JSON,
+    BigInteger,
+    DateTime,
+    Float,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy import Enum as SaEnum
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
-from app.domain.enums import ItemState, ProcessingStatus, SourceType
+from app.domain.enums import ItemState, ItemType, ProcessingStatus, SourceType
 
 
 class Base(DeclarativeBase):
@@ -53,6 +64,27 @@ class Item(Base):
     # при сбое (PRODUCT_SPEC §60, D-001 resumable).
     processing_stage: Mapped[str] = mapped_column(String(32), default="INGESTED")
     user_note: Mapped[str] = mapped_column(Text)
+
+    # Результат анализа (заполняется пайплайном Phase 2); до анализа — NULL.
+    title: Mapped[str | None] = mapped_column(String(300))
+    summary: Mapped[str | None] = mapped_column(Text)
+    category: Mapped[str | None] = mapped_column(String(100), index=True)
+    item_type: Mapped[ItemType | None] = mapped_column(
+        SaEnum(ItemType, native_enum=False, length=16)
+    )
+    tags_json: Mapped[list | None] = mapped_column(JSON)
+    importance: Mapped[float | None] = mapped_column(Float)
+    urgency: Mapped[float | None] = mapped_column(Float)
+    goal_fit: Mapped[float | None] = mapped_column(Float)
+    long_term_value: Mapped[float | None] = mapped_column(Float)
+    interest_fit: Mapped[float | None] = mapped_column(Float)
+    estimated_action_minutes: Mapped[int | None] = mapped_column(Integer)
+    priority_score: Mapped[int | None] = mapped_column(Integer, index=True)
+    priority_reason: Mapped[str | None] = mapped_column(Text)
+    next_action: Mapped[str | None] = mapped_column(Text)
+    suggested_due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    language: Mapped[str | None] = mapped_column(String(16))
+    confidence: Mapped[float | None] = mapped_column(Float)
 
     error_code: Mapped[str | None] = mapped_column(String(64))
     error_message: Mapped[str | None] = mapped_column(Text)

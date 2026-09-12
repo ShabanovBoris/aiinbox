@@ -3,9 +3,11 @@ import logging
 import time
 
 from sqlalchemy import func, select, update
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.domain.enums import ProcessingStatus
+from app.llm.base import LlmError
+from app.services.processing import ProcessingPipeline
 from app.storage.models import Item
 
 log = logging.getLogger(__name__)
@@ -36,9 +38,19 @@ class ProcessingWorker:
     забрать один Item, даже без внешних блокировок (SQLite сериализует запись).
     """
 
-    def __init__(self, session_factory: async_sessionmaker, poll_seconds: float = 1.0):
+    def __init__(
+        self,
+        session_factory: async_sessionmaker,
+        pipeline: ProcessingPipeline,
+        poll_seconds: float = 1.0,
+        on_result=None,
+    ):
         self.session_factory = session_factory
+        self.pipeline = pipeline
         self.poll_seconds = poll_seconds
+        # on_result — auxiliary-колбэк (доставка результата в Telegram);
+        # его сбой не должен ломать уже готовый результат.
+        self.on_result = on_result
 
     async def run_forever(self, stop: asyncio.Event) -> None:
         while not stop.is_set():
@@ -73,11 +85,6 @@ class ProcessingWorker:
             await session.commit()
             return claimed
 
-    async def process_item(self, session: AsyncSession, item: Item) -> None:
-        """Временная детерминированная обработка Phase 1; LLM-анализ подключается в Phase 2."""
-        item.processing_stage = "READY"
-        item.processing_status = ProcessingStatus.READY
-
     async def mark_failed(self, item_id: int, exc: Exception) -> None:
         async with self.session_factory() as session:
             item = await session.get(Item, item_id)
@@ -85,7 +92,7 @@ class ProcessingWorker:
                 return
             item.processing_status = ProcessingStatus.FAILED
             item.processing_stage = "FAILED"
-            item.error_code = "UNKNOWN"
+            item.error_code = exc.code if isinstance(exc, LlmError) else "UNKNOWN"
             item.error_message = str(exc)[:500]
             await session.commit()
 
@@ -99,7 +106,8 @@ class ProcessingWorker:
                 item = await session.get(Item, item_id)
                 if item is None:
                     return True
-                await self.process_item(session, item)
+                await self.pipeline.run(session, item)
+                item.processing_status = ProcessingStatus.READY
                 await session.commit()
         except Exception as exc:
             # Ошибка обработки не теряет Item: он переходит в FAILED с кодом
@@ -110,4 +118,9 @@ class ProcessingWorker:
         log.info(
             "item processed id=%s duration=%.3fs result=READY", item_id, time.monotonic() - started
         )
+        if self.on_result is not None:
+            try:
+                await self.on_result(item)
+            except Exception:
+                log.exception("result delivery failed item_id=%s", item_id)
         return True

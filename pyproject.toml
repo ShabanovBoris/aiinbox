@@ -9,6 +9,7 @@ description = "Personal AI Inbox — Telegram-driven personal attention manager"
 requires-python = ">=3.12"
 dependencies = [
     "aiogram>=3.13",
+    "openai>=1.40",
     "sqlalchemy[asyncio]>=2.0.30",
     "aiosqlite>=0.20",
     "alembic>=1.13",

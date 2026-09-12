@@ -1,0 +1,55 @@
+import pytest
+
+from app.bot.formatting import format_ready_item
+from app.domain.enums import ItemType, SourceType
+from app.llm.base import LlmError
+from app.llm.openai import OpenAiProvider
+from app.storage.models import Item
+from tests.fakes import invalid_analysis_json, make_analysis
+
+
+def make_ready_item() -> Item:
+    analysis = make_analysis()
+    return Item(
+        id=1,
+        user_id=1,
+        source_type=SourceType.TEXT,
+        title=analysis.title,
+        summary=analysis.summary,
+        category=analysis.category,
+        item_type=analysis.item_type,
+        tags_json=analysis.tags,
+        priority_score=82,
+        next_action=analysis.next_action,
+        priority_reason=analysis.priority_reason,
+    )
+
+
+def test_format_contains_key_fields():
+    text = format_ready_item(make_ready_item())
+    assert "🎯 Архитектура AI-агентов" in text
+    assert "Категория: AI" in text
+    assert f"Тип: {ItemType.LEARN.value}" in text
+    assert "Приоритет: 82/100" in text
+    assert "Разбор подходов к оркестрации агентов." in text
+    assert "Следующее действие: Посмотреть блок про tool orchestration" in text
+    assert "Почему: Сильно связано с профессиональными целями" in text
+
+
+def test_openai_parse_valid_json():
+    analysis = make_analysis()
+    parsed = OpenAiProvider.parse_analysis(analysis.model_dump_json())
+    assert parsed.title == analysis.title
+    assert parsed.item_type == analysis.item_type
+
+
+def test_openai_parse_invalid_json_raises_invalid_output():
+    with pytest.raises(LlmError) as exc_info:
+        OpenAiProvider.parse_analysis(invalid_analysis_json())
+    assert exc_info.value.code == "INVALID_LLM_OUTPUT"
+
+
+def test_openai_parse_garbage_raises_invalid_output():
+    with pytest.raises(LlmError) as exc_info:
+        OpenAiProvider.parse_analysis("not json at all")
+    assert exc_info.value.code == "INVALID_LLM_OUTPUT"
