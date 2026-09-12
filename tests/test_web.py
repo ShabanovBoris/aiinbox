@@ -6,6 +6,7 @@ from app.domain.enums import ProcessingStatus, SourceType
 from app.domain.priority import PriorityEngine
 from app.errors import AppError
 from app.extractors.web import PinningTransport, WebPageExtractor
+from app.llm.base import LlmError
 from app.services.analysis import Analyzer
 from app.services.ingestion import ingest_message
 from app.services.processing import ProcessingPipeline
@@ -396,3 +397,117 @@ async def test_playwright_fallback_hard_disabled_without_renderer():
         await extractor.extract(make_web_item())
     assert exc_info.value.code == "EXTRACTION_FAILED"
     assert "disabled" in str(exc_info.value)
+
+
+async def test_failed_item_preserves_checkpoint_and_retry_reuses_extraction(session_factory):
+    # Регрессия Phase 4: FAILED не уничтожает durable checkpoint (D-001).
+    # WEB extraction → LLM падает → FAILED + stage ANALYZING → retry → READY,
+    # экстрактор вызван ровно один раз (страница не перекачивается).
+    ingested = await ingest_message(
+        session_factory,
+        telegram_user_id=42,
+        chat_id=42,
+        message_id=1,
+        text="Полезная статья https://example.com/article",
+    )
+    item = ingested.items[0]
+    extractor = CountingWebExtractor(
+        lambda request: httpx.Response(200, text=ARTICLE_HTML), min_text_length=100
+    )
+    failing = FakeLlmProvider(error=LlmError("LLM_FAILED", "provider down"))
+    assert (
+        await ProcessingWorker(
+            session_factory,
+            ProcessingPipeline(Analyzer(failing), PriorityEngine(), extractor),
+            poll_seconds=0.01,
+        ).process_one()
+        is True
+    )
+
+    failed = await _get_item(session_factory, item.id)
+    assert failed.processing_status is ProcessingStatus.FAILED
+    assert failed.processing_stage == "ANALYZING"  # checkpoint сохранён
+    assert failed.error_code == "LLM_FAILED"
+
+    # retry (как Phase 10 Retry / ручной UPDATE): FAILED -> QUEUED
+    async with session_factory() as session:
+        row = await session.get(Item, item.id)
+        row.processing_status = ProcessingStatus.QUEUED
+        await session.commit()
+
+    working = FakeLlmProvider()
+    assert (
+        await ProcessingWorker(
+            session_factory,
+            ProcessingPipeline(Analyzer(working), PriorityEngine(), extractor),
+            poll_seconds=0.01,
+        ).process_one()
+        is True
+    )
+
+    ready = await _get_item(session_factory, item.id)
+    assert ready.processing_status is ProcessingStatus.READY
+    assert ready.title == make_analysis().title
+    assert extractor.calls == 1  # extraction НЕ повторялся
+
+
+async def test_retry_from_prioritizing_checkpoint_skips_llm(session_factory):
+    # Сбой на priority-этапе: retry продолжает с persisted analysis, LLM не зовётся.
+    ingested = await ingest_message(
+        session_factory,
+        telegram_user_id=42,
+        chat_id=42,
+        message_id=1,
+        text="Полезная статья https://example.com/article",
+    )
+    item = ingested.items[0]
+    provider = FakeLlmProvider()
+    assert (
+        await ProcessingWorker(
+            session_factory,
+            ProcessingPipeline(
+                Analyzer(provider),
+                PriorityEngine(),
+                CountingWebExtractor(
+                    lambda request: httpx.Response(200, text=ARTICLE_HTML), min_text_length=100
+                ),
+            ),
+            poll_seconds=0.01,
+        ).process_one()
+        is True
+    )
+
+    # Имитация крэша после PRIORITIZING checkpoint: FAILED, analysis персистен
+    async with session_factory() as session:
+        row = await session.get(Item, item.id)
+        row.processing_status = ProcessingStatus.FAILED
+        row.processing_stage = "PRIORITIZING"
+        row.priority_score = None
+        await session.commit()
+
+    # retry: FAILED -> QUEUED
+    async with session_factory() as session:
+        row = await session.get(Item, item.id)
+        row.processing_status = ProcessingStatus.QUEUED
+        await session.commit()
+
+    counting = FakeLlmProvider()
+    assert (
+        await ProcessingWorker(
+            session_factory,
+            ProcessingPipeline(
+                Analyzer(counting),
+                PriorityEngine(),
+                CountingWebExtractor(
+                    lambda request: httpx.Response(200, text=ARTICLE_HTML), min_text_length=100
+                ),
+            ),
+            poll_seconds=0.01,
+        ).process_one()
+        is True
+    )
+
+    ready = await _get_item(session_factory, item.id)
+    assert ready.processing_status is ProcessingStatus.READY
+    assert ready.priority_score == PriorityEngine().score(make_analysis())
+    assert len(counting.calls) == 0  # LLM не вызывался

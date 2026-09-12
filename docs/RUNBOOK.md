@@ -110,4 +110,6 @@ sqlite3 data/app.db "SELECT id, error_code, error_message FROM items WHERE proce
 - Зависшие `PROCESSING` после падения процесса возвращаются в `QUEUED`
   автоматически при следующем старте (`requeue_stale`).
 - Retry из Telegram появится в Phase 10; до этого повторную обработку FAILED
-  можно запустить вручную: `UPDATE items SET processing_status='QUEUED' WHERE id=...`.
+  можно запустить вручную (stage сохраняется, retry продолжит с durable
+  checkpoint'а; error-поля очищаются, чтобы не остаться на успешном READY):
+  `UPDATE items SET processing_status='QUEUED', error_code=NULL, error_message=NULL WHERE id=...`.

@@ -255,6 +255,28 @@
      синхронизирован с HEAD.
 - Отдельно обновлён RUNBOOK (retry FAILED→QUEUED сохраняет стадию автоматически).
 
+## 2026-09-13 — PR #5 — aaaa75a — CHANGES REQUIRED (re-review)
+
+- Reviewer: Orchestrator; вердикт также на GitHub:
+  https://github.com/ShabanovBoris/aiinbox/pull/5#pullrequestreview-5188470388 (commit aaaa75a).
+- Production fixes (mark_failed checkpoint, converging dedup) подтверждены
+  корректными. Найдено:
+  1. MAJOR: три заявленных regression tests отсутствовали на HEAD (скрипт
+     добавления прервался, а заявление попало в request) — поймано проверкой diff.
+  2. MAJOR: IMPLEMENTATION_STATE заявлял несуществующие проверки.
+  3. MINOR: RUNBOOK не описывал checkpoint semantics ручного retry; стоит
+     очищать error_code/error_message.
+- Resolved (коммиты после aaaa75a):
+  1. → тесты реально добавлены: test_failed_item_preserves_checkpoint_and_retry_
+     reuses_extraction, test_retry_from_prioritizing_checkpoint_skips_llm,
+     test_concurrent_overlapping_url_dedup_converges; pytest 81 → 84 passed
+     (проверено запуском).
+  2. → IMPLEMENTATION_STATE синхронизирован с фактическим diff.
+  3. → RUNBOOK: ручной retry с очисткой error_code/error_message +
+     документированная checkpoint semantics.
+- Урок зафиксирован агенту: каждое заявление в REVIEW REQUEST проверять
+  фактическим diff/запуском ДО отправки.
+
 ## Шаблон записи
 
 ```text
