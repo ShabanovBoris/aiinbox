@@ -181,6 +181,20 @@ async def ingest_voice(
         return IngestResult([item], [])
 
 
+async def mark_oversized(
+    session_factory: async_sessionmaker, item_id: int, actual_bytes: int, limit_bytes: int
+) -> None:
+    """Oversized media: durable FAILED/TOO_LARGE Item с метаданными (ТЗ §66)."""
+    async with session_factory() as session:
+        item = await session.get(Item, item_id)
+        if item is None:
+            return
+        item.processing_status = ProcessingStatus.FAILED
+        item.error_code = "TOO_LARGE"
+        item.error_message = f"file too large: {actual_bytes} > {limit_bytes} bytes"
+        await session.commit()
+
+
 async def _resolve_after_race(
     session: AsyncSession, user_id: int, message_id: int, note: str, raw_urls: list[str]
 ) -> tuple[list[Item], list[str]]:

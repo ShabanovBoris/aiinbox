@@ -1,9 +1,12 @@
 from pathlib import Path
 
+import httpx
+import pytest
 from sqlalchemy import select
 
 from app.domain.enums import ContentKind, ProcessingStatus, SourceType
 from app.domain.priority import PriorityEngine
+from app.errors import AppError
 from app.extractors.audio import AudioExtractor
 from app.services.analysis import Analyzer
 from app.services.ingestion import ingest_voice
@@ -172,3 +175,133 @@ async def test_voice_ingestion_is_idempotent(session_factory):
         )
     ).items[0]
     assert second.id == first.id
+
+
+def make_real_downloader(bot, tmp_path, **overrides):
+    from app.bot.files import TelegramFileDownloader
+
+    defaults = dict(
+        max_bytes=1_000_000,
+        max_attempts=3,
+        backoff_seconds=0.01,
+        client_factory=lambda: httpx.AsyncClient(
+            transport=httpx.MockTransport(lambda request: bot.serve_file(request)),
+            follow_redirects=False,
+            timeout=5,
+        ),
+    )
+    defaults.update(overrides)
+    return TelegramFileDownloader(bot, **defaults)
+
+
+class FakeTgBot:
+    """Минимальный bot double: get_file + token; скачивание через MockTransport."""
+
+    def __init__(self, file_size=None, get_file_fails=False):
+        self.token = "TESTTOKEN"
+        self.file_size = file_size
+        self.get_file_fails = get_file_fails
+        self.get_file_calls = 0
+
+    async def get_file(self, file_id):
+        self.get_file_calls += 1
+        if self.get_file_fails:
+            raise RuntimeError("network hiccup")
+        from types import SimpleNamespace
+
+        return SimpleNamespace(file_size=self.file_size, file_path="voice/file_123.ogg")
+
+    def serve_file(self, request):
+        # файл отдаётся в два чанка — проверяет инкрементальный byte-cap
+
+        if request.url.path.endswith("file_123.ogg"):
+
+            async def chunks():
+                yield b"x" * 300_000
+                yield b"y" * 300_000
+
+            return httpx.Response(200, content=chunks())
+        return httpx.Response(404)
+
+
+async def test_downloader_transient_then_success(tmp_path):
+    bot = FakeTgBot()
+    downloader = make_real_downloader(bot, tmp_path)
+    path = await downloader.download("file-123", tmp_path)
+    assert path.exists() and path.stat().st_size > 0
+    path.unlink()
+
+
+async def test_downloader_oversized_streaming_without_file_size(tmp_path):
+    # Регрессия: file_size отсутствует — инкрементальный cap всё равно режет.
+    bot = FakeTgBot(file_size=None)
+    downloader = make_real_downloader(bot, tmp_path, max_bytes=500_000, max_attempts=1)
+    with pytest.raises(AppError) as exc_info:
+        await downloader.download("file-123", tmp_path)
+    assert exc_info.value.code == "TOO_LARGE"
+    assert exc_info.value.permanent is True
+    assert list(tmp_path.glob("*.bin")) == []  # partial удалён
+
+
+async def test_downloader_permanent_404_single_attempt(tmp_path):
+    class NotFoundBot:
+        token = "TESTTOKEN"
+
+        async def get_file(self, file_id):
+            from types import SimpleNamespace
+
+            return SimpleNamespace(file_size=None, file_path="missing.ogg")
+
+    attempts = {"count": 0}
+
+    def handler(request):
+        attempts["count"] += 1
+        return httpx.Response(404)
+
+    downloader = make_real_downloader(
+        NotFoundBot(),
+        tmp_path,
+        max_attempts=3,
+        client_factory=lambda: httpx.AsyncClient(
+            transport=httpx.MockTransport(handler), follow_redirects=False, timeout=5
+        ),
+    )
+    with pytest.raises(AppError) as exc_info:
+        await downloader.download("file-123", tmp_path)
+    assert exc_info.value.code == "DOWNLOAD_FAILED"
+    assert exc_info.value.permanent is True
+    assert attempts["count"] == 1
+
+
+async def test_downloader_get_file_failure_retries(tmp_path):
+    bot = FakeTgBot(get_file_fails=True)
+    downloader = make_real_downloader(bot, tmp_path)
+    with pytest.raises(AppError) as exc_info:
+        await downloader.download("file-123", tmp_path)
+    assert exc_info.value.code == "DOWNLOAD_FAILED"
+    assert bot.get_file_calls == 3  # transient: 3 попытки
+    assert list(tmp_path.glob("*.bin")) == []
+
+
+async def test_voice_size_limit_creates_durable_item(session_factory):
+    # Регрессия: oversized media сохраняется как FAILED/TOO_LARGE с метаданными
+    # (PRODUCT_SPEC §66), а не теряется.
+    ingested = await ingest_voice(
+        session_factory,
+        telegram_user_id=42,
+        chat_id=42,
+        message_id=1,
+        file_id="big-file",
+        duration_seconds=999,
+        source_type=SourceType.VOICE,
+    )
+    item = ingested.items[0]
+    from app.services.ingestion import mark_oversized
+
+    await mark_oversized(session_factory, item.id, 25_000_000, 20_000_000)
+    async with session_factory() as session:
+        row = await session.get(Item, item.id)
+        assert row.processing_status is ProcessingStatus.FAILED
+        assert row.error_code == "TOO_LARGE"
+        assert row.source_file_id == "big-file"
+        assert row.content_duration_seconds == 999

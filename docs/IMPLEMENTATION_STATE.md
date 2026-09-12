@@ -266,10 +266,16 @@ Completed:
 ✓ Размер-лимит в handler (до очереди) и в downloader (после get_file/скачивания)
 ✓ TranscriptionProvider (отдельный Protocol): whisper-эндпоинт OpenAI — другой
   API/модель, отдельный adapter (OpenAiTranscriptionProvider)
-✓ AudioExtractor: downloader → temp файл → STT → NormalizedContent; temp удаляется
-  в finally (успех/ошибка); TRANSCRIPT персистится атомарно с checkpoint'ом
-  ANALYZING — retry из ANALYZING не повторяет download+STT (resume-тест)
-✓ Ошибки: TOO_LARGE / DOWNLOAD_FAILED / TRANSCRIPTION_FAILED (+TIMEOUT из transport)
+✓ AudioExtractor: downloader → temp файл → STT → NormalizedContent; partial/temp
+  файлы удаляются при ошибке/отмене в каждом раунде; byte-cap инкрементально
+  при скачивании (работает без file_size); TRANSCRIPT персистится атомарно с
+  checkpoint'ом ANALYZING — resume не повторяет download+STT (resume-тест с
+  полным равенством NormalizedContent, включая duration_seconds)
+✓ Ошибки: TOO_LARGE (permanent) / DOWNLOAD_FAILED / TRANSCRIPTION_FAILED / TIMEOUT
+✓ Retry policy на Telegram boundary: transient 3 attempts с backoff, permanent —
+  одна попытка
+✓ Oversized media: durable FAILED/TOO_LARGE Item с file_id/duration (ТЗ §66),
+  пользователю — реальный лимит из конфига
 ✓ Миграция d1b5bdba99a3 (source_file_id, content_duration_seconds)
 
 Remaining:
@@ -277,7 +283,9 @@ Remaining:
   fakes (FakeDownloader/FakeTranscriber)
 
 Last verification:
-ruff check . → pass; ruff format --check . → pass; pytest → 91 passed
+ruff check . → pass; ruff format --check . → pass; pytest → 96 passed
+(+ downloader: transient→success, permanent→1 attempt, oversized streaming,
+partial cleanup; oversized durable Item; resume с duration)
 smoke: headless старт без токена — bot disabled, SIGINT graceful
 
 ### Шаблон фазы в работе

@@ -7,8 +7,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.config import Settings
 from app.domain.enums import SourceType
-from app.errors import AppError
-from app.services.ingestion import ingest_message, ingest_voice
+from app.services.ingestion import ingest_message, ingest_voice, mark_oversized
 
 log = logging.getLogger(__name__)
 
@@ -64,25 +63,26 @@ async def on_voice_audio(
         log.warning("unauthorized telegram user ignored user_id=%s", user_id)
         return
     file_size = media.file_size or 0
-    if file_size > max_audio_bytes:
-        # TOO_LARGE: отказ до постановки в очередь — файл всё равно не скачается.
-        await message.answer("Файл слишком большой — лимит 20 МБ.")
-        return
     source_type = SourceType.AUDIO if is_audio else SourceType.VOICE
-    # persist → ACK (порядок Phase 1).
-    try:
-        await ingest_voice(
-            session_factory,
-            telegram_user_id=user_id,
-            chat_id=message.chat.id,
-            message_id=message.message_id,
-            file_id=media.file_id,
-            duration_seconds=media.duration,
-            source_type=source_type,
+    # persist → ACK (порядок Phase 1). Oversized тоже сохраняем как durable
+    # FAILED/TOO_LARGE Item с метаданными (PRODUCT_SPEC §66), а не молча теряем.
+    result = await ingest_voice(
+        session_factory,
+        telegram_user_id=user_id,
+        chat_id=message.chat.id,
+        message_id=message.message_id,
+        file_id=media.file_id,
+        duration_seconds=media.duration,
+        source_type=source_type,
+    )
+    item = result.items[0]
+    if file_size > max_audio_bytes:
+        await mark_oversized(session_factory, item.id, file_size, max_audio_bytes)
+        limit_mb = max_audio_bytes / 1_000_000
+        await message.answer(
+            f"Файл слишком большой ({file_size / 1_000_000:.1f} МБ > лимита "
+            f"{limit_mb:.0f} МБ). Метаданные сохранил — файл не скачан."
         )
-    except AppError as exc:
-        log.warning("voice ingestion failed code=%s", exc.code)
-        await message.answer(f"Не удалось сохранить файл ({exc.code}).")
         return
     label = "аудио" if is_audio else "голосовое"
     await message.answer(f"Принял {label}. Разбираю…")

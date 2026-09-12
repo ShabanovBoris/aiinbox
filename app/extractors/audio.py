@@ -41,5 +41,5 @@ class AudioExtractor:
         return NormalizedContent(
             source_type=item.source_type,
             text=transcript,
-            metadata={"duration_seconds": item.content_duration_seconds},
+            duration_seconds=item.content_duration_seconds,
         )

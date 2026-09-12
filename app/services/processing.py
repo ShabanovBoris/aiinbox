@@ -99,6 +99,7 @@ class ProcessingPipeline:
                     metadata_json={"duration_seconds": item.content_duration_seconds},
                 )
             )
+            content.duration_seconds = item.content_duration_seconds
             return content
         if item.source_type is SourceType.WEB:
             content = await self.web_extractor.extract(item)
@@ -141,6 +142,7 @@ class ProcessingPipeline:
             title=meta.get("title"),
             text=row.text,
             url=url,
+            duration_seconds=meta.get("duration_seconds"),
             user_note=meta.get("user_note")
             if meta.get("user_note") is not None
             else item.user_note,

@@ -287,6 +287,35 @@
   фактическому состоянию. Урок о проверке заявлений перед REVIEW REQUEST
   зафиксирован в журнале (см. запись aaaa75a).
 
+## 2026-09-13 — PR #6 — 0b74e8b — CHANGES REQUIRED
+
+- Phase 05 — Voice/audio. Reviewer: Orchestrator; вердикт также на GitHub:
+  https://github.com/ShabanovBoris/aiinbox/pull/6#pullrequestreview-5188549994.
+- Findings:
+  1. MAJOR: temp cleanup нарушен на download failure/cancel — try/finally
+     начинался только после download; partial-файл оставался в TEMP_DIR;
+     post-factum stat не жёсткий cap (обязательное).
+  2. MAJOR: oversized audio терялся — handler отклонял до ingest_voice, не
+     создавая durable Item (PRODUCT_SPEC §66) (обязательное).
+  3. MAJOR: Telegram boundary без retry policy — transient ошибка сразу
+     DOWNLOAD_FAILED (обязательное, PRODUCT_SPEC §58).
+  4. MINOR: TIMEOUT не выходил из STT adapter (всё маппилось в
+     TRANSCRIPTION_FAILED), а docs заявляли TIMEOUT.
+  5. MINOR: duration терялся — не использовался first-class
+     NormalizedContent.duration_seconds; resume не восстанавливал.
+- Resolved (коммиты после 0b74e8b в этом же PR):
+  1. → TelegramFileDownloader: partial-файл удаляется при ошибке/отмене в каждом
+     раунде; byte-cap инкрементально при скачивании (streaming, работает без
+     file_size); тест oversized-streaming без file_size.
+  2. → oversized сохраняется как durable FAILED/TOO_LARGE Item с file_id/duration
+     (mark_oversized), пользователю сообщается реальный лимит из конфига.
+  3. → retry policy на Telegram boundary: transient 3 attempts с backoff;
+     permanent (TOO_LARGE/4xx/not found) — одна попытка; тесты: transient→success,
+     permanent→1 attempt, cleanup между попытками.
+  4. → APITimeoutError → TIMEOUT в транскрипции.
+  5. → NormalizedContent.duration_seconds заполняется из item; checkpoint
+     metadata хранит duration; resume восстанавливает (тест полного равенства).
+
 ## Шаблон записи
 
 ```text
