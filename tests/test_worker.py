@@ -79,7 +79,8 @@ async def test_worker_marks_failed_on_exception(session_factory):
     assert await worker.process_one() is True
     stored = await get_item(session_factory, item.id)
     assert stored.processing_status is ProcessingStatus.FAILED
-    assert stored.processing_stage == "FAILED"
+    # Стадия сохраняется: FAILED не уничтожает durable checkpoint (D-001).
+    assert stored.processing_stage == "INGESTED"
     assert stored.error_code == "UNKNOWN"
     assert "boom" in stored.error_message
 

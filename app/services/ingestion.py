@@ -124,6 +124,8 @@ def _make_web_item(user_id: int, message_id: int, source_index: int, url: str, n
 async def _resolve_after_race(
     session: AsyncSession, user_id: int, message_id: int, note: str, raw_urls: list[str]
 ) -> tuple[list[Item], list[str]]:
+    """Сходящийся resolve после IntegrityError: повторная вставка текстового Item
+    невозможна — уже существующий возвращается как результат."""
     if not raw_urls:
         # Повторный TEXT-update: уникальность (user_id, message_id, source_index)
         existing = await session.scalar(
@@ -134,27 +136,57 @@ async def _resolve_after_race(
             )
         )
         return ([existing] if existing is not None else [], [])
+    return await _ingest_web_urls(session, user_id, message_id, note, raw_urls)
 
+
+async def _ingest_web_urls(
+    session: AsyncSession,
+    user_id: int,
+    message_id: int,
+    note: str,
+    raw_urls: list[str],
+) -> tuple[list[Item], list[str]]:
+    """Сходящаяся схема дедупликации URL: re-select → insert → при гонке rollback
+    и повторный re-select (bounded). Гарантирует: каждый нормализованный URL —
+    либо существующий Item (duplicate), либо ровно один новый."""
     items: list[Item] = []
     duplicates: list[str] = []
     seen: set[str] = set()
+    pending: list[tuple[int, str]] = []
     for index, raw_url in enumerate(raw_urls):
         normalized = normalize_url(raw_url)
         if normalized in seen:
-            continue
+            continue  # повтор URL внутри одного сообщения
         seen.add(normalized)
-        existing = await session.scalar(
-            select(Item).where(
-                Item.user_id == user_id,
-                Item.source_url == normalized,
+        pending.append((index, normalized))
+
+    for _ in range(3):  # bounded re-resolve: гонка не может длиться дольше
+        still_missing: list[tuple[int, str]] = []
+        for index, normalized in pending:
+            existing = await session.scalar(
+                select(Item).where(Item.user_id == user_id, Item.source_url == normalized)
             )
-        )
-        if existing is not None:
-            duplicates.append(normalized)
-            continue
-        items.append(_make_web_item(user_id, message_id, index, normalized, note))
-        session.add(items[-1])
-    if items:
-        # Повторный конфликт здесь — реальная проблема, скрывать её нельзя.
-        await session.commit()
-    return items, duplicates
+            if existing is not None:
+                log.info("duplicate url ignored item_id=%s url=%s", existing.id, normalized)
+                duplicates.append(normalized)
+            else:
+                still_missing.append((index, normalized))
+        if not still_missing:
+            return items, duplicates
+
+        created = [
+            _make_web_item(user_id, message_id, index, normalized, note)
+            for index, normalized in still_missing
+        ]
+        for item in created:
+            session.add(item)
+        try:
+            await session.commit()
+            items.extend(created)
+            return items, duplicates
+        except IntegrityError:
+            # Параллельный запрос успел сохранить часть URL'ов — пере-резолв.
+            await session.rollback()
+
+    # Сходиться не удалось за bounded число раундов — реальная проблема БД.
+    raise IntegrityError("url dedup race did not converge", None, Exception())

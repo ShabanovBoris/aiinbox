@@ -230,6 +230,31 @@
   закрыты; playwright dependency удалена.
 - Финализация: Phase 3 → DONE в IMPLEMENTATION_STATE.
 
+## 2026-09-13 — PR #5 — 64e95d8 — CHANGES REQUIRED
+
+- Phase 04 — Architecture checkpoint. Reviewer: Orchestrator; вердикт также на GitHub:
+  https://github.com/ShabanovBoris/aiinbox/pull/5#pullrequestreview-5188456553 (commit 64e95d8).
+- Findings:
+  1. MAJOR: mark_failed ставил processing_stage="FAILED" — уничтожал durable
+     checkpoint (persisted WEB_TEXT/analysis); retry перекачивал страницу / повторял
+     LLM (нарушение D-001, PRODUCT_SPEC §59) (обязательное).
+  2. MAJOR: _resolve_after_race не сходится при гонке дедупликации URL —
+     конкурентные сообщения с пересекающимися URL давали исключение без ACK
+     (обязательное).
+  3. MINOR: IMPLEMENTATION_STATE заявлял правки тестов, которых не было на HEAD
+     (assert second is not None; sanity isinstance) — источник истины обязан
+     соответствовать фактическому состоянию.
+- Resolved (коммиты после 64e95d8 в этом же PR):
+  1. → mark_failed меняет только status/error_*; стадия сохраняется. Регрессии:
+     WEB → LLM_FAILED → FAILED+ANALYZING → retry → READY при extractor.calls==1;
+     retry из PRIORITIZING завершает priority без вызова LLM (counting.calls==0).
+  2. → сходящаяся схема _ingest_web_urls: re-select → insert → rollback →
+     re-resolve (bounded 3 раунда). Регрессия: конкурентные сообщения с
+     пересекающимися URL → каждый URL ровно один Item, без исключений.
+  3. → фактические правки тестов применены и проверены; IMPLEMENTATION_STATE
+     синхронизирован с HEAD.
+- Отдельно обновлён RUNBOOK (retry FAILED→QUEUED сохраняет стадию автоматически).
+
 ## Шаблон записи
 
 ```text

@@ -3,7 +3,6 @@ import pytest
 from sqlalchemy import select
 
 from app.domain.enums import ProcessingStatus, SourceType
-from app.domain.models import AnalysisResult
 from app.domain.priority import PriorityEngine
 from app.errors import AppError
 from app.extractors.web import PinningTransport, WebPageExtractor
@@ -347,7 +346,6 @@ async def test_web_resume_restores_full_normalized_content(session_factory):
 
     second_content = provider.calls[1][0]
     assert second_content == first_content  # pydantic equality по всем полям
-    assert isinstance(make_analysis(), AnalysisResult)  # sanity: типы стабильны
 
 
 async def test_pinning_transport_delegates_aclose_to_inner():

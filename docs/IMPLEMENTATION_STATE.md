@@ -237,16 +237,21 @@ Completed:
 ✓ Error recovery: WEB_TEXT персистент, LLM retry не перекачивает страницу
 ✓ Dead code: удалена мёртвая ветка _render_with_playwright (всегда-raise метод
   после жёсткого отключения playwright) — упрощён _fallback
-✓ Честность race-resolve: повторный IntegrityError в _resolve_after_race больше
-  не глотается
-✓ Test quality: усилены слабые assert'ы (processing_status is QUEUED; убран
-  бессмысленный assert second is not None)
+✓ MAJOR-fix: mark_failed больше не затирает processing_stage — FAILED сохраняет
+  durable checkpoint; retry из ANALYZING переиспользует WEB_TEXT (extractor
+  calls==1), retry из PRIORITIZING завершает priority без LLM
+✓ MAJOR-fix: _ingest_web_urls — сходящаяся дедупликация URL (bounded re-resolve);
+  регрессия конкурентных пересекающихся URL
+✓ Test quality: усилены слабые assert'ы; фактические правки проверены (все
+  заявленные в аудит-записи изменения присутствуют в diff)
 
 Remaining:
 □ — нет (ждёт вердикта Orchestrator'а)
 
 Last verification:
 ruff check . → pass; ruff format --check . → pass; pytest → 81 passed
+(+ Phase 4 регрессии: FAILED сохраняет checkpoint и retry без повторного
+download/LLM; конкурентная дедупликация пересекающихся URL сходится)
 
 ### Шаблон фазы в работе
 

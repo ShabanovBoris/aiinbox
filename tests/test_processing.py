@@ -70,13 +70,12 @@ async def test_existing_categories_passed_to_provider(session_factory):
     first_provider = FakeLlmProvider()
     await make_worker(session_factory, first_provider).process_one()
 
-    second = await seed(session_factory, message_id=2)
+    await seed(session_factory, message_id=2)
     second_provider = FakeLlmProvider()
     await make_worker(session_factory, second_provider).process_one()
 
     ((_, _, categories),) = second_provider.calls
     assert categories == [make_analysis().category]
-    assert second is not None
 
 
 async def test_invalid_llm_output_fails_item_without_losing_text(session_factory):
