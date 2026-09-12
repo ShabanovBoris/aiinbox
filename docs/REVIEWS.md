@@ -183,6 +183,28 @@
   5. → normalize_url: порт и trailing slash сохраняются; default-порт снимается;
      тесты на 8443/a/ и trailing slash.
 
+## 2026-09-13 — PR #4 — 133a396 — CHANGES REQUIRED (re-review)
+
+- Reviewer: Orchestrator; вердикт также на GitHub:
+  https://github.com/ShabanovBoris/aiinbox/pull/4#pullrequestreview-5188369457 (commit 133a396).
+- Findings #2–#5 предыдущего ревью подтверждены закрытыми. Остались три в
+  transport/security fix:
+  1. MAJOR: PinningTransport не делегирует aclose() внутреннему транспорту —
+     connection pool/sockets остаются незакрытыми.
+  2. MAJOR/SECURITY: включаемый Playwright path всё ещё без SSRF-изоляции
+     (route-deny не закрывает TOCTOU/WebSockets) — нарушал бы §20 при opt-in.
+  3. MAJOR: connection pool после pinning идентифицирует origin по IP — redirect
+     A→B на один CDN IP мог переиспользовать TLS-сессию с SNI A.
+- Resolved (коммиты после 133a396):
+  1. → PinningTransport.aclose() делегирует self._inner.aclose(); тест вызывает
+     cleanup на фейковом inner.
+  2. → Playwright fallback жёстко отключён без production opt-in (route-deny
+     не является SSRF-изоляцией); config-флаг и route-код удалены; вернётся
+     отдельным изменением с настоящим network boundary. Renderer — только
+     тестовый seam.
+  3. → Connection: close на каждый запрос через PinningTransport — переиспользование
+     соединений по IP-origin исключено; тест фиксирует заголовок.
+
 ## Шаблон записи
 
 ```text

@@ -20,9 +20,8 @@ class Settings(BaseSettings):
     max_redirects: int = 5
     web_max_attempts: int = 3
     web_backoff_seconds: float = 0.5
-    # Playwright fallback требует network enforcement; по умолчанию выключен
-    # (продукт не должен запускать unrestricted browser), ТЗ §20.
-    playwright_fallback_enabled: bool = False
+    # Playwright fallback жёстко отключён (нет SSRF-safe browser boundary);
+    # вернётся отдельным изменением с pinned/proxied browser network boundary.
 
     # Сменный LLM-провайдер: model ids только через конфиг (PRODUCT_SPEC §29).
     llm_provider: str = "openai"

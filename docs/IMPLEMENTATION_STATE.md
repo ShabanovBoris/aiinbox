@@ -180,8 +180,10 @@ Completed:
 ✓ Streamed download с инкрементальным byte-cap (работает без Content-Length);
   transient retry (3 attempts, exponential backoff), permanent — ровно одна
   попытка; WEB_TIMEOUT_SECONDS управляет клиентом
-✓ Playwright fallback: по умолчанию выключен (network enforcement policy);
-  при включении route-deny + block service workers
+✓ Playwright fallback: жёстко отключён без production opt-in (route-deny не
+  даёт SSRF-изоляции); вернётся с настоящим network boundary
+✓ PinningTransport: aclose() делегируется внутреннему транспорту; Connection:
+  close — переиспользование соединений по IP-origin исключено
 ✓ WebPageExtractor: httpx (timeout, max size) → trafilatura (в thread) →
   недостаточно текста → Playwright fallback → trafilatura; лимит извлечения
   MIN_EXTRACTED_TEXT_LENGTH

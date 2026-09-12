@@ -26,7 +26,6 @@ diff "ТЗ_ Personal AI Inbox - интеллектуальный Telegram TODO.m
 ```bash
 uv venv --python 3.12
 uv sync
-uv run playwright install chromium   # только для Playwright-fallback веб-экстракции
 cp .env.example .env   # заполнить TELEGRAM_BOT_TOKEN, ALLOWED_TELEGRAM_USER_IDS,
                        # OPENAI_API_KEY, OPENAI_ANALYSIS_MODEL
 uv run python -m app.main

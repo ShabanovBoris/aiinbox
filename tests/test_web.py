@@ -348,3 +348,53 @@ async def test_web_resume_restores_full_normalized_content(session_factory):
     second_content = provider.calls[1][0]
     assert second_content == first_content  # pydantic equality по всем полям
     assert isinstance(make_analysis(), AnalysisResult)  # sanity: типы стабильны
+
+
+async def test_pinning_transport_delegates_aclose_to_inner():
+    # Регрессия: wrapper transport обязан делегировать cleanup внутреннему
+    # транспорту, иначе connection pool/sockets остаются незакрытыми.
+    class FakeInner(httpx.AsyncBaseTransport):
+        def __init__(self):
+            self.closed = False
+
+        async def handle_async_request(self, request):
+            return httpx.Response(200, text="ok")
+
+        async def aclose(self):
+            self.closed = True
+
+    inner = FakeInner()
+    transport = PinningTransport(inner=inner, resolver=fake_resolver)
+    await transport.aclose()
+    assert inner.closed is True
+
+
+async def test_pinning_sets_connection_close():
+    # Регрессия: pinning подменяет host на IP — keep-alive по IP-origin позволил бы
+    # redirect A->B на один CDN IP переиспользовать TLS-сессию с SNI A.
+    captured: list[httpx.Request] = []
+
+    async def handle(request):
+        captured.append(request)
+        return httpx.Response(200, text="ok")
+
+    transport = PinningTransport(inner=handle_wrapper(handle), resolver=fake_resolver)
+    request = httpx.Request("GET", "https://example.com/x")
+    await transport.handle_async_request(request)
+    assert captured[0].headers["connection"] == "close"
+
+
+class handle_wrapper(httpx.AsyncBaseTransport):
+    def __init__(self, fn):
+        self._fn = fn
+
+    async def handle_async_request(self, request):
+        return await self._fn(request)
+
+
+async def test_playwright_fallback_hard_disabled_without_renderer():
+    extractor = make_extractor(lambda request: httpx.Response(200, text=TINY_HTML))
+    with pytest.raises(AppError) as exc_info:
+        await extractor.extract(make_web_item())
+    assert exc_info.value.code == "EXTRACTION_FAILED"
+    assert "disabled" in str(exc_info.value)

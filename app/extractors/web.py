@@ -38,8 +38,16 @@ class PinningTransport(httpx.AsyncBaseTransport):
         inner: httpx.AsyncBaseTransport | None = None,
         resolver: Callable[[str], Awaitable[list[str]]] | None = None,
     ):
+        # keep-alive запрещён на уровне запросов (Connection: close): pinning
+        # подменяет host на IP, а httpcore переиспользует соединения по origin —
+        # redirect A->B на один CDN IP мог бы переиспользовать TLS-сессию с SNI A.
         self._inner = inner if inner is not None else httpx.AsyncHTTPTransport()
         self._resolver = resolver
+
+    async def aclose(self) -> None:
+        # Wrapper обязан делегировать cleanup внутреннему транспорту (httpx docs):
+        # иначе connection pool/sockets остаются незакрытыми.
+        await self._inner.aclose()
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
         url = request.url
@@ -56,6 +64,9 @@ class PinningTransport(httpx.AsyncBaseTransport):
         else:
             # IP-литерал: DNS не нужен, только валидация адреса и схемы.
             await resolve_validated_ips(str(url), self._resolver)
+        # Connection: close — keep-alive пулла по IP-origin позволил бы redirect
+        # A->B на один CDN IP переиспользовать TLS-сессию с SNI A.
+        request.headers["connection"] = "close"
         return await self._inner.handle_async_request(request)
 
 
@@ -79,7 +90,6 @@ class WebPageExtractor:
         backoff_seconds: float = 0.5,
         client_factory: Callable[[], httpx.AsyncClient] | None = None,
         renderer: Callable[[str], Awaitable[str]] | None = None,
-        playwright_fallback_enabled: bool = False,
         resolver: Callable[[str], Awaitable[list[str]]] | None = None,
     ):
         self.min_text_length = min_text_length
@@ -91,10 +101,6 @@ class WebPageExtractor:
         self._client_factory = client_factory or self._default_client
         # renderer(url) -> html; подменяется в тестах (Playwright не требуется)
         self._renderer = renderer
-        # Playwright fallback выключен по умолчанию: без network enforcement
-        # unrestricted browser небезопасен (PRODUCT_SPEC §20). При включении —
-        # route-level deny + block service workers.
-        self._playwright_fallback_enabled = playwright_fallback_enabled
         self._resolver = resolver
 
     def _default_client(self) -> httpx.AsyncClient:
@@ -186,27 +192,14 @@ class WebPageExtractor:
         return await self._text_from_html(html)
 
     async def _render_with_playwright(self, url: str) -> str:
-        if not self._playwright_fallback_enabled:
-            raise AppError(
-                "EXTRACTION_FAILED",
-                "playwright fallback disabled (network isolation policy)",
-            )
-        try:
-            from playwright.async_api import async_playwright
-        except ImportError as exc:
-            raise AppError("EXTRACTION_FAILED", "playwright fallback not installed") from exc
-        async with async_playwright() as pw:
-            browser = await pw.chromium.launch()
-            try:
-                context = await browser.new_context(service_workers="block")
-                await context.route("**/*", lambda route: _browser_route_deny(route))
-                page = await context.new_page()
-                await page.goto(
-                    url, timeout=self.timeout_seconds * 1000, wait_until="domcontentloaded"
-                )
-                return await page.content()
-            finally:
-                await browser.close()
+        # Жёстко отключено (решение Orchestrator по Phase 3): route-level deny не
+        # закрывает DNS TOCTOU/дочерние ресурсы/WebSockets — настоящий network
+        # boundary (pinned/proxied browser) появится отдельным изменением.
+        # Тестовый seam — renderer; production-запуск браузера отсутствует.
+        raise AppError(
+            "EXTRACTION_FAILED",
+            "playwright fallback is disabled: no SSRF-safe browser boundary yet",
+        )
 
     @staticmethod
     async def _text_from_html(html: str):
@@ -227,16 +220,3 @@ class WebPageExtractor:
             return text.strip(), metadata
 
         return await asyncio.to_thread(_extract)
-
-
-async def _browser_route_deny(route) -> None:
-    """Route-level deny: только http/https на публичные хосты; localhost и
-    IP-литералы частных адресов блокируются. Service Workers блокируются
-    контекстом. Это best-effort слой поверх config-гейта."""
-    from app.services.url_security import resolve_validated_ips
-
-    try:
-        await resolve_validated_ips(route.request.url)
-        await route.continue_()
-    except AppError:
-        await route.abort()

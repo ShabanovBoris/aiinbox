@@ -48,7 +48,6 @@ async def run(settings: Settings) -> None:
             max_redirects=settings.max_redirects,
             max_attempts=settings.web_max_attempts,
             backoff_seconds=settings.web_backoff_seconds,
-            playwright_fallback_enabled=settings.playwright_fallback_enabled,
         )
         pipeline = ProcessingPipeline(
             Analyzer(build_provider(settings)), PriorityEngine(), web_extractor
