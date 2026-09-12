@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+build/
+dist/
+
+# Environment & secrets
+.env
+.env.*
+!.env.example
+
+# Runtime data & temp artifacts
+data/
+temp/
+
+# Coverage
+.coverage
+htmlcov/
+
+# OS
+.DS_Store
