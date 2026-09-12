@@ -16,6 +16,13 @@ squash merge с ожидаемым HEAD B. Вердикты фиксируютс
 
 Архитектурные решения фиксируются отдельно — в `docs/DECISIONS.md`.
 
+## Contract addendum — PR #1 — orchestration protocol adoption
+
+Статус: APPROVED @ 5611be6b52fc546cd4dd060b985d24af8619ed88
+(GitHub review: pullrequestreview-5187945174). Вердикты и история ревью —
+в `docs/REVIEWS.md`. Squash merge выполняет Orchestrator; Phase 1 начинается
+только после merge и sync main (протокол §9.2, §23).
+
 ## Phases
 
 | # | Этап | Статус |

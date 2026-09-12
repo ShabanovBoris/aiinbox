@@ -49,6 +49,18 @@
 - Resolved (коммит после 24a2b2f): в протокол добавлены §9.1 (durable record) и
   §9.2 (APPROVED → merge handshake); эта запись создана.
 
+## 2026-09-12 — PR #1 — 5611be6 — APPROVED
+
+- Reviewer: Orchestrator; вердикт зафиксирован на GitHub:
+  https://github.com/ShabanovBoris/aiinbox/pull/1#pullrequestreview-5187945174 (COMMENTED, commit 5611be6).
+- Reviewed HEAD: 5611be6b52fc546cd4dd060b985d24af8619ed88 (PR #1 указывает на него).
+- Оставшийся MAJOR закрыт: протокол дополнен §9.1 (durable verdict record) и
+  §9.2 (no-TOCTOU handshake); все предыдущие замечания de516ee и 24a2b2f закрыты.
+- Дальнейшее: финализирующий commit (только REVIEWS.md + IMPLEMENTATION_STATE),
+  объявление MERGE READY (Previous approved HEAD: 5611be6b…, New HEAD: B);
+  Orchestrator проверяет delta 5611be6..B и выполняет squash merge с
+  expected_head_sha=B. Phase 1 — только после merge и sync main.
+
 ## Шаблон записи
 
 ```text
