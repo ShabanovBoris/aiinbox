@@ -149,14 +149,24 @@ async def ingest_voice(
     file_id: str,
     duration_seconds: int | None,
     source_type: SourceType,
+    too_large: tuple[int, int] | None = None,
 ) -> IngestResult:
-    """Voice/audio → один Item QUEUED с file_id; сам файл скачивается позже,
-    в extraction-этапе воркера (handler не делает тяжёлой работы)."""
+    """Voice/audio → один Item с file_id; сам файл скачивается позже,
+    в extraction-этапе воркера (handler не делает тяжёлой работы).
+
+    too_large=(actual, limit): Item сразу персистится атомарно как FAILED/TOO_LARGE
+    с метаданными (PRODUCT_SPEC §66) — без промежуточного claimable QUEUED.
+    """
     async with session_factory() as session:
         user = await get_or_create_user(session, telegram_user_id=telegram_user_id, chat_id=chat_id)
         # user.id до транзакции: rollback истекает объекты (см. ingest_message).
         user_id = user.id
         item = _make_media_item(user_id, message_id, file_id, duration_seconds, source_type)
+        if too_large is not None:
+            actual, limit = too_large
+            item.processing_status = ProcessingStatus.FAILED
+            item.error_code = "TOO_LARGE"
+            item.error_message = f"file too large: {actual} > {limit} bytes"
         session.add(item)
         try:
             await session.commit()
@@ -179,20 +189,6 @@ async def ingest_voice(
             item.source_type.value,
         )
         return IngestResult([item], [])
-
-
-async def mark_oversized(
-    session_factory: async_sessionmaker, item_id: int, actual_bytes: int, limit_bytes: int
-) -> None:
-    """Oversized media: durable FAILED/TOO_LARGE Item с метаданными (ТЗ §66)."""
-    async with session_factory() as session:
-        item = await session.get(Item, item_id)
-        if item is None:
-            return
-        item.processing_status = ProcessingStatus.FAILED
-        item.error_code = "TOO_LARGE"
-        item.error_message = f"file too large: {actual_bytes} > {limit_bytes} bytes"
-        await session.commit()
 
 
 async def _resolve_after_race(

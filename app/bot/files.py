@@ -6,6 +6,7 @@ from typing import Protocol
 from uuid import uuid4
 
 import httpx
+from aiogram.exceptions import TelegramNotFound
 
 from app.errors import AppError
 
@@ -51,7 +52,13 @@ class TelegramFileDownloader:
         for attempt in range(self._max_attempts):
             dest = Path(dest_dir) / f"{uuid4().hex}.bin"
             try:
-                tg_file = await self._bot.get_file(file_id)
+                try:
+                    tg_file = await self._bot.get_file(file_id)
+                except TelegramNotFound as exc:
+                    # not found / bad request — permanent, повтор бессмыслен
+                    raise AppError(
+                        "DOWNLOAD_FAILED", f"file not found: {exc}", permanent=True
+                    ) from exc
                 if tg_file.file_size and tg_file.file_size > self._max_bytes:
                     raise AppError(
                         "TOO_LARGE", f"file exceeds {self._max_bytes} bytes", permanent=True

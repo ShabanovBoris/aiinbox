@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from openai import AsyncOpenAI
+from openai import APITimeoutError, AsyncOpenAI
 
 from app.errors import AppError
 
@@ -20,6 +20,8 @@ class OpenAiTranscriptionProvider:
                 response = await self._client.audio.transcriptions.create(
                     model=self._model, file=audio_file
                 )
+        except APITimeoutError as exc:
+            raise AppError("TIMEOUT", f"transcription timed out: {exc}") from exc
         except Exception as exc:  # граница адаптера: SDK-ошибки → код приложения
             raise AppError("TRANSCRIPTION_FAILED", f"transcription failed: {exc}") from exc
         return (response.text or "").strip()

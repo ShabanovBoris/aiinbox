@@ -316,6 +316,29 @@
   5. → NormalizedContent.duration_seconds заполняется из item; checkpoint
      metadata хранит duration; resume восстанавливает (тест полного равенства).
 
+## 2026-09-13 — PR #6 — 52126ae — CHANGES REQUIRED (re-review)
+
+- Reviewer: Orchestrator; вердикт также на GitHub:
+  https://github.com/ShabanovBoris/aiinbox/pull/6#pullrequestreview-5188575434 (commit 52126ae).
+- Partial cleanup подтверждён (streaming byte-cap, partial cleanup). Findings:
+  1. MAJOR: oversized race — ingest_voice коммитил QUEUED, mark_oversized шёл
+     отдельной транзакцией; worker мог claim'нуть и начать download/STT.
+  2. MAJOR: TIMEOUT-фикс фактически отсутствовал (patch не применился из-за
+     reformat — заявлен без проверки).
+  3. MAJOR: retry-тесты не соответствовали заявлению (transient не создавался);
+     get_file generic exceptions ретраились, включая permanent 4xx.
+  4. MINOR: не было equality-теста resume NormalizedContent с duration.
+  5. MINOR: durable docs снова опережали код.
+- Resolved (коммиты после 52126ae):
+  1. → ingest_voice(too_large=(actual, limit)): атомарное создание
+     FAILED/TOO_LARGE без claimable промежуточного состояния; mark_oversized удалён.
+  2. → except APITimeoutError → TIMEOUT в transcription.py (применение проверено
+     grep + unit-тест с фейковым клиентом).
+  3. → downloader: TelegramNotFound → permanent; тесты: реальный transient
+     (503 → retry → success), not-found → ровно одна попытка.
+  4. → resume-тест проверяет pydantic equality initial/resumed (включая duration).
+  5. → IMPLEMENTATION_STATE/REVIEWS обновлены только после фактических правок.
+
 ## Шаблон записи
 
 ```text

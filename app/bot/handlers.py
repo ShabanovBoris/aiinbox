@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.config import Settings
 from app.domain.enums import SourceType
-from app.services.ingestion import ingest_message, ingest_voice, mark_oversized
+from app.services.ingestion import ingest_message, ingest_voice
 
 log = logging.getLogger(__name__)
 
@@ -64,8 +64,10 @@ async def on_voice_audio(
         return
     file_size = media.file_size or 0
     source_type = SourceType.AUDIO if is_audio else SourceType.VOICE
-    # persist → ACK (порядок Phase 1). Oversized тоже сохраняем как durable
-    # FAILED/TOO_LARGE Item с метаданными (PRODUCT_SPEC §66), а не молча теряем.
+    # persist → ACK (порядок Phase 1). Oversized сохраняется атомарно при создании
+    # как FAILED/TOO_LARGE (PRODUCT_SPEC §66) — без claimable промежуточного
+    # состояния, чтобы воркер не начал скачивание.
+    oversized = (file_size, max_audio_bytes) if file_size > max_audio_bytes else None
     result = await ingest_voice(
         session_factory,
         telegram_user_id=user_id,
@@ -74,10 +76,10 @@ async def on_voice_audio(
         file_id=media.file_id,
         duration_seconds=media.duration,
         source_type=source_type,
+        too_large=oversized,
     )
     item = result.items[0]
-    if file_size > max_audio_bytes:
-        await mark_oversized(session_factory, item.id, file_size, max_audio_bytes)
+    if item.error_code == "TOO_LARGE":
         limit_mb = max_audio_bytes / 1_000_000
         await message.answer(
             f"Файл слишком большой ({file_size / 1_000_000:.1f} МБ > лимита "

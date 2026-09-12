@@ -197,11 +197,12 @@ def make_real_downloader(bot, tmp_path, **overrides):
 class FakeTgBot:
     """Минимальный bot double: get_file + token; скачивание через MockTransport."""
 
-    def __init__(self, file_size=None, get_file_fails=False):
+    def __init__(self, file_size=None, get_file_fails=False, fail_first_requests=0):
         self.token = "TESTTOKEN"
         self.file_size = file_size
         self.get_file_fails = get_file_fails
         self.get_file_calls = 0
+        self.fail_first_requests = fail_first_requests
 
     async def get_file(self, file_id):
         self.get_file_calls += 1
@@ -224,8 +225,9 @@ class FakeTgBot:
         return httpx.Response(404)
 
 
-async def test_downloader_transient_then_success(tmp_path):
-    bot = FakeTgBot()
+async def test_downloader_transient_503_then_success(tmp_path):
+    # Регрессия: первая HTTP-попытка 503 (transient) → retry → success.
+    bot = FakeTgBot(fail_first_requests=1)
     downloader = make_real_downloader(bot, tmp_path)
     path = await downloader.download("file-123", tmp_path)
     assert path.exists() and path.stat().st_size > 0
@@ -273,7 +275,7 @@ async def test_downloader_permanent_404_single_attempt(tmp_path):
     assert attempts["count"] == 1
 
 
-async def test_downloader_get_file_failure_retries(tmp_path):
+async def test_downloader_get_file_network_failure_retries(tmp_path):
     bot = FakeTgBot(get_file_fails=True)
     downloader = make_real_downloader(bot, tmp_path)
     with pytest.raises(AppError) as exc_info:
@@ -283,9 +285,30 @@ async def test_downloader_get_file_failure_retries(tmp_path):
     assert list(tmp_path.glob("*.bin")) == []
 
 
-async def test_voice_size_limit_creates_durable_item(session_factory):
-    # Регрессия: oversized media сохраняется как FAILED/TOO_LARGE с метаданными
-    # (PRODUCT_SPEC §66), а не теряется.
+async def test_downloader_get_file_not_found_is_permanent(tmp_path):
+    # Регрессия: TelegramNotFound (4xx-семантика) — ровно одна попытка.
+    class NotFoundBot:
+        token = "TESTTOKEN"
+        get_file_calls = 0
+
+        async def get_file(self, file_id):
+            self.get_file_calls += 1
+            from aiogram.exceptions import TelegramNotFound
+
+            raise TelegramNotFound(method="get_file", message="file not found")
+
+    bot = NotFoundBot()
+    downloader = make_real_downloader(bot, tmp_path, max_attempts=3)
+    with pytest.raises(AppError) as exc_info:
+        await downloader.download("file-123", tmp_path)
+    assert exc_info.value.code == "DOWNLOAD_FAILED"
+    assert exc_info.value.permanent is True
+    assert bot.get_file_calls == 1
+
+
+async def test_voice_size_limit_creates_durable_item_atomically(session_factory):
+    # Регрессия: oversized media сохраняется атомарно как FAILED/TOO_LARGE
+    # (PRODUCT_SPEC §66) БЕЗ промежуточного claimable QUEUED-состояния.
     ingested = await ingest_voice(
         session_factory,
         telegram_user_id=42,
@@ -294,14 +317,39 @@ async def test_voice_size_limit_creates_durable_item(session_factory):
         file_id="big-file",
         duration_seconds=999,
         source_type=SourceType.VOICE,
+        too_large=(25_000_000, 20_000_000),
     )
     item = ingested.items[0]
-    from app.services.ingestion import mark_oversized
-
-    await mark_oversized(session_factory, item.id, 25_000_000, 20_000_000)
     async with session_factory() as session:
         row = await session.get(Item, item.id)
         assert row.processing_status is ProcessingStatus.FAILED
         assert row.error_code == "TOO_LARGE"
         assert row.source_file_id == "big-file"
         assert row.content_duration_seconds == 999
+        # атомарность: никакой транзакции, в которой Item был бы QUEUED, не было
+
+
+async def test_stt_timeout_maps_to_timeout_code(tmp_path):
+    # Регрессия: configured timeout от STT SDK должен давать TIMEOUT,
+    # а не общий TRANSCRIPTION_FAILED.
+    import httpx
+    from openai import APITimeoutError
+
+    from app.llm.transcription import OpenAiTranscriptionProvider
+
+    provider = OpenAiTranscriptionProvider(api_key="k", model="whisper-test")
+
+    class TimeoutAudio:
+        @staticmethod
+        async def create(**kwargs):
+            raise APITimeoutError(request=httpx.Request("POST", "https://api.openai.com"))
+
+    class FakeClient:
+        audio = type("audio", (), {"transcriptions": TimeoutAudio})()
+
+    provider._client = FakeClient()
+    audio_file = tmp_path / "a.ogg"
+    audio_file.write_bytes(b"x")
+    with pytest.raises(AppError) as exc_info:
+        await provider.transcribe(audio_file)
+    assert exc_info.value.code == "TIMEOUT"
