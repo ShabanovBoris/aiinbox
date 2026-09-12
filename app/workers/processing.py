@@ -6,7 +6,7 @@ from sqlalchemy import case, func, select, update
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.domain.enums import ProcessingStatus
-from app.llm.base import LlmError
+from app.errors import AppError
 from app.services.processing import ProcessingPipeline
 from app.storage.models import Item
 
@@ -102,7 +102,7 @@ class ProcessingWorker:
                 return
             item.processing_status = ProcessingStatus.FAILED
             item.processing_stage = "FAILED"
-            item.error_code = exc.code if isinstance(exc, LlmError) else "UNKNOWN"
+            item.error_code = exc.code if isinstance(exc, AppError) else "UNKNOWN"
             item.error_message = str(exc)[:500]
             await session.commit()
 

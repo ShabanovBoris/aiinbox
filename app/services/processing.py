@@ -1,14 +1,16 @@
 import logging
 
 from pydantic import ValidationError
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.domain.enums import ProcessingStatus
-from app.domain.models import DEFAULT_PROFILE, AnalysisResult
+from app.domain.enums import ContentKind, ProcessingStatus, SourceType
+from app.domain.models import DEFAULT_PROFILE, AnalysisResult, NormalizedContent
 from app.domain.priority import PriorityEngine
 from app.extractors.text import TextExtractor
+from app.extractors.web import WebPageExtractor
 from app.services.analysis import Analyzer
-from app.storage.models import Item
+from app.storage.models import Content, Item
 
 log = logging.getLogger(__name__)
 
@@ -22,14 +24,20 @@ class ProcessingPipeline:
     повторяет успешный LLM-вызов. Источники добавляются в extract-шаге своих фаз.
     """
 
-    def __init__(self, analyzer: Analyzer, priority: PriorityEngine):
+    def __init__(
+        self,
+        analyzer: Analyzer,
+        priority: PriorityEngine,
+        web_extractor: WebPageExtractor | None = None,
+    ):
         self.analyzer = analyzer
         self.priority = priority
+        self.web_extractor = web_extractor or WebPageExtractor()
 
     async def run(self, session: AsyncSession, item: Item) -> None:
         analysis = None
         if item.processing_stage == "PRIORITIZING":
-            # Checkpoint после дорогого вызова: analysis уже персистен —
+            # Checkpoint после дорогих вызовов: analysis уже персистен —
             # пересчитываем только приоритет, LLM не вызываем.
             try:
                 analysis = self._restored_analysis(item)
@@ -37,10 +45,15 @@ class ProcessingPipeline:
                 analysis = None  # неполный checkpoint — честно начинаем анализ заново
 
         if analysis is None:
-            if item.processing_stage != "ANALYZING":
+            content = None
+            if item.processing_stage == "ANALYZING":
+                # Resume из ANALYZING: для WEB дорогой extraction уже выполнен —
+                # WEB_TEXT персистен, повторная загрузка не нужна (ТЗ §59).
+                content = await self._restored_content(session, item)
+            if content is None:
                 item.processing_stage = "EXTRACTING"
                 await session.commit()
-            content = await TextExtractor().extract(item)
+                content = await self._extract(session, item)
 
             item.processing_stage = "ANALYZING"
             await session.commit()
@@ -65,6 +78,52 @@ class ProcessingPipeline:
             item.category,
             item.item_type.value if item.item_type else None,
             item.priority_score,
+        )
+
+    async def _extract(self, session: AsyncSession, item: Item) -> NormalizedContent:
+        if item.source_type is SourceType.WEB:
+            content = await self.web_extractor.extract(item)
+            # WEB_TEXT персистится атомарно с checkpoint'ом ANALYZING:
+            # переживает restart, retry не перекачивает страницу (ТЗ §46, §59).
+            # metadata_json хранит заголовок/автора/язык/заметку — resume
+            # восстанавливает эквивалентный NormalizedContent целиком.
+            session.add(
+                Content(
+                    item_id=item.id,
+                    kind=ContentKind.WEB_TEXT,
+                    text=content.text,
+                    metadata_json={
+                        "title": content.title,
+                        "author": content.author,
+                        "language": content.language,
+                        "user_note": item.user_note or None,
+                    },
+                )
+            )
+            return content
+        return await TextExtractor().extract(item)
+
+    @staticmethod
+    async def _restored_content(session: AsyncSession, item: Item) -> NormalizedContent | None:
+        if item.source_type is not SourceType.WEB:
+            # TEXT: извлечение тривиально, content всегда восстанавливается из заметки.
+            return await TextExtractor().extract(item)
+        row = await session.scalar(
+            select(Content).where(Content.item_id == item.id, Content.kind == ContentKind.WEB_TEXT)
+        )
+        if row is None:
+            return None
+        meta = row.metadata_json or {}
+        return NormalizedContent(
+            source_type=SourceType.WEB,
+            title=meta.get("title"),
+            text=row.text,
+            url=item.source_url,
+            user_note=meta.get("user_note")
+            if meta.get("user_note") is not None
+            else item.user_note,
+            author=meta.get("author"),
+            language=meta.get("language"),
         )
 
     @staticmethod

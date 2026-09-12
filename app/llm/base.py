@@ -1,15 +1,11 @@
 from typing import Protocol
 
 from app.domain.models import AnalysisResult, NormalizedContent, UserProfile
+from app.errors import AppError
 
 
-class LlmError(Exception):
-    """Ошибка на границе LLM-адаптера с машиночитаемым кодом
-    (PRODUCT_SPEC §57: LLM_FAILED / INVALID_LLM_OUTPUT)."""
-
-    def __init__(self, code: str, message: str):
-        super().__init__(message)
-        self.code = code
+class LlmError(AppError):
+    """Ошибка на границе LLM-адаптера (LLM_FAILED / INVALID_LLM_OUTPUT)."""
 
 
 class LlmProvider(Protocol):

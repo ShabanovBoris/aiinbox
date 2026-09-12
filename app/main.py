@@ -7,6 +7,7 @@ from alembic.config import Config as AlembicConfig
 
 from app.config import Settings
 from app.domain.priority import PriorityEngine
+from app.extractors.web import WebPageExtractor
 from app.llm.base import LlmProvider
 from app.llm.openai import OpenAiProvider
 from app.services.analysis import Analyzer
@@ -40,7 +41,17 @@ async def run(settings: Settings) -> None:
     try:
         await requeue_stale(session_factory)
 
-        pipeline = ProcessingPipeline(Analyzer(build_provider(settings)), PriorityEngine())
+        web_extractor = WebPageExtractor(
+            min_text_length=settings.min_extracted_text_length,
+            timeout_seconds=settings.web_timeout_seconds,
+            max_download_bytes=settings.max_download_bytes,
+            max_redirects=settings.max_redirects,
+            max_attempts=settings.web_max_attempts,
+            backoff_seconds=settings.web_backoff_seconds,
+        )
+        pipeline = ProcessingPipeline(
+            Analyzer(build_provider(settings)), PriorityEngine(), web_extractor
+        )
 
         stop = asyncio.Event()
         loop = asyncio.get_running_loop()

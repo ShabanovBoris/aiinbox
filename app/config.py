@@ -13,6 +13,16 @@ class Settings(BaseSettings):
     processing_poll_seconds: float = 1.0
     default_timezone: str = "UTC"
 
+    # Web extraction (Phase 3)
+    min_extracted_text_length: int = 300
+    web_timeout_seconds: float = 30.0
+    max_download_bytes: int = 5_000_000
+    max_redirects: int = 5
+    web_max_attempts: int = 3
+    web_backoff_seconds: float = 0.5
+    # Playwright fallback жёстко отключён (нет SSRF-safe browser boundary);
+    # вернётся отдельным изменением с pinned/proxied browser network boundary.
+
     # Сменный LLM-провайдер: model ids только через конфиг (PRODUCT_SPEC §29).
     llm_provider: str = "openai"
     openai_api_key: str = ""

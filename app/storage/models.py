@@ -15,7 +15,7 @@ from sqlalchemy import (
 from sqlalchemy import Enum as SaEnum
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
-from app.domain.enums import ItemState, ItemType, ProcessingStatus, SourceType
+from app.domain.enums import ContentKind, ItemState, ItemType, ProcessingStatus, SourceType
 
 
 class Base(DeclarativeBase):
@@ -40,6 +40,9 @@ class Item(Base):
     __tablename__ = "items"
     __table_args__ = (
         UniqueConstraint("user_id", "telegram_message_id", "source_index", name="uq_items_source"),
+        # Дедупликация URL per-user на уровне БД; для TEXT-Item source_url NULL
+        # (SQLite уникальность не действует на NULL-пары).
+        UniqueConstraint("user_id", "source_url", name="uq_items_user_url"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -59,6 +62,8 @@ class Item(Base):
     source_type: Mapped[SourceType] = mapped_column(
         SaEnum(SourceType, native_enum=False, length=16)
     )
+    # Нормализованный URL для WEB-источников (дедупликация, Открыть, retry).
+    source_url: Mapped[str | None] = mapped_column(String(700))
 
     # Текущий этап конвейера — позволяет понять, где обработка остановилась
     # при сбое (PRODUCT_SPEC §60, D-001 resumable).
@@ -93,3 +98,17 @@ class Item(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), onupdate=func.now()
     )
+
+
+class Content(Base):
+    """Длинный контент отдельно от Item (ТЗ §46–48): исходный extracted text,
+    транскрипты и т.п. переживают restart и позволяют retry без повторной работы."""
+
+    __tablename__ = "contents"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    item_id: Mapped[int] = mapped_column(ForeignKey("items.id"), index=True)
+    kind: Mapped[ContentKind] = mapped_column(SaEnum(ContentKind, native_enum=False, length=16))
+    text: Mapped[str] = mapped_column(Text)
+    metadata_json: Mapped[dict | None] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())

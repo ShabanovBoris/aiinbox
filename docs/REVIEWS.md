@@ -151,6 +151,85 @@
   LLM-вызова, IMPLEMENTATION_STATE синхронизирован.
 - Финализация: Phase 2 → DONE в IMPLEMENTATION_STATE.
 
+## 2026-09-13 — PR #4 — cd88b89 — CHANGES REQUIRED
+
+- Phase 03 — Web ingestion. Reviewer: Orchestrator; вердикт также на GitHub:
+  https://github.com/ShabanovBoris/aiinbox/pull/4#pullrequestreview-5188307687 (commit cd88b89).
+- Findings:
+  1. MAJOR/SECURITY: SSRF не привязан к фактическому соединению — валидация DNS
+     и httpx-резолв раздельны (DNS rebinding/TOCTOU, OWASP); Playwright fallback
+     без private-network enforcement (обязательное).
+  2. MAJOR: MAX_DOWNLOAD_BYTES не был лимитом скачивания — client.get читал тело
+     до проверки; _default_client игнорировал WEB_TIMEOUT_SECONDS (обязательное).
+  3. MAJOR: resume из WEB_TEXT терял user_note/title/author/language
+     (обязательное).
+  4. MAJOR: заявленный transient retry отсутствовал — одна попытка, сразу FAILED
+     (обязательное, PRODUCT_SPEC §58).
+  5. MAJOR: URL normalization меняла ресурс — терялись явный порт и trailing
+     slash (обязательное, ТЗ §62).
+- Resolved (коммиты после cd88b89 в этом же PR):
+  1. → PinningTransport: резолв+валидация+connect на один и тот же проверенный IP
+     (Host/SNI оригинальные); Playwright fallback по умолчанию ВЫКЛЮЧЕН
+     (config-гейт), при включении — route-deny непубличных адресов + block
+     service workers.
+  2. → streamed download с инкрементальным byte-cap (без Content-Length тоже);
+     таймаут из конфига применяется в _default_client; тесты: oversized без
+     Content-Length, кастомный timeout.
+  3. → contents.metadata_json хранит title/author/language/user_note; resume
+     восстанавливает эквивалентный NormalizedContent (тест на полное равенство).
+  4. → retry: transient (TIMEOUT/DOWNLOAD_FAILED-transient) до 3 попыток с
+     exponential backoff; permanent (SECURITY_REJECTED/4xx/TOO_LARGE) — ровно
+     одна попытка; тесты на оба пути.
+  5. → normalize_url: порт и trailing slash сохраняются; default-порт снимается;
+     тесты на 8443/a/ и trailing slash.
+
+## 2026-09-13 — PR #4 — 133a396 — CHANGES REQUIRED (re-review)
+
+- Reviewer: Orchestrator; вердикт также на GitHub:
+  https://github.com/ShabanovBoris/aiinbox/pull/4#pullrequestreview-5188369457 (commit 133a396).
+- Findings #2–#5 предыдущего ревью подтверждены закрытыми. Остались три в
+  transport/security fix:
+  1. MAJOR: PinningTransport не делегирует aclose() внутреннему транспорту —
+     connection pool/sockets остаются незакрытыми.
+  2. MAJOR/SECURITY: включаемый Playwright path всё ещё без SSRF-изоляции
+     (route-deny не закрывает TOCTOU/WebSockets) — нарушал бы §20 при opt-in.
+  3. MAJOR: connection pool после pinning идентифицирует origin по IP — redirect
+     A→B на один CDN IP мог переиспользовать TLS-сессию с SNI A.
+- Resolved (коммиты после 133a396):
+  1. → PinningTransport.aclose() делегирует self._inner.aclose(); тест вызывает
+     cleanup на фейковом inner.
+  2. → Playwright fallback жёстко отключён без production opt-in (route-deny
+     не является SSRF-изоляцией); config-флаг и route-код удалены; вернётся
+     отдельным изменением с настоящим network boundary. Renderer — только
+     тестовый seam.
+  3. → Connection: close на каждый запрос через PinningTransport — переиспользование
+     соединений по IP-origin исключено; тест фиксирует заголовок.
+
+## 2026-09-13 — PR #4 — 86d40e6 — CHANGES REQUIRED (re-review 2)
+
+- Reviewer: Orchestrator; вердикт также на GitHub:
+  https://github.com/ShabanovBoris/aiinbox/pull/4#pullrequestreview-5188394647 (commit 86d40e6).
+- Три transport/security finding'а 133a396 подтверждены закрытыми (aclose,
+  Connection: close, playwright отключён в рантайме).
+- Remaining (cleanup):
+  1. MINOR: playwright-зависимость не удалена из pyproject/uv.lock.
+  2. MINOR: IMPLEMENTATION_STATE отстал (78 вместо 81 passed, нет описания
+     финальных transport fixes).
+- Resolved (коммит после 86d40e6):
+  1. → playwright удалён из pyproject + uv lock пересобран (production-путь его
+     не импортирует).
+  2. → IMPLEMENTATION_STATE: 81 passed, финальные transport fixes зафиксированы,
+     Phase 3 остаётся IN_REVIEW.
+
+## 2026-09-13 — PR #4 — 14f4804 — APPROVED
+
+- Phase 03 — Web ingestion. Reviewer: Orchestrator; вердикт также на GitHub:
+  https://github.com/ShabanovBoris/aiinbox/pull/4#pullrequestreview-5188406402 (commit 14f4804).
+- Reviewed HEAD: 14f4804e5a2618f9c3a6f41cf52bf7374c92e382. mergeable/clean.
+- Все findings (SSRF pinning/Playwright/byte-cap/retry/resume-metadata/normalization)
+  закрыты; playwright dependency удалена.
+- Финализация: Phase 3 → DONE в IMPLEMENTATION_STATE.
+
 ## Шаблон записи
 
 ```text
