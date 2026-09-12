@@ -1326,8 +1326,12 @@ Review mechanism (protocol §5–9):
 
 1. Phase branch `phase/NN-short-description` is pushed and a PR to `main` is opened with the protocol's PR body template.
 2. A `REVIEW REQUEST` in the protocol's format (Repository and PR are mandatory) is sent to the fixed conversation.
-3. Phase state in `docs/IMPLEMENTATION_STATE.md` moves to `IN_REVIEW`; `DONE` is set only after an explicit Orchestrator `APPROVED` (or immediately before a merge the Orchestrator has authorized).
+3. Phase state in `docs/IMPLEMENTATION_STATE.md` moves to `IN_REVIEW`.
 4. Outcomes: `APPROVED` / `CHANGES REQUIRED` (fix in the same branch and PR, then `RE-REVIEW REQUEST`) / `BLOCKED` (continue everything not affected by the blocker).
+
+Durable record of verdicts: the chat conversation is not a reliable store of decisions. Every Orchestrator verdict must be recorded by the agent in `docs/REVIEWS.md` immediately after receipt, with the PR number and reviewed HEAD SHA; a `RE-REVIEW REQUEST` references that record. A formal GitHub PR review is preferred when the connected identity permits it (known constraint: the PR author cannot post `REQUEST_CHANGES` on their own PR).
+
+Approval → merge handshake (no TOCTOU): after `APPROVED @ HEAD A` the agent makes ONLY a status-finalization commit (`IMPLEMENTATION_STATE` `IN_REVIEW` → `DONE`, recording approved HEAD A), producing HEAD B whose delta A..B is docs-status-only, then declares `MERGE READY` (`Previous approved HEAD: A`, `New HEAD: B`). The Orchestrator verifies the delta and squash-merges with expected HEAD B. No other changes between APPROVED and merge. `main` is additionally protected server-side (branch protection: PR-only changes, no force push, linear history).
 
 The Orchestrator verifies GitHub directly (PR metadata, diff, SHAs, runs). As companion material, a submission may also include the main diff (`git diff <base>..HEAD`) and a project archive built from git-tracked files only (`git archive --format=zip -o temp/project.zip HEAD`), so ignored paths (`.env`, `data/`, `temp/`, virtualenvs) never leave the machine — send them when the Orchestrator asks or cannot access GitHub.
 

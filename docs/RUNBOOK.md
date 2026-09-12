@@ -20,12 +20,18 @@ diff "ТЗ_ Personal AI Inbox - интеллектуальный Telegram TODO.m
 
 ## Repository
 
-- GitHub: https://github.com/ShabanovBoris/aiinbox (создан пользователем), remote `origin`
+- GitHub: https://github.com/ShabanovBoris/aiinbox (public), remote `origin`, default branch `main`
 - Локальный git инициализирован 2026-09-12 (branch `main`, первый commit `f0448e6`)
-- Push-аутентификация CLI: `gh` установлен, device-flow `gh auth login` запущен
-  (код подтверждения вводится на https://github.com/login/device); после успешного
-  входа push по HTTPS работает через credential helper. Альтернатива — привязать
-  существующий SSH-ключ `~/.ssh/id_ed25519.pub` к аккаунту GitHub.
+- Аутентификация GitHub CLI (воспроизводимая процедура):
+
+```bash
+gh auth status      # если не аутентифицирован:
+gh auth login       # device flow
+gh auth setup-git   # git credential helper для push по HTTPS
+```
+
+- Защита `main` (server-side): branch protection включена — только через PR,
+  force push и deletion запрещены, linear history обязательна.
 
 ## Git workflow (оркестрационный протокол §2–4, §22–23)
 
@@ -45,6 +51,10 @@ git push -u origin phase/NN-short-description
 ```
 
 - Merge — только Orchestrator, squash, заголовок `Phase NN: <description>`.
+- Handshake APPROVED → merge: см. `AGENTS.md` §57 — после `APPROVED @ HEAD A`
+  агент делает единственный status-finalization commit (HEAD B, delta
+  docs-status-only) и объявляет `MERGE READY`; Orchestrator проверяет delta
+  и squash-merges с ожидаемым HEAD B.
 - После merge: `git checkout main && git pull --ff-only`, затем новая ветка.
 - Запрещены: direct commit в `main`, force push, merge собственного PR,
   старт следующей фазы до `APPROVED`, несколько фаз в одном PR.
@@ -54,7 +64,12 @@ git push -u origin phase/NN-short-description
 Механизм — протокол §5–9: PR + `REVIEW REQUEST` в фиксированную беседу ChatGPT
 (правило: `AGENTS.md` §57). Orchestrator проверяет GitHub напрямую (PR, diff, SHA).
 
-Как сопроводительный материал (когда Orchestrator попросит или нет доступа к GitHub):
+- Каждый вердикт (`APPROVED` / `CHANGES REQUIRED` / `BLOCKED`) агент немедленно
+  фиксирует в `docs/REVIEWS.md` (PR + reviewed HEAD SHA) — durable record,
+  пережидающий смену сессий. Ограничение GitHub: автор PR не может оставить
+  `REQUEST_CHANGES` на собственный PR, поэтому формальный PR review от identity
+  Orchestrator'а может быть недоступен.
+- Сопроводительный материал (когда Orchestrator попросит):
 
 ```bash
 git diff main..HEAD > temp/review.diff

@@ -6,7 +6,13 @@
 
 Статусы: `NOT_STARTED` / `IN_PROGRESS` / `IN_REVIEW` / `DONE` / `BLOCKED`.
 
-Правило статусов (оркестрационный протокол §25): `IN_REVIEW` = реализация завершена, PR открыт и отправлен `REVIEW REQUEST` Orchestrator'у; `DONE` ставится только после явного `APPROVED` Orchestrator'а (или непосредственно перед разрешённым им merge); `BLOCKED` — только реальный внешний блокер. Фаза в `IN_REVIEW` не расширяется по scope: исправления идут в ту же branch и PR.
+Правило статусов (оркестрационный протокол §25): `IN_REVIEW` = реализация завершена, PR открыт и отправлен `REVIEW REQUEST` Orchestrator'у; `DONE` ставится только после явного `APPROVED` Orchestrator'а; `BLOCKED` — только реальный внешний блокер. Фаза в `IN_REVIEW` не расширяется по scope: исправления идут в ту же branch и PR.
+
+Handshake APPROVED → DONE → merge: после `APPROVED @ HEAD A` агент делает
+единственный status-finalization commit (`IN_REVIEW` → `DONE`, с записью approved
+HEAD A), delta A..B — только статусная документация; затем объявляет `MERGE READY`
+(Previous approved HEAD: A, New HEAD: B). Orchestrator проверяет delta и делает
+squash merge с ожидаемым HEAD B. Вердикты фиксируются в `docs/REVIEWS.md`.
 
 Архитектурные решения фиксируются отдельно — в `docs/DECISIONS.md`.
 
@@ -52,15 +58,17 @@ Completed:
 ✓ docs/RUNBOOK.md — каркас операций
 ✓ git инициализирован (branch main), .gitignore, первый commit
 ✓ внешний ревью-канал зафиксирован: ChatGPT через Browser Use (AGENTS.md §57)
+✓ GitHub remote https://github.com/ShabanovBoris/aiinbox подключён, push работает
+  (gh auth login + gh auth setup-git)
+✓ branch protection для main включена (PR-only, no force push, linear history)
 
 Remaining:
-□ GitHub remote + push: создание репозитория заблокировано отсутствием
-  GitHub-аутентификации на машине (gh не установлен, SSH-ключ не привязан,
-  HTTPS-креденшелов нет). Нужен `gh auth login` либо ручное создание
-  репозитория пользователем; после этого — add remote + push.
+□ — нет
 
 Last verification:
 diff «ТЗ ↔ docs/PRODUCT_SPEC.md» — различие только в служебной шапке
+branch protection: gh api .../branches/main/protection → PR required, force push
+и deletions запрещены, linear history включена
 (pytest/ruff неприменимы: кода ещё нет)
 
 ### Шаблон фазы в работе
