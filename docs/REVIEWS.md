@@ -61,6 +61,30 @@
   Orchestrator проверяет delta 5611be6..B и выполняет squash merge с
   expected_head_sha=B. Phase 1 — только после merge и sync main.
 
+## 2026-09-12 — PR #2 — 522b2ce — CHANGES REQUIRED
+
+- Phase 01 — Skeleton. Reviewer: Orchestrator; вердикт также на GitHub:
+  https://github.com/ShabanovBoris/aiinbox/pull/2#pullrequestreview-5188124942 (commit 522b2ce).
+- Findings:
+  1. MAJOR: гонка создания User — SELECT→INSERT→flush без обработки уникальности
+     внутри get_or_create_user; параллельные первые сообщения нового пользователя
+     могли терять Item (обязательное).
+  2. MAJOR: ACK («Принял. Разбираю…») отправлялся до persistence — при ошибке БД
+     пользователь получал ложное подтверждение (обязательное).
+  3. MAJOR: SQLite FK не enforcement'ится — PRAGMA foreign_keys=ON не включалась
+     на connection (обязательное).
+  4. MINOR: атомарность claim (D-004) проверялась только последовательно — нужен
+     конкурентный тест через asyncio.gather.
+- Resolved (коммиты после 522b2ce в этом же PR):
+  1. → get_or_create_user обрабатывает IntegrityError на flush (rollback +
+     переиспользование существующего User); регрессия: параллельные первые
+     сообщения → 1 User + 2 Items.
+  2. → порядок persist QUEUED → ACK; регрессия: падение ingestion → ACK не отправлен.
+  3. → enable_sqlite_fk (event listener `pragma foreign_keys=ON`) в make_engine и
+     тестовом контексте; регрессия: Item с несуществующим user_id отвергается БД.
+  4. → конкурентные тесты claim: 2 воркера × 1 Item → ровно один claim;
+     2 воркера × 2 Items → разные Items.
+
 ## Шаблон записи
 
 ```text

@@ -1,3 +1,5 @@
+import asyncio
+
 from app.domain.enums import ProcessingStatus
 from app.services.ingestion import ingest_text
 from app.storage.models import Item
@@ -32,6 +34,23 @@ async def test_claim_is_atomic_no_double_processing(session_factory):
     second = await worker.claim_next()
     assert first is not None
     assert second is None
+
+
+async def test_concurrent_workers_claim_exactly_one_for_single_item(session_factory):
+    # D-004 проверяется конкурентно: два воркера, один QUEUED — ровно один claim.
+    item = await seed(session_factory)
+    workers = [ProcessingWorker(session_factory), ProcessingWorker(session_factory)]
+    claimed = await asyncio.gather(*(w.claim_next() for w in workers))
+    assert sorted(c for c in claimed if c is not None) == [item.id]
+    assert claimed.count(None) == 1
+
+
+async def test_concurrent_workers_claim_distinct_items(session_factory):
+    first = await seed(session_factory, message_id=1)
+    second = await seed(session_factory, message_id=2)
+    workers = [ProcessingWorker(session_factory), ProcessingWorker(session_factory)]
+    claimed = await asyncio.gather(*(w.claim_next() for w in workers))
+    assert sorted(c for c in claimed if c is not None) == [first.id, second.id]
 
 
 async def test_worker_processes_queued_to_ready(session_factory):

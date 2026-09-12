@@ -1,3 +1,5 @@
+import asyncio
+
 import pytest
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
@@ -74,3 +76,34 @@ async def test_user_created_once_for_repeated_updates(session_factory):
     await ingest_text(session_factory, telegram_user_id=42, chat_id=42, message_id=2, text="b")
     async with session_factory() as session:
         assert await session.scalar(select(func.count()).select_from(User)) == 1
+
+
+async def test_parallel_first_messages_create_one_user_and_all_items(session_factory):
+    # Регрессия гонки get_or_create_user: два одновременных первых сообщения
+    # нового пользователя не должны терять Item — итог: 1 User + 2 Items.
+    results = await asyncio.gather(
+        ingest_text(session_factory, telegram_user_id=777, chat_id=777, message_id=1, text="first"),
+        ingest_text(
+            session_factory, telegram_user_id=777, chat_id=777, message_id=2, text="second"
+        ),
+    )
+    assert len({item.id for item in results}) == 2
+    async with session_factory() as session:
+        assert await session.scalar(select(func.count()).select_from(User)) == 1
+        assert await session.scalar(select(func.count()).select_from(Item)) == 2
+
+
+async def test_item_with_unknown_user_rejected_by_db(session_factory):
+    # FK должен enforcement'иться БД (pragma foreign_keys=ON), а не только логикой.
+    async with session_factory() as session:
+        session.add(
+            Item(
+                user_id=999_999,
+                telegram_message_id=1,
+                source_index=0,
+                source_type=SourceType.TEXT,
+                user_note="orphan",
+            )
+        )
+        with pytest.raises(IntegrityError):
+            await session.commit()

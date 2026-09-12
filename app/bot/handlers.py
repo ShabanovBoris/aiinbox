@@ -28,7 +28,8 @@ async def on_text(
     if not message.text:
         return
     # Тяжёлая обработка запрещена в handler: только валидация, Item QUEUED и ответ.
-    await message.answer("Принял. Разбираю…")
+    # Сначала persistence, потом ACK: при ошибке БД пользователь не получает
+    # ложное подтверждение сохранения.
     await ingest_text(
         session_factory,
         telegram_user_id=user_id,
@@ -36,6 +37,7 @@ async def on_text(
         message_id=message.message_id,
         text=message.text,
     )
+    await message.answer("Принял. Разбираю…")
 
 
 def make_router(settings: Settings, session_factory: async_sessionmaker) -> Router:

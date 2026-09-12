@@ -1,5 +1,6 @@
 from datetime import UTC, datetime
 
+import pytest
 from aiogram.types import Chat, Message
 from aiogram.types import User as TgUser
 from sqlalchemy import func, select
@@ -68,3 +69,17 @@ async def test_two_allowed_users_ingest_separately(settings, session_factory, mo
         assert await session.scalar(select(func.count()).select_from(Item)) == 2
         users = (await session.scalars(select(User.telegram_user_id))).all()
         assert sorted(users) == [42, 1000]
+
+
+async def test_no_success_ack_when_persistence_fails(settings, session_factory, monkeypatch):
+    # Регрессия порядка persist → ACK: ошибка БД не должна сопровождаться
+    # сообщением об успешном приёме.
+    sent = capture_answers(monkeypatch)
+
+    async def failing_ingest(*args, **kwargs):
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr("app.bot.handlers.ingest_text", failing_ingest)
+    with pytest.raises(RuntimeError):
+        await on_text(make_message(42), settings, session_factory)
+    assert sent == []

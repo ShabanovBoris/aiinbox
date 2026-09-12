@@ -14,10 +14,20 @@ async def get_or_create_user(
     session: AsyncSession, *, telegram_user_id: int, chat_id: int | None
 ) -> User:
     user = await session.scalar(select(User).where(User.telegram_user_id == telegram_user_id))
-    if user is None:
-        user = User(telegram_user_id=telegram_user_id, telegram_chat_id=chat_id)
-        session.add(user)
+    if user is not None:
+        return user
+    user = User(telegram_user_id=telegram_user_id, telegram_chat_id=chat_id)
+    session.add(user)
+    try:
         await session.flush()
+    except IntegrityError:
+        # Гонка первых сообщений нового пользователя: параллельный запрос уже
+        # создал User (уникальность telegram_user_id). Откатываем нашу вставку
+        # и переиспользуем существующую запись — Item при этом не теряется.
+        await session.rollback()
+        user = await session.scalar(select(User).where(User.telegram_user_id == telegram_user_id))
+        if user is None:
+            raise
     return user
 
 

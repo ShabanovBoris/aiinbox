@@ -2,6 +2,7 @@ import pytest
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.config import Settings
+from app.storage.database import enable_sqlite_fk
 from app.storage.models import Base
 
 
@@ -18,7 +19,8 @@ def settings(tmp_path):
 
 @pytest.fixture
 async def engine(settings):
-    engine = create_async_engine(settings.database_url)
+    # FK-pragma как в продовом make_engine: тесты проверяют те же инварианты БД
+    engine = enable_sqlite_fk(create_async_engine(settings.database_url))
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     yield engine
