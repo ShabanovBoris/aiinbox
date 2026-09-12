@@ -365,6 +365,24 @@
      перемещена в Phase 5).
 - Урок процесса: правки через must_replace с assert'ом на каждое применение.
 
+## 2026-09-13 — PR #6 — 1455f3e — CHANGES REQUIRED (re-review 3)
+
+- Reviewer: Orchestrator; вердикт также на GitHub:
+  https://github.com/ShabanovBoris/aiinbox/pull/6#pullrequestreview-5188627524 (commit 1455f3e).
+- Findings:
+  1. MAJOR/SECURITY: Telegram bot token попадает в URL скачивания и может утечь
+     через INFO-лог httpx (печатает полный request URL).
+  2. MINOR: permanent-классификация шире тестов (проверен только TelegramNotFound).
+  3. MINOR: PR body устарел.
+- Resolved (коммиты после 1455f3e):
+  1. → TokenRedactionFilter на логгерах httpx/httpcore (устанавливается
+     TelegramFileDownloader, идемпотентно): токен в записях заменяется на ***;
+     regression test_bot_token_never_leaks_into_logs — caplog INFO при download,
+     токен в логе отсутствует.
+  2. → test_downloader_bad_request_is_permanent: TelegramBadRequest → ровно одна
+     попытка get_file.
+  3. → PR body обновлён как metadata без commit.
+
 ## Шаблон записи
 
 ```text

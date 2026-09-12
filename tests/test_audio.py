@@ -359,3 +359,37 @@ async def test_stt_timeout_maps_to_timeout_code(tmp_path):
     with pytest.raises(AppError) as exc_info:
         await provider.transcribe(audio_file)
     assert exc_info.value.code == "TIMEOUT"
+
+
+async def test_bot_token_never_leaks_into_logs(tmp_path, caplog):
+    # Регрессия (SECURITY): URL скачивания содержит bot<token>; INFO-лог httpx
+    # печатает URL целиком — redaction-фильтр обязан скрыть токен.
+    import logging
+
+    bot = FakeTgBot()
+    downloader = make_real_downloader(bot, tmp_path)
+    with caplog.at_level(logging.INFO):
+        path = await downloader.download("file-123", tmp_path)
+    assert path.exists()
+    assert "TESTTOKEN" not in caplog.text
+
+
+async def test_downloader_bad_request_is_permanent(tmp_path):
+    # Регрессия: TelegramBadRequest (4xx-семантика) — ровно одна попытка.
+    class BadRequestBot:
+        token = "TESTTOKEN"
+        get_file_calls = 0
+
+        async def get_file(self, file_id):
+            self.get_file_calls += 1
+            from aiogram.exceptions import TelegramBadRequest
+
+            raise TelegramBadRequest(method="get_file", message="bad request")
+
+    bot = BadRequestBot()
+    downloader = make_real_downloader(bot, tmp_path, max_attempts=3)
+    with pytest.raises(AppError) as exc_info:
+        await downloader.download("file-123", tmp_path)
+    assert exc_info.value.code == "DOWNLOAD_FAILED"
+    assert exc_info.value.permanent is True
+    assert bot.get_file_calls == 1

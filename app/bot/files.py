@@ -19,6 +19,22 @@ from app.errors import AppError
 log = logging.getLogger(__name__)
 
 
+class TokenRedactionFilter(logging.Filter):
+    """Гарантирует, что Telegram token не попадёт в записи httpx/httpcore
+    логгеров: их INFO-лог печатает полный request URL, а URL скачивания файла
+    содержит bot<token> по контракту Telegram Bot API."""
+
+    def __init__(self, token: str):
+        super().__init__()
+        self._token = token
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if self._token and self._token in record.getMessage():
+            record.msg = record.getMessage().replace(self._token, "***")
+            record.args = None
+        return True
+
+
 class FileDownloader(Protocol):
     """Скачивание файла Telegram по file_id в локальную директорию.
 
@@ -52,6 +68,17 @@ class TelegramFileDownloader:
         self._client_factory = client_factory or (
             lambda: httpx.AsyncClient(follow_redirects=False, timeout=60.0)
         )
+        token = getattr(bot, "token", "")
+        if token:
+            # Redaction на logger'ах httpx/httpcore: URL скачивания содержит
+            # bot<token>, и INFO-лог httpx печатает URL целиком.
+            for logger_name in ("httpx", "httpcore"):
+                logger = logging.getLogger(logger_name)
+                if not any(
+                    isinstance(f, TokenRedactionFilter) and f._token == token
+                    for f in logger.filters
+                ):
+                    logger.addFilter(TokenRedactionFilter(token))
 
     async def _get_file(self, file_id: str):
         """get_file с permanent-классификацией aiogram client errors (4xx-семантика):
