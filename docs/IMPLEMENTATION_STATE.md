@@ -28,7 +28,7 @@ squash merge с ожидаемым HEAD B. Вердикты фиксируютс
 | # | Этап | Статус |
 |---|------|--------|
 | 0 | Project contract | DONE |
-| 1 | Skeleton | NOT_STARTED |
+| 1 | Skeleton | DONE |
 | 2 | Text end-to-end | NOT_STARTED |
 | 3 | Web ingestion | NOT_STARTED |
 | 4 | Architecture checkpoint | NOT_STARTED |
@@ -77,6 +77,48 @@ diff «ТЗ ↔ docs/PRODUCT_SPEC.md» — различие только в сл
 branch protection: gh api .../branches/main/protection → PR required, force push
 и deletions запрещены, linear history включена
 (pytest/ruff неприменимы: кода ещё нет)
+
+### Phase 1 — Skeleton — DONE
+
+APPROVED @ 0ca1266678b6e902dd7f0d387bd4059efd69e27c (Orchestrator, GitHub review
+pullrequestreview-5188149992). По ходу ревью закрыты 4 finding'а вердикта 522b2ce:
+гонка создания User (concurrency-safe get_or_create_user), persist-before-ACK,
+реальное включение SQLite FK (pragma на каждый connection), конкурентные тесты
+atomic claim (D-004).
+
+Completed:
+✓ pyproject.toml (hatchling; deps: aiogram, SQLAlchemy 2 async + aiosqlite, alembic,
+  pydantic-settings; dev: pytest, pytest-asyncio, ruff); uv venv на Python 3.12
+✓ конфигурация pydantic-settings: TELEGRAM_BOT_TOKEN, ALLOWED_TELEGRAM_USER_IDS,
+  DATABASE_URL, PROCESSING_CONCURRENCY, DEFAULT_TIMEZONE, PROCESSING_POLL_SECONDS
+✓ SQLite + SQLAlchemy async. Item: id, user_id, telegram_message_id, source_index,
+  processing_status, state, source_type, processing_stage, user_note, error_code,
+  error_message, created_at/updated_at; unique (user_id, telegram_message_id, source_index)
+✓ User: telegram identity (telegram_user_id unique, telegram_chat_id, timestamps)
+✓ Alembic async-миграции (initial schema 4cbfde82e2e8, render_as_batch для SQLite)
+✓ Telegram-хендлеры: /start, текст → Item QUEUED (source_type=TEXT); allowlist,
+  неавторизованные молча игнорируются; тяжёлой обработки в handler нет —
+  бизнес-логика в services/ingestion, aiogram не проникает в сервисы
+✓ ProcessingWorker: атомарный claim oldest QUEUED (UPDATE...RETURNING, D-004),
+  PROCESSING → READY / FAILED(error_code, error_message); requeue stale PROCESSING
+  при старте; PROCESSING_CONCURRENCY воркеров
+✓ Startup/shutdown: миграции при старте, SIGINT/SIGTERM graceful, headless-режим
+  без токена (локальный smoke без Telegram network)
+✓ tests: 18 passed — ingestion (QUEUED/TEXT, duplicate → тот же Item, unique на
+  уровне БД, source_index, один user), worker (claim atomic, QUEUED→READY,
+  exception→FAILED, oldest first, requeue stale), handlers (allowlist),
+  миграции (fresh DB → head, unique enforced схемой)
+✓ e2e smoke: живой процесс обрабатывает QUEUED → READY; SIGINT graceful
+
+Remaining:
+□ — нет
+
+Last verification:
+ruff check . → pass; ruff format --check . → pass; pytest → 23 passed
+(+5 регрессий на review findings: user race, persist→ACK, FK enforcement,
+конкурентный claim); fresh DB → alembic upgrade head → users/items, duplicate и
+orphan user_id запрещены схемой; smoke: `uv run python -m app.main` без токена →
+bot disabled; INSERT QUEUED-Item → READY за <2 c; SIGINT → shutdown complete
 
 ### Шаблон фазы в работе
 

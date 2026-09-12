@@ -3,9 +3,9 @@
 Как запускать, проверять и диагностировать Personal AI Inbox.
 Заполняется по мере появления реальных команд и проблем; не выдумывать команды заранее.
 
-Статус: этап 0 — кода ещё нет, существуют только контракты.
+Статус: Phase 1 — Skeleton реализован (ветка `phase/01-skeleton`; PR #1 — контракт, слит).
 
-## Контракты репозитория (доступно уже сейчас)
+## Контракты репозитория
 
 Проверить, что PRODUCT_SPEC не разошёлся с исходным ТЗ (ожидаемое различие —
 только служебная шапка в начале файла):
@@ -16,22 +16,31 @@ diff "ТЗ_ Personal AI Inbox - интеллектуальный Telegram TODO.m
 
 - Состояние этапов: `docs/IMPLEMENTATION_STATE.md`
 - Архитектурные решения и инварианты: `docs/DECISIONS.md`
+- Журнал вердиктов ревью: `docs/REVIEWS.md`
 - Правила реализации: `AGENTS.md`
 
-## Repository
+## Быстрый старт
 
-- GitHub: https://github.com/ShabanovBoris/aiinbox (public), remote `origin`, default branch `main`
-- Локальный git инициализирован 2026-09-12 (branch `main`, первый commit `f0448e6`)
-- Аутентификация GitHub CLI (воспроизводимая процедура):
+Требования: Python 3.12+, [uv](https://docs.astral.sh/uv/). macOS/Linux.
 
 ```bash
-gh auth status      # если не аутентифицирован:
-gh auth login       # device flow
-gh auth setup-git   # git credential helper для push по HTTPS
+uv venv --python 3.12
+uv sync
+cp .env.example .env   # заполнить TELEGRAM_BOT_TOKEN и ALLOWED_TELEGRAM_USER_IDS
+uv run python -m app.main
 ```
 
-- Защита `main` (server-side): branch protection включена — только через PR,
-  force push и deletion запрещены, linear history обязательна.
+`app.main` сам применяет миграции (`alembic upgrade head`), затем запускает
+Telegram polling и processing workers. Без `TELEGRAM_BOT_TOKEN` приложение
+стартует в headless-режиме (только воркеры) — локальный smoke без сети.
+
+## Quality gate
+
+```bash
+uv run ruff check .
+uv run ruff format --check .
+uv run pytest
+```
 
 ## Git workflow (оркестрационный протокол §2–4, §22–23)
 
@@ -80,18 +89,21 @@ git archive --format=zip -o temp/project.zip HEAD
 `temp/` и прочие игнорируемые пути физически не покидают машину.
 Сами `temp/review.diff` и `temp/project.zip` игнорируются git'ом.
 
-## Quality gate (появится в Phase 1 вместе с кодом)
-
-```bash
-ruff check .
-ruff format --check .
-pytest
-```
-
-## Запуск приложения (появится в Phase 1)
-
-Заполняется на Phase 1: локальный запуск, переменные окружения, миграции.
-
 ## Диагностика
 
-Записывается по мере возникновения реальных эксплуатационных проблем.
+Инспекция базы (по умолчанию `data/app.db`):
+
+```bash
+sqlite3 data/app.db "SELECT id, processing_status, processing_stage, state, source_type FROM items ORDER BY created_at"
+```
+
+Провалившиеся Item'ы — с кодом и причиной (стек-трейсы только в логах):
+
+```bash
+sqlite3 data/app.db "SELECT id, error_code, error_message FROM items WHERE processing_status='FAILED'"
+```
+
+- Зависшие `PROCESSING` после падения процесса возвращаются в `QUEUED`
+  автоматически при следующем старте (`requeue_stale`).
+- Retry из Telegram появится в Phase 10; до этого повторную обработку FAILED
+  можно запустить вручную: `UPDATE items SET processing_status='QUEUED' WHERE id=...`.

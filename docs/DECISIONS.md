@@ -83,3 +83,22 @@ Consequences: `DONE` в IMPLEMENTATION_STATE достигается только
 `IN_REVIEW` + `APPROVED`; между `REVIEW REQUEST` и ответом Orchestrator'а —
 никакого scope expansion (§12). AGENTS.md §2/§48/§57 и RUNBOOK приведены
 в соответствие протоколу.
+
+## D-004 — Атомарный claim и restart recovery воркера (этап 1)
+
+Context: несколько asyncio-воркеров берут работу из SQLite-очереди; процесс может
+умереть в любой момент (PRODUCT_SPEC §15, §17; D-001 resumable).
+
+Decision: claim Item'а — один UPDATE с подзапросом oldest QUEUED и условием
+`processing_status='QUEUED'` (UPDATE...RETURNING); двойная обработка физически
+невозможна без внешних блокировок. Restart recovery: при старте процесса все
+`PROCESSING` возвращаются в `QUEUED` (`requeue_stale`) — процесс один, поэтому
+любой PROCESSING в БД на старте остался от умершего процесса.
+
+Reason: SQLite сериализует запись — условный UPDATE даёт атомарность без Redis/locks;
+time-based stale detection не нужен при single-process инварианте (проще и
+детерминированнее).
+
+Consequences: воркеры не требуют координации в памяти; переход на multi-process
+потребует пересмотра (новая запись здесь). Внешние блокировки не вводятся до
+реального потребления.
