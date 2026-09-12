@@ -30,13 +30,14 @@ Before making changes, read the relevant repository instructions and project sta
 Primary sources of truth, in order:
 
 1. explicit current user goal;
-2. `docs/PRODUCT_SPEC.md`;
-3. `docs/IMPLEMENTATION_STATE.md`;
-4. `docs/DECISIONS.md`;
-5. existing tests;
-6. existing implementation;
-7. `docs/RUNBOOK.md`;
-8. this file.
+2. `Оркестрационный протокол Codex → Reviewer.md` — latest Orchestrator decision and the current approved Phase prompt take precedence over everything below; on conflict, stop only the conflicting part and report to the Orchestrator;
+3. `AGENTS.md`;
+4. `docs/PRODUCT_SPEC.md`;
+5. `docs/DECISIONS.md`;
+6. `docs/IMPLEMENTATION_STATE.md`;
+7. existing tests;
+8. existing implementation;
+9. `docs/RUNBOOK.md`.
 
 If documents disagree with working code, investigate the discrepancy instead of silently choosing one.
 
@@ -1114,6 +1115,8 @@ Whenever operational procedure changes, update the runbook.
 
 # 48. Git discipline
 
+Git workflow is governed by the orchestration protocol (`Оркестрационный протокол Codex → Reviewer.md`, §2–4, §22–23), which takes precedence over this section: `main` is a protected integration branch; each Phase is implemented on a `phase/NN-short-description` branch, pushed and opened as a PR; merge is performed only by the Orchestrator (squash by default).
+
 Before editing:
 
 ```text
@@ -1126,9 +1129,9 @@ Keep changes scoped to the task.
 
 Prefer coherent checkpoints.
 
-When local commits are allowed by the current workflow, completed phases should be committed as recoverable checkpoints.
+Commits follow the protocol's conventional format (`feat:`, `test:`, `fix:`, `docs:`) and are made on the phase branch, not on `main`.
 
-Never push, force-push, rewrite shared history, reset unrelated changes, or delete user work unless explicitly requested.
+Never force-push, rewrite published history, reset unrelated changes, or delete user work.
 
 If the worktree already contains unrelated modifications:
 
@@ -1311,20 +1314,27 @@ without requiring hidden conversation history or manual reconstruction from the 
 
 ---
 
-# 57. External review via ChatGPT (Browser Use)
+# 57. External review via ChatGPT (Orchestrator, Browser Use)
 
-Every completed step, material decision, and change is verified through an external reviewer before it is considered accepted. Ordinary questions about further decisions go to the same reviewer.
+Development is governed by the external Orchestrator per `Оркестрационный протокол Codex → Reviewer.md`. The implementation agent never self-approves a Phase (protocol §11): the only permitted claims are `implementation complete` and `ready for external review`; acceptance, merge and the transition to the next Phase belong to the Orchestrator.
 
-* Orchestrator: Browser Use. The main agent performs the browser work itself; the review session must not be delegated to a subagent.
-* Reviewer: ChatGPT, fixed conversation:
+* Orchestrator: ChatGPT, fixed conversation (opened via Browser Use; the main agent performs browser work itself, review sessions are not delegated to subagents):
 
   https://chatgpt.com/g/g-p-6aa5a9bad2ec819181757f71917ef6c0-aiinbox/c/6aa15a98-8e28-83ed-b71d-e1142ccccffc
 
-Every review submission must include:
+Review mechanism (protocol §5–9):
 
-* the main diff of the change (e.g. `git diff <last_reviewed_sha>..HEAD`);
-* a project archive built from git-tracked files only (e.g. `git archive --format=zip -o temp/project.zip HEAD`), so that ignored paths (`.env`, `data/`, `temp/`, virtualenvs) never leave the machine.
+1. Phase branch `phase/NN-short-description` is pushed and a PR to `main` is opened with the protocol's PR body template.
+2. A `REVIEW REQUEST` in the protocol's format (Repository and PR are mandatory) is sent to the fixed conversation.
+3. Phase state in `docs/IMPLEMENTATION_STATE.md` moves to `IN_REVIEW`.
+4. Outcomes: `APPROVED` / `CHANGES REQUIRED` (fix in the same branch and PR, then `RE-REVIEW REQUEST`) / `BLOCKED` (continue everything not affected by the blocker).
 
-The reviewer is proposal-only (same as subagents, §55): it reviews, flags problems, and recommends. The repository is mutated only by the root agent after evaluating its findings.
+Durable record of verdicts: the chat conversation is not a reliable store of decisions. Every Orchestrator verdict must be recorded by the agent in `docs/REVIEWS.md` immediately after receipt, with the PR number and reviewed HEAD SHA; a `RE-REVIEW REQUEST` references that record. A formal GitHub PR review is preferred when the connected identity permits it (known constraint: the PR author cannot post `REQUEST_CHANGES` on their own PR).
+
+Approval → merge handshake (no TOCTOU): after `APPROVED @ HEAD A` the agent makes ONLY a status-finalization commit (`IMPLEMENTATION_STATE` `IN_REVIEW` → `DONE`, recording approved HEAD A), producing HEAD B whose delta A..B is docs-status-only, then declares `MERGE READY` (`Previous approved HEAD: A`, `New HEAD: B`). The Orchestrator verifies the delta and squash-merges with expected HEAD B. No other changes between APPROVED and merge. `main` is additionally protected server-side (branch protection: PR-only changes, no force push, linear history).
+
+The Orchestrator verifies GitHub directly (PR metadata, diff, SHAs, runs). As companion material, a submission may also include the main diff (`git diff <base>..HEAD`) and a project archive built from git-tracked files only (`git archive --format=zip -o temp/project.zip HEAD`), so ignored paths (`.env`, `data/`, `temp/`, virtualenvs) never leave the machine — send them when the Orchestrator asks or cannot access GitHub.
+
+No scope expansion while a `REVIEW REQUEST` is open (protocol §12): no next Phase, no unrelated architecture changes, no bonus functionality.
 
 If ChatGPT or the browser is unavailable, apply §4/§5: record the pending external verification in `docs/IMPLEMENTATION_STATE.md` and continue all work that does not depend on it.
