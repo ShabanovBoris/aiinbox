@@ -29,7 +29,7 @@ squash merge с ожидаемым HEAD B. Вердикты фиксируютс
 |---|------|--------|
 | 0 | Project contract | DONE |
 | 1 | Skeleton | DONE |
-| 2 | Text end-to-end | NOT_STARTED |
+| 2 | Text end-to-end | IN_REVIEW |
 | 3 | Web ingestion | NOT_STARTED |
 | 4 | Architecture checkpoint | NOT_STARTED |
 | 5 | Voice/audio | NOT_STARTED |
@@ -119,6 +119,39 @@ ruff check . → pass; ruff format --check . → pass; pytest → 23 passed
 конкурентный claim); fresh DB → alembic upgrade head → users/items, duplicate и
 orphan user_id запрещены схемой; smoke: `uv run python -m app.main` без токена →
 bot disabled; INSERT QUEUED-Item → READY за <2 c; SIGINT → shutdown complete
+
+### Phase 2 — Text end-to-end — IN_REVIEW
+
+Completed:
+✓ NormalizedContent / AnalysisResult / UserProfile (pydantic, строгие лимиты
+  полей; priority_score LLM не отдаёт)
+✓ ItemType enum: ACTION/LEARN/READ/WATCH/IDEA/REFERENCE/SOMEDAY
+✓ LlmProvider (Protocol) + OpenAiProvider: SDK только в адаптере, model ids из
+  конфига, JSON-mode + Pydantic-валидация (regex-парсинга нет), ошибки →
+  LlmError(LLM_FAILED / INVALID_LLM_OUTPUT); system prompt с untrusted-content
+  изоляцией (PRODUCT_SPEC §21)
+✓ TextExtractor → NormalizedContent (без registry framework)
+✓ Analyzer: content + профиль + существующие категории (DISTINCT-запрос,
+  динамические строки, не enum) → AnalysisResult
+✓ PriorityEngine: детерминированная формула с весами в domain/priority.py;
+  quick_win считается кодом (None→0.5, max(0, 1-min/60)); clamp 0..100
+✓ ProcessingPipeline: EXTRACTING → ANALYZING → PRIORITIZING → READY; результат
+  анализа персистится в новые колонки items (миграция b07bbcab9a72)
+✓ Результат в Telegram: persist → ACK; on_result-колбэк воркера (auxiliary, сбой
+  доставки не портит READY) → bot/formatting + bot/notify
+✓ config: LLM_PROVIDER, OPENAI_API_KEY, OPENAI_ANALYSIS_MODEL, LLM_TIMEOUT_SECONDS
+
+Remaining:
+□ — нет (ждёт вердикта Orchestrator'а)
+□ Blocked (external): live-проверка happy path с реальным OpenAI — нет ключа;
+  пайплайн покрыт FakeLlmProvider, путь ошибки проверен live (401 → FAILED/LLM_FAILED)
+
+Last verification:
+ruff check . → pass; ruff format --check . → pass; pytest → 39 passed
+(+ PriorityEngine exact-value тесты, e2e с FakeLlmProvider, invalid/garbage JSON →
+INVALID_LLM_OUTPUT, delivery-failure не портит READY)
+smoke: живой процесс с dummy-ключом → Item дошёл до FAILED/LLM_FAILED через
+реальный OpenAI SDK (ошибка смаппирована); SIGINT graceful
 
 ### Шаблон фазы в работе
 
