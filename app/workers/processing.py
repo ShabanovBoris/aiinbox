@@ -2,7 +2,7 @@ import asyncio
 import logging
 import time
 
-from sqlalchemy import func, select, update
+from sqlalchemy import case, func, select, update
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.domain.enums import ProcessingStatus
@@ -18,12 +18,21 @@ async def requeue_stale(session_factory: async_sessionmaker) -> int:
 
     Процесс один (PRODUCT_SPEC §15): любой PROCESSING в БД на момент старта —
     незавершённая работа умершего процесса, её безопасно поставить в очередь заново.
+    Содержательная стадия (EXTRACTING/ANALYZING/...) сохраняется — это durable
+    checkpoint глубины прогресса (D-001); REQUEUED ставится только вместо
+    безынформативного маркера claim'а PROCESSING.
     """
     async with session_factory() as session:
         result = await session.execute(
             update(Item)
             .where(Item.processing_status == ProcessingStatus.PROCESSING)
-            .values(processing_status=ProcessingStatus.QUEUED, processing_stage="REQUEUED")
+            .values(
+                processing_status=ProcessingStatus.QUEUED,
+                processing_stage=case(
+                    (Item.processing_stage == "PROCESSING", "REQUEUED"),
+                    else_=Item.processing_stage,
+                ),
+            )
         )
         await session.commit()
         if result.rowcount:
@@ -106,9 +115,8 @@ class ProcessingWorker:
                 item = await session.get(Item, item_id)
                 if item is None:
                     return True
+                # Пайплайн сам коммитит стадии и READY (durable checkpoint).
                 await self.pipeline.run(session, item)
-                item.processing_status = ProcessingStatus.READY
-                await session.commit()
         except Exception as exc:
             # Ошибка обработки не теряет Item: он переходит в FAILED с кодом
             # и остаётся доступным для Retry (PRODUCT_SPEC §56, §59).

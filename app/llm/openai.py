@@ -29,6 +29,40 @@ Rules:
 Respond with a single JSON object matching the schema. No extra text."""
 
 
+# OpenAI Structured Outputs принимает подмножество JSON Schema: лишние keywords
+# снимаем, все поля объявляем required (опциональные уже anyOf[..., null]),
+# additionalProperties=false на каждом объекте. Жёсткие лимиты (min/max/length)
+# продолжает enforced Pydantic-валидация ответа.
+_STRICT_KEEP = {
+    "type",
+    "enum",
+    "format",
+    "properties",
+    "required",
+    "additionalProperties",
+    "items",
+    "anyOf",
+    "$ref",
+    "$defs",
+}
+
+
+def _strict_node(node):
+    if isinstance(node, dict):
+        cleaned = {k: _strict_node(v) for k, v in node.items() if k in _STRICT_KEEP}
+        if "properties" in cleaned:
+            cleaned["additionalProperties"] = False
+            cleaned["required"] = sorted(cleaned["properties"])
+        return cleaned
+    if isinstance(node, list):
+        return [_strict_node(item) for item in node]
+    return node
+
+
+def strict_json_schema(model: type[AnalysisResult]) -> dict:
+    return _strict_node(model.model_json_schema())
+
+
 def build_user_message(
     content: NormalizedContent, profile: UserProfile, categories: list[str]
 ) -> str:
@@ -53,6 +87,14 @@ class OpenAiProvider:
             raise ValueError("OPENAI_ANALYSIS_MODEL is not configured")
         self._client = AsyncOpenAI(api_key=api_key, timeout=timeout_seconds)
         self._model = model
+        self.response_format = {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "analysis",
+                "strict": True,
+                "schema": strict_json_schema(AnalysisResult),
+            },
+        }
 
     async def analyze(
         self,
@@ -70,8 +112,9 @@ class OpenAiProvider:
                         "content": build_user_message(content, profile, categories),
                     },
                 ],
-                # JSON-режим + строгая Pydantic-валидация; regex-парсинг запрещён.
-                response_format={"type": "json_object"},
+                # Structured Outputs: генерация ограничена схемой AnalysisResult,
+                # а не парсингом свободного текста (PRODUCT_SPEC §30).
+                response_format=self.response_format,
             )
         except LlmError:
             raise

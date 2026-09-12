@@ -1,6 +1,6 @@
 """Детерминированные фейки для тестов: только тестовое окружение, не production path."""
 
-from app.domain.enums import ItemType, SourceType
+from app.domain.enums import ItemType, ProcessingStatus, SourceType
 from app.domain.models import AnalysisResult, NormalizedContent, UserProfile
 from app.llm.base import LlmError
 
@@ -56,6 +56,8 @@ class FakePipeline:
             raise RuntimeError("boom")
         item.title = "stub"
         item.processing_stage = "READY"
+        item.processing_status = ProcessingStatus.READY
+        await session.commit()
 
 
 def make_content(text: str = "текст") -> NormalizedContent:

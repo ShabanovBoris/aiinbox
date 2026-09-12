@@ -41,3 +41,48 @@ def test_fresh_database_migrates_to_latest_schema(tmp_path):
             raise AssertionError("duplicate (user_id, telegram_message_id, source_index) allowed")
     finally:
         conn.close()
+
+
+def test_existing_phase1_db_upgrades_with_data_intact(tmp_path):
+    # Регрессия (Phase 2 review): существующая БД Phase 1 должна мигрировать на head
+    # без потери данных и получить analysis-колонки.
+    db = tmp_path / "upgrade.db"
+    cfg = Config()
+    cfg.set_main_option("script_location", "migrations")
+    cfg.set_main_option("sqlalchemy.url", f"sqlite+aiosqlite:///{db}")
+
+    command.upgrade(cfg, "4cbfde82e2e8")  # schema Phase 1
+    conn = sqlite3.connect(db)
+    try:
+        conn.execute("INSERT INTO users (telegram_user_id, telegram_chat_id) VALUES (42, 42)")
+        user_id = conn.execute("SELECT id FROM users").fetchone()[0]
+        conn.execute(
+            "INSERT INTO items (user_id, telegram_message_id, source_index, processing_status,"
+            " state, source_type, processing_stage, user_note)"
+            " VALUES (?, 7, 0, 'READY', 'ACTIVE', 'TEXT', 'READY', 'Изучить AI agents')",
+            (user_id,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    command.upgrade(cfg, "head")
+
+    conn = sqlite3.connect(db)
+    try:
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(items)")}
+        assert {
+            "title",
+            "summary",
+            "category",
+            "item_type",
+            "priority_score",
+            "confidence",
+        } <= columns
+        row = conn.execute(
+            "SELECT u.telegram_user_id, i.user_note, i.processing_status FROM items i"
+            " JOIN users u ON u.id = i.user_id"
+        ).fetchone()
+        assert row == (42, "Изучить AI agents", "READY")
+    finally:
+        conn.close()

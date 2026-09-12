@@ -53,9 +53,13 @@ DEFAULT_PROFILE = UserProfile(
 class AnalysisResult(BaseModel):
     """Строгая схема ответа LLM; валидируется Pydantic до попадания в БД.
 
+    extra="forbid": неожиданные поля от модели (например, самовольный
+    priority_score) — это INVALID_LLM_OUTPUT, а не молчаливое отбрасывание.
     priority_score здесь НЕ существует: LLM даёт только факторы, итоговый
     приоритет считает детерминированный PriorityEngine (PRODUCT_SPEC §30, §37).
     """
+
+    model_config = {"extra": "forbid"}
 
     title: str = Field(min_length=1, max_length=300)
     summary: str = Field(max_length=1200)

@@ -2,6 +2,7 @@ import logging
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.domain.enums import ProcessingStatus
 from app.domain.models import DEFAULT_PROFILE
 from app.domain.priority import PriorityEngine
 from app.extractors.text import TextExtractor
@@ -23,20 +24,28 @@ class ProcessingPipeline:
         self.priority = priority
 
     async def run(self, session: AsyncSession, item: Item) -> None:
+        # Каждая стадия коммитится до внешнего вызова: processing_stage — durable
+        # checkpoint (D-001). Падение процесса оставляет в БД честную стадию,
+        # а READY атомарен с результатом анализа.
         item.processing_stage = "EXTRACTING"
+        await session.commit()
         content = await TextExtractor().extract(item)
 
         item.processing_stage = "ANALYZING"
+        await session.commit()
         # Phase 2 использует default-профиль; профиль пользователя — Phase 8.
         analysis = await self.analyzer.analyze(
             content, session, item.user_id, profile=DEFAULT_PROFILE
         )
 
         item.processing_stage = "PRIORITIZING"
+        await session.commit()
         self._apply_analysis(item, analysis)
         item.priority_score = self.priority.score(analysis)
 
         item.processing_stage = "READY"
+        item.processing_status = ProcessingStatus.READY
+        await session.commit()
         log.info(
             "item analyzed id=%s category=%s type=%s priority=%s",
             item.id,

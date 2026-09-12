@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 from app.bot.formatting import format_ready_item
@@ -53,3 +55,24 @@ def test_openai_parse_garbage_raises_invalid_output():
     with pytest.raises(LlmError) as exc_info:
         OpenAiProvider.parse_analysis("not json at all")
     assert exc_info.value.code == "INVALID_LLM_OUTPUT"
+
+
+def test_openai_parse_rejects_extra_fields():
+    # Регрессия: чужой priority_score от LLM — INVALID_LLM_OUTPUT, а не молчаливое
+    # отбрасывание (приоритет считает только код, PRODUCT_SPEC §37).
+    raw = json.loads(make_analysis().model_dump_json())
+    raw["priority_score"] = 99
+    with pytest.raises(LlmError) as exc_info:
+        OpenAiProvider.parse_analysis(json.dumps(raw))
+    assert exc_info.value.code == "INVALID_LLM_OUTPUT"
+
+
+def test_adapter_uses_strict_structured_outputs():
+    # Регрессия: schema-constrained Structured Outputs (json_schema), не json_object.
+    provider = OpenAiProvider(api_key="k", model="gpt-test")
+    fmt = provider.response_format
+    assert fmt["type"] == "json_schema"
+    schema = fmt["json_schema"]["schema"]
+    assert fmt["json_schema"]["strict"] is True
+    assert schema["additionalProperties"] is False
+    assert set(schema["required"]) == set(schema["properties"])

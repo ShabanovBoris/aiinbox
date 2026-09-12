@@ -1,5 +1,8 @@
+import asyncio
+
 import pytest
 
+from app.domain.enums import ProcessingStatus
 from app.domain.models import DEFAULT_PROFILE
 from app.domain.priority import PriorityEngine
 from app.llm.base import LlmError
@@ -7,7 +10,7 @@ from app.services.analysis import Analyzer
 from app.services.ingestion import ingest_text
 from app.services.processing import ProcessingPipeline
 from app.storage.models import Item
-from app.workers.processing import ProcessingWorker
+from app.workers.processing import ProcessingWorker, requeue_stale
 from tests.fakes import FakeLlmProvider, make_analysis
 
 
@@ -121,3 +124,58 @@ async def test_result_delivered_to_callback(session_factory):
     await worker.process_one()
     assert len(delivered) == 1
     assert delivered[0].title == make_analysis().title
+
+
+class BlockingProvider:
+    """Провайдер, блокирующийся до release: имитация долгого LLM-вызова."""
+
+    def __init__(self):
+        self.release = asyncio.Event()
+        self.calls = 0
+
+    async def analyze(self, content, profile, categories):
+        self.calls += 1
+        await self.release.wait()
+        return make_analysis()
+
+
+async def _wait_for_stage(session_factory, item_id, stage, attempts=100):
+    for _ in range(attempts):
+        stored = await get_item(session_factory, item_id)
+        if stored.processing_stage == stage:
+            return stored
+        await asyncio.sleep(0.02)
+    raise AssertionError(f"stage {stage} not reached, last={stored.processing_stage}")
+
+
+async def test_processing_stage_is_durable_during_analysis(session_factory):
+    # Регрессия: другая сессия обязана видеть ANALYZING, пока провайдер блокирует —
+    # иначе processing_stage не является durable checkpoint (D-001).
+    item = await seed(session_factory)
+    provider = BlockingProvider()
+    worker = make_worker(session_factory, provider)
+    task = asyncio.create_task(worker.process_one())
+
+    stored = await _wait_for_stage(session_factory, item.id, "ANALYZING")
+    assert stored.processing_status is ProcessingStatus.PROCESSING
+
+    provider.release.set()
+    await asyncio.wait_for(task, timeout=5)
+    stored = await get_item(session_factory, item.id)
+    assert stored.processing_status is ProcessingStatus.READY
+
+
+async def test_requeue_preserves_meaningful_stage(session_factory):
+    # Restart после падения в ANALYZING: стадия сохраняется, REQUEUED ставится
+    # только вместо безынформативного маркера PROCESSING.
+    item = await seed(session_factory)
+    async with session_factory() as session:
+        stored = await session.get(Item, item.id)
+        stored.processing_status = ProcessingStatus.PROCESSING
+        stored.processing_stage = "ANALYZING"
+        await session.commit()
+
+    assert await requeue_stale(session_factory) == 1
+    updated = await get_item(session_factory, item.id)
+    assert updated.processing_status is ProcessingStatus.QUEUED
+    assert updated.processing_stage == "ANALYZING"
