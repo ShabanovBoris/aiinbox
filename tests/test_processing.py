@@ -7,7 +7,7 @@ from app.domain.models import DEFAULT_PROFILE
 from app.domain.priority import PriorityEngine
 from app.llm.base import LlmError
 from app.services.analysis import Analyzer
-from app.services.ingestion import ingest_text
+from app.services.ingestion import ingest_message
 from app.services.processing import ProcessingPipeline
 from app.storage.models import Item
 from app.workers.processing import ProcessingWorker, requeue_stale
@@ -20,9 +20,11 @@ def make_worker(session_factory, provider, on_result=None):
 
 
 async def seed(session_factory, text="Изучить AI agents", message_id=1):
-    return await ingest_text(
-        session_factory, telegram_user_id=42, chat_id=42, message_id=message_id, text=text
-    )
+    return (
+        await ingest_message(
+            session_factory, telegram_user_id=42, chat_id=42, message_id=message_id, text=text
+        )
+    ).items[0]
 
 
 async def get_item(session_factory, item_id):

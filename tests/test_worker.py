@@ -1,16 +1,18 @@
 import asyncio
 
 from app.domain.enums import ProcessingStatus
-from app.services.ingestion import ingest_text
+from app.services.ingestion import ingest_message
 from app.storage.models import Item
 from app.workers.processing import ProcessingWorker, requeue_stale
 from tests.fakes import FakePipeline
 
 
 async def seed(session_factory, message_id: int = 1, text: str = "note"):
-    return await ingest_text(
-        session_factory, telegram_user_id=42, chat_id=42, message_id=message_id, text=text
-    )
+    return (
+        await ingest_message(
+            session_factory, telegram_user_id=42, chat_id=42, message_id=message_id, text=text
+        )
+    ).items[0]
 
 
 async def get_item(session_factory, item_id):

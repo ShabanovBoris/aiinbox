@@ -6,7 +6,8 @@ from aiogram.types import Message
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.config import Settings
-from app.services.ingestion import ingest_text
+from app.domain.enums import SourceType
+from app.services.ingestion import ingest_message
 
 log = logging.getLogger(__name__)
 
@@ -30,14 +31,23 @@ async def on_text(
     # Тяжёлая обработка запрещена в handler: только валидация, Item QUEUED и ответ.
     # Сначала persistence, потом ACK: при ошибке БД пользователь не получает
     # ложное подтверждение сохранения.
-    await ingest_text(
+    result = await ingest_message(
         session_factory,
         telegram_user_id=user_id,
         chat_id=message.chat.id,
         message_id=message.message_id,
         text=message.text,
     )
-    await message.answer("Принял. Разбираю…")
+    ack_lines = []
+    if result.items:
+        if len(result.items) == 1 and result.items[0].source_type is SourceType.TEXT:
+            ack_lines.append("Принял. Разбираю…")
+        else:
+            ack_lines.append(f"Принял {len(result.items)} ссылок. Разбираю…")
+    if result.duplicates:
+        ack_lines.append("Часть ссылок уже сохранена — дубли пропустил.")
+    if ack_lines:
+        await message.answer("\n".join(ack_lines))
 
 
 def make_router(settings: Settings, session_factory: async_sessionmaker) -> Router:

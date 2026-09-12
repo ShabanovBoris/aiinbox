@@ -21,6 +21,7 @@ class ItemState(enum.Enum):
 # YOUTUBE — Phase 6); после NormalizedContent все источники идут по одному пайплайну.
 class SourceType(enum.Enum):
     TEXT = "TEXT"
+    WEB = "WEB"
 
 
 # Тип контента определяет, попадает ли Item в /today и что с ним делать;
@@ -33,3 +34,14 @@ class ItemType(enum.Enum):
     IDEA = "IDEA"
     REFERENCE = "REFERENCE"
     SOMEDAY = "SOMEDAY"
+
+
+# Вид содержимого в contents (PRODUCT_SPEC §48): длинный контент хранится
+# отдельно от Item и переживает restart (ТЗ §46).
+class ContentKind(enum.Enum):
+    USER_TEXT = "USER_TEXT"
+    WEB_TEXT = "WEB_TEXT"
+    TRANSCRIPT = "TRANSCRIPT"
+    VISUAL_NOTES = "VISUAL_NOTES"
+    DESCRIPTION = "DESCRIPTION"
+    CHUNK_SUMMARY = "CHUNK_SUMMARY"

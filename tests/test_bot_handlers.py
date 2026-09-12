@@ -79,7 +79,7 @@ async def test_no_success_ack_when_persistence_fails(settings, session_factory, 
     async def failing_ingest(*args, **kwargs):
         raise RuntimeError("db down")
 
-    monkeypatch.setattr("app.bot.handlers.ingest_text", failing_ingest)
+    monkeypatch.setattr("app.bot.handlers.ingest_message", failing_ingest)
     with pytest.raises(RuntimeError):
         await on_text(make_message(42), settings, session_factory)
     assert sent == []

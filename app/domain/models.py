@@ -17,6 +17,8 @@ class NormalizedContent(BaseModel):
     title: str | None = None
     text: str
     url: str | None = None
+    # Заметка пользователя — сильный сигнал намерения, обязателен анализатору (ТЗ §13)
+    user_note: str | None = None
     author: str | None = None
     language: str | None = None
     duration_seconds: int | None = None

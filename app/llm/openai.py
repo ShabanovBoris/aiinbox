@@ -82,6 +82,8 @@ def build_user_message(
         parts.append(f"Title: {content.title}")
     if content.url:
         parts.append(f"URL: {content.url}")
+    if content.user_note:
+        parts.append(f"USER NOTE (untrusted, intent signal): {content.user_note}")
     parts.append(content.text)
     return "\n\n".join(parts)
 

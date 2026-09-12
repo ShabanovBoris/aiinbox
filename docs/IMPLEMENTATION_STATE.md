@@ -30,7 +30,7 @@ squash merge с ожидаемым HEAD B. Вердикты фиксируютс
 | 0 | Project contract | DONE |
 | 1 | Skeleton | DONE |
 | 2 | Text end-to-end | DONE |
-| 3 | Web ingestion | NOT_STARTED |
+| 3 | Web ingestion | IN_REVIEW |
 | 4 | Architecture checkpoint | NOT_STARTED |
 | 5 | Voice/audio | NOT_STARTED |
 | 6 | YouTube | NOT_STARTED |
@@ -163,6 +163,42 @@ INVALID_LLM_OUTPUT, extra priority_score → INVALID_LLM_OUTPUT, strict-схем
 LLM-вызова, delivery-failure не портит READY, upgrade Phase 1 DB → head)
 smoke: живой процесс с dummy-ключом → Item дошёл до FAILED/LLM_FAILED через
 реальный OpenAI SDK (ошибка смаппирована); SIGINT graceful
+
+### Phase 3 — Web ingestion — IN_REVIEW
+
+Completed:
+✓ Разбор сообщения: text+URL / несколько URL → Item на каждый URL (source_index),
+  общий текст — user_note; повторы URL внутри сообщения дедуплицируются
+✓ URL normalization: fragment, lowercase host, tracking params (utm_*/gclid/fbclid),
+  значимые query сохраняются
+✓ Дедупликация URL per-user: unique (user_id, source_url) на уровне БД + race-safe
+  resolve; повторный URL не создаёт второй Item
+✓ SSRF: http/https only; localhost (по имени) и IP-литералы частных адресов
+  отвергаются до DNS; DNS-резолюция перед запросом; каждый redirect-хоп
+  ревалидируется; лимит redirect'ов; IPv4-mapped IPv6 и CGNAT покрыты
+✓ WebPageExtractor: httpx (timeout, max size) → trafilatura (в thread) →
+  недостаточно текста → Playwright fallback → trafilatura; лимит извлечения
+  MIN_EXTRACTED_TEXT_LENGTH
+✓ Contents storage: таблица contents (kind WEB_TEXT и др.); WEB_TEXT персистится
+  атомарно с checkpoint'ом ANALYZING — переживает restart, retry не перекачивает
+  страницу (resume из персистеного WEB_TEXT)
+✓ Ошибки: AppError(code) — DOWNLOAD_FAILED / EXTRACTION_FAILED / TOO_LARGE /
+  SECURITY_REJECTED / TIMEOUT (+ LLM_FAILED/INVALID_LLM_OUTPUT унаследованы);
+  retry transient, permanent не ретраятся
+✓ user_note передаётся анализатору (NormalizedContent.user_note, в prompt —
+  как untrusted intent signal)
+
+Remaining:
+□ Blocked (external): live-проверка с реальным OpenAI — нет ключа; web-путь до
+  LLM-границы проверен live (example.com → 401 → FAILED/LLM_FAILED)
+
+Last verification:
+ruff check . → pass; ruff format --check . → pass; pytest → 71 passed
+(+ URL normalization/parse, SSRF (literal/DNS/redirect), MockTransport: extraction,
+fallback, TOO_LARGE, TIMEOUT, 404, redirect-to-private; дедупликация URL; web
+pipeline e2e с resume без перекачки)
+smoke: живой процесс — WEB item https://example.com прошёл SSRF → download →
+trafilatura → WEB_TEXT → LLM-граница (401 → FAILED/LLM_FAILED); SIGINT graceful
 
 ### Шаблон фазы в работе
 
