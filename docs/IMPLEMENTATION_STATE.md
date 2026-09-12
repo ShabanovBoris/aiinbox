@@ -28,7 +28,7 @@ squash merge с ожидаемым HEAD B. Вердикты фиксируютс
 | # | Этап | Статус |
 |---|------|--------|
 | 0 | Project contract | DONE |
-| 1 | Skeleton | IN_REVIEW |
+| 1 | Skeleton | DONE |
 | 2 | Text end-to-end | NOT_STARTED |
 | 3 | Web ingestion | NOT_STARTED |
 | 4 | Architecture checkpoint | NOT_STARTED |
@@ -78,7 +78,13 @@ branch protection: gh api .../branches/main/protection → PR required, force pu
 и deletions запрещены, linear history включена
 (pytest/ruff неприменимы: кода ещё нет)
 
-### Phase 1 — Skeleton — IN_REVIEW
+### Phase 1 — Skeleton — DONE
+
+APPROVED @ 0ca1266678b6e902dd7f0d387bd4059efd69e27c (Orchestrator, GitHub review
+pullrequestreview-5188149992). По ходу ревью закрыты 4 finding'а вердикта 522b2ce:
+гонка создания User (concurrency-safe get_or_create_user), persist-before-ACK,
+реальное включение SQLite FK (pragma на каждый connection), конкурентные тесты
+atomic claim (D-004).
 
 Completed:
 ✓ pyproject.toml (hatchling; deps: aiogram, SQLAlchemy 2 async + aiosqlite, alembic,
@@ -105,13 +111,14 @@ Completed:
 ✓ e2e smoke: живой процесс обрабатывает QUEUED → READY; SIGINT graceful
 
 Remaining:
-□ — нет (ждёт вердикта Orchestrator'а)
+□ — нет
 
 Last verification:
-ruff check . → pass; ruff format --check . → pass; pytest → 18 passed
-fresh DB → alembic upgrade head → users/items/alembic_version, duplicate запрещён схемой
-smoke: `DATABASE_URL=... PROCESSING_POLL_SECONDS=0.2 uv run python -m app.main` без
-токена → bot disabled; INSERT QUEUED-Item → READY за <2 c; SIGINT → shutdown complete
+ruff check . → pass; ruff format --check . → pass; pytest → 23 passed
+(+5 регрессий на review findings: user race, persist→ACK, FK enforcement,
+конкурентный claim); fresh DB → alembic upgrade head → users/items, duplicate и
+orphan user_id запрещены схемой; smoke: `uv run python -m app.main` без токена →
+bot disabled; INSERT QUEUED-Item → READY за <2 c; SIGINT → shutdown complete
 
 ### Шаблон фазы в работе
 
