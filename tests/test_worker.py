@@ -31,7 +31,8 @@ async def test_claim_transitions_queued_to_processing(session_factory):
     assert claimed == item.id
     stored = await get_item(session_factory, item.id)
     assert stored.processing_status is ProcessingStatus.PROCESSING
-    assert stored.processing_stage == "PROCESSING"
+    # claim не затирает processing_stage — checkpoint принадлежит пайплайну
+    assert stored.processing_stage == "INGESTED"
 
 
 async def test_claim_is_atomic_no_double_processing(session_factory):
@@ -105,5 +106,5 @@ async def test_requeue_stale_returns_processing_to_queued(session_factory):
     assert await requeue_stale(session_factory) == 1
     stored = await get_item(session_factory, item.id)
     assert stored.processing_status is ProcessingStatus.QUEUED
-    assert stored.processing_stage == "REQUEUED"
+    assert stored.processing_stage == "INGESTED"  # содержательная стадия сохранена
     assert await requeue_stale(session_factory) == 0

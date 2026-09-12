@@ -49,7 +49,14 @@ _STRICT_KEEP = {
 
 def _strict_node(node):
     if isinstance(node, dict):
-        cleaned = {k: _strict_node(v) for k, v in node.items() if k in _STRICT_KEEP}
+        cleaned = {}
+        for key, value in node.items():
+            if key in ("properties", "$defs"):
+                # Карты имён: ключи — имена полей/типов, а не schema-keywords,
+                # поэтому фильтр whitelist применяется только к их значениям.
+                cleaned[key] = {name: _strict_node(sub) for name, sub in value.items()}
+            elif key in _STRICT_KEEP:
+                cleaned[key] = _strict_node(value)
         if "properties" in cleaned:
             cleaned["additionalProperties"] = False
             cleaned["required"] = sorted(cleaned["properties"])

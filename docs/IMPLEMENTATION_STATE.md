@@ -127,16 +127,20 @@ Completed:
   полей; priority_score LLM не отдаёт)
 ✓ ItemType enum: ACTION/LEARN/READ/WATCH/IDEA/REFERENCE/SOMEDAY
 ✓ LlmProvider (Protocol) + OpenAiProvider: SDK только в адаптере, model ids из
-  конфига, JSON-mode + Pydantic-валидация (regex-парсинга нет), ошибки →
-  LlmError(LLM_FAILED / INVALID_LLM_OUTPUT); system prompt с untrusted-content
-  изоляцией (PRODUCT_SPEC §21)
+  конфига, strict Structured Outputs (json_schema, схема из AnalysisResult:
+  все поля required, additionalProperties=false, extra="forbid"), Pydantic-валидация
+  (regex-парсинга нет), ошибки → LlmError(LLM_FAILED / INVALID_LLM_OUTPUT);
+  system prompt с untrusted-content изоляцией (PRODUCT_SPEC §21)
 ✓ TextExtractor → NormalizedContent (без registry framework)
 ✓ Analyzer: content + профиль + существующие категории (DISTINCT-запрос,
   динамические строки, не enum) → AnalysisResult
 ✓ PriorityEngine: детерминированная формула с весами в domain/priority.py;
   quick_win считается кодом (None→0.5, max(0, 1-min/60)); clamp 0..100
-✓ ProcessingPipeline: EXTRACTING → ANALYZING → PRIORITIZING → READY; результат
-  анализа персистится в новые колонки items (миграция b07bbcab9a72)
+✓ ProcessingPipeline resumable: стадии коммитятся до внешних вызовов, дорогой
+  LLM-результат персистится атомарно с checkpoint'ом PRIORITIZING; resume с
+  durable-стадии не повторяет успешный LLM-вызов; claim не затирает стадию;
+  requeue сохраняет содержательную стадию; результат анализа персистится
+  (миграция b07bbcab9a72)
 ✓ Результат в Telegram: persist → ACK; on_result-колбэк воркера (auxiliary, сбой
   доставки не портит READY) → bot/formatting + bot/notify
 ✓ config: LLM_PROVIDER, OPENAI_API_KEY, OPENAI_ANALYSIS_MODEL, LLM_TIMEOUT_SECONDS
@@ -147,9 +151,11 @@ Remaining:
   пайплайн покрыт FakeLlmProvider, путь ошибки проверен live (401 → FAILED/LLM_FAILED)
 
 Last verification:
-ruff check . → pass; ruff format --check . → pass; pytest → 39 passed
+ruff check . → pass; ruff format --check . → pass; pytest → 45 passed
 (+ PriorityEngine exact-value тесты, e2e с FakeLlmProvider, invalid/garbage JSON →
-INVALID_LLM_OUTPUT, delivery-failure не портит READY)
+INVALID_LLM_OUTPUT, extra priority_score → INVALID_LLM_OUTPUT, strict-схема:
+все поля + $defs.ItemType + resolvable $ref, полный resumable-сценарий без второго
+LLM-вызова, delivery-failure не портит READY, upgrade Phase 1 DB → head)
 smoke: живой процесс с dummy-ключом → Item дошёл до FAILED/LLM_FAILED через
 реальный OpenAI SDK (ошибка смаппирована); SIGINT graceful
 

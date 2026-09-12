@@ -179,3 +179,49 @@ async def test_requeue_preserves_meaningful_stage(session_factory):
     updated = await get_item(session_factory, item.id)
     assert updated.processing_status is ProcessingStatus.QUEUED
     assert updated.processing_stage == "ANALYZING"
+
+
+class CountingProvider:
+    def __init__(self):
+        self.calls = 0
+
+    async def analyze(self, content, profile, categories):
+        self.calls += 1
+        return make_analysis()
+
+
+async def test_checkpoint_resumable_llm_not_called_twice(session_factory):
+    # Полный сценарий ревью: ANALYZING -> death -> requeue -> claim -> checkpoint
+    # survives -> resume -> LLM ok -> analysis persisted at PRIORITIZING -> death ->
+    # restart -> priority из persisted analysis -> LLM второй раз не вызывается.
+    item = await seed(session_factory)
+    blocker = BlockingProvider()
+    task = asyncio.create_task(make_worker(session_factory, blocker).process_one())
+    await _wait_for_stage(session_factory, item.id, "ANALYZING")
+    task.cancel()  # процесс умирает во время дорогого LLM-вызова
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    await requeue_stale(session_factory)
+    counter = CountingProvider()
+    assert await make_worker(session_factory, counter).process_one() is True
+    stored = await get_item(session_factory, item.id)
+    assert stored.processing_status is ProcessingStatus.READY
+    assert stored.priority_score is not None
+    assert counter.calls == 1  # resume: ровно один успешный вызов
+
+    # Крэш сразу после PRIORITIZING checkpoint: analysis персистен, READY не успел
+    async with session_factory() as session:
+        row = await session.get(Item, item.id)
+        row.processing_status = ProcessingStatus.PROCESSING
+        row.processing_stage = "PRIORITIZING"
+        row.priority_score = None
+        await session.commit()
+
+    # restart: сначала startup recovery возвращает PROCESSING -> QUEUED
+    assert await requeue_stale(session_factory) == 1
+    assert await make_worker(session_factory, counter).process_one() is True
+    stored = await get_item(session_factory, item.id)
+    assert stored.processing_status is ProcessingStatus.READY
+    assert stored.priority_score == PriorityEngine().score(make_analysis())
+    assert counter.calls == 1  # LLM второй раз не вызывался

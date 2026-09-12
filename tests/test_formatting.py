@@ -4,6 +4,7 @@ import pytest
 
 from app.bot.formatting import format_ready_item
 from app.domain.enums import ItemType, SourceType
+from app.domain.models import AnalysisResult
 from app.llm.base import LlmError
 from app.llm.openai import OpenAiProvider
 from app.storage.models import Item
@@ -75,4 +76,14 @@ def test_adapter_uses_strict_structured_outputs():
     schema = fmt["json_schema"]["schema"]
     assert fmt["json_schema"]["strict"] is True
     assert schema["additionalProperties"] is False
-    assert set(schema["required"]) == set(schema["properties"])
+
+    # Регрессия сломанного трансформера: properties/$defs — карты имён, их ключи
+    # не могут вырезаться keyword-whitelist'ом.
+    reference = AnalysisResult.model_json_schema()["properties"]
+    assert set(schema["properties"]) == set(reference)
+    assert set(schema["required"]) == set(reference)
+    item_type_def = schema["$defs"]["ItemType"]
+    assert set(item_type_def["enum"]) == {e.value for e in ItemType}
+    item_type_prop = schema["properties"]["item_type"]
+    item_type_ref = item_type_prop.get("$ref") or item_type_prop["anyOf"][0]["$ref"]
+    assert item_type_ref == "#/$defs/ItemType"

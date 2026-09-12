@@ -118,6 +118,29 @@
   3. → тест: upgrade 4cbfde82e2e8 → head с данными Phase 1 (User+Item) — данные
      целы, analysis-колонки добавлены.
 
+## 2026-09-13 — PR #3 — f6f4d0a — CHANGES REQUIRED (re-review)
+
+- Reviewer: Orchestrator; вердикт также на GitHub:
+  https://github.com/ShabanovBoris/aiinbox/pull/3#pullrequestreview-5188228742 (commit f6f4d0a).
+- Findings:
+  1. MAJOR: strict-трансформер сломан — keyword-whitelist применялся и к картам
+     имён (properties/$defs), вырезая все поля; тест не ловил (пустые множества).
+  2. MAJOR: checkpoint durable, но не resumable — claim_next затирал стадию
+     маркером PROCESSING; PRIORITIZING коммитился ДО записи analysis-полей
+     (дорогой LLM-результат терялся при падении после commit).
+  3. MINOR: IMPLEMENTATION_STATE отставал (JSON-mode, 39 passed).
+- Finding #3 предыдущего ревью (upgrade Phase 1 DB → head) подтверждён закрытым.
+- Resolved (коммиты после f6f4d0a):
+  1. → properties/$defs обрабатываются как карты имён (whitelist только к
+     значениям); усиленный тест: все 16 полей, непустой $defs.ItemType (7 enum),
+     resolvable $ref.
+  2. → claim не трогает processing_stage; pipeline: анализ-поля пишутся в том же
+     commit, что ставит PRIORITIZING; resume с PRIORITIZING восстанавливает
+     AnalysisResult из БД без LLM (с fallback на полный анализ при неполном
+     checkpoint'е); полный сценарий ревью покрыт тестом
+     test_checkpoint_resumable_llm_not_called_twice.
+  3. → IMPLEMENTATION_STATE обновлён (strict outputs, актуальные счётчики).
+
 ## Шаблон записи
 
 ```text

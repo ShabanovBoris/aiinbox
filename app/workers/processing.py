@@ -83,9 +83,10 @@ class ProcessingWorker:
                     .scalar_subquery(),
                     Item.processing_status == ProcessingStatus.QUEUED,
                 )
+                # processing_stage не трогаем: это durable checkpoint пайплайна
+                # (D-001); затирание маркером claim'а ломает resume после requeue.
                 .values(
                     processing_status=ProcessingStatus.PROCESSING,
-                    processing_stage="PROCESSING",
                     updated_at=func.now(),
                 )
                 .returning(Item.id)
