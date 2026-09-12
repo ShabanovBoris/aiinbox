@@ -26,13 +26,17 @@ diff "ТЗ_ Personal AI Inbox - интеллектуальный Telegram TODO.m
 ```bash
 uv venv --python 3.12
 uv sync
-cp .env.example .env   # заполнить TELEGRAM_BOT_TOKEN и ALLOWED_TELEGRAM_USER_IDS
+cp .env.example .env   # заполнить TELEGRAM_BOT_TOKEN, ALLOWED_TELEGRAM_USER_IDS,
+                       # OPENAI_API_KEY, OPENAI_ANALYSIS_MODEL
 uv run python -m app.main
 ```
 
 `app.main` сам применяет миграции (`alembic upgrade head`), затем запускает
 Telegram polling и processing workers. Без `TELEGRAM_BOT_TOKEN` приложение
-стартует в headless-режиме (только воркеры) — локальный smoke без сети.
+стартует в headless-режиме (только воркеры) — локальный smoke без Telegram network.
+Для анализа нужен реальный `OPENAI_API_KEY`; без него (или с невалидным ключом)
+Item'ы уходят в FAILED с error_code=LLM_FAILED — happy path LLM проверяется
+FakeLlmProvider'ом в тестах, live-проверка требует ключа.
 
 ## Quality gate
 

@@ -93,6 +93,64 @@
 - Все четыре finding'а вердикта 522b2ce закрыты и покрыты регрессионными тестами;
   mergeable_state=clean. Финализация: IMPLEMENTATION_STATE Phase 1 → DONE.
 
+## 2026-09-13 — PR #3 — d88f2b1 — CHANGES REQUIRED
+
+- Phase 02 — Text end-to-end. Reviewer: Orchestrator; вердикт также на GitHub:
+  https://github.com/ShabanovBoris/aiinbox/pull/3#pullrequestreview-5188213744 (commit d88f2b1).
+- Findings:
+  1. MAJOR: адаптер использует json_object (JSON mode) вместо schema-constrained
+     Structured Outputs (json_schema); AnalysisResult не запрещает extra-поля —
+     чужой priority_score от LLM молча отбрасывался бы (обязательное).
+  2. MAJOR: processing_stage не durable — стадии присваиваются ORM-объекту, но
+     commit только после READY; падение во время анализа теряло глубину прогресса,
+     а requeue перезаписывал stage на REQUEUED (противоречит D-001) (обязательное).
+  3. MAJOR: нет upgrade-теста существующей Phase 1 DB → head (данные должны
+     сохраниться, новые колонки добавиться) (обязательное).
+- Resolved (коммиты после d88f2b1 в этом же PR):
+  1. → response_format=json_schema strict (strict-схема генерируется из AnalysisResult:
+     required=все поля, additionalProperties=false, лишние keywords сняты);
+     AnalysisResult extra="forbid"; регрессия: JSON с лишним priority_score →
+     INVALID_LLM_OUTPUT.
+  2. → pipeline коммитит каждую стадию до внешних вызовов; READY атомарен с
+     результатом; requeue_stale сохраняет содержательную стадию (REQUEUED только
+     вместо маркера PROCESSING); регрессии: другая сессия видит ANALYZING во время
+     блокирующего provider-вызова, requeue сохраняет ANALYZING.
+  3. → тест: upgrade 4cbfde82e2e8 → head с данными Phase 1 (User+Item) — данные
+     целы, analysis-колонки добавлены.
+
+## 2026-09-13 — PR #3 — f6f4d0a — CHANGES REQUIRED (re-review)
+
+- Reviewer: Orchestrator; вердикт также на GitHub:
+  https://github.com/ShabanovBoris/aiinbox/pull/3#pullrequestreview-5188228742 (commit f6f4d0a).
+- Findings:
+  1. MAJOR: strict-трансформер сломан — keyword-whitelist применялся и к картам
+     имён (properties/$defs), вырезая все поля; тест не ловил (пустые множества).
+  2. MAJOR: checkpoint durable, но не resumable — claim_next затирал стадию
+     маркером PROCESSING; PRIORITIZING коммитился ДО записи analysis-полей
+     (дорогой LLM-результат терялся при падении после commit).
+  3. MINOR: IMPLEMENTATION_STATE отставал (JSON-mode, 39 passed).
+- Finding #3 предыдущего ревью (upgrade Phase 1 DB → head) подтверждён закрытым.
+- Resolved (коммиты после f6f4d0a):
+  1. → properties/$defs обрабатываются как карты имён (whitelist только к
+     значениям); усиленный тест: все 16 полей, непустой $defs.ItemType (7 enum),
+     resolvable $ref.
+  2. → claim не трогает processing_stage; pipeline: анализ-поля пишутся в том же
+     commit, что ставит PRIORITIZING; resume с PRIORITIZING восстанавливает
+     AnalysisResult из БД без LLM (с fallback на полный анализ при неполном
+     checkpoint'е); полный сценарий ревью покрыт тестом
+     test_checkpoint_resumable_llm_not_called_twice.
+  3. → IMPLEMENTATION_STATE обновлён (strict outputs, актуальные счётчики).
+
+## 2026-09-13 — PR #3 — cffa2da — APPROVED
+
+- Phase 02 — Text end-to-end. Reviewer: Orchestrator; вердикт также на GitHub:
+  https://github.com/ShabanovBoris/aiinbox/pull/3#pullrequestreview-5188249594 (commit cffa2da).
+- Reviewed HEAD: cffa2da8a430258c07db60cd28d08030c4c0ca7b. mergeable/clean.
+- Все findings двух кругов ревью (d88f2b1, f6f4d0a) закрыты: strict Structured
+  Outputs с сохранёнными properties/$defs, resumable checkpoint без повторного
+  LLM-вызова, IMPLEMENTATION_STATE синхронизирован.
+- Финализация: Phase 2 → DONE в IMPLEMENTATION_STATE.
+
 ## Шаблон записи
 
 ```text

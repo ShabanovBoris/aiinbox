@@ -13,6 +13,12 @@ class Settings(BaseSettings):
     processing_poll_seconds: float = 1.0
     default_timezone: str = "UTC"
 
+    # Сменный LLM-провайдер: model ids только через конфиг (PRODUCT_SPEC §29).
+    llm_provider: str = "openai"
+    openai_api_key: str = ""
+    openai_analysis_model: str = ""
+    llm_timeout_seconds: int = 120
+
     @property
     def allowed_user_ids(self) -> frozenset[int]:
         ids = self.allowed_telegram_user_ids.replace(" ", "")

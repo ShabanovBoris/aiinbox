@@ -6,6 +6,11 @@ from alembic import command as alembic_command
 from alembic.config import Config as AlembicConfig
 
 from app.config import Settings
+from app.domain.priority import PriorityEngine
+from app.llm.base import LlmProvider
+from app.llm.openai import OpenAiProvider
+from app.services.analysis import Analyzer
+from app.services.processing import ProcessingPipeline
 from app.storage.database import make_engine, make_session_factory
 from app.workers.processing import ProcessingWorker, requeue_stale
 
@@ -18,35 +23,40 @@ def run_migrations(database_url: str) -> None:
     alembic_command.upgrade(cfg, "head")
 
 
+def build_provider(settings: Settings) -> LlmProvider:
+    # Точка единственной сборки провайдера; Ollama добавляется post-MVP своей веткой.
+    if settings.llm_provider != "openai":
+        raise SystemExit(f"Unsupported LLM_PROVIDER={settings.llm_provider!r}")
+    if not settings.openai_api_key or not settings.openai_analysis_model:
+        raise SystemExit("OPENAI_API_KEY and OPENAI_ANALYSIS_MODEL must be configured")
+    return OpenAiProvider(
+        settings.openai_api_key, settings.openai_analysis_model, settings.llm_timeout_seconds
+    )
+
+
 async def run(settings: Settings) -> None:
     engine = make_engine(settings)
     session_factory = make_session_factory(engine)
     try:
         await requeue_stale(session_factory)
 
+        pipeline = ProcessingPipeline(Analyzer(build_provider(settings)), PriorityEngine())
+
         stop = asyncio.Event()
         loop = asyncio.get_running_loop()
         for sig in (signal.SIGINT, signal.SIGTERM):
             loop.add_signal_handler(sig, stop.set)
 
-        worker_tasks = [
-            asyncio.create_task(
-                ProcessingWorker(session_factory, settings.processing_poll_seconds).run_forever(
-                    stop
-                ),
-                name=f"processing-worker-{i}",
-            )
-            for i in range(settings.processing_concurrency)
-        ]
-
         polling = None
         bot = None
+        on_result = None
         if settings.telegram_bot_token:
             # aiogram импортируется лениво: без токена приложение стартует чисто
             # воркерами — локальный smoke test не требует Telegram network.
             from aiogram import Bot, Dispatcher
 
             from app.bot.handlers import make_router
+            from app.bot.notify import send_item_result
 
             bot = Bot(settings.telegram_bot_token)
             dispatcher = Dispatcher()
@@ -54,9 +64,20 @@ async def run(settings: Settings) -> None:
             polling = asyncio.create_task(
                 dispatcher.start_polling(bot, handle_signals=False), name="telegram-polling"
             )
+            on_result = lambda item: send_item_result(bot, session_factory, item)  # noqa: E731
             log.info("telegram bot started")
         else:
             log.warning("TELEGRAM_BOT_TOKEN is empty — bot disabled, workers only")
+
+        worker_tasks = [
+            asyncio.create_task(
+                ProcessingWorker(
+                    session_factory, pipeline, settings.processing_poll_seconds, on_result
+                ).run_forever(stop),
+                name=f"processing-worker-{i}",
+            )
+            for i in range(settings.processing_concurrency)
+        ]
 
         await stop.wait()
         log.info("shutdown: stopping background tasks")
