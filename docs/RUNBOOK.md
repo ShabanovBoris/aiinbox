@@ -20,22 +20,44 @@ diff "ТЗ_ Personal AI Inbox - интеллектуальный Telegram TODO.m
 
 ## Repository
 
-Локальный git-репозиторий инициализирован 2026-09-12 (branch `main`).
-GitHub remote — пока не создан: требует GitHub-аутентификации на машине
-(`gh auth login`) либо ручного создания репозитория пользователем.
-После создания:
+- GitHub: https://github.com/ShabanovBoris/aiinbox (создан пользователем), remote `origin`
+- Локальный git инициализирован 2026-09-12 (branch `main`, первый commit `f0448e6`)
+- Push-аутентификация CLI: `gh` установлен, device-flow `gh auth login` запущен
+  (код подтверждения вводится на https://github.com/login/device); после успешного
+  входа push по HTTPS работает через credential helper. Альтернатива — привязать
+  существующий SSH-ключ `~/.ssh/id_ed25519.pub` к аккаунту GitHub.
+
+## Git workflow (оркестрационный протокол §2–4, §22–23)
+
+`main` — защищённая integration branch. Реализация фаз в `main` запрещена.
 
 ```bash
-gh repo create aiinbox --private --source=. --remote=origin --push
+# перед началом фазы
+git checkout main
+git pull --ff-only
+git status
+git checkout -b phase/NN-short-description
+
+# commits на ветке (формат feat:/test:/fix:/docs:), затем
+git push -u origin phase/NN-short-description
+# PR phase/NN-... → main, title "Phase NN: <short description>"
+# REVIEW REQUEST Orchestrator'у (формат протокола §7)
 ```
 
-## Внешняя ревью-проверка (ChatGPT через Browser Use)
+- Merge — только Orchestrator, squash, заголовок `Phase NN: <description>`.
+- После merge: `git checkout main && git pull --ff-only`, затем новая ветка.
+- Запрещены: direct commit в `main`, force push, merge собственного PR,
+  старт следующей фазы до `APPROVED`, несколько фаз в одном PR.
 
-Каждый этап отправляется на верификацию в фиксированную беседу ChatGPT
-(правило: `AGENTS.md` §57). Вложение — основной diff и архив проекта:
+## Внешняя ревью-проверка (Orchestrator: ChatGPT через Browser Use)
+
+Механизм — протокол §5–9: PR + `REVIEW REQUEST` в фиксированную беседу ChatGPT
+(правило: `AGENTS.md` §57). Orchestrator проверяет GitHub напрямую (PR, diff, SHA).
+
+Как сопроводительный материал (когда Orchestrator попросит или нет доступа к GitHub):
 
 ```bash
-git diff <last_reviewed_sha>..HEAD > temp/review.diff
+git diff main..HEAD > temp/review.diff
 git archive --format=zip -o temp/project.zip HEAD
 ```
 

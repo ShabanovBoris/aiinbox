@@ -62,3 +62,24 @@ Reason: каждую задачу выполняет новая сессия а�
 
 Consequences: новый край (HTTP API, Ollama, новый extractor) добавляется как adapter
 поверх ядра и не требует переписывания проекта.
+
+## D-003 — Внешний Orchestrator и PR-workflow (принято 2026-09-12)
+
+Context: проект реализуется сессиями агента; без внешнего контроля acceptance
+дрейфует (self-approval, scope creep, прямые коммиты в основную ветку).
+
+Decision: принят `Оркестрационный протокол Codex → Reviewer.md`. Агент —
+implementation agent; Orchestrator (ChatGPT, фиксированная беседа, открывается
+через Browser Use) принимает acceptance, merge, архитектурные pivots, scope
+change и переходы между фазами. Реализация фаз — в ветках `phase/NN-*`, PR →
+`main`, `REVIEW REQUEST` → `APPROVED / CHANGES REQUIRED / BLOCKED`, squash merge.
+`main` защищён: без direct commit, force push, self-merge.
+
+Reason: протокол задан пользователем как высшая инструкция после его явных
+решений; он же устраняет self-approval и делает историю фаз проверяемой через
+GitHub (PR metadata, diff, SHA).
+
+Consequences: `DONE` в IMPLEMENTATION_STATE достигается только через
+`IN_REVIEW` + `APPROVED`; между `REVIEW REQUEST` и ответом Orchestrator'а —
+никакого scope expansion (§12). AGENTS.md §2/§48/§57 и RUNBOOK приведены
+в соответствие протоколу.
