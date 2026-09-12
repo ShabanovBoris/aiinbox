@@ -140,7 +140,7 @@ async def test_item_with_unknown_user_rejected_by_db(session_factory):
 
 def test_normalize_url_strips_tracking_and_fragment():
     normalized = normalize_url("HTTPS://Example.COM/path/?utm_source=tg&id=7&fbclid=abc#section")
-    assert normalized == "https://example.com/path?id=7"
+    assert normalized == "https://example.com/path/?id=7"  # trailing slash сохранён
 
 
 def test_normalize_url_keeps_meaningful_query():

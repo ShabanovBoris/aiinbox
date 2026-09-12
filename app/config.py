@@ -18,6 +18,11 @@ class Settings(BaseSettings):
     web_timeout_seconds: float = 30.0
     max_download_bytes: int = 5_000_000
     max_redirects: int = 5
+    web_max_attempts: int = 3
+    web_backoff_seconds: float = 0.5
+    # Playwright fallback требует network enforcement; по умолчанию выключен
+    # (продукт не должен запускать unrestricted browser), ТЗ §20.
+    playwright_fallback_enabled: bool = False
 
     # Сменный LLM-провайдер: model ids только через конфиг (PRODUCT_SPEC §29).
     llm_provider: str = "openai"

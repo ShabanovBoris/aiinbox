@@ -151,6 +151,38 @@
   LLM-вызова, IMPLEMENTATION_STATE синхронизирован.
 - Финализация: Phase 2 → DONE в IMPLEMENTATION_STATE.
 
+## 2026-09-13 — PR #4 — cd88b89 — CHANGES REQUIRED
+
+- Phase 03 — Web ingestion. Reviewer: Orchestrator; вердикт также на GitHub:
+  https://github.com/ShabanovBoris/aiinbox/pull/4#pullrequestreview-5188307687 (commit cd88b89).
+- Findings:
+  1. MAJOR/SECURITY: SSRF не привязан к фактическому соединению — валидация DNS
+     и httpx-резолв раздельны (DNS rebinding/TOCTOU, OWASP); Playwright fallback
+     без private-network enforcement (обязательное).
+  2. MAJOR: MAX_DOWNLOAD_BYTES не был лимитом скачивания — client.get читал тело
+     до проверки; _default_client игнорировал WEB_TIMEOUT_SECONDS (обязательное).
+  3. MAJOR: resume из WEB_TEXT терял user_note/title/author/language
+     (обязательное).
+  4. MAJOR: заявленный transient retry отсутствовал — одна попытка, сразу FAILED
+     (обязательное, PRODUCT_SPEC §58).
+  5. MAJOR: URL normalization меняла ресурс — терялись явный порт и trailing
+     slash (обязательное, ТЗ §62).
+- Resolved (коммиты после cd88b89 в этом же PR):
+  1. → PinningTransport: резолв+валидация+connect на один и тот же проверенный IP
+     (Host/SNI оригинальные); Playwright fallback по умолчанию ВЫКЛЮЧЕН
+     (config-гейт), при включении — route-deny непубличных адресов + block
+     service workers.
+  2. → streamed download с инкрементальным byte-cap (без Content-Length тоже);
+     таймаут из конфига применяется в _default_client; тесты: oversized без
+     Content-Length, кастомный timeout.
+  3. → contents.metadata_json хранит title/author/language/user_note; resume
+     восстанавливает эквивалентный NormalizedContent (тест на полное равенство).
+  4. → retry: transient (TIMEOUT/DOWNLOAD_FAILED-transient) до 3 попыток с
+     exponential backoff; permanent (SECURITY_REJECTED/4xx/TOO_LARGE) — ровно
+     одна попытка; тесты на оба пути.
+  5. → normalize_url: порт и trailing slash сохраняются; default-порт снимается;
+     тесты на 8443/a/ и trailing slash.
+
 ## Шаблон записи
 
 ```text

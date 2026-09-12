@@ -1,4 +1,5 @@
 import asyncio
+import ipaddress
 from collections.abc import Awaitable, Callable
 from urllib.parse import urljoin
 
@@ -8,21 +9,64 @@ import trafilatura
 from app.domain.enums import SourceType
 from app.domain.models import NormalizedContent
 from app.errors import AppError
-from app.services.url_security import validate_url_security
+from app.services.url_security import resolve_pinned_ip, resolve_validated_ips
 from app.storage.models import Item
 
 # trafilatura синхронный и CPU-зависимый — выполняется в thread, не блокируя loop.
 _EXTRACT = trafilatura.extract
 _EXTRACT_METADATA = trafilatura.extract_metadata
 
+# Ошибки, которые имеет смысл ретраить (transient); permanent коды не ретраятся
+# (PRODUCT_SPEC §58: 2-3 attempts, exponential backoff, без retry security/4xx).
+_RETRYABLE_CODES = {"TIMEOUT", "DOWNLOAD_FAILED"}
+
+
+def _resolve_ip_literal_safe(host: str):
+    try:
+        return ipaddress.ip_address(host)
+    except ValueError:
+        return None
+
+
+class PinningTransport(httpx.AsyncBaseTransport):
+    """Транспорт с DNS pinning: резолвит и валидирует host сам, затем соединяется
+    с проверенным IP (SNI/Host сохраняют оригинал). Исключает DNS rebinding
+    TOCTOU — между валидацией и connect нет второго резолва."""
+
+    def __init__(
+        self,
+        inner: httpx.AsyncBaseTransport | None = None,
+        resolver: Callable[[str], Awaitable[list[str]]] | None = None,
+    ):
+        self._inner = inner if inner is not None else httpx.AsyncHTTPTransport()
+        self._resolver = resolver
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        url = request.url
+        host = url.host
+        if _resolve_ip_literal_safe(host) is None:
+            # hostname: резолв+валидация, затем соединение с проверенным IP;
+            # Host/SNI остаются оригинальными — сервер видит корректный vhost/TLS.
+            pinned = await resolve_pinned_ip(str(url), self._resolver)
+            request.url = url.copy_with(host=pinned)
+            # httpx.URL.netloc — bytes; Host собираем из str-компонентов.
+            request.headers["host"] = host if url.port is None else f"{host}:{url.port}"
+            if url.scheme == "https":
+                request.extensions["sni_hostname"] = host
+        else:
+            # IP-литерал: DNS не нужен, только валидация адреса и схемы.
+            await resolve_validated_ips(str(url), self._resolver)
+        return await self._inner.handle_async_request(request)
+
 
 class WebPageExtractor:
-    """Загрузка и очистка web-страницы: security → httpx → trafilatura →
-    (недостаточно текста?) → Playwright fallback → trafilatura.
+    """Загрузка и очистка web-страницы: pinning-транспорт → streamed download
+    с byte-cap → trafilatura → (недостаточно текста?) → Playwright fallback.
 
-    SSRF: каждый redirect-хоп проходит validate_url_security; размер ответа и
-    число redirect'ов ограничены; extraction без содержательного текста — FAIL
-    (ТЗ §18–20), бесконечный обход защит не выполняется.
+    SSRF: соединение выполняется на проверенный IP (DNS pinning); размер ответа
+    ограничен инкрементально при чтении; extraction без содержательного текста —
+    FAIL (ТЗ §18–20). Transient-ошибки ретраятся ограниченно (PRODUCT_SPEC §58),
+    permanent (security/4xx/TOO_LARGE) — никогда.
     """
 
     def __init__(
@@ -31,27 +75,38 @@ class WebPageExtractor:
         timeout_seconds: float = 30.0,
         max_download_bytes: int = 5_000_000,
         max_redirects: int = 5,
+        max_attempts: int = 3,
+        backoff_seconds: float = 0.5,
         client_factory: Callable[[], httpx.AsyncClient] | None = None,
         renderer: Callable[[str], Awaitable[str]] | None = None,
+        playwright_fallback_enabled: bool = False,
+        resolver: Callable[[str], Awaitable[list[str]]] | None = None,
     ):
         self.min_text_length = min_text_length
         self.timeout_seconds = timeout_seconds
         self.max_download_bytes = max_download_bytes
         self.max_redirects = max_redirects
+        self.max_attempts = max_attempts
+        self.backoff_seconds = backoff_seconds
         self._client_factory = client_factory or self._default_client
         # renderer(url) -> html; подменяется в тестах (Playwright не требуется)
         self._renderer = renderer
+        # Playwright fallback выключен по умолчанию: без network enforcement
+        # unrestricted browser небезопасен (PRODUCT_SPEC §20). При включении —
+        # route-level deny + block service workers.
+        self._playwright_fallback_enabled = playwright_fallback_enabled
+        self._resolver = resolver
 
-    @staticmethod
-    def _default_client() -> httpx.AsyncClient:
+    def _default_client(self) -> httpx.AsyncClient:
         return httpx.AsyncClient(
             follow_redirects=False,
-            timeout=30.0,
+            timeout=self.timeout_seconds,
             headers={"User-Agent": "PersonalAIInbox/0.1 (+private bot)"},
+            transport=PinningTransport(resolver=self._resolver),
         )
 
-    async def extract(self, item: Item) -> "NormalizedContent":
-        html = await self._fetch_with_redirects(item.source_url)
+    async def extract(self, item: Item) -> NormalizedContent:
+        html = await self._fetch_with_retries(item.source_url)
         text, meta = await self._text_from_html(html)
         if len(text) < self.min_text_length:
             text, meta = await self._fallback(item.source_url)
@@ -70,20 +125,72 @@ class WebPageExtractor:
             language=meta.get("language"),
         )
 
+    async def _fetch_with_retries(self, url: str) -> str:
+        last_error: AppError | None = None
+        for attempt in range(self.max_attempts):
+            try:
+                return await self._fetch_with_redirects(url)
+            except AppError as exc:
+                if exc.code not in _RETRYABLE_CODES or exc.permanent:
+                    raise
+                last_error = exc
+                await asyncio.sleep(self.backoff_seconds * (2**attempt))
+        raise last_error  # pragma: no cover — цикл всегда завершается raise/return
+
+    async def _fetch_with_redirects(self, url: str) -> str:
+        current = url
+        async with self._client_factory() as client:
+            for _ in range(self.max_redirects):
+                try:
+                    async with client.stream("GET", current) as response:
+                        if response.is_redirect:
+                            location = response.headers.get("location")
+                            if not location:
+                                raise AppError("DOWNLOAD_FAILED", "redirect without location")
+                            current = urljoin(current, location)
+                            continue
+                        if response.status_code >= 400:
+                            # 4xx — permanent (повтор бессмыслен), 5xx — transient.
+                            raise AppError(
+                                "DOWNLOAD_FAILED",
+                                f"HTTP {response.status_code} for {current}",
+                                permanent=response.status_code < 500,
+                            )
+                        return await self._read_capped(response)
+                except httpx.TimeoutException as exc:
+                    raise AppError("TIMEOUT", f"request timed out: {current}") from exc
+                except httpx.HTTPError as exc:
+                    raise AppError("DOWNLOAD_FAILED", f"download failed: {exc}") from exc
+        raise AppError("DOWNLOAD_FAILED", "redirect limit exceeded", permanent=True)
+
+    async def _read_capped(self, response: httpx.Response) -> str:
+        """Инкрементальное чтение с жёстким byte-cap: ответ без Content-Length
+        не может заставить процесс буферизовать произвольный объём."""
+        content_length = response.headers.get("content-length")
+        if content_length and content_length.isdigit():
+            if int(content_length) > self.max_download_bytes:
+                raise AppError("TOO_LARGE", f"response exceeds {self.max_download_bytes} bytes")
+        buffer = bytearray()
+        async for chunk in response.aiter_bytes():
+            if len(buffer) + len(chunk) > self.max_download_bytes:
+                raise AppError("TOO_LARGE", f"response exceeds {self.max_download_bytes} bytes")
+            buffer.extend(chunk)
+        charset = response.charset_encoding or "utf-8"
+        return buffer.decode(charset, errors="replace")
+
     async def _fallback(self, url: str):
-        """Playwright fallback; недоступен (нет пакета/браузера) — честный FAIL."""
         if self._renderer is not None:
             html = await self._renderer(url)
         else:
-            try:
-                html = await self._render_with_playwright(url)
-            except AppError:
-                raise
-            except Exception as exc:
-                raise AppError("EXTRACTION_FAILED", f"render failed: {exc}") from exc
+            html = await self._render_with_playwright(url)
         return await self._text_from_html(html)
 
     async def _render_with_playwright(self, url: str) -> str:
+        if not self._playwright_fallback_enabled:
+            raise AppError(
+                "EXTRACTION_FAILED",
+                "playwright fallback disabled (network isolation policy)",
+            )
         try:
             from playwright.async_api import async_playwright
         except ImportError as exc:
@@ -91,44 +198,15 @@ class WebPageExtractor:
         async with async_playwright() as pw:
             browser = await pw.chromium.launch()
             try:
-                page = await browser.new_page()
+                context = await browser.new_context(service_workers="block")
+                await context.route("**/*", lambda route: _browser_route_deny(route))
+                page = await context.new_page()
                 await page.goto(
                     url, timeout=self.timeout_seconds * 1000, wait_until="domcontentloaded"
                 )
                 return await page.content()
             finally:
                 await browser.close()
-
-    async def _fetch_with_redirects(self, url: str) -> str:
-        current = url
-        async with self._client_factory() as client:
-            for _ in range(self.max_redirects):
-                await validate_url_security(current)
-                try:
-                    response = await client.get(current)
-                except httpx.TimeoutException as exc:
-                    raise AppError("TIMEOUT", f"request timed out: {current}") from exc
-                except httpx.HTTPError as exc:
-                    raise AppError("DOWNLOAD_FAILED", f"download failed: {exc}") from exc
-                if response.is_redirect:
-                    location = response.headers.get("location")
-                    if not location:
-                        raise AppError("DOWNLOAD_FAILED", "redirect without location")
-                    current = urljoin(current, location)
-                    continue
-                if response.status_code >= 400:
-                    raise AppError("DOWNLOAD_FAILED", f"HTTP {response.status_code} for {current}")
-                content_length = response.headers.get("content-length")
-                if content_length and content_length.isdigit():
-                    if int(content_length) > self.max_download_bytes:
-                        raise AppError(
-                            "TOO_LARGE", f"response exceeds {self.max_download_bytes} bytes"
-                        )
-                body = response.content
-                if len(body) > self.max_download_bytes:
-                    raise AppError("TOO_LARGE", f"response exceeds {self.max_download_bytes} bytes")
-                return response.text
-        raise AppError("DOWNLOAD_FAILED", "redirect limit exceeded")
 
     @staticmethod
     async def _text_from_html(html: str):
@@ -149,3 +227,16 @@ class WebPageExtractor:
             return text.strip(), metadata
 
         return await asyncio.to_thread(_extract)
+
+
+async def _browser_route_deny(route) -> None:
+    """Route-level deny: только http/https на публичные хосты; localhost и
+    IP-литералы частных адресов блокируются. Service Workers блокируются
+    контекстом. Это best-effort слой поверх config-гейта."""
+    from app.services.url_security import resolve_validated_ips
+
+    try:
+        await resolve_validated_ips(route.request.url)
+        await route.continue_()
+    except AppError:
+        await route.abort()

@@ -85,7 +85,21 @@ class ProcessingPipeline:
             content = await self.web_extractor.extract(item)
             # WEB_TEXT персистится атомарно с checkpoint'ом ANALYZING:
             # переживает restart, retry не перекачивает страницу (ТЗ §46, §59).
-            session.add(Content(item_id=item.id, kind=ContentKind.WEB_TEXT, text=content.text))
+            # metadata_json хранит заголовок/автора/язык/заметку — resume
+            # восстанавливает эквивалентный NormalizedContent целиком.
+            session.add(
+                Content(
+                    item_id=item.id,
+                    kind=ContentKind.WEB_TEXT,
+                    text=content.text,
+                    metadata_json={
+                        "title": content.title,
+                        "author": content.author,
+                        "language": content.language,
+                        "user_note": item.user_note or None,
+                    },
+                )
+            )
             return content
         return await TextExtractor().extract(item)
 
@@ -99,11 +113,17 @@ class ProcessingPipeline:
         )
         if row is None:
             return None
+        meta = row.metadata_json or {}
         return NormalizedContent(
             source_type=SourceType.WEB,
+            title=meta.get("title"),
             text=row.text,
             url=item.source_url,
-            metadata={"user_note": item.user_note},
+            user_note=meta.get("user_note")
+            if meta.get("user_note") is not None
+            else item.user_note,
+            author=meta.get("author"),
+            language=meta.get("language"),
         )
 
     @staticmethod

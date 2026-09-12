@@ -26,15 +26,26 @@ _TRAILING_PUNCT = "[.,;:!?)\\]\"']*"
 
 
 def normalize_url(url: str) -> str:
+    """Минимальная нормализация (ТЗ §62): fragment, lowercase host, tracking-параметры.
+    Порт, path (включая trailing slash) и остальные query-параметры не меняются —
+    они часть идентичности ресурса."""
     parts = urlsplit(url.strip())
     scheme = parts.scheme.lower()
-    host = (parts.hostname or "").lower()
+    hostname = (parts.hostname or "").lower()
+    default_port = {"http": 80, "https": 443}.get(scheme)
+    try:
+        port = parts.port
+    except ValueError:
+        port = None
+    netloc = f"[{hostname}]" if ":" in hostname else hostname
+    if port is not None and port != default_port:
+        netloc = f"{netloc}:{port}"
     query = [
         (k, v)
         for k, v in parse_qsl(parts.query, keep_blank_values=True)
         if k.lower() not in TRACKING_PARAMS
     ]
-    return urlunsplit((scheme, host, parts.path.rstrip("/") or "/", urlencode(query), ""))
+    return urlunsplit((scheme, netloc, parts.path, urlencode(query), ""))
 
 
 def find_urls(text: str) -> list[str]:

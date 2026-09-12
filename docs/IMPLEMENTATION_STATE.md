@@ -174,8 +174,14 @@ Completed:
 ✓ Дедупликация URL per-user: unique (user_id, source_url) на уровне БД + race-safe
   resolve; повторный URL не создаёт второй Item
 ✓ SSRF: http/https only; localhost (по имени) и IP-литералы частных адресов
-  отвергаются до DNS; DNS-резолюция перед запросом; каждый redirect-хоп
-  ревалидируется; лимит redirect'ов; IPv4-mapped IPv6 и CGNAT покрыты
+  отвергаются до DNS; DNS pinning — соединение на проверенный IP
+  (PinningTransport, Host/SNI оригинальные); каждый redirect-хоп ревалидируется;
+  лимит redirect'ов; IPv4-mapped IPv6 и CGNAT покрыты
+✓ Streamed download с инкрементальным byte-cap (работает без Content-Length);
+  transient retry (3 attempts, exponential backoff), permanent — ровно одна
+  попытка; WEB_TIMEOUT_SECONDS управляет клиентом
+✓ Playwright fallback: по умолчанию выключен (network enforcement policy);
+  при включении route-deny + block service workers
 ✓ WebPageExtractor: httpx (timeout, max size) → trafilatura (в thread) →
   недостаточно текста → Playwright fallback → trafilatura; лимит извлечения
   MIN_EXTRACTED_TEXT_LENGTH
@@ -186,17 +192,19 @@ Completed:
   SECURITY_REJECTED / TIMEOUT (+ LLM_FAILED/INVALID_LLM_OUTPUT унаследованы);
   retry transient, permanent не ретраятся
 ✓ user_note передаётся анализатору (NormalizedContent.user_note, в prompt —
-  как untrusted intent signal)
+  как untrusted intent signal); WEB_TEXT metadata хранит
+  title/author/language/user_note — resume восстанавливает эквивалентный
+  NormalizedContent (тест на полное равенство)
 
 Remaining:
 □ Blocked (external): live-проверка с реальным OpenAI — нет ключа; web-путь до
   LLM-границы проверен live (example.com → 401 → FAILED/LLM_FAILED)
 
 Last verification:
-ruff check . → pass; ruff format --check . → pass; pytest → 71 passed
-(+ URL normalization/parse, SSRF (literal/DNS/redirect), MockTransport: extraction,
-fallback, TOO_LARGE, TIMEOUT, 404, redirect-to-private; дедупликация URL; web
-pipeline e2e с resume без перекачки)
+ruff check . → pass; ruff format --check . → pass; pytest → 78 passed
+(+ SSRF pinning/DNS/redirect, transient retry и permanent no-retry, oversized
+streaming без Content-Length, кастомный timeout, normalization порт/trailing slash,
+resume восстанавливает полный NormalizedContent, дедупликация URL, web pipeline e2e)
 smoke: живой процесс — WEB item https://example.com прошёл SSRF → download →
 trafilatura → WEB_TEXT → LLM-граница (401 → FAILED/LLM_FAILED); SIGINT graceful
 

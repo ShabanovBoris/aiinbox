@@ -1,12 +1,15 @@
 """SSRF-защита web-загрузки (обязательное требование, ТЗ §20).
 
 Разрешены только http/https на публичные адреса; DNS резолвится до запроса,
-каждый redirect-хоп проверяется заново.
+каждый redirect-хоп проверяется заново. Для исключения DNS rebinding/TOCTOU
+фактическое соединение выполняется на закэшированный проверенный IP
+(PinningTransport) — резолв и connect используют один и тот же адрес.
 """
 
 import asyncio
 import ipaddress
 import socket
+from collections.abc import Awaitable, Callable
 from urllib.parse import urlsplit
 
 from app.errors import AppError
@@ -35,7 +38,26 @@ def _is_blocked_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
     )
 
 
-async def validate_url_security(url: str) -> None:
+def _resolve_ip_literal(host: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
+    try:
+        return ipaddress.ip_address(host)
+    except ValueError:
+        return None
+
+
+async def _resolve_dns(host: str) -> list[str]:
+    loop = asyncio.get_running_loop()
+    try:
+        infos = await loop.getaddrinfo(host, None, type=socket.SOCK_STREAM)
+    except socket.gaierror as exc:
+        raise AppError("DOWNLOAD_FAILED", f"cannot resolve host {host!r}") from exc
+    return [info[4][0] for info in infos]
+
+
+async def resolve_validated_ips(
+    url: str, resolver: Callable[[str], Awaitable[list[str]]] | None = None
+) -> list[str]:
+    """Все IP хоста после проверки; любой запрещённый адрес → SECURITY_REJECTED."""
     parts = urlsplit(url)
     if parts.scheme not in ("http", "https"):
         raise AppError("SECURITY_REJECTED", f"scheme {parts.scheme!r} is not allowed")
@@ -46,24 +68,32 @@ async def validate_url_security(url: str) -> None:
         # localhost запрещён по имени: его резолюция не должна зависеть от DNS.
         raise AppError("SECURITY_REJECTED", "localhost is not allowed")
 
-    # IP-литерал: DNS не нужен, проверяем адрес напрямую (иначе литерал частного
-    # адреса прошёл бы через любую подмену/кэш DNS-ответов).
-    try:
-        literal = ipaddress.ip_address(host)
-    except ValueError:
-        literal = None
+    literal = _resolve_ip_literal(host)
     if literal is not None:
         if _is_blocked_ip(literal):
             raise AppError("SECURITY_REJECTED", f"host {host!r} is a forbidden address")
-        return
+        return [str(literal)]
 
-    loop = asyncio.get_running_loop()
     try:
-        infos = await loop.getaddrinfo(host, None, type=socket.SOCK_STREAM)
+        ips = await (resolver(host) if resolver else _resolve_dns(host))
     except socket.gaierror as exc:
         raise AppError("DOWNLOAD_FAILED", f"cannot resolve host {host!r}") from exc
-
-    for info in infos:
-        ip = ipaddress.ip_address(info[4][0])
-        if _is_blocked_ip(ip):
+    if not ips:
+        raise AppError("DOWNLOAD_FAILED", f"host {host!r} resolved to no addresses")
+    for ip_str in ips:
+        if _is_blocked_ip(ipaddress.ip_address(ip_str)):
             raise AppError("SECURITY_REJECTED", f"host {host!r} resolves to forbidden address")
+    return ips
+
+
+async def resolve_pinned_ip(
+    url: str, resolver: Callable[[str], Awaitable[list[str]]] | None = None
+) -> str:
+    """Один проверенный IP для фактического соединения (DNS pinning)."""
+    return (await resolve_validated_ips(url, resolver))[0]
+
+
+async def validate_url_security(
+    url: str, resolver: Callable[[str], Awaitable[list[str]]] | None = None
+) -> None:
+    await resolve_validated_ips(url, resolver)
