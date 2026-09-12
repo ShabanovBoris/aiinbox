@@ -205,6 +205,22 @@
   3. → Connection: close на каждый запрос через PinningTransport — переиспользование
      соединений по IP-origin исключено; тест фиксирует заголовок.
 
+## 2026-09-13 — PR #4 — 86d40e6 — CHANGES REQUIRED (re-review 2)
+
+- Reviewer: Orchestrator; вердикт также на GitHub:
+  https://github.com/ShabanovBoris/aiinbox/pull/4#pullrequestreview-5188394647 (commit 86d40e6).
+- Три transport/security finding'а 133a396 подтверждены закрытыми (aclose,
+  Connection: close, playwright отключён в рантайме).
+- Remaining (cleanup):
+  1. MINOR: playwright-зависимость не удалена из pyproject/uv.lock.
+  2. MINOR: IMPLEMENTATION_STATE отстал (78 вместо 81 passed, нет описания
+     финальных transport fixes).
+- Resolved (коммит после 86d40e6):
+  1. → playwright удалён из pyproject + uv lock пересобран (production-путь его
+     не импортирует).
+  2. → IMPLEMENTATION_STATE: 81 passed, финальные transport fixes зафиксированы,
+     Phase 3 остаётся IN_REVIEW.
+
 ## Шаблон записи
 
 ```text

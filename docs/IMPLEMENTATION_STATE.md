@@ -181,7 +181,8 @@ Completed:
   transient retry (3 attempts, exponential backoff), permanent — ровно одна
   попытка; WEB_TIMEOUT_SECONDS управляет клиентом
 ✓ Playwright fallback: жёстко отключён без production opt-in (route-deny не
-  даёт SSRF-изоляции); вернётся с настоящим network boundary
+  даёт SSRF-изоляции); playwright-зависимость удалена из pyproject; вернётся
+  с настоящим network boundary
 ✓ PinningTransport: aclose() делегируется внутреннему транспорту; Connection:
   close — переиспользование соединений по IP-origin исключено
 ✓ WebPageExtractor: httpx (timeout, max size) → trafilatura (в thread) →
@@ -203,7 +204,7 @@ Remaining:
   LLM-границы проверен live (example.com → 401 → FAILED/LLM_FAILED)
 
 Last verification:
-ruff check . → pass; ruff format --check . → pass; pytest → 78 passed
+ruff check . → pass; ruff format --check . → pass; pytest → 81 passed
 (+ SSRF pinning/DNS/redirect, transient retry и permanent no-retry, oversized
 streaming без Content-Length, кастомный timeout, normalization порт/trailing slash,
 resume восстанавливает полный NormalizedContent, дедупликация URL, web pipeline e2e)
