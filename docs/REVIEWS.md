@@ -230,6 +230,63 @@
   закрыты; playwright dependency удалена.
 - Финализация: Phase 3 → DONE в IMPLEMENTATION_STATE.
 
+## 2026-09-13 — PR #5 — 64e95d8 — CHANGES REQUIRED
+
+- Phase 04 — Architecture checkpoint. Reviewer: Orchestrator; вердикт также на GitHub:
+  https://github.com/ShabanovBoris/aiinbox/pull/5#pullrequestreview-5188456553 (commit 64e95d8).
+- Findings:
+  1. MAJOR: mark_failed ставил processing_stage="FAILED" — уничтожал durable
+     checkpoint (persisted WEB_TEXT/analysis); retry перекачивал страницу / повторял
+     LLM (нарушение D-001, PRODUCT_SPEC §59) (обязательное).
+  2. MAJOR: _resolve_after_race не сходится при гонке дедупликации URL —
+     конкурентные сообщения с пересекающимися URL давали исключение без ACK
+     (обязательное).
+  3. MINOR: IMPLEMENTATION_STATE заявлял правки тестов, которых не было на HEAD
+     (assert second is not None; sanity isinstance) — источник истины обязан
+     соответствовать фактическому состоянию.
+- Resolved (коммиты после 64e95d8 в этом же PR):
+  1. → mark_failed меняет только status/error_*; стадия сохраняется. Регрессии:
+     WEB → LLM_FAILED → FAILED+ANALYZING → retry → READY при extractor.calls==1;
+     retry из PRIORITIZING завершает priority без вызова LLM (counting.calls==0).
+  2. → сходящаяся схема _ingest_web_urls: re-select → insert → rollback →
+     re-resolve (bounded 3 раунда). Регрессия: конкурентные сообщения с
+     пересекающимися URL → каждый URL ровно один Item, без исключений.
+  3. → фактические правки тестов применены и проверены; IMPLEMENTATION_STATE
+     синхронизирован с HEAD.
+- Отдельно обновлён RUNBOOK (retry FAILED→QUEUED сохраняет стадию автоматически).
+
+## 2026-09-13 — PR #5 — aaaa75a — CHANGES REQUIRED (re-review)
+
+- Reviewer: Orchestrator; вердикт также на GitHub:
+  https://github.com/ShabanovBoris/aiinbox/pull/5#pullrequestreview-5188470388 (commit aaaa75a).
+- Production fixes (mark_failed checkpoint, converging dedup) подтверждены
+  корректными. Найдено:
+  1. MAJOR: три заявленных regression tests отсутствовали на HEAD (скрипт
+     добавления прервался, а заявление попало в request) — поймано проверкой diff.
+  2. MAJOR: IMPLEMENTATION_STATE заявлял несуществующие проверки.
+  3. MINOR: RUNBOOK не описывал checkpoint semantics ручного retry; стоит
+     очищать error_code/error_message.
+- Resolved (коммиты после aaaa75a):
+  1. → тесты реально добавлены: test_failed_item_preserves_checkpoint_and_retry_
+     reuses_extraction, test_retry_from_prioritizing_checkpoint_skips_llm,
+     test_concurrent_overlapping_url_dedup_converges; pytest 81 → 84 passed
+     (проверено запуском).
+  2. → IMPLEMENTATION_STATE синхронизирован с фактическим diff.
+  3. → RUNBOOK: ручной retry с очисткой error_code/error_message +
+     документированная checkpoint semantics.
+- Урок зафиксирован агенту: каждое заявление в REVIEW REQUEST проверять
+  фактическим diff/запуском ДО отправки.
+
+## 2026-09-13 — PR #5 — a1c0e1b — APPROVED
+
+- Phase 04 — Architecture checkpoint. Reviewer: Orchestrator; вердикт также на GitHub:
+  https://github.com/ShabanovBoris/aiinbox/pull/5#pullrequestreview-5188485235 (commit a1c0e1b).
+- Reviewed HEAD: a1c0e1b1c7684b72fc4bf2ed6c8ad8345007f6c7. mergeable/clean.
+- Все blockers закрыты: FAILED сохраняет durable checkpoint (retry без повторных
+  download/LLM), конкурентная URL-дедупликация сходится, документация соответствует
+  фактическому состоянию. Урок о проверке заявлений перед REVIEW REQUEST
+  зафиксирован в журнале (см. запись aaaa75a).
+
 ## Шаблон записи
 
 ```text

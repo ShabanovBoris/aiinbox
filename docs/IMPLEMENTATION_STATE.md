@@ -31,7 +31,7 @@ squash merge с ожидаемым HEAD B. Вердикты фиксируютс
 | 1 | Skeleton | DONE |
 | 2 | Text end-to-end | DONE |
 | 3 | Web ingestion | DONE |
-| 4 | Architecture checkpoint | NOT_STARTED |
+| 4 | Architecture checkpoint | DONE |
 | 5 | Voice/audio | NOT_STARTED |
 | 6 | YouTube | NOT_STARTED |
 | 7 | Video visual analysis | NOT_STARTED |
@@ -216,6 +216,47 @@ streaming без Content-Length, кастомный timeout, normalization по�
 resume восстанавливает полный NormalizedContent, дедупликация URL, web pipeline e2e)
 smoke: живой процесс — WEB item https://example.com прошёл SSRF → download →
 trafilatura → WEB_TEXT → LLM-граница (401 → FAILED/LLM_FAILED); SIGINT graceful
+
+### Phase 4 — Architecture checkpoint — DONE
+
+APPROVED @ a1c0e1b1c7684b72fc4bf2ed6c8ad8345007f6c7 (Orchestrator, GitHub review
+pullrequestreview-5188485235). Аудит подтвердил каркас; по ходу ревью закрыты
+2 MAJOR: FAILED сохраняет durable checkpoint (retry без повторных download/LLM),
+сходящаяся дедупликация URL. Урок: заявления в REVIEW REQUEST проверять фактическим
+diff/запуском до отправки.
+
+Completed:
+✓ E2E control flow: один канонический пайплайн (Telegram → ingestion → Item →
+  claim → pipeline.extract/analyze/prioritize → READY → notify); параллельных
+  pipelines нет — WEB/TEXT расходятся только в extract-шаге
+✓ Abstractions: LlmProvider и injectable-зависимости имеют реальных потребителей
+  (Fake в тестах + OpenAI в prod); бесполезных интерфейсов/wrapper-ов не найдено
+✓ Worker correctness: atomic claim (UPDATE...RETURNING + условие QUEUED),
+  concurrent-тесты, requeue stale с сохранением стадии, FAILED с error_code —
+  реализовано в Phase 1–3, подтверждено
+✓ Database: FK pragma, unique (user_id, message_id, source_index) и
+  (user_id, source_url), transactions на переходах, fresh+upgrade миграции
+✓ Web security: SSRF pinning/redirects/byte-cap; prompt injection изоляция в
+  system prompt; content-analysis модель без инструментов
+✓ Error recovery: WEB_TEXT персистент, LLM retry не перекачивает страницу
+✓ Dead code: удалена мёртвая ветка _render_with_playwright (всегда-raise метод
+  после жёсткого отключения playwright) — упрощён _fallback
+✓ MAJOR-fix: mark_failed больше не затирает processing_stage — FAILED сохраняет
+  durable checkpoint; retry из ANALYZING переиспользует WEB_TEXT (extractor
+  calls==1), retry из PRIORITIZING завершает priority без LLM (обе регрессии
+  фактически в tests/test_web.py)
+✓ MAJOR-fix: _ingest_web_urls — сходящаяся дедупликация URL (bounded re-resolve);
+  регрессия конкурентных пересекающихся URL (tests/test_ingestion.py)
+✓ Test quality: усилены слабые assert'ы; фактические правки проверены (все
+  заявленные в аудит-записи изменения присутствуют в diff)
+
+Remaining:
+□ — нет (ждёт вердикта Orchestrator'а)
+
+Last verification:
+ruff check . → pass; ruff format --check . → pass; pytest → 84 passed
+(+ Phase 4 регрессии фактически в suite: FAILED сохраняет checkpoint и retry
+без повторного download/LLM; конкурентная дедупликация пересекающихся URL)
 
 ### Шаблон фазы в работе
 

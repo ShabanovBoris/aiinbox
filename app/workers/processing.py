@@ -101,7 +101,9 @@ class ProcessingWorker:
             if item is None:
                 return
             item.processing_status = ProcessingStatus.FAILED
-            item.processing_stage = "FAILED"
+            # processing_stage НЕ трогаем: это durable checkpoint (D-001).
+            # Затирание его словом "FAILED" уничтожило бы достигнутую глубину
+            # (persisted WEB_TEXT/analysis), и retry повторял бы дорогие этапы.
             item.error_code = exc.code if isinstance(exc, AppError) else "UNKNOWN"
             item.error_message = str(exc)[:500]
             await session.commit()

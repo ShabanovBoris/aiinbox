@@ -185,21 +185,17 @@ class WebPageExtractor:
         return buffer.decode(charset, errors="replace")
 
     async def _fallback(self, url: str):
-        if self._renderer is not None:
-            html = await self._renderer(url)
-        else:
-            html = await self._render_with_playwright(url)
+        """Playwright fallback жёстко отключён (решение Orchestrator по Phase 3):
+        route-deny не закрывает DNS TOCTOU/WebSockets — unrestricted browser не
+        запускается. Вернётся отдельным изменением с настоящим network boundary;
+        renderer — тестовый seam."""
+        if self._renderer is None:
+            raise AppError(
+                "EXTRACTION_FAILED",
+                "playwright fallback is disabled: no SSRF-safe browser boundary yet",
+            )
+        html = await self._renderer(url)
         return await self._text_from_html(html)
-
-    async def _render_with_playwright(self, url: str) -> str:
-        # Жёстко отключено (решение Orchestrator по Phase 3): route-level deny не
-        # закрывает DNS TOCTOU/дочерние ресурсы/WebSockets — настоящий network
-        # boundary (pinned/proxied browser) появится отдельным изменением.
-        # Тестовый seam — renderer; production-запуск браузера отсутствует.
-        raise AppError(
-            "EXTRACTION_FAILED",
-            "playwright fallback is disabled: no SSRF-safe browser boundary yet",
-        )
 
     @staticmethod
     async def _text_from_html(html: str):

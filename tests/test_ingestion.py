@@ -160,3 +160,30 @@ def test_parse_message_without_urls():
     note, urls = parse_message("Просто мысль без ссылок")
     assert urls == []
     assert note == "Просто мысль без ссылок"
+
+
+async def test_concurrent_overlapping_url_dedup_converges(session_factory):
+    # Регрессия Phase 4: конкурентные сообщения с пересекающимися URL —
+    # итог: каждый URL ровно один Item, исключений нет.
+    results = await asyncio.gather(
+        ingest_message(
+            session_factory,
+            telegram_user_id=42,
+            chat_id=42,
+            message_id=1,
+            text="https://example.com/a и https://example.com/b",
+        ),
+        ingest_message(
+            session_factory,
+            telegram_user_id=42,
+            chat_id=42,
+            message_id=2,
+            text="https://example.com/b и https://example.com/c",
+        ),
+    )
+    urls = [item.source_url for result in results for item in result.items]
+    assert sorted(urls) == [
+        "https://example.com/a",
+        "https://example.com/b",
+        "https://example.com/c",
+    ]
