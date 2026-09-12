@@ -1,7 +1,10 @@
 """Детерминированные фейки для тестов: только тестовое окружение, не production path."""
 
+from pathlib import Path
+
 from app.domain.enums import ItemType, ProcessingStatus, SourceType
 from app.domain.models import AnalysisResult, NormalizedContent, UserProfile
+from app.errors import AppError
 from app.llm.base import LlmError
 
 
@@ -73,3 +76,32 @@ def json_invalid() -> str:
 
     # Нарушает схему: score вне диапазона, неизвестный item_type
     return json.dumps({"title": "x", "summary": "y", "goal_fit": 5.0, "item_type": "NOPE"})
+
+
+class FakeDownloader:
+    """Пишет фейковое аудио в temp dir; счётчик для проверки повторов."""
+
+    def __init__(self, fail: bool = False):
+        self.fail = fail
+        self.calls = 0
+
+    async def download(self, file_id: str, dest_dir: Path):
+        self.calls += 1
+        if self.fail:
+            raise AppError("DOWNLOAD_FAILED", "telegram download failed")
+        dest = Path(dest_dir) / f"{file_id}.ogg"
+        dest.write_bytes(b"fake-ogg-bytes")
+        return dest
+
+
+class FakeTranscriber:
+    def __init__(self, transcript: str = "Голосовая заметка: изучить агентов", fail: bool = False):
+        self.transcript = transcript
+        self.fail = fail
+        self.calls = 0
+
+    async def transcribe(self, audio_path: Path) -> str:
+        self.calls += 1
+        if self.fail:
+            raise AppError("TRANSCRIPTION_FAILED", "stt failed")
+        return self.transcript

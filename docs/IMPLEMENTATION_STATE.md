@@ -32,7 +32,7 @@ squash merge с ожидаемым HEAD B. Вердикты фиксируютс
 | 2 | Text end-to-end | DONE |
 | 3 | Web ingestion | DONE |
 | 4 | Architecture checkpoint | DONE |
-| 5 | Voice/audio | NOT_STARTED |
+| 5 | Voice/audio | IN_REVIEW |
 | 6 | YouTube | NOT_STARTED |
 | 7 | Video visual analysis | NOT_STARTED |
 | 8 | User profile | NOT_STARTED |
@@ -257,6 +257,28 @@ Last verification:
 ruff check . → pass; ruff format --check . → pass; pytest → 84 passed
 (+ Phase 4 регрессии фактически в suite: FAILED сохраняет checkpoint и retry
 без повторного download/LLM; конкурентная дедупликация пересекающихся URL)
+
+### Phase 5 — Voice/audio — IN_REVIEW
+
+Completed:
+✓ Voice/audio ingestion: ingest_voice → Item QUEUED с source_file_id
+  (идемпотентно по (user_id, message_id, source_index)); handler persist→ACK
+✓ Размер-лимит в handler (до очереди) и в downloader (после get_file/скачивания)
+✓ TranscriptionProvider (отдельный Protocol): whisper-эндпоинт OpenAI — другой
+  API/модель, отдельный adapter (OpenAiTranscriptionProvider)
+✓ AudioExtractor: downloader → temp файл → STT → NormalizedContent; temp удаляется
+  в finally (успех/ошибка); TRANSCRIPT персистится атомарно с checkpoint'ом
+  ANALYZING — retry из ANALYZING не повторяет download+STT (resume-тест)
+✓ Ошибки: TOO_LARGE / DOWNLOAD_FAILED / TRANSCRIPTION_FAILED (+TIMEOUT из transport)
+✓ Миграция d1b5bdba99a3 (source_file_id, content_duration_seconds)
+
+Remaining:
+□ Blocked (external): live STT/Telegram download — нет токена/ключа; путь покрыт
+  fakes (FakeDownloader/FakeTranscriber)
+
+Last verification:
+ruff check . → pass; ruff format --check . → pass; pytest → 91 passed
+smoke: headless старт без токена — bot disabled, SIGINT graceful
 
 ### Шаблон фазы в работе
 

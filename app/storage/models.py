@@ -64,6 +64,10 @@ class Item(Base):
     )
     # Нормализованный URL для WEB-источников (дедупликация, Открыть, retry).
     source_url: Mapped[str | None] = mapped_column(String(700))
+    # file_id Telegram-файла для VOICE/AUDIO (скачивание на этапе extraction).
+    source_file_id: Mapped[str | None] = mapped_column(String(200))
+    # Длительность медиа-контента (voice/audio/video), секунд.
+    content_duration_seconds: Mapped[int | None] = mapped_column()
 
     # Текущий этап конвейера — позволяет понять, где обработка остановилась
     # при сбое (PRODUCT_SPEC §60, D-001 resumable).

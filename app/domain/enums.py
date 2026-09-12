@@ -22,6 +22,8 @@ class ItemState(enum.Enum):
 class SourceType(enum.Enum):
     TEXT = "TEXT"
     WEB = "WEB"
+    VOICE = "VOICE"
+    AUDIO = "AUDIO"
 
 
 # Тип контента определяет, попадает ли Item в /today и что с ним делать;
