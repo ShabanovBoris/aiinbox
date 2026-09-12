@@ -36,6 +36,19 @@
   5. → оговорка добавлена в тело PR #1 и в эту запись.
   6. → RUNBOOK переписан на воспроизводимую процедуру `gh auth status` / `gh auth login`.
 
+## 2026-09-12 — PR #1 — 24a2b2f — CHANGES REQUIRED (re-review)
+
+- Reviewer: Orchestrator; вердикт также зафиксирован непосредственно на GitHub:
+  https://github.com/ShabanovBoris/aiinbox/pull/1#pullrequestreview-5187931848 (COMMENTED, commit 24a2b2f).
+- Первые шесть замечаний de516ee закрыты (protection перепроверена API: protected=true).
+- Remaining MAJOR: файл протокола не был изменён при фиксе (blob SHA совпадал на
+  de516ee и 24a2b2f), при этом протокол выше AGENTS.md/RUNBOOK — handshake и
+  durable-record правило должны быть определены в самом протоколе.
+- Уточнение handshake: finalization commit содержит ровно две мутации
+  (REVIEWS.md запись + IMPLEMENTATION_STATE IN_REVIEW → DONE).
+- Resolved (коммит после 24a2b2f): в протокол добавлены §9.1 (durable record) и
+  §9.2 (APPROVED → merge handshake); эта запись создана.
+
 ## Шаблон записи
 
 ```text

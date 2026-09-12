@@ -304,6 +304,31 @@ Orchestrator предоставит обязательные изменения.
 
 В этом случае выполняй всё, что остаётся возможным без blocker, и жди инструкции только по заблокированной части.
 
+## 9.1 Durable record of verdicts
+
+Каждый вердикт Orchestrator (`APPROVED`, `CHANGES REQUIRED`, `BLOCKED`) implementation agent обязан немедленно зафиксировать в `docs/REVIEWS.md` с привязкой к PR number и reviewed HEAD SHA.
+
+Chat-беседа не является долговечным хранилищем решений. Формальный GitHub PR review предпочтителен, когда identity позволяет (ограничение GitHub: автор PR не может оставить `REQUEST_CHANGES` на собственный PR). Новая сессия восстанавливает состояние оркестрации из `docs/REVIEWS.md` + GitHub, а не из истории чата.
+
+## 9.2 APPROVED → merge handshake (no TOCTOU)
+
+```text
+APPROVED @ HEAD A
+↓ один finalization commit:
+    docs/REVIEWS.md + APPROVED / PR / reviewed HEAD A
+    docs/IMPLEMENTATION_STATE.md IN_REVIEW → DONE, approved HEAD = A
+↓ HEAD B
+↓ MERGE READY
+Previous approved HEAD: A
+New HEAD: B
+↓ Orchestrator проверяет A..B: только review/state finalization
+↓ squash merge expected HEAD B
+↓ sync main
+↓ только теперь следующая Phase
+```
+
+Финализирующий commit содержит ровно две разрешённые мутации: запись вердикта в `docs/REVIEWS.md` и перевод статуса фазы в `docs/IMPLEMENTATION_STATE.md`. Никаких иных изменений между APPROVED и merge.
+
 ---
 
 # 10. Review findings severity
