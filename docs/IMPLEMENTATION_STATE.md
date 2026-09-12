@@ -29,7 +29,7 @@ squash merge с ожидаемым HEAD B. Вердикты фиксируютс
 |---|------|--------|
 | 0 | Project contract | DONE |
 | 1 | Skeleton | DONE |
-| 2 | Text end-to-end | IN_REVIEW |
+| 2 | Text end-to-end | DONE |
 | 3 | Web ingestion | NOT_STARTED |
 | 4 | Architecture checkpoint | NOT_STARTED |
 | 5 | Voice/audio | NOT_STARTED |
@@ -120,7 +120,13 @@ ruff check . → pass; ruff format --check . → pass; pytest → 23 passed
 orphan user_id запрещены схемой; smoke: `uv run python -m app.main` без токена →
 bot disabled; INSERT QUEUED-Item → READY за <2 c; SIGINT → shutdown complete
 
-### Phase 2 — Text end-to-end — IN_REVIEW
+### Phase 2 — Text end-to-end — DONE
+
+APPROVED @ cffa2da8a430258c07db60cd28d08030c4c0ca7b (Orchestrator, GitHub review
+pullrequestreview-5188249594). Ревью прошло два круга: strict Structured Outputs
+(исправлен сломанный трансформер properties/$defs) и resumable checkpoint
+(claim не затирает стадию, LLM-результат атомарен с PRIORITIZING, resume без
+повторного вызова).
 
 Completed:
 ✓ NormalizedContent / AnalysisResult / UserProfile (pydantic, строгие лимиты
@@ -146,7 +152,6 @@ Completed:
 ✓ config: LLM_PROVIDER, OPENAI_API_KEY, OPENAI_ANALYSIS_MODEL, LLM_TIMEOUT_SECONDS
 
 Remaining:
-□ — нет (ждёт вердикта Orchestrator'а)
 □ Blocked (external): live-проверка happy path с реальным OpenAI — нет ключа;
   пайплайн покрыт FakeLlmProvider, путь ошибки проверен live (401 → FAILED/LLM_FAILED)
 
