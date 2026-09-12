@@ -221,6 +221,15 @@
   2. → IMPLEMENTATION_STATE: 81 passed, финальные transport fixes зафиксированы,
      Phase 3 остаётся IN_REVIEW.
 
+## 2026-09-13 — PR #4 — 14f4804 — APPROVED
+
+- Phase 03 — Web ingestion. Reviewer: Orchestrator; вердикт также на GitHub:
+  https://github.com/ShabanovBoris/aiinbox/pull/4#pullrequestreview-5188406402 (commit 14f4804).
+- Reviewed HEAD: 14f4804e5a2618f9c3a6f41cf52bf7374c92e382. mergeable/clean.
+- Все findings (SSRF pinning/Playwright/byte-cap/retry/resume-metadata/normalization)
+  закрыты; playwright dependency удалена.
+- Финализация: Phase 3 → DONE в IMPLEMENTATION_STATE.
+
 ## Шаблон записи
 
 ```text

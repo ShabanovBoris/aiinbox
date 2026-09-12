@@ -30,7 +30,7 @@ squash merge с ожидаемым HEAD B. Вердикты фиксируютс
 | 0 | Project contract | DONE |
 | 1 | Skeleton | DONE |
 | 2 | Text end-to-end | DONE |
-| 3 | Web ingestion | IN_REVIEW |
+| 3 | Web ingestion | DONE |
 | 4 | Architecture checkpoint | NOT_STARTED |
 | 5 | Voice/audio | NOT_STARTED |
 | 6 | YouTube | NOT_STARTED |
@@ -164,7 +164,13 @@ LLM-вызова, delivery-failure не портит READY, upgrade Phase 1 DB �
 smoke: живой процесс с dummy-ключом → Item дошёл до FAILED/LLM_FAILED через
 реальный OpenAI SDK (ошибка смаппирована); SIGINT graceful
 
-### Phase 3 — Web ingestion — IN_REVIEW
+### Phase 3 — Web ingestion — DONE
+
+APPROVED @ 14f4804e5a2618f9c3a6f41cf52bf7374c92e382 (Orchestrator, GitHub review
+pullrequestreview-5188406402). Ревью прошло два полных круга: SSRF-пиннинг
+(PinningTransport + Connection: close), streamed byte-cap, transient retry,
+полная реставрация NormalizedContent, минимальная URL normalization,
+Playwright fallback жёстко отключён с удалением зависимости.
 
 Completed:
 ✓ Разбор сообщения: text+URL / несколько URL → Item на каждый URL (source_index),
