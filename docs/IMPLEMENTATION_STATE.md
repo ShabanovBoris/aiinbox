@@ -452,8 +452,8 @@ smoke with empty Telegram token → startup, migration, and graceful SIGINT pass
 ### Phase 10 — Item actions and feedback events — IN_REVIEW
 
 Completed:
-✓ транзакционные Done, Archive, Later/Snooze, Cancel и Retry с user scoping и
-  idempotent повторными callback'ами
+✓ транзакционные Done, Archive, Later/Snooze, Cancel и Retry с user scoping;
+  повторные Done/Retry idempotent без дублирования событий
 ✓ `completed_at`, `archived_at`, `snoozed_until` и durable `events` table через
   Alembic migration; Retry сохраняет processing checkpoint и очищает только
   error fields
