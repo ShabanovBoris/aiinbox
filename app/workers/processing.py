@@ -119,6 +119,7 @@ class ProcessingWorker:
         if item_id is None:
             return False
         started = time.monotonic()
+        failure: Exception | None = None
         try:
             async with self.session_factory() as session:
                 item = await session.get(Item, item_id)
@@ -129,7 +130,7 @@ class ProcessingWorker:
                     self.pipeline.run(session, item), timeout=self.processing_timeout_seconds
                 )
         except TimeoutError:
-            exc = AppError(
+            failure = AppError(
                 "PROCESSING_TIMEOUT",
                 f"item processing exceeded {self.processing_timeout_seconds}s",
             )
@@ -140,9 +141,8 @@ class ProcessingWorker:
                 getattr(getattr(item, "source_type", None), "value", None),
                 getattr(item, "processing_stage", None),
             )
-            await self.mark_failed(item_id, exc)
-            return True
         except Exception as exc:
+            failure = exc
             # Ошибка обработки не теряет Item: он переходит в FAILED с кодом
             # и остаётся доступным для Retry (PRODUCT_SPEC §56, §59).
             log.exception(
@@ -154,28 +154,33 @@ class ProcessingWorker:
                 getattr(item, "processing_stage", None),
                 getattr(exc, "code", "UNKNOWN"),
             )
-            await self.mark_failed(item_id, exc)
-            if self.on_failure is not None:
-                async with self.session_factory() as session:
-                    failed_item = await session.get(Item, item_id)
-                if failed_item is not None:
-                    try:
-                        await self.on_failure(failed_item)
-                    except Exception:
-                        log.exception("failure delivery failed item_id=%s", item_id)
+        else:
+            log.info(
+                "item processed item_id=%s user_id=%s source_type=%s stage=%s "
+                "duration=%.3fs result=READY",
+                item_id,
+                getattr(item, "user_id", None),
+                getattr(getattr(item, "source_type", None), "value", None),
+                getattr(item, "processing_stage", None),
+                time.monotonic() - started,
+            )
+            if self.on_result is not None:
+                try:
+                    await self.on_result(item)
+                except Exception:
+                    log.exception("result delivery failed item_id=%s", item_id)
             return True
-        log.info(
-            "item processed item_id=%s user_id=%s source_type=%s stage=%s "
-            "duration=%.3fs result=READY",
-            item_id,
-            getattr(item, "user_id", None),
-            getattr(getattr(item, "source_type", None), "value", None),
-            getattr(item, "processing_stage", None),
-            time.monotonic() - started,
-        )
-        if self.on_result is not None:
-            try:
-                await self.on_result(item)
-            except Exception:
-                log.exception("result delivery failed item_id=%s", item_id)
+
+        # Both provider errors and the explicit deadline use the same durable
+        # failure path, including the user-facing retry notification.
+        assert failure is not None
+        await self.mark_failed(item_id, failure)
+        if self.on_failure is not None:
+            async with self.session_factory() as session:
+                failed_item = await session.get(Item, item_id)
+            if failed_item is not None:
+                try:
+                    await self.on_failure(failed_item)
+                except Exception:
+                    log.exception("failure delivery failed item_id=%s", item_id)
         return True
