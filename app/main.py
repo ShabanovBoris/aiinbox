@@ -11,6 +11,7 @@ from app.config import Settings
 from app.domain.priority import PriorityEngine
 from app.extractors.audio import AudioExtractor
 from app.extractors.web import WebPageExtractor
+from app.extractors.youtube import YoutubeExtractor
 from app.llm.openai import OpenAiProvider
 from app.llm.transcription import OpenAiTranscriptionProvider
 from app.services.analysis import Analyzer
@@ -49,6 +50,36 @@ def build_transcriber(settings: Settings) -> OpenAiTranscriptionProvider:
     )
 
 
+def build_extractors(settings: Settings, bot) -> tuple:
+    """Сборка экстракторов (composition root). audio требует живого Telegram bot;
+    youtube STT-fallback использует transcriber, но сам extractor не требует bot."""
+    web_extractor = WebPageExtractor(
+        min_text_length=settings.min_extracted_text_length,
+        timeout_seconds=settings.web_timeout_seconds,
+        max_download_bytes=settings.max_download_bytes,
+        max_redirects=settings.max_redirects,
+        max_attempts=settings.web_max_attempts,
+        backoff_seconds=settings.web_backoff_seconds,
+    )
+    youtube_extractor = YoutubeExtractor(
+        transcriber=build_transcriber(settings),
+        temp_dir=Path(settings.temp_dir) / "youtube",
+        max_duration_seconds=settings.youtube_max_duration_seconds,
+        max_audio_bytes=settings.youtube_max_audio_bytes,
+        subtitle_langs=tuple(
+            lang.strip() for lang in settings.subtitle_langs.split(",") if lang.strip()
+        ),
+        timeout_seconds=settings.web_timeout_seconds,
+    )
+    audio_extractor = None
+    if bot is not None:
+        downloader = TelegramFileDownloader(bot, settings.max_audio_bytes)
+        audio_extractor = AudioExtractor(
+            build_transcriber(settings), downloader, Path(settings.temp_dir)
+        )
+    return web_extractor, audio_extractor, youtube_extractor
+
+
 async def run(settings: Settings) -> None:
     engine = make_engine(settings)
     session_factory = make_session_factory(engine)
@@ -57,7 +88,7 @@ async def run(settings: Settings) -> None:
 
         polling = None
         bot = None
-        audio_extractor = None
+        on_result = None
         if settings.telegram_bot_token:
             # aiogram импортируется лениво: без токена приложение стартует чисто
             # воркерами — локальный smoke test не требует Telegram network.
@@ -81,19 +112,15 @@ async def run(settings: Settings) -> None:
             on_result = lambda item: send_item_result(bot, session_factory, item)  # noqa: E731
             log.info("telegram bot started")
         else:
-            on_result = None
             log.warning("TELEGRAM_BOT_TOKEN is empty — bot disabled, workers only")
 
-        web_extractor = WebPageExtractor(
-            min_text_length=settings.min_extracted_text_length,
-            timeout_seconds=settings.web_timeout_seconds,
-            max_download_bytes=settings.max_download_bytes,
-            max_redirects=settings.max_redirects,
-            max_attempts=settings.web_max_attempts,
-            backoff_seconds=settings.web_backoff_seconds,
-        )
+        web_extractor, audio_extractor, youtube_extractor = build_extractors(settings, bot)
         pipeline = ProcessingPipeline(
-            Analyzer(build_provider(settings)), PriorityEngine(), web_extractor, audio_extractor
+            Analyzer(build_provider(settings)),
+            PriorityEngine(),
+            web_extractor,
+            audio_extractor,
+            youtube_extractor,
         )
 
         stop = asyncio.Event()

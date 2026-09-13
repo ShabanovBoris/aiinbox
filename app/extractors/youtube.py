@@ -2,14 +2,21 @@
 
 Стратегия транскрипта (ТЗ §22): human subtitles → automatic captions →
 скачивание аудио + STT fallback. Субтитры уже пригодные — STT не вызывается.
+
+Resource invariants (ТЗ §66, AGENTS §25/§27): инкрементальный byte-cap на все
+загрузки, bounded retry transient-ошибок, собственная temp-поддиректория на
+extraction (уникальная — нет коллизий между параллельными обработками), полная
+очистка при успехе/ошибке/отмене.
 """
 
 import asyncio
 import logging
+import shutil
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
+from uuid import uuid4
 
 import httpx
 import yt_dlp
@@ -29,12 +36,16 @@ _YOUTUBE_HOSTS = {
     "music.youtube.com",
     "youtu.be",
     "youtube-nocookie.com",
+    "www.youtube-nocookie.com",
 }
 
 
 def is_youtube_url(url: str) -> bool:
-    return urlparse(url).hostname in _YOUTUBE_HOSTS or (urlparse(url).hostname or "").endswith(
-        ".youtube.com"
+    host = urlparse(url).hostname or ""
+    return (
+        host in _YOUTUBE_HOSTS
+        or host.endswith(".youtube.com")
+        or host.endswith(".youtube-nocookie.com")
     )
 
 
@@ -49,64 +60,79 @@ class YoutubeExtractor:
         temp_dir: Path,
         max_duration_seconds: int = 7200,
         max_audio_bytes: int = 50_000_000,
+        max_subtitle_bytes: int = 2_000_000,
         subtitle_langs: tuple[str, ...] = ("ru", "en"),
         ydl_factory: Callable[[dict], Any] = default_ydl_factory,
         http_client_factory: Callable[[], httpx.AsyncClient] | None = None,
         timeout_seconds: float = 60.0,
+        max_attempts: int = 3,
+        backoff_seconds: float = 0.5,
     ):
         self.transcriber = transcriber
         self.temp_dir = Path(temp_dir)
         self.max_duration_seconds = max_duration_seconds
         self.max_audio_bytes = max_audio_bytes
+        self.max_subtitle_bytes = max_subtitle_bytes
         self.subtitle_langs = subtitle_langs
         self._ydl_factory = ydl_factory
         self._http_client_factory = http_client_factory or (
             lambda: httpx.AsyncClient(follow_redirects=True, timeout=timeout_seconds)
         )
         self.timeout_seconds = timeout_seconds
+        self.max_attempts = max_attempts
+        self.backoff_seconds = backoff_seconds
 
     async def extract(self, item: Item) -> NormalizedContent:
-        info = await self._info(item.source_url)
-        title = info.get("title")
-        description = info.get("description") or ""
-        duration = info.get("duration")
-        if duration and duration > self.max_duration_seconds:
-            raise AppError(
-                "TOO_LARGE",
-                f"video duration {duration}s exceeds {self.max_duration_seconds}s",
-                permanent=True,
+        """Собственная temp-поддиректория на extraction: уникальна для параллельных
+        обработок, полностью удаляется при успехе/ошибке/отмене (ТЗ §25, §27)."""
+        work_dir = self.temp_dir / f"yt-{uuid4().hex}"
+        work_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            info = await self._info(item.source_url)
+            title = info.get("title")
+            description = (info.get("description") or "")[:2000]
+            duration = info.get("duration")
+            if duration and duration > self.max_duration_seconds:
+                raise AppError(
+                    "TOO_LARGE",
+                    f"video duration {duration}s exceeds {self.max_duration_seconds}s",
+                    permanent=True,
+                )
+
+            transcript, cues = await self._transcript_from_subtitles(info)
+            via_stt = transcript is None
+            if transcript is None:
+                # fallback: скачиваем аудио и транскрибируем
+                audio_path = await self._download_audio(item.source_url, work_dir)
+                try:
+                    transcript = await self.transcriber.transcribe(audio_path)
+                except AppError:
+                    raise
+                except Exception as exc:
+                    raise AppError("TRANSCRIPTION_FAILED", f"stt failed: {exc}") from exc
+                finally:
+                    # guard: пустой prepare_filename даёт Path(".") — не удаляем его
+                    if str(audio_path) not in ("", "."):
+                        audio_path.unlink(missing_ok=True)
+            if not transcript:
+                raise AppError("TRANSCRIPTION_FAILED", "empty transcript")
+
+            canonical = info.get("webpage_url") or item.source_url
+            return NormalizedContent(
+                source_type=SourceType.YOUTUBE,
+                title=title,
+                text=transcript,
+                url=canonical,
+                user_note=item.user_note or None,
+                duration_seconds=duration,
+                metadata={
+                    "description_excerpt": description,
+                    "via_stt": via_stt,
+                    "cues": cues,
+                },
             )
-
-        transcript = await self._transcript_from_subtitles(info)
-        via_stt = transcript is None
-        audio_path: Path | None = None
-        if transcript is None:
-            # fallback: скачиваем аудио и транскрибируем
-            audio_path = await self._download_audio(item.source_url)
-            try:
-                transcript = await self.transcriber.transcribe(audio_path)
-            except AppError:
-                raise
-            except Exception as exc:
-                raise AppError("TRANSCRIPTION_FAILED", f"stt failed: {exc}") from exc
-            finally:
-                audio_path.unlink(missing_ok=True)
-        if not transcript:
-            raise AppError("TRANSCRIPTION_FAILED", "empty transcript")
-
-        canonical = info.get("webpage_url") or item.source_url
-        return NormalizedContent(
-            source_type=SourceType.YOUTUBE,
-            title=title,
-            text=transcript,
-            url=canonical,
-            user_note=item.user_note or None,
-            duration_seconds=duration,
-            metadata={
-                "description_excerpt": description[:2000],
-                "via_stt": via_stt,
-            },
-        )
+        finally:
+            shutil.rmtree(work_dir, ignore_errors=True)
 
     async def _info(self, url: str) -> dict:
         options = {
@@ -149,35 +175,67 @@ class YoutubeExtractor:
                         return track["url"]
         return None
 
-    async def _transcript_from_subtitles(self, info: dict) -> str | None:
+    async def _transcript_from_subtitles(self, info: dict) -> tuple[str | None, list]:
         sub_url = self._pick_subtitles(info)
         if sub_url is None:
-            return None
+            return None, []
         try:
-            async with self._http_client_factory() as client:
-                response = await client.get(sub_url)
-                response.raise_for_status()
-                raw = response.text
-        except httpx.TimeoutException as exc:
-            raise AppError("TIMEOUT", "subtitles download timed out") from exc
-        except httpx.HTTPError as exc:
+            raw = await self._fetch_capped(sub_url, self.max_subtitle_bytes)
+        except AppError as exc:
+            if exc.code == "TOO_LARGE":
+                raise  # oversized субтитры не пригодны
             log.warning("subtitles fetch failed: %s", exc)
-            return None
+            return None, []  # неудачные субтитры → fallback на STT
         text, cues = parse_subtitles(raw)
         if len(text.strip()) < 40:
-            return None  # пустые/служебные субтитры не считаются пригодными
+            return None, []  # пустые/служебные субтитры не считаются пригодными
         log.info("subtitles parsed chars=%s cues=%s", len(text), len(cues))
-        return text
+        return text, cues
 
-    async def _download_audio(self, url: str) -> Path:
-        self.temp_dir.mkdir(parents=True, exist_ok=True)
+    async def _fetch_capped(self, url: str, max_bytes: int) -> str:
+        """Streamed GET с инкрементальным byte-cap и bounded retry transient'ов."""
+        last_error: AppError | None = None
+        for attempt in range(self.max_attempts):
+            try:
+                async with self._http_client_factory() as client:
+                    async with client.stream("GET", url) as response:
+                        if response.status_code >= 400:
+                            raise AppError(
+                                "DOWNLOAD_FAILED",
+                                f"HTTP {response.status_code} for {url}",
+                                permanent=response.status_code < 500,
+                            )
+                        buffer = bytearray()
+                        async for chunk in response.aiter_bytes():
+                            if len(buffer) + len(chunk) > max_bytes:
+                                raise AppError(
+                                    "TOO_LARGE",
+                                    f"response exceeds {max_bytes} bytes",
+                                    permanent=True,
+                                )
+                            buffer.extend(chunk)
+                        charset = response.charset_encoding or "utf-8"
+                        return buffer.decode(charset, errors="replace")
+            except httpx.TimeoutException:
+                last_error = AppError("TIMEOUT", f"request timed out: {url}")
+            except httpx.HTTPError as exc:
+                last_error = AppError("DOWNLOAD_FAILED", f"download failed: {exc}")
+            except AppError as exc:
+                # transient AppError (не permanent) тоже ретраится bounded
+                if exc.permanent:
+                    raise
+                last_error = exc
+            await asyncio.sleep(self.backoff_seconds * (2**attempt))
+        raise last_error  # pragma: no cover
+
+    async def _download_audio(self, url: str, work_dir: Path) -> Path:
         options = {
             "quiet": True,
             "no_warnings": True,
             "noplaylist": True,
             "format": "bestaudio/best",
             "max_filesize": self.max_audio_bytes,
-            "outtmpl": str(self.temp_dir / "%(id)s.%(ext)s"),
+            "outtmpl": str(work_dir / "%(id)s.%(ext)s"),
             "socket_timeout": self.timeout_seconds,
         }
 
@@ -193,7 +251,6 @@ class YoutubeExtractor:
                         raise AppError("DOWNLOAD_FAILED", "audio file missing after download")
                     path = candidates[0]
                 if path.stat().st_size > self.max_audio_bytes:
-                    path.unlink(missing_ok=True)
                     raise AppError(
                         "TOO_LARGE",
                         f"audio exceeds {self.max_audio_bytes} bytes",
@@ -204,7 +261,7 @@ class YoutubeExtractor:
         try:
             return await asyncio.to_thread(_download)
         except AppError:
-            raise
+            raise  # partial-файлы убирает cleanup work_dir в extract()
         except yt_dlp.utils.DownloadError as exc:
             raise AppError("DOWNLOAD_FAILED", f"yt-dlp download failed: {exc}") from exc
         except yt_dlp.utils.YoutubeDLError as exc:

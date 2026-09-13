@@ -103,6 +103,8 @@ class ProcessingPipeline:
                         "duration_seconds": content.duration_seconds,
                         "via_stt": content.metadata.get("via_stt"),
                         "title": content.title,
+                        "canonical_url": content.url,
+                        "cues": content.metadata.get("cues"),
                     },
                 )
             )
@@ -114,7 +116,6 @@ class ProcessingPipeline:
                         text=content.metadata["description_excerpt"],
                     )
                 )
-            content.duration_seconds = content.duration_seconds
             return content
         if item.source_type in (SourceType.VOICE, SourceType.AUDIO):
             if self.audio_extractor is None:
@@ -168,7 +169,7 @@ class ProcessingPipeline:
         if row is None:
             return None
         meta = row.metadata_json or {}
-        return NormalizedContent(
+        content = NormalizedContent(
             source_type=item.source_type,
             title=meta.get("title"),
             text=row.text,
@@ -178,6 +179,21 @@ class ProcessingPipeline:
             author=meta.get("author"),
             language=meta.get("language"),
         )
+        if item.source_type is SourceType.YOUTUBE:
+            # checkpoint восстанавливает эквивалентный NormalizedContent:
+            # канонический url, описание и cues персистятся вместе с транскриптом.
+            description_row = await session.scalar(
+                select(Content).where(
+                    Content.item_id == item.id, Content.kind == ContentKind.DESCRIPTION
+                )
+            )
+            content.url = meta.get("canonical_url") or item.source_url
+            content.metadata = {
+                "description_excerpt": description_row.text if description_row else None,
+                "via_stt": meta.get("via_stt"),
+                "cues": meta.get("cues"),
+            }
+        return content
 
     @staticmethod
     def _restored_analysis(item: Item) -> AnalysisResult:

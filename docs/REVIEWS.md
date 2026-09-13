@@ -392,6 +392,36 @@
   Telegram retry policy, STT TIMEOUT, duration/resume, token redaction).
 - Финализация: Phase 5 → DONE в IMPLEMENTATION_STATE.
 
+## 2026-09-13 — PR #7 — e54e61e — CHANGES REQUIRED
+
+- Phase 06 — YouTube. Reviewer: Orchestrator; вердикт также на GitHub:
+  https://github.com/ShabanovBoris/aiinbox/pull/7#pullrequestreview-5188734132 (commit e54e61e).
+- Findings:
+  1. MAJOR: YoutubeExtractor не подключён в composition root (main.py) —
+     production YOUTUBE Items падали с UNSUPPORTED_SOURCE; тесты скрывали дефект,
+     передавая extractor вручную (обязательное).
+  2. MAJOR: subtitle download буферизовал ответ целиком без byte-cap и retry;
+     audio fallback не чистил partial-файлы при ошибке yt-dlp; outtmpl %(id)s
+     давал коллизии путей при параллельной обработке (обязательное).
+  3. MAJOR: checkpoint ANALYZING восстанавливал неэквивалентный NormalizedContent
+     (url=None вместо canonical, без description/via_stt/cues) — retry анализировал
+     другой input (обязательное, D-001).
+  4. MINOR: timestamps (cues) не персистились, хотя IMPLEMENTATION_STATE заявлял.
+  5. MINOR: VTT case-баг — Kind:/Language: заголовки утекали в текст транскрипта.
+  6. MINOR: www.youtube-nocookie.com не классифицировался как YouTube.
+- Resolved (коммиты после e54e61e в этом же PR):
+  1. → build_extractors() в main.py (composition root) подключает YoutubeExtractor
+     всегда; regression-тест production-composition.
+  2. → собственная temp-поддиректория на extraction (yt-<uuid>), полная очистка
+     при успехе/ошибке/отмене; subtitle download — streamed с byte-cap и bounded
+     retry; регрессии: subtitle oversize, transient retry, partial cleanup.
+  3. → TRANSCRIPT metadata хранит canonical_url/title/via_stt/cues/duration;
+     restore собирает эквивалентный NormalizedContent (description из CONTENTS
+     DESCRIPTION); regression: pydantic equality initial/resumed.
+  4. → cues персистятся в metadata_json.
+  5. → case-insensitive фильтрация заголовков; regression.
+  6. → www.youtube-nocookie.com + .youtube-nocookie.com suffix; regression.
+
 ## Шаблон записи
 
 ```text

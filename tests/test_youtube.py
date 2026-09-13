@@ -76,11 +76,12 @@ def make_youtube(tmp_path: Path, ydl_results: list, sub_http=None, **overrides):
         timeout=5,
     )
     prepared_file = overrides.pop("prepared_file", None)
+    http_client_factory = overrides.pop("http_client_factory", lambda: sub_client)
     extractor = YoutubeExtractor(
         transcriber=transcriber,
         temp_dir=tmp_path / "yt",
         ydl_factory=lambda options: FakeYoutubeDL(ydl_results, prepared_file),
-        http_client_factory=lambda: sub_client if sub_http is None else sub_http,
+        http_client_factory=http_client_factory,
         **overrides,
     )
     return extractor, transcriber, downloader
@@ -203,3 +204,126 @@ async def test_youtube_pipeline_persists_transcript_and_resumes(tmp_path, sessio
     # точная проверка: youtube ydl и STT не вызывались повторно
     assert transcriber.calls == 0
     assert len(provider.calls) == 2
+
+
+def test_production_composition_wires_youtube_extractor(tmp_path):
+    # Регрессия Phase 6: composition root обязан подключать YoutubeExtractor —
+    # без этого все YOUTUBE Items падают с UNSUPPORTED_SOURCE в production.
+    from app.config import Settings
+    from app.main import build_extractors
+
+    settings = Settings(
+        _env_file=None,
+        openai_api_key="k",
+        openai_analysis_model="m",
+        openai_transcription_model="w",
+        temp_dir=str(tmp_path),
+    )
+    web, audio, youtube = build_extractors(settings, bot=None)
+    assert web is not None
+    assert youtube is not None
+    assert audio is None  # headless: bot отсутствует
+
+
+def test_www_youtube_nocookie_classified():
+    from app.extractors.youtube import is_youtube_url
+
+    assert is_youtube_url("https://www.youtube-nocookie.com/embed/abc")
+    assert is_youtube_url("https://youtube-nocookie.com/embed/abc")
+    assert not is_youtube_url("https://example.com/watch?v=abc")
+
+
+def test_vtt_kind_language_headers_do_not_leak():
+    from app.services.subtitles import parse_subtitles
+
+    vtt = "WEBVTT\nKind: captions\nLanguage: ru\n\n00:00:01.000 --> 00:00:02.000\nтекст\n"
+    text, _ = parse_subtitles(vtt)
+    assert "Kind:" not in text and "Language:" not in text
+    assert "текст" in text
+
+
+async def test_subtitle_oversize_is_too_large(tmp_path):
+    info = make_info(subtitles={"ru": [{"ext": "vtt", "url": "https://sub.example.com/ru.vtt"}]})
+    big = "x" * 2_000_000
+
+    async def body():
+        yield big.encode()
+
+    def handler(request):
+        return httpx.Response(200, content=body())
+
+    extractor, _, _ = make_youtube(
+        tmp_path,
+        [info],
+        max_subtitle_bytes=100_000,
+        http_client_factory=lambda: httpx.AsyncClient(
+            transport=httpx.MockTransport(handler), follow_redirects=True, timeout=5
+        ),
+    )
+    with pytest.raises(AppError) as exc_info:
+        await extractor.extract(make_youtube_item())
+    assert exc_info.value.code == "TOO_LARGE"
+
+
+async def test_subtitle_transient_retry_success(tmp_path):
+    attempts = {"count": 0}
+
+    def handler(request):
+        attempts["count"] += 1
+        if attempts["count"] == 1:
+            return httpx.Response(503)
+        return httpx.Response(200, text=SUBTITLE_VTT)
+
+    info = make_info(subtitles={"ru": [{"ext": "vtt", "url": "https://sub.example.com/ru.vtt"}]})
+    extractor, transcriber, _ = make_youtube(
+        tmp_path,
+        [info],
+        http_client_factory=lambda: httpx.AsyncClient(
+            transport=httpx.MockTransport(handler), follow_redirects=True, timeout=5
+        ),
+        backoff_seconds=0.01,
+    )
+    await extractor.extract(make_youtube_item())
+    assert attempts["count"] == 2
+    assert transcriber.calls == 0
+
+
+async def test_ytdlp_partial_files_cleaned_on_failure(tmp_path):
+    # Регрессия: если yt-dlp пишет partial-файл и падает — temp-поддиректория
+    # экстрактора полностью удаляется.
+    class PartialThenFailYdl:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def extract_info(self, url, download=False):
+            if download:
+                partial = Path(
+                    self.options["outtmpl"].replace("%(id)s", "abc123").replace("%(ext)s", "part")
+                )
+                partial.parent.mkdir(parents=True, exist_ok=True)
+                partial.write_bytes(b"partial")
+            raise AppError("DOWNLOAD_FAILED", "yt-dlp boom", permanent=True)
+
+        def prepare_filename(self, info):
+            return "missing"
+
+    extractor, _, _ = make_youtube(
+        tmp_path,
+        [make_info(subtitles={}, automatic_captions={}), make_info()],
+        prepared_file=tmp_path / "audio.m4a",
+    )
+    extractor._ydl_factory = lambda options: PartialThenFailYdl()
+
+    # подменить options-запись: PartialThenFailYdl читает self.options — зададим атрибут
+    class WithOptions(PartialThenFailYdl):
+        def __init__(self, options):
+            self.options = options
+
+    extractor._ydl_factory = lambda options: WithOptions(options)
+    with pytest.raises(AppError):
+        await extractor.extract(make_youtube_item())
+    # вся temp-поддиректория экстрактора удалена
+    assert list((tmp_path / "yt").iterdir()) == []

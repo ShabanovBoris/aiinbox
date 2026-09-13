@@ -27,7 +27,7 @@ def parse_subtitles(text: str) -> tuple[str, list[tuple[float, float]]]:
             start_raw, end_raw = raw_line.strip().split("-->")
             cues.append((_parse_seconds(start_raw), _parse_seconds(end_raw)))
             continue
-        if line.upper().startswith(("WEBVTT", "NOTE", "Kind:", "Language:")):
+        if line.upper().startswith(("WEBVTT", "NOTE", "KIND:", "LANGUAGE:")):
             continue
         if _CUE_ID.match(line):
             continue
