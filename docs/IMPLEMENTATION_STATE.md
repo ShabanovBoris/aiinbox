@@ -37,7 +37,7 @@ squash merge с ожидаемым HEAD B. Вердикты фиксируютс
 | 7 | Video visual analysis | DONE |
 | 8 | User profile | DONE |
 | 9 | Today/inbox/search | DONE |
-| 10 | Item actions | IN_REVIEW |
+| 10 | Item actions | DONE |
 | 11 | Notifications | NOT_STARTED |
 | 12 | Production hardening | NOT_STARTED |
 | 13 | Final acceptance | NOT_STARTED |
