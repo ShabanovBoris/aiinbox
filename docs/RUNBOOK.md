@@ -4,7 +4,7 @@
 Заполняется по мере появления реальных команд и проблем; не выдумывать команды заранее.
 
 Статус: Phase 11 — Notifications завершена; Phase 12 — Production hardening
-реализуется в ветке `phase/12-production-hardening`.
+реализована в ветке `phase/12-production-hardening` и ожидает external review.
 
 После squash merge PR #12 Phase 11 завершена. Текущая разработка Phase 12
 идёт в `phase/12-production-hardening`; запуск и проверка ниже описывают

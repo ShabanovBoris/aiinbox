@@ -39,7 +39,7 @@ squash merge с ожидаемым HEAD B. Вердикты фиксируютс
 | 9 | Today/inbox/search | DONE |
 | 10 | Item actions | DONE |
 | 11 | Notifications | DONE |
-| 12 | Production hardening | IN_PROGRESS |
+| 12 | Production hardening | IN_REVIEW |
 | 13 | Final acceptance | NOT_STARTED |
 
 Post-MVP этапы (промпты 14–18: Ollama, LLM router, behaviour ranking, HTTP API,
@@ -497,7 +497,7 @@ Last verification:
 ruff check . → pass; ruff format --check . → pass; pytest → 187 passed;
 git diff --check → pass.
 
-### Phase 12 — Production hardening — IN_PROGRESS
+### Phase 12 — Production hardening — IN_REVIEW
 
 Scope: restart recovery, atomic worker claims, intermediate-result reuse,
 bounded external retries, timeouts, cleanup, graceful shutdown, contextual
@@ -505,13 +505,23 @@ logging, container/runtime documentation, migration checks, and security
 re-review. New product features are out of scope.
 
 Completed:
+✓ stale PROCESSING recovery и atomic worker claims подтверждены существующими
+  миграционными/restart/concurrency regressions
+✓ end-to-end `PROCESSING_TIMEOUT_SECONDS`, общий failure/retry path и
+  contextual logs (`item_id`, `user_id`, `source_type`, `stage`, `duration`,
+  `result/error_code`)
+✓ graceful SIGTERM/SIGINT: bounded drain через `SHUTDOWN_TIMEOUT_SECONDS` с
+  cancel fallback; timeout regression
+✓ external retry/timeout/cleanup/security boundaries проаудированы; добавлены
+  clean-machine README, Dockerfile, .dockerignore и operational runbook
+✓ fresh/upgrade migrations и default test suite проверены
 
 Remaining:
-□ проверить и усилить production hardening по Prompt 12; затем отправить PR
-  на внешний review Orchestrator'у
+□ дождаться verdict Orchestrator'а; исправления при необходимости выполнять
+  в этой же ветке и PR Phase 12
 
 Last verification:
-pytest — 187 passed
+pytest — 188 passed; Ruff check/format и git diff --check — pass
 
 ### Шаблон фазы в работе
 
