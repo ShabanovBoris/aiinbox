@@ -703,6 +703,28 @@
   2. → PR body переходит на фиксацию HEAD в RE-REVIEW REQUEST.
 - Product code не менялся.
 
+## 2026-09-13 — PR #9 — 24b75cd — CHANGES REQUIRED (re-review 6)
+
+- Reviewer: Orchestrator; вердикт также на GitHub:
+  https://github.com/ShabanovBoris/aiinbox/pull/9#pullrequestreview-5191608336 (commit 24b75cd).
+- Findings:
+  1. MINOR/§9.1: отсутствовала durable запись для 9e31499/5189448726; формулировка
+     151 passed осталась.
+  2. MINOR/metadata: PR body HEAD stale после docs-коммита.
+- Resolved (коммит после 24b75cd): запись 9e31499/5189448726 добавлена, счётчики
+  приведены к 152; PR body переходит на фиксацию HEAD в RE-REVIEW REQUEST.
+- Product code не менялся.
+
+## 2026-09-13 — PR #9 — ec28ee2 — CHANGES REQUIRED (re-review 7)
+
+- Reviewer: Orchestrator; вердикт также на GitHub:
+  https://github.com/ShabanovBoris/aiinbox/pull/9#pullrequestreview-5191630114 (commit ec28ee2).
+- Findings:
+  1. MINOR/§9.1: отсутствовала durable запись для 70cff18/5191596241.
+- Resolved (коммит после ec28ee2): эта запись и запись 24b75cd/5191608336
+  добавлены вместе — journal синхронизирован полностью.
+- Product code не менялся.
+
 ## Шаблон записи
 
 ```text
