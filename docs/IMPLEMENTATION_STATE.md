@@ -39,7 +39,7 @@ squash merge с ожидаемым HEAD B. Вердикты фиксируютс
 | 9 | Today/inbox/search | DONE |
 | 10 | Item actions | DONE |
 | 11 | Notifications | DONE |
-| 12 | Production hardening | IN_REVIEW |
+| 12 | Production hardening | DONE |
 | 13 | Final acceptance | NOT_STARTED |
 
 Post-MVP этапы (промпты 14–18: Ollama, LLM router, behaviour ranking, HTTP API,
@@ -497,7 +497,7 @@ Last verification:
 ruff check . → pass; ruff format --check . → pass; pytest → 187 passed;
 git diff --check → pass.
 
-### Phase 12 — Production hardening — IN_REVIEW
+### Phase 12 — Production hardening — DONE
 
 Scope: restart recovery, atomic worker claims, intermediate-result reuse,
 bounded external retries, timeouts, cleanup, graceful shutdown, contextual
@@ -511,17 +511,17 @@ Completed:
   contextual logs (`item_id`, `user_id`, `source_type`, `stage`, `duration`,
   `result/error_code`) for success, failure and timeout paths
 ✓ graceful SIGTERM/SIGINT: bounded drain через `SHUTDOWN_TIMEOUT_SECONDS` с
-  cancel fallback; in-flight drain/delivery regression
+  cancel fallback; in-flight drain/delivery and aiogram session-ownership regressions
 ✓ external retry/timeout/cleanup/security boundaries проаудированы; добавлены
   clean-machine README, Dockerfile, .dockerignore и operational runbook
 ✓ fresh/upgrade migrations и default test suite проверены
 
 Remaining:
-□ дождаться verdict Orchestrator'а; исправления при необходимости выполнять
-  в этой же ветке и PR Phase 12
+✓ approval Orchestrator получен для exact HEAD
+  `f168117ddbfbfe95fb5f09bac8e65c81547159da`; Phase 12 scope завершён.
 
 Last verification:
-pytest — 189 passed; Ruff check/format и git diff --check — pass
+pytest — 190 passed; Ruff check/format и git diff --check — pass
 
 ### Шаблон фазы в работе
 

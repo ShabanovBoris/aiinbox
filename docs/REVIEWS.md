@@ -966,3 +966,15 @@
 - Resolved in same branch/PR #13: polling passes `close_bot_session=False`,
   explicit close remains after bounded drain, and a regression verifies the
   polling ownership flag plus in-flight drain ordering.
+
+## 2026-09-14 — PR #13 — f168117 — APPROVED (review 3)
+
+- Reviewer: Orchestrator; GitHub COMMENT review:
+  https://github.com/ShabanovBoris/aiinbox/pull/13#pullrequestreview-5192677471
+  (approved HEAD `f168117ddbfbfe95fb5f09bac8e65c81547159da`).
+- Confirmed: targeted shutdown/session-ownership fixes are correct; product
+  findings are closed, PR metadata is synchronized, and Docker build absence
+  is an accepted external limitation. Recorded verification: Ruff PASS,
+  `pytest` 190 passed, `git diff --check` PASS.
+- Protocol next step: one status-finalization commit only, changing Phase 12
+  `IN_REVIEW` → `DONE` and recording approved HEAD `f168117ddb…`.
