@@ -2,6 +2,7 @@ import asyncio
 import logging
 
 from app.domain.enums import ProcessingStatus
+from app.main import _drain_worker_tasks
 from app.services.ingestion import ingest_message
 from app.storage.models import Item
 from app.workers.processing import ProcessingWorker, requeue_stale
@@ -106,6 +107,19 @@ async def test_worker_applies_end_to_end_processing_timeout(session_factory):
     stored = await get_item(session_factory, item.id)
     assert stored.processing_status is ProcessingStatus.FAILED
     assert stored.error_code == "PROCESSING_TIMEOUT"
+
+
+async def test_shutdown_drain_waits_for_inflight_worker_before_transport_close():
+    events = []
+
+    async def in_flight_worker():
+        await asyncio.sleep(0)
+        events.append("worker-complete")
+
+    task = asyncio.create_task(in_flight_worker())
+    await _drain_worker_tasks([task], timeout=1)
+    events.append("transport-close")
+    assert events == ["worker-complete", "transport-close"]
 
 
 async def test_worker_claims_oldest_first(session_factory):

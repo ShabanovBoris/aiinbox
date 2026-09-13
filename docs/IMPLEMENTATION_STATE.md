@@ -509,9 +509,9 @@ Completed:
   миграционными/restart/concurrency regressions
 ✓ end-to-end `PROCESSING_TIMEOUT_SECONDS`, общий failure/retry path и
   contextual logs (`item_id`, `user_id`, `source_type`, `stage`, `duration`,
-  `result/error_code`)
+  `result/error_code`) for success, failure and timeout paths
 ✓ graceful SIGTERM/SIGINT: bounded drain через `SHUTDOWN_TIMEOUT_SECONDS` с
-  cancel fallback; timeout regression
+  cancel fallback; in-flight drain/delivery regression
 ✓ external retry/timeout/cleanup/security boundaries проаудированы; добавлены
   clean-machine README, Dockerfile, .dockerignore и operational runbook
 ✓ fresh/upgrade migrations и default test suite проверены
@@ -521,7 +521,7 @@ Remaining:
   в этой же ветке и PR Phase 12
 
 Last verification:
-pytest — 188 passed; Ruff check/format и git diff --check — pass
+pytest — 189 passed; Ruff check/format и git diff --check — pass
 
 ### Шаблон фазы в работе
 

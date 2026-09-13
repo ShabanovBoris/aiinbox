@@ -940,3 +940,16 @@
 - New HEAD: <sha>                        # после status-finalization/fixes
 - Notes: <bootstrap/scope, если есть>
 ```
+
+## 2026-09-14 — PR #13 — 2ac0d58 — CHANGES REQUIRED (review 1)
+
+- Reviewer: Orchestrator; GitHub COMMENT review:
+  https://github.com/ShabanovBoris/aiinbox/pull/13#pullrequestreview-5192628276
+  (reviewed HEAD `2ac0d589218f7b5cdae394e1f6cdbf84da1a86b8`).
+- Findings: MAJOR — Telegram transport закрывался до worker drain; MAJOR —
+  Docker README/default path не направлял SQLite в `/data`; MINOR — timeout и
+  error logs не имели единой contextual shape; MINOR — отсутствовала shutdown
+  regression на in-flight completion/delivery.
+- Resolved in same branch/PR #13: Telegram closes after bounded worker drain;
+  Docker uses absolute `sqlite+aiosqlite:////data/app.db`; processing logs are
+  being unified with all required fields; shutdown regression is being added.

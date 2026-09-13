@@ -93,6 +93,21 @@ def build_extractors(settings: Settings, bot) -> tuple:
     return web_extractor, audio_extractor, youtube_extractor
 
 
+async def _drain_worker_tasks(tasks: list[asyncio.Task], timeout: float) -> None:
+    """Wait for worker completion before transport closure, with bounded fallback."""
+    try:
+        await asyncio.wait_for(
+            asyncio.gather(*tasks, return_exceptions=True),
+            timeout=timeout,
+        )
+    except TimeoutError:
+        log.warning("shutdown timeout seconds=%s; cancelling remaining worker tasks", timeout)
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
 def _profile_done_notifier(bot, session_factory):
     """Уведомление о завершении /profile_update: адресат — users.telegram_chat_id
     (job.user_id — внутренний PK). Возвращает coroutine или None (headless)."""
@@ -218,25 +233,14 @@ async def run(settings: Settings) -> None:
         if polling is not None:
             polling.cancel()
             await asyncio.gather(polling, return_exceptions=True)
-            if bot is not None:
-                await bot.session.close()
         # Сначала даём воркерам завершить текущую атомарную операцию; cancel —
         # только bounded fallback для зависшего внешнего provider call.
         all_worker_tasks = worker_tasks + profile_tasks + reminder_tasks
-        try:
-            await asyncio.wait_for(
-                asyncio.gather(*all_worker_tasks, return_exceptions=True),
-                timeout=settings.shutdown_timeout_seconds,
-            )
-        except TimeoutError:
-            log.warning(
-                "shutdown timeout seconds=%s; cancelling remaining worker tasks",
-                settings.shutdown_timeout_seconds,
-            )
-            for task in all_worker_tasks:
-                if not task.done():
-                    task.cancel()
-            await asyncio.gather(*all_worker_tasks, return_exceptions=True)
+        await _drain_worker_tasks(all_worker_tasks, settings.shutdown_timeout_seconds)
+        if bot is not None:
+            # Delivery callbacks must keep the Telegram session alive until
+            # all workers have drained or the bounded shutdown deadline ends.
+            await bot.session.close()
     finally:
         await engine.dispose()
         log.info("shutdown complete")

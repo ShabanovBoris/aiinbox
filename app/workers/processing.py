@@ -135,11 +135,13 @@ class ProcessingWorker:
                 f"item processing exceeded {self.processing_timeout_seconds}s",
             )
             log.error(
-                "item processing timeout item_id=%s user_id=%s source_type=%s stage=%s",
+                "item processing timeout item_id=%s user_id=%s source_type=%s stage=%s "
+                "duration=%.3fs result=FAILED error_code=PROCESSING_TIMEOUT",
                 item_id,
                 getattr(item, "user_id", None),
                 getattr(getattr(item, "source_type", None), "value", None),
                 getattr(item, "processing_stage", None),
+                time.monotonic() - started,
             )
         except Exception as exc:
             failure = exc
@@ -147,11 +149,12 @@ class ProcessingWorker:
             # и остаётся доступным для Retry (PRODUCT_SPEC §56, §59).
             log.exception(
                 "item processing failed item_id=%s user_id=%s source_type=%s "
-                "stage=%s error_code=%s",
+                "stage=%s duration=%.3fs result=FAILED error_code=%s",
                 item_id,
                 getattr(item, "user_id", None),
                 getattr(getattr(item, "source_type", None), "value", None),
                 getattr(item, "processing_stage", None),
+                time.monotonic() - started,
                 getattr(exc, "code", "UNKNOWN"),
             )
         else:

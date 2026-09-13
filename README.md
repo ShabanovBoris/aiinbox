@@ -43,11 +43,14 @@ package dependencies. SQLite хранится в volume, чтобы переза
 ```bash
 docker build -t personal-ai-inbox .
 docker run --rm --env-file .env \
+  -e DATABASE_URL=sqlite+aiosqlite:////data/app.db \
   -v "$(pwd)/data:/data" \
   personal-ai-inbox
 ```
 
-При Docker-запуске оставляйте `DATABASE_URL=sqlite+aiosqlite:///data/app.db`.
+Для Docker нужен абсолютный SQLite URL `sqlite+aiosqlite:////data/app.db`:
+третья форма (`///data/app.db`) означает относительный путь внутри `/app`, а
+четыре слеша направляют SQLite в persistent volume `/data`.
 Не запускайте дополнительные инфраструктурные контейнеры: MVP рассчитан на
 один процесс и SQLite.
 

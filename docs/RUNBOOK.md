@@ -42,6 +42,9 @@ scheduler.
 Для Docker см. корневой `README.md`: образ содержит Python 3.12 и ffmpeg,
 SQLite должен быть вынесен в volume `/data`. Playwright fallback отключён по
 решению безопасности, поэтому Chromium-зависимости в образ не устанавливаются.
+В контейнере обязательно используйте абсолютный URL
+`sqlite+aiosqlite:////data/app.db`, иначе relative SQLite path окажется под
+`/app`, а не в persistent volume.
 
 ## Контракты репозитория
 
