@@ -1,4 +1,5 @@
 import asyncio
+import logging
 
 from app.domain.enums import ProcessingStatus
 from app.services.ingestion import ingest_message
@@ -68,7 +69,8 @@ async def test_concurrent_workers_claim_distinct_items(session_factory):
     assert sorted(c for c in claimed if c is not None) == [first.id, second.id]
 
 
-async def test_worker_processes_queued_to_ready(session_factory):
+async def test_worker_processes_queued_to_ready(session_factory, caplog):
+    caplog.set_level(logging.INFO)
     item = await seed(session_factory)
     worker = make_worker(session_factory)
     assert await worker.process_one() is True
@@ -76,6 +78,8 @@ async def test_worker_processes_queued_to_ready(session_factory):
     assert stored.processing_status is ProcessingStatus.READY
     assert stored.processing_stage == "READY"
     assert stored.error_code is None
+    assert f"item_id={item.id}" in caplog.text
+    assert "result=READY" in caplog.text
 
 
 async def test_worker_marks_failed_on_exception(session_factory):

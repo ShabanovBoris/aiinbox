@@ -165,7 +165,13 @@ class ProcessingWorker:
                         log.exception("failure delivery failed item_id=%s", item_id)
             return True
         log.info(
-            "item processed id=%s duration=%.3fs result=READY", item_id, time.monotonic() - started
+            "item processed item_id=%s user_id=%s source_type=%s stage=%s "
+            "duration=%.3fs result=READY",
+            item_id,
+            getattr(item, "user_id", None),
+            getattr(getattr(item, "source_type", None), "value", None),
+            getattr(item, "processing_stage", None),
+            time.monotonic() - started,
         )
         if self.on_result is not None:
             try:
