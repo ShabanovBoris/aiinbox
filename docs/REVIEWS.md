@@ -708,11 +708,9 @@
 - Reviewer: Orchestrator; вердикт также на GitHub:
   https://github.com/ShabanovBoris/aiinbox/pull/9#pullrequestreview-5191608336 (commit 24b75cd).
 - Findings:
-  1. MINOR/§9.1: отсутствовала durable запись для 9e31499/5189448726; формулировка
-     151 passed осталась.
-  2. MINOR/metadata: PR body HEAD stale после docs-коммита.
-- Resolved (коммит после 24b75cd): запись 9e31499/5189448726 добавлена, счётчики
-  приведены к 152; PR body переходит на фиксацию HEAD в RE-REVIEW REQUEST.
+  1. MINOR/§9.1: отсутствовала durable запись для verdict 70cff18/5191596241.
+- Resolved (коммит после 24b75cd): запись 70cff18/5191596241 добавлена в
+  docs/REVIEWS.md.
 - Product code не менялся.
 
 ## 2026-09-13 — PR #9 — ec28ee2 — CHANGES REQUIRED (re-review 7)
@@ -720,10 +718,21 @@
 - Reviewer: Orchestrator; вердикт также на GitHub:
   https://github.com/ShabanovBoris/aiinbox/pull/9#pullrequestreview-5191630114 (commit ec28ee2).
 - Findings:
-  1. MINOR/§9.1: отсутствовала durable запись для 70cff18/5191596241.
-- Resolved (коммит после ec28ee2): эта запись и запись 24b75cd/5191608336
-  добавлены вместе — journal синхронизирован полностью.
+  1. MINOR/§9.1: отсутствовала durable запись для verdict 24b75cd/5191608336.
+- Resolved (коммит после ec28ee2): запись 24b75cd/5191608336 добавлена в
+  docs/REVIEWS.md.
 - Product code не менялся.
+
+## 2026-09-13 — PR #9 — 067215a — CHANGES REQUIRED (re-review 8)
+
+- Reviewer: Orchestrator; вердикт также на GitHub:
+  https://github.com/ShabanovBoris/aiinbox/pull/9#pullrequestreview-5192108080 (commit 067215a).
+- Findings:
+  1. MINOR/§9.1: записи 24b75cd/5191608336 и ec28ee2/5191630114 содержали
+     findings предыдущих вердиктов, а не фактические findings соответствующих
+     reviewed HEAD.
+- Resolved (следующий docs-only коммит): записи приведены к фактическим
+  findings своих вердиктов; product code не менялся.
 
 ## Шаблон записи
 
