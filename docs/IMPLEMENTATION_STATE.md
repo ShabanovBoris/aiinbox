@@ -388,22 +388,29 @@ smoke: headless старт без токена — bot disabled, SIGINT graceful
 
 Completed:
 ✓ users.profile_json (миграция 220d7ae6d4f1); profile seed через YAML
-  (profile.example.yaml, load_profile_seed)
-✓ ProfilePatch (extra=forbid): natural language → strict Structured Outputs →
-  валидация; field-level merge — незатронутые поля не теряются
+  (profile.example.yaml, load_profile_seed, apply_profile_seed на старте,
+  ленивый seed для пользователей, созданных после старта)
+✓ ProfilePatch (extra=forbid) + ConstraintEntry(key, value): natural language →
+  strict Structured Outputs → валидация; field-level merge — незатронутые поля
+  не теряются
 ✓ OpenAiProvider.profile_update: strict schema + валидация, ошибки
   LLM_FAILED/INVALID_LLM_OUTPUT; FakeLlmProvider.profile_update в тестах
-✓ update_profile_from_text: telegram_user_id-based, возвращает изменённые поля
-✓ /profile (format_profile) и /profile_update (allowlist, persist → ACK)
+✓ /profile_update: durable ProfileUpdateJob + быстрый ACK; фоновый
+  ProfileUpdateWorker — LLM + DB-side атомарный json_patch merge, job DONE
+  той же транзакцией; startup recovery RUNNING → PENDING; уведомление на
+  telegram_chat_id
+✓ /profile (format_profile, показывает constraints)
 ✓ Pipeline: analyzer получает профиль пользователя из БД (не default)
-✓ Регрессии: persistence across sessions, merge без потери полей, invalid patch
-  rejected, seed yaml, /profile показ, /profile_update persist
+✓ Регрессии: persistence across sessions, merge без потери полей, constraints
+  entries → dict, invalid patch rejected, seed yaml + missing file no-op,
+  lazy seed, /profile показ, /profile_update enqueue, analyzer-from-DB,
+  recovery idempotency, concurrent disjoint merge
 
 Remaining:
 □ Blocked (external): live LLM profile_update — нет ключа; путь покрыт фейками
 
 Last verification:
-ruff check . → pass; ruff format --check . → pass; pytest → 140 passed
+ruff check . → pass; ruff format --check . → pass; pytest → 151 passed
 smoke: headless старт без токена — bot disabled, SIGINT graceful
 
 ### Шаблон фазы в работе
