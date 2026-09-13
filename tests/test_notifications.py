@@ -84,6 +84,29 @@ async def test_digest_due_during_quiet_hours_is_deferred_to_morning(session_fact
         assert reminder.payload_json["local_date"] == "2026-09-14"
 
 
+async def test_digest_due_before_overnight_quiet_is_deferred_without_losing_date(session_factory):
+    await make_ready_item(session_factory)
+    await update_notification_settings(
+        session_factory,
+        42,
+        daily_digest_time="21:00",
+        quiet_hours_start="22:30",
+        quiet_hours_end="08:00",
+    )
+    bot = FakeBot()
+    worker = ReminderWorker(session_factory, bot)
+
+    # `process_once` receives UTC; these instants are 23:00 local and then
+    # 08:00/08:01 local in Europe/Moscow. The due moment at 21:00 was missed.
+    assert await worker.process_once(datetime(2026, 9, 14, 20, 0)) == 0
+    assert await worker.process_once(datetime(2026, 9, 15, 5, 0)) == 1
+    assert await worker.process_once(datetime(2026, 9, 15, 5, 1)) == 0
+    assert len(bot.messages) == 1
+    async with session_factory() as session:
+        reminder = await session.scalar(select(Reminder).where(Reminder.type == DAILY_DIGEST))
+        assert reminder.payload_json["local_date"] == "2026-09-14"
+
+
 def test_clock_parser_rejects_offsets_and_seconds():
     from app.services.notifications import parse_clock
 

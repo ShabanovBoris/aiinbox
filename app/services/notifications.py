@@ -70,16 +70,25 @@ def digest_target_date(
     local_now: datetime, digest_time: time, quiet_start: time, quiet_end: time
 ) -> date | None:
     """Return the local day whose digest is due, or None when it is not due."""
-    digest_quiet = in_quiet_hours(digest_time, quiet_start, quiet_end)
-    if not digest_quiet:
-        return local_now.date() if local_now.time() >= digest_time else None
     if in_quiet_hours(local_now.time(), quiet_start, quiet_end):
         return None
-    if quiet_start > quiet_end and local_now.time() < quiet_start:
-        # Overnight quiet hours deferred an evening digest to the following
-        # morning; keep yesterday's local date as the idempotency key.
+
+    current_time = local_now.time()
+    if current_time >= digest_time:
+        return local_now.date()
+
+    # Once overnight quiet hours have ended, a digest scheduled before or
+    # during that quiet window belongs to yesterday even when today's clock
+    # time has not reached the configured digest time. This preserves the
+    # local-date idempotency key after a restart or a late worker poll.
+    if quiet_start > quiet_end and current_time >= quiet_end:
         return local_now.date() - timedelta(days=1)
-    return local_now.date() if local_now.time() >= quiet_end else None
+
+    # The same-day variant can defer a digest that was scheduled inside the
+    # quiet window until the window ends.
+    if current_time >= quiet_end and in_quiet_hours(digest_time, quiet_start, quiet_end):
+        return local_now.date()
+    return None
 
 
 async def get_notification_settings(

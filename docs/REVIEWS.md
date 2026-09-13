@@ -841,6 +841,20 @@
   DB-side JSON patch merge; bounded Telegram retry/backoff; durable docs and
   regressions updated. Phase 11 remains IN_REVIEW pending re-review.
 
+## 2026-09-14 — PR #12 — 0a13755 — CHANGES REQUIRED (review 2)
+
+- Reviewer: Orchestrator; GitHub COMMENT review:
+  https://github.com/ShabanovBoris/aiinbox/pull/12#pullrequestreview-5192497128
+  (reviewed HEAD `0a13755e209901a814b743e5eb8365f82a5d887d`).
+- Finding: MAJOR — digest deferral checked whether the configured digest time
+  was quiet, but not whether the actual late poll occurred during quiet hours;
+  a missed digest scheduled before an overnight quiet window could be sent at
+  night or lost at the following morning boundary.
+- Resolved in same branch/PR #12: `digest_target_date` now suppresses delivery
+  during the actual quiet window and preserves the previous local calendar date
+  after overnight quiet hours; regression covers `21:00`, `22:30–08:00`, late
+  poll at 23:00, delivery at 08:00, and no duplicate on the next poll.
+
 ```text
 ## YYYY-MM-DD — PR #N — <reviewed HEAD sha> — OUTCOME
 
