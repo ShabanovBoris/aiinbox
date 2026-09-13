@@ -268,7 +268,14 @@ async def _ingest_web_urls(
             return items, duplicates
 
         created = [
-            _make_web_item(user_id, message_id, index, normalized, note)
+            _make_web_item(
+                user_id,
+                message_id,
+                index,
+                normalized,
+                note,
+                SourceType.YOUTUBE if is_youtube_url(normalized) else SourceType.WEB,
+            )
             for index, normalized in still_missing
         ]
         for item in created:
