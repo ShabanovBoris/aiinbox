@@ -6,11 +6,13 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy import Enum as SaEnum
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -30,6 +32,19 @@ class User(Base):
     telegram_chat_id: Mapped[int | None] = mapped_column(BigInteger)
     # Персональный профиль (Phase 8) — JSON в users; отдельные таблицы не нужны.
     profile_json: Mapped[dict | None] = mapped_column(JSON)
+    # Настройки уведомлений хранятся отдельно от профиля: это операционные
+    # предпочтения, а не семантический контекст анализа Item.
+    timezone: Mapped[str] = mapped_column(
+        String(64), default="UTC", server_default="UTC", nullable=False
+    )
+    settings_json: Mapped[dict] = mapped_column(
+        JSON, default=dict, server_default="{}", nullable=False
+    )
+    # Отдельная отметка включения digest отличает активацию от общего
+    # updated_at: изменение профиля не должно отменять legitimate recovery.
+    daily_digest_enabled_at: Mapped[datetime | None] = mapped_column(
+        DateTime, default=func.now(), server_default=func.now()
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), onupdate=func.now()
@@ -138,6 +153,40 @@ class Event(Base):
     event_type: Mapped[str] = mapped_column(String(32), index=True)
     payload_json: Mapped[dict | None] = mapped_column(JSON)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class Reminder(Base):
+    """Durable notification claim/state used by the periodic reminder worker.
+
+    The row is the restart-safe idempotency key: a digest is identified by its
+    user, type and local-day schedule, while a snooze reminder is tied to one
+    Item and its exact ``snoozed_until`` timestamp.
+    """
+
+    __tablename__ = "reminders"
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id", "item_id", "type", "scheduled_at", name="uq_reminders_delivery"
+        ),
+        Index(
+            "uq_reminders_daily_digest",
+            "user_id",
+            "type",
+            "scheduled_at",
+            unique=True,
+            sqlite_where=text("type = 'DAILY_DIGEST'"),
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    item_id: Mapped[int | None] = mapped_column(ForeignKey("items.id"), index=True)
+    type: Mapped[str] = mapped_column(String(32), index=True)
+    scheduled_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    status: Mapped[str] = mapped_column(String(16), default="PENDING", index=True)
+    payload_json: Mapped[dict | None] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime)
 
 
 class ProfileUpdateJob(Base):

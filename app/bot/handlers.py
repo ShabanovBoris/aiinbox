@@ -10,6 +10,11 @@ from app.config import Settings
 from app.domain.enums import SourceType
 from app.services.actions import apply_item_action, record_item_events
 from app.services.ingestion import ingest_message, ingest_voice
+from app.services.notifications import (
+    format_settings,
+    get_notification_settings,
+    update_notification_settings,
+)
 from app.services.profile import enqueue_profile_update
 from app.services.retrieval import (
     TodayService,
@@ -26,6 +31,61 @@ async def on_start(message: Message, settings: Settings) -> None:
     if not settings.is_allowed(message.from_user.id if message.from_user else None):
         return
     await message.answer("Personal AI Inbox готов. Просто отправь текст или ссылку.")
+
+
+async def on_settings(
+    message: Message, settings: Settings, session_factory, arguments: str = ""
+) -> None:
+    """Show or minimally update notification settings without a settings app."""
+    user_id = message.from_user.id if message.from_user else None
+    if not settings.is_allowed(user_id):
+        return
+    from app.services.ingestion import get_or_create_user
+
+    if await get_notification_settings(session_factory, user_id) is None:
+        async with session_factory() as session:
+            await get_or_create_user(
+                session,
+                telegram_user_id=user_id,
+                chat_id=message.chat.id,
+                timezone=settings.default_timezone,
+            )
+            await session.commit()
+    parts = arguments.split(maxsplit=2)
+    try:
+        if parts and parts[0] == "timezone" and len(parts) == 2:
+            result = await update_notification_settings(session_factory, user_id, timezone=parts[1])
+        elif parts and parts[0] == "time" and len(parts) == 2:
+            result = await update_notification_settings(
+                session_factory, user_id, daily_digest_time=parts[1]
+            )
+        elif parts and parts[0] == "quiet" and len(parts) == 2:
+            quiet_parts = parts[1].split("-", maxsplit=1)
+            if len(quiet_parts) != 2:
+                raise ValueError("Тихие часы: /settings quiet 22:30-08:00")
+            result = await update_notification_settings(
+                session_factory,
+                user_id,
+                quiet_hours_start=quiet_parts[0],
+                quiet_hours_end=quiet_parts[1],
+            )
+        elif parts:
+            await message.answer("Использование: /settings [timezone|time|quiet] <значение>")
+            return
+        else:
+            result = await get_notification_settings(session_factory, user_id)
+        if result is None:
+            return
+    except ValueError as exc:
+        await message.answer(str(exc))
+        return
+    user, notification_settings = result
+    from app.bot.keyboards import settings_keyboard
+
+    await message.answer(
+        format_settings(user, notification_settings),
+        reply_markup=settings_keyboard(notification_settings["daily_digest_enabled"]),
+    )
 
 
 async def on_text(
@@ -47,6 +107,7 @@ async def on_text(
         chat_id=message.chat.id,
         message_id=message.message_id,
         text=message.text,
+        default_timezone=settings.default_timezone,
     )
     ack_lines = []
     if result.items:
@@ -87,6 +148,7 @@ async def on_voice_audio(
         duration_seconds=media.duration,
         source_type=source_type,
         too_large=oversized,
+        default_timezone=settings.default_timezone,
     )
     item = result.items[0]
     if item.error_code == "TOO_LARGE":
@@ -133,6 +195,11 @@ def make_router(
             return
         await on_profile(message, settings, session_factory)
 
+    @router.message(Command("settings"))
+    async def settings_command(message: Message) -> None:
+        arguments = (message.text or "").removeprefix("/settings").strip()
+        await on_settings(message, settings, session_factory, arguments)
+
     @router.message(Command("profile_update"))
     async def profile_update(message: Message) -> None:
         if not settings.is_allowed(message.from_user.id if message.from_user else None):
@@ -161,6 +228,10 @@ def make_router(
     @router.callback_query(F.data.startswith("item:"))
     async def item_action(callback: CallbackQuery) -> None:
         await on_item_callback(callback, settings, session_factory)
+
+    @router.callback_query(F.data == "settings:digest")
+    async def settings_digest(callback: CallbackQuery) -> None:
+        await on_settings_callback(callback, settings, session_factory)
 
     return router
 
@@ -230,6 +301,34 @@ async def on_item_callback(
     await callback.answer()
 
 
+async def on_settings_callback(
+    callback: CallbackQuery, settings: Settings, session_factory
+) -> None:
+    """Toggle only the safe, single-tap setting and redraw the compact UI."""
+    if not settings.is_allowed(callback.from_user.id):
+        await callback.answer()
+        return
+    current = await get_notification_settings(session_factory, callback.from_user.id)
+    if current is None:
+        await callback.answer("Пользователь не найден")
+        return
+    user, values = current
+    updated = await update_notification_settings(
+        session_factory,
+        callback.from_user.id,
+        daily_digest_enabled=not values["daily_digest_enabled"],
+    )
+    if callback.message and updated is not None:
+        from app.bot.keyboards import settings_keyboard
+
+        updated_user, updated_values = updated
+        await callback.message.edit_text(
+            format_settings(updated_user, updated_values),
+            reply_markup=settings_keyboard(updated_values["daily_digest_enabled"]),
+        )
+    await callback.answer()
+
+
 async def on_profile(message: Message, settings: Settings, session_factory) -> None:
     if not settings.is_allowed(message.from_user.id if message.from_user else None):
         return
@@ -240,7 +339,10 @@ async def on_profile(message: Message, settings: Settings, session_factory) -> N
     async with session_factory() as session:
         # get_or_create + get_profile: lazy seed работает и для первого /profile
         user = await get_or_create_user(
-            session, telegram_user_id=message.from_user.id, chat_id=message.chat.id
+            session,
+            telegram_user_id=message.from_user.id,
+            chat_id=message.chat.id,
+            timezone=settings.default_timezone,
         )
         profile = await get_profile(session, user.id)
     await message.answer(format_profile(profile))
@@ -264,6 +366,7 @@ async def on_profile_update(
         telegram_user_id=user_id,
         chat_id=message.chat.id,
         instruction=instruction,
+        default_timezone=settings.default_timezone,
     )
     log.info("profile update queued user_id=%s", user_id)
     await message.answer("Принял. Обновляю профиль…")
@@ -281,7 +384,10 @@ async def on_today(message: Message, settings: Settings, session_factory) -> Non
 
     async with session_factory() as session:
         user = await get_or_create_user(
-            session, telegram_user_id=message.from_user.id, chat_id=message.chat.id
+            session,
+            telegram_user_id=message.from_user.id,
+            chat_id=message.chat.id,
+            timezone=settings.default_timezone,
         )
         items = await TodayService().list_items(session, user.id)
         await record_item_events(session, user.id, [item.id for item in items], "TODAY_SHOWN")
@@ -297,7 +403,10 @@ async def on_inbox(message: Message, settings: Settings, session_factory) -> Non
 
     async with session_factory() as session:
         user = await get_or_create_user(
-            session, telegram_user_id=message.from_user.id, chat_id=message.chat.id
+            session,
+            telegram_user_id=message.from_user.id,
+            chat_id=message.chat.id,
+            timezone=settings.default_timezone,
         )
         items = await list_inbox(session, user.id)
     await message.answer(format_item_list(items, "Входящие:"))
@@ -311,7 +420,10 @@ async def on_category(message: Message, settings: Settings, session_factory, cat
 
     async with session_factory() as session:
         user = await get_or_create_user(
-            session, telegram_user_id=message.from_user.id, chat_id=message.chat.id
+            session,
+            telegram_user_id=message.from_user.id,
+            chat_id=message.chat.id,
+            timezone=settings.default_timezone,
         )
         if category:
             items = await list_category_items(session, user.id, category)
@@ -332,7 +444,10 @@ async def on_search(message: Message, settings: Settings, session_factory, query
         return
     async with session_factory() as session:
         user = await get_or_create_user(
-            session, telegram_user_id=message.from_user.id, chat_id=message.chat.id
+            session,
+            telegram_user_id=message.from_user.id,
+            chat_id=message.chat.id,
+            timezone=settings.default_timezone,
         )
         items = await search_items(session, user.id, query)
     await message.answer(format_item_list(items, "Результаты поиска:"))

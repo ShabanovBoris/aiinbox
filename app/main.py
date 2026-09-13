@@ -15,6 +15,7 @@ from app.extractors.youtube import YoutubeExtractor
 from app.llm.openai import OpenAiProvider
 from app.llm.transcription import OpenAiTranscriptionProvider
 from app.services.analysis import Analyzer
+from app.services.notifications import ReminderWorker
 from app.services.processing import ProcessingPipeline
 from app.services.profile import (
     apply_profile_seed,
@@ -183,6 +184,17 @@ async def run(settings: Settings) -> None:
             asyncio.create_task(profile_worker.run_forever(stop), name=f"profile-worker-{i}")
             for i in range(1)
         ]
+        reminder_tasks = []
+        if bot is not None:
+            reminder_worker = ReminderWorker(
+                session_factory,
+                bot,
+                default_timezone=settings.default_timezone,
+                poll_seconds=settings.processing_poll_seconds,
+            )
+            reminder_tasks.append(
+                asyncio.create_task(reminder_worker.run_forever(stop), name="reminder-worker")
+            )
         for sig in (signal.SIGINT, signal.SIGTERM):
             loop.add_signal_handler(sig, stop.set)
 
@@ -208,9 +220,9 @@ async def run(settings: Settings) -> None:
             if bot is not None:
                 await bot.session.close()
         # Воркеры завершают текущий Item и выходят по stop; отмена только как страховка.
-        for task in worker_tasks + profile_tasks:
+        for task in worker_tasks + profile_tasks + reminder_tasks:
             task.cancel()
-        await asyncio.gather(*worker_tasks, *profile_tasks, return_exceptions=True)
+        await asyncio.gather(*worker_tasks, *profile_tasks, *reminder_tasks, return_exceptions=True)
     finally:
         await engine.dispose()
         log.info("shutdown complete")

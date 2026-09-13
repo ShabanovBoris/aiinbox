@@ -3,8 +3,8 @@
 Как запускать, проверять и диагностировать Personal AI Inbox.
 Заполняется по мере появления реальных команд и проблем; не выдумывать команды заранее.
 
-Статус: Phase 10 — Item actions реализуется в ветке
-`phase/10-item-actions`; PR ещё не открыт.
+Статус: Phase 11 — Notifications реализуется в ветке
+`phase/11-notifications`; PR #12 открыт и находится на re-review.
 
 FTS5 индекс `item_search` контролируется приложением: после обработки Item он
 синхронизируется вместе с READY, а перед поиском индекс пользователя
@@ -17,6 +17,14 @@ Done, Later (завтра/неделя/месяц), Archive и Retry для FAIL
 пользователь получает кнопку Retry, а повтор действия не создаёт дубликат
 события. Retry сохраняет `processing_stage`, поэтому уже извлечённый контент не
 обрабатывается заново.
+
+Уведомления Phase 11 используют SQLite-таблицу `reminders` как durable
+идемпотентный журнал. `/settings` показывает настройки и принимает минимальные
+изменения: `timezone Europe/Moscow`, `time 09:00`, `quiet 22:30-08:00`.
+Daily digest отправляется один раз за локальный день через `TodayService`, а
+отложенные Items возвращаются после `snoozed_until`, кроме quiet hours.
+`ReminderWorker` запускается вместе с Telegram bot и не требует внешнего
+scheduler.
 
 ## Контракты репозитория
 
@@ -119,6 +127,16 @@ sqlite3 data/app.db "SELECT id, processing_status, processing_stage, state, sour
 ```bash
 sqlite3 data/app.db "SELECT id, error_code, error_message FROM items WHERE processing_status='FAILED'"
 ```
+
+Состояние уведомлений и неудачные доставки:
+
+```bash
+sqlite3 data/app.db "SELECT id, user_id, item_id, type, scheduled_at, status, sent_at FROM reminders ORDER BY scheduled_at"
+```
+
+`SENT` означает, что delivery claim зафиксирован до отправки Telegram и после
+перезапуска не будет создан повторно. `FAILED` означает, что Telegram-вызов
+завершился ошибкой; техническая причина остаётся в логах приложения.
 
 - Зависшие `PROCESSING` после падения процесса возвращаются в `QUEUED`
   автоматически при следующем старте (`requeue_stale`).

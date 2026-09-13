@@ -5,7 +5,7 @@ from aiogram.types import Chat, Message
 from aiogram.types import User as TgUser
 from sqlalchemy import func, select
 
-from app.bot.handlers import on_start, on_text, on_today
+from app.bot.handlers import on_settings, on_start, on_text, on_today
 from app.domain.enums import ItemState, ItemType, ProcessingStatus, SourceType
 from app.storage.models import Event, Item, User
 
@@ -39,6 +39,15 @@ async def test_authorized_text_creates_item_and_replies(settings, session_factor
         assert item is not None
         assert item.processing_status is ProcessingStatus.QUEUED
         assert item.user_note == "hello"
+
+
+async def test_new_user_gets_configured_default_timezone(settings, session_factory, monkeypatch):
+    settings.default_timezone = "Europe/Moscow"
+    capture_answers(monkeypatch)
+    await on_text(make_message(42), settings, session_factory)
+    async with session_factory() as session:
+        user = await session.scalar(select(User).where(User.telegram_user_id == 42))
+        assert user.timezone == "Europe/Moscow"
 
 
 async def test_unauthorized_user_is_ignored(settings, session_factory, monkeypatch):
@@ -116,6 +125,20 @@ async def test_today_records_shown_event(settings, session_factory, monkeypatch)
         )
 
 
+async def test_settings_command_persists_minimal_notification_settings(
+    settings, session_factory, monkeypatch
+):
+    sent = capture_answers(monkeypatch)
+    await on_settings(make_message(42), settings, session_factory, "timezone Europe/Moscow")
+    await on_settings(make_message(42), settings, session_factory, "time 08:30")
+    assert "Europe/Moscow" in sent[0]
+    assert "08:30" in sent[1]
+    async with session_factory() as session:
+        user = await session.scalar(select(User).where(User.telegram_user_id == 42))
+        assert user.timezone == "Europe/Moscow"
+        assert user.settings_json["daily_digest_time"] == "08:30"
+
+
 def test_production_router_composition_builds(settings, session_factory):
     # Регрессия: production-вызов make_router (как в app/main.py) собирается
     # без TypeError — router включает profile-команды.
@@ -126,6 +149,6 @@ def test_production_router_composition_builds(settings, session_factory):
     router = make_router(settings, session_factory, settings.max_audio_bytes)
     assert isinstance(router, Router)
     names = [h.callback.__name__ for h in router.message.handlers]
-    assert "profile" in names and "profile_update" in names
+    assert "profile" in names and "profile_update" in names and "settings_command" in names
     assert {"today", "inbox", "category", "search"} <= set(names)
     assert "item_action" in [h.callback.__name__ for h in router.callback_query.handlers]

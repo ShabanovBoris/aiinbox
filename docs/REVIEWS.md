@@ -827,6 +827,111 @@
   синхронизацию; product code не менялся; `pytest` — 168 passed.
 - Следующий шаг по протоколу: status-finalization commit и MERGE READY.
 
+## 2026-09-14 — PR #12 — d5634eb — CHANGES REQUIRED (review 1)
+
+- Reviewer: Orchestrator; GitHub COMMENT review:
+  https://github.com/ShabanovBoris/aiinbox/pull/12#pullrequestreview-5192477103
+  (reviewed HEAD `d5634ebedffd746ce00aab0543ee4220467fad5c`).
+- Findings: MAJOR — digest quiet hours, strict HH:MM parsing, configured
+  default timezone, once-per-local-day key across timezone changes, concurrent
+  disjoint settings updates, and bounded transient Telegram retries; MINOR —
+  restore the historical Contract addendum and synchronize Phase 11 docs.
+- Resolved in same branch/PR #12: digest quiet-hours deferral and strict clock
+  validation; configured timezone propagation and local-date idempotency key;
+  DB-side JSON patch merge; bounded Telegram retry/backoff; durable docs and
+  regressions updated. Phase 11 remains IN_REVIEW pending re-review.
+
+## 2026-09-14 — PR #12 — 0a13755 — CHANGES REQUIRED (review 2)
+
+- Reviewer: Orchestrator; GitHub COMMENT review:
+  https://github.com/ShabanovBoris/aiinbox/pull/12#pullrequestreview-5192497128
+  (reviewed HEAD `0a13755e209901a814b743e5eb8365f82a5d887d`).
+- Finding: MAJOR — digest deferral checked whether the configured digest time
+  was quiet, but not whether the actual late poll occurred during quiet hours;
+  a missed digest scheduled before an overnight quiet window could be sent at
+  night or lost at the following morning boundary.
+- Resolved in same branch/PR #12: `digest_target_date` now suppresses delivery
+  during the actual quiet window and preserves the previous local calendar date
+  after overnight quiet hours; regression covers `21:00`, `22:30–08:00`, late
+  poll at 23:00, delivery at 08:00, and no duplicate on the next poll.
+
+## 2026-09-14 — PR #12 — 7b235b4 — CHANGES REQUIRED (review 3)
+
+- Reviewer: Orchestrator; GitHub COMMENT review:
+  https://github.com/ShabanovBoris/aiinbox/pull/12#pullrequestreview-5192510310
+  (reviewed HEAD `7b235b409707af2dd8420caa7d1bc8c5b1ea67f7`).
+- Findings: MAJOR — generalized overnight recovery synthesized yesterday's
+  digest before the configured time for a new/enabled user; MINOR — PR body
+  still contained the previous HEAD and test count.
+- Resolved in same branch/PR #12: recovery now requires durable PENDING
+  evidence created by a due digest during quiet hours (or an explicitly
+  configured digest inside overnight quiet hours); a default `09:00` digest at
+  local 08:30 remains unsent until 09:00. Added regression coverage and
+  synchronized the PR metadata to the new exact HEAD and 185 tests.
+
+## 2026-09-14 — PR #12 — ffc97a8 — CHANGES REQUIRED (review 4)
+
+- Reviewer: Orchestrator; GitHub COMMENT review:
+  https://github.com/ShabanovBoris/aiinbox/pull/12#pullrequestreview-5192521430
+  (reviewed HEAD `ffc97a8f30e315226bc63da30015949bec359736`).
+- Findings: MAJOR — the durable-evidence recovery did not materialize a
+  previous local date when the first poll after downtime occurred after
+  midnight during overnight quiet hours; MINOR — PR metadata had stale HEAD
+  and test count.
+- Resolved in same branch/PR #12: overnight quiet-hours polling after
+  midnight now records yesterday's due digest as PENDING evidence, while a
+  user with no prior poll still receives no synthetic digest before 09:00.
+  Added the 01:00 → 08:00 regression and synchronized PR metadata.
+
+## 2026-09-14 — PR #12 — d9bcbcf — CHANGES REQUIRED (review 5)
+
+- Reviewer: Orchestrator; GitHub COMMENT review:
+  https://github.com/ShabanovBoris/aiinbox/pull/12#pullrequestreview-5192530844
+  (reviewed HEAD `d9bcbcf52fb60a12464e3c274b6b2052cd721b36`).
+- Findings: MAJOR — overnight recovery synthesized a previous-day digest for
+  a user created or enabled after that due-time; MINOR — review journal had an
+  incorrect exact-head association for review `5192510310`.
+- Resolved in same branch/PR #12 at the next exact HEAD: recovery compares
+  user activation timestamps with the due-time, a new-user regression covers
+  01:00 → no stale delivery at 08:00 → today's digest at 09:00, and the review
+  journal association is corrected.
+
+## 2026-09-14 — PR #12 — 72bacd9 — CHANGES REQUIRED (review 6)
+
+- Reviewer: Orchestrator; GitHub COMMENT review:
+  https://github.com/ShabanovBoris/aiinbox/pull/12#pullrequestreview-5192543163
+  (reviewed HEAD `72bacd931ad18322121681b1fa60463d25f15035`).
+- Findings: MAJOR — generic `updated_at` cannot represent digest activation;
+  unrelated settings changes could suppress a legitimate deferred digest.
+  MINOR — review IDs `5192510310` and `5192521430` were associated with the
+  wrong reviewed HEADs.
+- Resolved in same branch/PR #12: digest eligibility now uses dedicated
+  `daily_digest_enabled_at`, with migration/backfill and regression coverage;
+  journal associations are corrected.
+
+## 2026-09-14 — PR #12 — 30dee0d — CHANGES REQUIRED (review 7)
+
+- Reviewer: Orchestrator; GitHub COMMENT review:
+  https://github.com/ShabanovBoris/aiinbox/pull/12#pullrequestreview-5192558920
+  (reviewed HEAD `30dee0dd5c55be16fef911676217f83dfae7030f`).
+- Finding: MINOR — `REVIEWS.md` associated review `5192510310` with the
+  wrong HEAD; correct mapping is `7b235b4 → 5192510310` and
+  `ffc97a8 → 5192521430`.
+- Resolved in same branch/PR #12: the two durable journal associations are
+  corrected; product code was already accepted as clean.
+
+## 2026-09-14 — PR #12 — c066cac — APPROVED (review 8)
+
+- Reviewer: Orchestrator; GitHub COMMENT review:
+  https://github.com/ShabanovBoris/aiinbox/pull/12#pullrequestreview-5192565760
+  (approved HEAD `c066cacc00ef8ab1da138872b62b9f1e828c99db`).
+- Confirmed: the delta from `30dee0d` is journal-only; product code and tests
+  are unchanged, exact PR HEAD/body are synchronized, and local verification
+  is Ruff PASS, `pytest` 187 passed, and `git diff --check` PASS.
+- Protocol next step: status-finalization commit only, changing
+  `IMPLEMENTATION_STATE` from `IN_REVIEW` to `DONE` and recording approved
+  HEAD `c066cacc00ef8ab1da138872b62b9f1e828c99db`.
+
 ```text
 ## YYYY-MM-DD — PR #N — <reviewed HEAD sha> — OUTCOME
 
