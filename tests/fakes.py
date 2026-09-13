@@ -41,6 +41,7 @@ class FakeLlmProvider:
         vision: bool = False,
         describe_notes: str | None = None,
         describe_fail: bool = False,
+        analyze_failures: int = 0,
     ):
         from app.llm.base import LlmCapabilities
 
@@ -51,11 +52,16 @@ class FakeLlmProvider:
         self.describe_notes = describe_notes or "На слайдах диаграмма оркестрации."
         self.describe_fail = describe_fail
         self.describe_calls = 0
+        self.analyze_failures = analyze_failures
 
     async def analyze(
         self, content: NormalizedContent, profile: UserProfile, categories: list[str]
     ):
         self.calls.append((content, profile, list(categories)))
+        if self.analyze_failures > 0:
+            # первые N analyze-вызовов падают: имитация transient LLM failure
+            self.analyze_failures -= 1
+            raise LlmError("LLM_FAILED", "analyze failed")
         if self.error is not None:
             raise self.error
         return self.result

@@ -61,6 +61,7 @@ class YoutubeExtractor:
         temp_dir: Path,
         max_duration_seconds: int = 7200,
         max_audio_bytes: int = 50_000_000,
+        max_video_bytes: int = 50_000_000,
         max_subtitle_bytes: int = 2_000_000,
         subtitle_langs: tuple[str, ...] = ("ru", "en"),
         ydl_factory: Callable[[dict], Any] = default_ydl_factory,
@@ -73,6 +74,7 @@ class YoutubeExtractor:
         self.temp_dir = Path(temp_dir)
         self.max_duration_seconds = max_duration_seconds
         self.max_audio_bytes = max_audio_bytes
+        self.max_video_bytes = max_video_bytes
         self.max_subtitle_bytes = max_subtitle_bytes
         self.subtitle_langs = subtitle_langs
         self._ydl_factory = ydl_factory
@@ -261,8 +263,9 @@ class YoutubeExtractor:
             "quiet": True,
             "no_warnings": True,
             "noplaylist": True,
-            "format": "best[height<=720]/best",
-            "max_filesize": self.max_audio_bytes,
+            # без /best fallback: >720p-фоллбек нарушил бы заявленный bound
+            "format": "best[height<=720]",
+            "max_filesize": self.max_video_bytes,
             "outtmpl": str(work_dir / "%(id)s.%(ext)s"),
             "socket_timeout": self.timeout_seconds,
         }

@@ -34,7 +34,7 @@ squash merge с ожидаемым HEAD B. Вердикты фиксируютс
 | 4 | Architecture checkpoint | DONE |
 | 5 | Voice/audio | DONE |
 | 6 | YouTube | DONE |
-| 7 | Video visual analysis | NOT_STARTED |
+| 7 | Video visual analysis | IN_REVIEW |
 | 8 | User profile | NOT_STARTED |
 | 9 | Today/inbox/search | NOT_STARTED |
 | 10 | Item actions | NOT_STARTED |
@@ -348,6 +348,34 @@ unusable → auto → STT; subtitle oversize/transient retry; playlist reject;
 duration cap; TRANSCRIPT/DESCRIPTION persistence + resume с полным equality
 NormalizedContent; youtube URL классификация + www.youtube-nocookie; production
 composition test)
+
+### Phase 7 — Video visual analysis — IN_REVIEW
+
+Completed:
+✓ LlmCapabilities (structured_output/vision) — vision доступен только при
+  сконфигурированной OPENAI_VISION_MODEL; LlmProvider protocol расширен
+  describe_images (ТЗ §24, §27)
+✓ YoutubeExtractor.download_video (best<=720p, filesize cap, noplaylist)
+✓ frames.py: ffmpeg periodic sampling (args list, без shell, timeout), лимит
+  VIDEO_MAX_FRAMES, дедупликация идентичных кадров по хэшу
+✓ Pipeline: visual enrichment после персистенции TRANSCRIPT (graceful —
+  vision failure/ffmpeg missing/отмена не роняют Item с транскриптом, ТЗ §39);
+  VISUAL_NOTES персистится; analysis_completeness =
+  TRANSCRIPT_AND_VISUAL / TRANSCRIPT_ONLY / FULL_TEXT
+✓ VISUAL NOTES передаются анализатору как untrusted input
+✓ Миграция 1eb65025a8b6 (items.analysis_completeness)
+✓ Конфиг: VIDEO_FRAME_INTERVAL_SECONDS, VIDEO_MAX_FRAMES, OPENAI_VISION_MODEL
+
+Remaining:
+□ Blocked (external): live vision (реальный OpenAI) и реальный ffmpeg — нет
+  ключа/бинарника; путь покрыт фейками (FakeLlmProvider.describe_images,
+  injectable frames runner)
+
+Last verification:
+ruff check . → pass; ruff format --check . → pass; pytest → 127 passed
+(+ visual notes persistence/completeness, no-vision → TRANSCRIPT_ONLY,
+vision failure → READY TRANSCRIPT_ONLY, frames dedup, ffmpeg failure code)
+smoke: headless старт без токена — bot disabled, SIGINT graceful
 
 ### Шаблон фазы в работе
 

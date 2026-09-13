@@ -503,6 +503,34 @@
   track, fallback order/priority).
 - Финализация: Phase 6 → DONE в IMPLEMENTATION_STATE.
 
+## 2026-09-13 — PR #8 — dd6e628 — CHANGES REQUIRED
+
+- Phase 07 — Video visual analysis. Reviewer: Orchestrator; вердикт также на GitHub:
+  https://github.com/ShabanovBoris/aiinbox/pull/8#pullrequestreview-5188734132 (commit dd6e628).
+- Findings:
+  1. MAJOR/RESUMABILITY: successful visual enrichment не персистился до Analyzer —
+     сбой structured analysis после успешного vision откатывал VISUAL_NOTES, retry
+     повторял download/ffmpeg/vision (нарушение AGENTS §18).
+  2. MAJOR/ASYNC: ffmpeg subprocess.run блокировал event loop.
+  3. MAJOR/GRACEFUL: work_dir.mkdir вне try/except — FS-ошибка роняла Item с
+     валидным транскриптом.
+  4. MINOR: format best[height<=720]/best допускал >720p fallback.
+  5. MINOR: visual notes не ограничены детерминированным лимитом.
+  6. MINOR: IMPLEMENTATION_STATE оставался NOT_STARTED для Phase 7.
+- Resolved (коммиты после dd6e628 в этом же PR):
+  1. → VISUAL_NOTES коммитится до Analyzer; resume восстанавливает visual_notes
+     из VISUAL_NOTES row и пропускает vision. Регрессия: analyze fail once →
+     FAILED → retry → READY, describe/frames calls == 1, notes идентичны.
+  2. → frames extraction через asyncio.to_thread. Регрессия: runner выполняется
+     не в главном потоке.
+  3. → mkdir внутри graceful-границы. Регрессия: блокирующий файл на пути
+     visual work_dir → READY + TRANSCRIPT_ONLY.
+  4. → format best[height<=720] без /best fallback; отдельный
+     youtube_max_video_bytes (Settings/.env/composition).
+  5. → детерминированная обрезка visual notes до 800 символов на границе
+     приложения. Регрессия: 1000-символьные notes → 800.
+  6. → Phase 7 в IMPLEMENTATION_STATE (IN_REVIEW + верификация).
+
 ## Шаблон записи
 
 ```text

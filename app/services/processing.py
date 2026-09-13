@@ -108,16 +108,24 @@ class ProcessingPipeline:
 
         Graceful по ТЗ §39/§24: нет vision-capability / ffmpeg / ошибка — Item
         продолжается по транскрипту с completeness=TRANSCRIPT_ONLY."""
+        existing = content.metadata.get("visual_notes")
+        if existing:
+            # visual notes уже персистены и восстановлены при resume —
+            # повторный download/ffmpeg/vision не нужен (AGENTS §18)
+            return existing
         capabilities = getattr(self.analyzer.provider, "capabilities", None)
         if not capabilities or not capabilities.vision:
             return None
         if item.source_type is not SourceType.YOUTUBE or self.youtube_extractor is None:
             return None
         work_dir = Path(self.youtube_extractor.temp_dir) / f"vis-{uuid4().hex}"
-        work_dir.mkdir(parents=True, exist_ok=True)
         try:
+            # mkdir внутри graceful-границы: FS-ошибка не роняет Item с транскриптом
+            work_dir.mkdir(parents=True, exist_ok=True)
             video = await self.youtube_extractor.download_video(item.source_url, work_dir)
-            frames = extract_representative_frames(
+            # ffmpeg — синхронный subprocess: выполняется в thread, не блокируя loop
+            frames = await asyncio.to_thread(
+                extract_representative_frames,
                 video,
                 work_dir / "frames",
                 interval_seconds=self.visual_frame_interval_seconds,
@@ -128,7 +136,11 @@ class ProcessingPipeline:
             notes = await self.analyzer.provider.describe_images(
                 frames, context=content.text[:1500]
             )
+            # Обрезка до детерминированного лимита: untrusted LLM output
+            notes = notes[:800]
             if notes:
+                # Успешный vision персистится ДО Analyzer (AGENTS §18):
+                # retry из ANALYZING не повторяет download/ffmpeg/vision.
                 session.add(
                     Content(
                         item_id=item.id,
@@ -137,6 +149,7 @@ class ProcessingPipeline:
                         metadata_json={"frames": len(frames)},
                     )
                 )
+                await session.commit()
                 return notes
             return None
         except asyncio.CancelledError:
@@ -257,11 +270,20 @@ class ProcessingPipeline:
                 )
             )
             content.url = meta.get("canonical_url") or item.source_url
+            visual_row = await session.scalar(
+                select(Content).where(
+                    Content.item_id == item.id, Content.kind == ContentKind.VISUAL_NOTES
+                )
+            )
             content.metadata = {
                 "description_excerpt": description_row.text if description_row else None,
                 "via_stt": meta.get("via_stt"),
                 "cues": meta.get("cues"),
             }
+            if visual_row is not None:
+                # ключ добавляется только при наличии записи — эквивалентность
+                # initial/resumed content (первый прогон не имеет ключа)
+                content.metadata["visual_notes"] = visual_row.text
         return content
 
     @staticmethod
