@@ -372,9 +372,11 @@ Remaining:
   injectable frames runner)
 
 Last verification:
-ruff check . → pass; ruff format --check . → pass; pytest → 131 passed
-(+ visual notes persistence/completeness, no-vision → TRANSCRIPT_ONLY,
-vision failure → READY TRANSCRIPT_ONLY, frames dedup, ffmpeg failure code)
+ruff check . → pass; ruff format --check . → pass; pytest → 132 passed
+(+ visual persistence до Analyzer и reuse на retry (describe/frames calls == 1),
+frames off event loop, mkdir failure → READY TRANSCRIPT_ONLY, notes truncation 800,
+720p bound без /best, video byte limit enforced отдельно от audio,
+malformed-track regression)
 smoke: headless старт без токена — bot disabled, SIGINT graceful
 
 ### Шаблон фазы в работе
