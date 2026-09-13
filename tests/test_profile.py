@@ -376,9 +376,7 @@ async def test_recovery_after_mutation_is_idempotent(tmp_path, session_factory):
     # Регрессия recovery после side effect boundary: profile уже применён, но job
     # остался RUNNING (крэш до атомарности в старой схеме) → recovery → повторная
     # обработка → финальный профиль консистентен (replace-merge идемпотентен).
-    await enqueue_profile_update(
-        session_factory, telegram_user_id=42, chat_id=42, instruction="i"
-    )
+    await enqueue_profile_update(session_factory, telegram_user_id=42, chat_id=42, instruction="i")
     provider = FakeLlmProvider(profile_patch={"profession": "dev"})
     worker = ProfileUpdateWorker(session_factory, provider, poll_seconds=0.01)
     assert await worker.process_one() is True

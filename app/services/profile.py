@@ -200,9 +200,7 @@ async def update_profile_from_patch(
             )
         )
         await session.execute(
-            update(ProfileUpdateJob)
-            .where(ProfileUpdateJob.id == job.id)
-            .values(status="DONE")
+            update(ProfileUpdateJob).where(ProfileUpdateJob.id == job.id).values(status="DONE")
         )
         await session.commit()
         merged = await get_profile(session, job.user_id)

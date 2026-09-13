@@ -135,12 +135,7 @@ async def run(settings: Settings) -> None:
             )
             dispatcher = Dispatcher()
             dispatcher.include_router(
-                make_router(
-                    settings,
-                    session_factory,
-                    provider=analyzer.provider,
-                    max_audio_bytes=settings.max_audio_bytes,
-                )
+                make_router(settings, session_factory, settings.max_audio_bytes)
             )
             polling = asyncio.create_task(
                 dispatcher.start_polling(bot, handle_signals=False), name="telegram-polling"

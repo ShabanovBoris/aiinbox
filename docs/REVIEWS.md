@@ -661,6 +661,22 @@
   5. → IMPLEMENTATION_STATE: 149 → 151 passed, job flow описан.
   6. → PR body обновлён как metadata.
 
+## 2026-09-13 — PR #9 — e32491c — CHANGES REQUIRED (re-review 3)
+
+- Reviewer: Orchestrator; вердикт также на GitHub:
+  https://github.com/ShabanovBoris/aiinbox/pull/9#pullrequestreview-5189435600 (commit e32491c).
+- Findings:
+  1. MAJOR: main.py вызывал make_router с устаревшим kwarg provider= —
+     TypeError при старте с Telegram token (headless smoke не ловил).
+  2. MINOR: composition regression на production-вызов make_router отсутствовал.
+- Resolved (коммит после e32491c):
+  1. → stale provider= убран из composition root (после перехода /profile_update
+     на durable job handler'у provider не нужен).
+  2. → regression test_production_router_composition_builds: make_router
+     production-вызовом, profile-команды зарегистрированы.
+- Дополнительно: IMPLEMENTATION_STATE/PR body синхронизированы (132 → 151 passed,
+  job flow, миграции 220d7ae6d4f1 + 76ed20f32fe7).
+
 ## Шаблон записи
 
 ```text
