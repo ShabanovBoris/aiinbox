@@ -170,28 +170,29 @@ class YoutubeExtractor:
         return info
 
     def _subtitle_candidates(self, info: dict) -> list[str]:
-        """Порядок (ТЗ §22): human subtitles → automatic captions; языки из
-        конфига, затем любые. URL дедуплицируются с сохранением порядка."""
+        """Строгий порядок (ТЗ §22): СНАЧАЛА все human subtitles (config langs →
+        любые), ПОТОМ все automatic captions (config langs → любые).
+        URL дедуплицируются с сохранением порядка."""
         candidates: list[str] = []
         seen: set[str] = set()
-        for source in ("subtitles", "automatic_captions"):
+
+        def collect(source: str) -> None:
             tracks = info.get(source) or {}
             for lang in self.subtitle_langs:
                 for track in tracks.get(lang) or []:
-                    if track.get("ext") in ("vtt", "srt") and track.get("url"):
-                        if track["url"] not in seen:
-                            seen.add(track["url"])
-                            candidates.append(track["url"])
-        for source in ("subtitles", "automatic_captions"):
-            tracks = info.get(source) or {}
+                    if track.get("ext") in ("vtt", "srt") and track["url"] not in seen:
+                        seen.add(track["url"])
+                        candidates.append(track["url"])
             for lang, lang_tracks in tracks.items():
                 if lang in self.subtitle_langs:
                     continue
                 for track in lang_tracks or []:
-                    if track.get("ext") in ("vtt", "srt") and track.get("url"):
-                        if track["url"] not in seen:
-                            seen.add(track["url"])
-                            candidates.append(track["url"])
+                    if track.get("ext") in ("vtt", "srt") and track["url"] not in seen:
+                        seen.add(track["url"])
+                        candidates.append(track["url"])
+
+        collect("subtitles")
+        collect("automatic_captions")
         return candidates
 
     async def _transcript_from_subtitles(self, info: dict) -> tuple[str | None, list]:
@@ -203,9 +204,9 @@ class YoutubeExtractor:
             try:
                 raw = await self._fetch_capped(sub_url, self.max_subtitle_bytes)
             except AppError as exc:
-                if exc.code == "TOO_LARGE":
-                    raise  # oversized субтитры не пригодны
-                log.warning("subtitles fetch failed url=%s: %s", sub_url, exc)
+                # Любая ошибка кандидата (oversize/сеть/not-found) — кандидат
+                # непригоден; пробуем следующего. STT — только после исчерпания.
+                log.warning("subtitles candidate unusable url=%s: %s", sub_url, exc)
                 continue
             text, cues = parse_subtitles(raw)
             if len(text.strip()) < 40:

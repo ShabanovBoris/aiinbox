@@ -252,7 +252,7 @@ async def test_subtitle_oversize_is_too_large(tmp_path):
     def handler(request):
         return httpx.Response(200, content=body())
 
-    extractor, _, _ = make_youtube(
+    extractor, transcriber, _ = make_youtube(
         tmp_path,
         [info],
         max_subtitle_bytes=100_000,
@@ -260,9 +260,10 @@ async def test_subtitle_oversize_is_too_large(tmp_path):
             transport=httpx.MockTransport(handler), follow_redirects=True, timeout=5
         ),
     )
-    with pytest.raises(AppError) as exc_info:
-        await extractor.extract(make_youtube_item())
-    assert exc_info.value.code == "TOO_LARGE"
+    # oversized кандидат непригоден -> цепочка исчерпана -> STT fallback
+    content = await extractor.extract(make_youtube_item())
+    assert transcriber.calls == 1
+    assert content.metadata["via_stt"] is True
 
 
 async def test_subtitle_transient_retry_success(tmp_path):
@@ -407,3 +408,78 @@ async def test_youtube_checkpoint_resume_full_equality(tmp_path, session_factory
     second_content = provider.calls[1][0]
     assert second_content == first_content  # полное pydantic equality
     assert factory_calls["count"] == 1  # ydl не вызывался повторно
+
+
+async def test_oversized_human_falls_back_to_auto_captions(tmp_path):
+    # Регрессия: oversized human-кандидат не прерывает цепочку — должен быть
+    # испробован auto-candidate; STT не вызывается.
+    info = make_info(
+        subtitles={"ru": [{"ext": "vtt", "url": "https://sub.example.com/huge.vtt"}]},
+        automatic_captions={"en": [{"ext": "vtt", "url": "https://sub.example.com/auto.vtt"}]},
+    )
+
+    async def huge():
+        yield b"x" * 2_000_000
+
+    def handler(request):
+        if request.url.path == "/huge.vtt":
+            return httpx.Response(200, content=huge())
+        return httpx.Response(200, text=SUBTITLE_VTT)
+
+    extractor, transcriber, _ = make_youtube(
+        tmp_path,
+        [info],
+        max_subtitle_bytes=100_000,
+        http_client_factory=lambda: httpx.AsyncClient(
+            transport=httpx.MockTransport(handler), follow_redirects=True, timeout=5
+        ),
+    )
+    content = await extractor.extract(make_youtube_item())
+    assert "оркестрация" in content.text
+    assert transcriber.calls == 0
+
+
+async def test_all_subtitles_unusable_falls_back_to_stt(tmp_path):
+    tiny_info = make_info(
+        subtitles={"ru": [{"ext": "vtt", "url": "https://sub.example.com/tiny.vtt"}]},
+        automatic_captions={},
+    )
+    extractor, transcriber, _ = make_youtube(
+        tmp_path,
+        [tiny_info, tiny_info],  # info для extract_info, затем STT
+        prepared_file=tmp_path / "audio.m4a",
+        http_client_factory=lambda: httpx.AsyncClient(
+            transport=httpx.MockTransport(lambda request: httpx.Response(200, text="ok")),
+            follow_redirects=True,
+            timeout=5,
+        ),
+    )
+    content = await extractor.extract(make_youtube_item())
+    assert transcriber.calls == 1  # субтитры исчерпаны → STT
+    assert content.metadata["via_stt"] is True
+
+
+async def test_human_preferred_over_auto_across_langs(tmp_path):
+    # Регрессия строгости: валидные human subtitles на de предпочтительнее
+    # auto-captions на ru, даже если ru — preferred язык.
+    info = make_info(
+        subtitles={"de": [{"ext": "vtt", "url": "https://sub.example.com/de.vtt"}]},
+        automatic_captions={"ru": [{"ext": "vtt", "url": "https://sub.example.com/ru.vtt"}]},
+    )
+    responses = {
+        "/de.vtt": httpx.Response(200, text=SUBTITLE_VTT),
+        "/ru.vtt": httpx.Response(200, text=SUBTITLE_VTT),
+    }
+
+    def handler(request):
+        return responses[request.url.path]
+
+    extractor, transcriber, _ = make_youtube(
+        tmp_path,
+        [info],
+        http_client_factory=lambda: httpx.AsyncClient(
+            transport=httpx.MockTransport(handler), follow_redirects=True, timeout=5
+        ),
+    )
+    await extractor.extract(make_youtube_item())
+    assert transcriber.calls == 0  # human de пригодны — до auto ru не доходит

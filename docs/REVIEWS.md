@@ -444,6 +444,23 @@
      передаёт в extractor.
   4. → docs синхронизированы с фактическим diff (проверено pytest/grep).
 
+## 2026-09-13 — PR #7 — d0ccaf0 — CHANGES REQUIRED (re-review 2)
+
+- Reviewer: Orchestrator; вердикт также на GitHub:
+  https://github.com/ShabanovBoris/aiinbox/pull/7#pullrequestreview-5188849013 (commit d0ccaf0).
+- Findings:
+  1. MAJOR: oversized subtitle candidate прерывал всю fallback-цепочку
+     (TOO_LARGE ретранслировался наружу вместо перехода к следующему кандидату).
+  2. MINOR: строгий human → auto порядок не соблюдался (auto ru обгонял human de).
+  3. MINOR: PR body stale (metadata).
+- Resolved (коммиты после d0ccaf0):
+  1. → любой AppError кандидата (включая TOO_LARGE) делает его непригодным и
+     цепочка продолжается; STT только после исчерпания. Регрессии:
+     oversized human → auto success (STT == 0); all unusable → STT.
+  2. → _subtitle_candidates: сначала ВСЕ human (config langs → любые), затем
+     ВСЕ auto. Регрессия: human de + auto ru → выбран human de.
+  3. → PR body обновлён как metadata.
+
 ## Шаблон записи
 
 ```text
