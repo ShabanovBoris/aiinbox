@@ -33,7 +33,7 @@ squash merge с ожидаемым HEAD B. Вердикты фиксируютс
 | 3 | Web ingestion | DONE |
 | 4 | Architecture checkpoint | DONE |
 | 5 | Voice/audio | DONE |
-| 6 | YouTube | IN_REVIEW |
+| 6 | YouTube | DONE |
 | 7 | Video visual analysis | NOT_STARTED |
 | 8 | User profile | NOT_STARTED |
 | 9 | Today/inbox/search | NOT_STARTED |
@@ -302,7 +302,13 @@ NormalizedContent включая duration; STT TIMEOUT маппинг; token red
 TESTTOKEN отсутствует в INFO-логах при media download)
 smoke: headless старт без токена — bot disabled, SIGINT graceful
 
-### Phase 6 — YouTube — IN_REVIEW
+### Phase 6 — YouTube — DONE
+
+APPROVED @ eeeb6cbe9c97a7c3d25899f36599ef0b74aa0fc8 (Orchestrator, GitHub review
+pullrequestreview-5188879730). Ревью прошло три круга: composition root wiring,
+resource invariants (owned temp subdir, byte-cap, retry), checkpoint equivalence
+(canonical url/cues/duration), VTT header case-фикс, nocookie классификация,
+malformed track regression.
 
 Completed:
 ✓ Разбор YouTube URL: source_type=YOUTUBE (youtube.com/youtu.be/music/nocookie
