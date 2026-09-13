@@ -459,6 +459,8 @@ Completed:
   error fields
 ✓ inline Telegram keyboard, Later choices и URL Open; `/today` записывает
   `TODAY_SHOWN`
+✓ ingestion атомарно пишет `CREATED` ровно для новых text/URL/voice/audio Items;
+  Telegram replay и deduplicated URL не создают дополнительное событие
 ✓ action, migration и handler regressions
 
 Remaining:

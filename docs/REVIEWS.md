@@ -771,7 +771,20 @@
 - Следующий шаг по протоколу: status-finalization commit изменяет только
   `docs/REVIEWS.md` и `docs/IMPLEMENTATION_STATE.md`, затем MERGE READY.
 
-## Шаблон записи
+## 2026-09-14 — PR #11 — f2c60e8 — CHANGES REQUIRED (review 1)
+
+- Reviewer: Orchestrator; вердикт также на GitHub:
+  https://github.com/ShabanovBoris/aiinbox/pull/11#pullrequestreview-5192269128
+  (reviewed HEAD `f2c60e8af400ef74ccf7b34c3c0545f5db44e72c`).
+- Findings:
+  1. MAJOR: минимальный event contract требует `CREATED`; ingestion не писал
+     его для новых text/URL/voice/audio Items. Нужны атомарная запись и
+     regressions на replay/dedup.
+  2. MINOR: wording в IMPLEMENTATION_STATE слишком широко обещал idempotency
+     всех callback'ов, хотя повторный snooze пересчитывает timestamp.
+- Resolved: `CREATED` добавлен атомарно с каждым новым Item; replay и
+  deduplicated URL не создают дополнительное событие; wording сужен до
+  гарантированных repeated Done/Retry.
 
 ```text
 ## YYYY-MM-DD — PR #N — <reviewed HEAD sha> — OUTCOME

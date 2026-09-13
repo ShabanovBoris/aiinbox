@@ -7,7 +7,7 @@ from sqlalchemy.exc import IntegrityError
 from app.domain.enums import ProcessingStatus, SourceType
 from app.services.ingestion import ingest_message
 from app.services.url_parsing import normalize_url, parse_message
-from app.storage.models import Item, User
+from app.storage.models import Event, Item, User
 
 
 async def ingest(session_factory, message_id: int = 1, text: str = "Изучить AI agents"):
@@ -33,6 +33,12 @@ async def test_duplicate_update_returns_same_item(session_factory):
     assert second.items[0].id == first.items[0].id
     async with session_factory() as session:
         assert await session.scalar(select(func.count()).select_from(Item)) == 1
+        assert (
+            await session.scalar(
+                select(func.count()).select_from(Event).where(Event.event_type == "CREATED")
+            )
+            == 1
+        )
 
 
 async def test_url_message_creates_web_item_with_note(session_factory):
@@ -66,6 +72,12 @@ async def test_duplicate_url_across_messages_is_skipped(session_factory):
     assert second.duplicates == ["https://example.com/a"]
     async with session_factory() as session:
         assert await session.scalar(select(func.count()).select_from(Item)) == 1
+        assert (
+            await session.scalar(
+                select(func.count()).select_from(Event).where(Event.event_type == "CREATED")
+            )
+            == 1
+        )
 
 
 async def test_repeated_url_inside_single_message_deduplicated(session_factory):
@@ -187,3 +199,10 @@ async def test_concurrent_overlapping_url_dedup_converges(session_factory):
         "https://example.com/b",
         "https://example.com/c",
     ]
+    async with session_factory() as session:
+        assert (
+            await session.scalar(
+                select(func.count()).select_from(Event).where(Event.event_type == "CREATED")
+            )
+            == 3
+        )

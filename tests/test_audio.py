@@ -2,7 +2,7 @@ from pathlib import Path
 
 import httpx
 import pytest
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app.domain.enums import ContentKind, ProcessingStatus, SourceType
 from app.domain.priority import PriorityEngine
@@ -11,7 +11,7 @@ from app.extractors.audio import AudioExtractor
 from app.services.analysis import Analyzer
 from app.services.ingestion import ingest_voice
 from app.services.processing import ProcessingPipeline
-from app.storage.models import Content, Item
+from app.storage.models import Content, Event, Item
 from app.workers.processing import ProcessingWorker
 from tests.fakes import FakeDownloader, FakeLlmProvider, FakeTranscriber, make_analysis
 
@@ -70,6 +70,15 @@ async def test_voice_pipeline_end_to_end(tmp_path, session_factory):
         ).all()
     assert len(rows) == 1
     assert rows[0].text == "Голосовая заметка: изучить агентов"
+    async with session_factory() as session:
+        assert (
+            await session.scalar(
+                select(Event.event_type).where(
+                    Event.item_id == item.id, Event.event_type == "CREATED"
+                )
+            )
+            == "CREATED"
+        )
 
     # временный файл удалён после успеха
     assert temp_files(tmp_path / "audio") == []
@@ -177,6 +186,13 @@ async def test_voice_ingestion_is_idempotent(session_factory):
         )
     ).items[0]
     assert second.id == first.id
+    async with session_factory() as session:
+        assert (
+            await session.scalar(
+                select(func.count()).select_from(Event).where(Event.item_id == first.id)
+            )
+            == 1
+        )
 
 
 def make_real_downloader(bot, tmp_path, **overrides):
