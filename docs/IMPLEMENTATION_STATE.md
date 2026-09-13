@@ -469,7 +469,7 @@ Remaining:
 
 Last verification:
 ruff check . → pass; ruff format --check . → pass; targeted tests → 15 passed;
-PR #11 открыт и exact-head REVIEW REQUEST отправлен; full suite → 166 passed.
+PR #11 открыт и exact-head REVIEW REQUEST отправлен; full suite → 168 passed.
 
 ### Шаблон фазы в работе
 
