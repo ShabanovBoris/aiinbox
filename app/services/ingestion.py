@@ -5,6 +5,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.domain.enums import ProcessingStatus, SourceType
+from app.extractors.youtube import is_youtube_url
 from app.services.url_parsing import normalize_url, parse_message
 from app.storage.models import Item, User
 
@@ -75,7 +76,10 @@ async def ingest_message(
                     log.info("duplicate url ignored item_id=%s url=%s", existing.id, normalized)
                     duplicates.append(normalized)
                     continue
-                items.append(_make_web_item(user_id, message_id, index, normalized, note))
+                source_type = SourceType.YOUTUBE if is_youtube_url(normalized) else SourceType.WEB
+                items.append(
+                    _make_web_item(user_id, message_id, index, normalized, note, source_type)
+                )
 
         for item in items:
             session.add(item)
@@ -128,13 +132,20 @@ def _make_text_item(user_id: int, message_id: int, text: str) -> Item:
     )
 
 
-def _make_web_item(user_id: int, message_id: int, source_index: int, url: str, note: str) -> Item:
+def _make_web_item(
+    user_id: int,
+    message_id: int,
+    source_index: int,
+    url: str,
+    note: str,
+    source_type: SourceType = SourceType.WEB,
+) -> Item:
     return Item(
         user_id=user_id,
         telegram_message_id=message_id,
         source_index=source_index,
         processing_status=ProcessingStatus.QUEUED,
-        source_type=SourceType.WEB,
+        source_type=source_type,
         source_url=url,
         user_note=note,
     )

@@ -392,6 +392,117 @@
   Telegram retry policy, STT TIMEOUT, duration/resume, token redaction).
 - Финализация: Phase 5 → DONE в IMPLEMENTATION_STATE.
 
+## 2026-09-13 — PR #7 — e54e61e — CHANGES REQUIRED
+
+- Phase 06 — YouTube. Reviewer: Orchestrator; вердикт также на GitHub:
+  https://github.com/ShabanovBoris/aiinbox/pull/7#pullrequestreview-5188734132 (commit e54e61e).
+- Findings:
+  1. MAJOR: YoutubeExtractor не подключён в composition root (main.py) —
+     production YOUTUBE Items падали с UNSUPPORTED_SOURCE; тесты скрывали дефект,
+     передавая extractor вручную (обязательное).
+  2. MAJOR: subtitle download буферизовал ответ целиком без byte-cap и retry;
+     audio fallback не чистил partial-файлы при ошибке yt-dlp; outtmpl %(id)s
+     давал коллизии путей при параллельной обработке (обязательное).
+  3. MAJOR: checkpoint ANALYZING восстанавливал неэквивалентный NormalizedContent
+     (url=None вместо canonical, без description/via_stt/cues) — retry анализировал
+     другой input (обязательное, D-001).
+  4. MINOR: timestamps (cues) не персистились, хотя IMPLEMENTATION_STATE заявлял.
+  5. MINOR: VTT case-баг — Kind:/Language: заголовки утекали в текст транскрипта.
+  6. MINOR: www.youtube-nocookie.com не классифицировался как YouTube.
+- Resolved (коммиты после e54e61e в этом же PR):
+  1. → build_extractors() в main.py (composition root) подключает YoutubeExtractor
+     всегда; regression-тест production-composition.
+  2. → собственная temp-поддиректория на extraction (yt-<uuid>), полная очистка
+     при успехе/ошибке/отмене; subtitle download — streamed с byte-cap и bounded
+     retry; регрессии: subtitle oversize, transient retry, partial cleanup.
+  3. → TRANSCRIPT metadata хранит canonical_url/title/via_stt/cues/duration;
+     restore собирает эквивалентный NormalizedContent (description из CONTENTS
+     DESCRIPTION); regression: pydantic equality initial/resumed.
+  4. → cues персистятся в metadata_json.
+  5. → case-insensitive фильтрация заголовков; regression.
+  6. → www.youtube-nocookie.com + .youtube-nocookie.com suffix; regression.
+
+## 2026-09-13 — PR #7 — 8a87a54 — CHANGES REQUIRED (re-review)
+
+- Reviewer: Orchestrator; вердикт также на GitHub:
+  https://github.com/ShabanovBoris/aiinbox/pull/7#pullrequestreview-5188821659 (commit 8a87a54).
+- Findings:
+  1. MAJOR: fallback order нарушен — human subs непригодны → сразу STT, automatic
+     captions не пробовались (_pick_subtitles выбирал один URL).
+  2. MAJOR: checkpoint equality не закрыта для YOUTUBE — заявленный equality-тест
+     отсутствовал; фактические различия initial/resumed: cues list[tuple] vs
+     list[list] после JSON round-trip, пустой description "" vs None.
+  3. MAJOR: subtitle byte cap не configurable (не в Settings/composition root).
+  4. MAJOR: docs опережали код (REVIEWS/IMPLEMENTATION_STATE/PR body).
+- Resolved (коммиты после 8a87a54):
+  1. → _subtitle_candidates: перебор ВСЕХ кандидатов (human → auto, config langs →
+     любые) до первого пригодного; STT только после исчерпания. Регрессия:
+     human unusable → auto valid → STT calls == 0.
+  2. → cues нормализуются к list[list] при extract; description_excerpt → None при
+     пустоте; youtube resume-тест проверяет полное pydantic equality.
+  3. → Settings.youtube_max_subtitle_bytes + .env.example + composition root
+     передаёт в extractor.
+  4. → docs синхронизированы с фактическим diff (проверено pytest/grep).
+
+## 2026-09-13 — PR #7 — d0ccaf0 — CHANGES REQUIRED (re-review 2)
+
+- Reviewer: Orchestrator; вердикт также на GitHub:
+  https://github.com/ShabanovBoris/aiinbox/pull/7#pullrequestreview-5188849013 (commit d0ccaf0).
+- Findings:
+  1. MAJOR: oversized subtitle candidate прерывал всю fallback-цепочку
+     (TOO_LARGE ретранслировался наружу вместо перехода к следующему кандидату).
+  2. MINOR: строгий human → auto порядок не соблюдался (auto ru обгонял human de).
+  3. MINOR: PR body stale (metadata).
+- Resolved (коммиты после d0ccaf0):
+  1. → любой AppError кандидата (включая TOO_LARGE) делает его непригодным и
+     цепочка продолжается; STT только после исчерпания. Регрессии:
+     oversized human → auto success (STT == 0); all unusable → STT.
+  2. → _subtitle_candidates: сначала ВСЕ human (config langs → любые), затем
+     ВСЕ auto. Регрессия: human de + auto ru → выбран human de.
+  3. → PR body обновлён как metadata.
+
+## 2026-09-13 — PR #7 — 3191f1b — CHANGES REQUIRED (re-review 3)
+
+- Reviewer: Orchestrator; вердикт также на GitHub:
+  https://github.com/ShabanovBoris/aiinbox/pull/7#pullrequestreview-5188859664 (commit 3191f1b).
+- Findings:
+  1. MAJOR: _subtitle_candidates использовал track["url"] — malformed track без
+     url давал KeyError и обрушивал весь fallback.
+  2. MINOR: strict-priority тест не доказывал порядок (одинаковые payloads).
+  3. MINOR: IMPLEMENTATION_STATE/PR body отставали (121/110 passed, старый HEAD).
+- Resolved (коммиты после 3191f1b):
+  1. → safe track.get("url") в collect(); malformed human track не роняет chain.
+     Regression: human track без url → valid auto → success, STT == 0.
+  2. → тест усилен разными payloads и счётчиком auto-запросов: content из human de,
+     auto endpoint не запрашивался.
+  3. → IMPLEMENTATION_STATE обновлён (121 passed, новые тесты перечислены).
+
+## 2026-09-13 — PR #7 — 7856a6d — CHANGES REQUIRED (re-review 4)
+
+- Reviewer: Orchestrator; вердикт также на GitHub:
+  https://github.com/ShabanovBoris/aiinbox/pull/7#pullrequestreview-5188870003 (commit 7856a6d).
+- Findings:
+  1. MINOR: заявленный malformed-track regression отсутствовал в test_youtube.py
+     (production fix применён, тест не добавлен).
+  2. MINOR: IMPLEMENTATION_STATE утверждал наличие этого теста.
+  3. MINOR/metadata: PR body stale (110 passed, старый HEAD).
+- Production fix (safe track.get("url")) и усиленный strict-priority тест
+  подтверждены корректными.
+- Resolved (коммит после 7856a6d):
+  1. → test_malformed_human_track_does_not_break_fallback фактически добавлен
+     (human track без url → valid auto → success, STT == 0); pytest 122 passed.
+  2. → PR body обновлён как metadata без commit.
+
+## 2026-09-13 — PR #7 — eeeb6cb — APPROVED
+
+- Phase 06 — YouTube. Reviewer: Orchestrator; вердикт также на GitHub:
+  https://github.com/ShabanovBoris/aiinbox/pull/7#pullrequestreview-5188879730 (commit eeeb6cb).
+- Reviewed HEAD: eeeb6cbe9c97a7c3d25899f36599ef0b74aa0fc8. mergeable/clean.
+- Все findings Phase 6 закрыты (composition root, resource invariants, checkpoint
+  equality, cues persistence, VTT headers, nocookie classification, malformed
+  track, fallback order/priority).
+- Финализация: Phase 6 → DONE в IMPLEMENTATION_STATE.
+
 ## Шаблон записи
 
 ```text

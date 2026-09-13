@@ -33,7 +33,7 @@ squash merge с ожидаемым HEAD B. Вердикты фиксируютс
 | 3 | Web ingestion | DONE |
 | 4 | Architecture checkpoint | DONE |
 | 5 | Voice/audio | DONE |
-| 6 | YouTube | NOT_STARTED |
+| 6 | YouTube | DONE |
 | 7 | Video visual analysis | NOT_STARTED |
 | 8 | User profile | NOT_STARTED |
 | 9 | Today/inbox/search | NOT_STARTED |
@@ -301,6 +301,53 @@ partial cleanup; атомарный oversized Item; resume с полным equal
 NormalizedContent включая duration; STT TIMEOUT маппинг; token redaction —
 TESTTOKEN отсутствует в INFO-логах при media download)
 smoke: headless старт без токена — bot disabled, SIGINT graceful
+
+### Phase 6 — YouTube — DONE
+
+APPROVED @ eeeb6cbe9c97a7c3d25899f36599ef0b74aa0fc8 (Orchestrator, GitHub review
+pullrequestreview-5188879730). Ревью прошло три круга: composition root wiring,
+resource invariants (owned temp subdir, byte-cap, retry), checkpoint equivalence
+(canonical url/cues/duration), VTT header case-фикс, nocookie классификация,
+malformed track regression.
+
+Completed:
+✓ Разбор YouTube URL: source_type=YOUTUBE (youtube.com/youtu.be/music/nocookie
+  hosts); WEB-классификация остальных
+✓ YoutubeExtractor: yt-dlp Python API (без shell/subprocess), noplaylist=True,
+  playlist URL → UNSUPPORTED_SOURCE (один URL — максимум одно видео)
+✓ Метаданные: title, description (excerpt в contents DESCRIPTION), duration,
+  canonical webpage_url
+✓ Транскрипт: human subtitles → automatic captions → аудио+STT fallback;
+  пригодность субтитров ≥ 40 символов; при пригодных субтитрах STT не вызывается
+✓ VTT/SRT парсер: теги/заголовки/дубликаты реплик, timestamps в metadata_json
+✓ Лимиты: duration cap (TOO_LARGE permanent), max_filesize аудио (TOO_LARGE),
+  max_subtitle_bytes (инкрементальный cap при streamed загрузке субтитров),
+  socket_timeout — всё через Settings/composition root
+✓ Fallback chain: перебор ВСЕХ кандидатов субтитров (human → auto, config langs →
+  любые) до первого пригодного; ЛЮБАЯ ошибка кандидата (включая TOO_LARGE и
+  malformed track без url) делает его непригодным и цепочка продолжается;
+  STT только после исчерпания кандидатов
+✓ Строгий порядок human → auto: валидные human на любом языке предпочтительнее
+  auto на preferred-языке (регрессия: human de + auto ru → выбран human de,
+  auto endpoint не запрашивался)
+✓ Malformed subtitle track (без url) не роняет fallback chain (регрессия)
+✓ Cues нормализуются к list[list] при extract — JSON round-trip сохраняет
+  равенство initial/resumed NormalizedContent
+✓ TRANSCRIPT + DESCRIPTION персистятся атомарно с checkpoint'ом ANALYZING;
+  resume из ANALYZING без повторного yt-dlp/STT (D-001)
+✓ Temp audio удаляется после STT (успех/ошибка)
+
+Remaining:
+□ Blocked (external): live yt-dlp против реального YouTube — отложен до Phase 12
+  (rate-limits/geo); путь покрыт фейковым ydl_factory + MockTransport
+
+Last verification:
+ruff check . → pass; ruff format --check . → pass; pytest → 122 passed
+(+ subtitles VTT/SRT/dedup + Kind:/Language: case-фикс; fallback chain: human
+unusable → auto → STT; subtitle oversize/transient retry; playlist reject;
+duration cap; TRANSCRIPT/DESCRIPTION persistence + resume с полным equality
+NormalizedContent; youtube URL классификация + www.youtube-nocookie; production
+composition test)
 
 ### Шаблон фазы в работе
 

@@ -24,6 +24,7 @@ class SourceType(enum.Enum):
     WEB = "WEB"
     VOICE = "VOICE"
     AUDIO = "AUDIO"
+    YOUTUBE = "YOUTUBE"
 
 
 # Тип контента определяет, попадает ли Item в /today и что с ним делать;
