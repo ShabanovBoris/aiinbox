@@ -256,9 +256,17 @@ class ReminderWorker:
                 # Durable evidence is created only after the configured time
                 # has passed; a later morning poll can then recover exactly
                 # this deferred local date without synthetic catch-up.
+                deferred_date = None
                 if local_now.time() >= digest_time:
+                    deferred_date = local_now.date()
+                elif quiet_start > quiet_end and local_now.time() < quiet_end:
+                    # After midnight, yesterday's daily schedule is already
+                    # due regardless of whether its time was before or inside
+                    # the overnight quiet window.
+                    deferred_date = local_now.date() - timedelta(days=1)
+                if deferred_date is not None:
                     await self._defer_digest(
-                        session, user.id, datetime.combine(local_now.date(), time.min)
+                        session, user.id, datetime.combine(deferred_date, time.min)
                     )
                 await session.commit()
                 return 0

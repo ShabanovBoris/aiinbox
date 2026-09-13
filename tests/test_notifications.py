@@ -107,6 +107,26 @@ async def test_digest_due_before_overnight_quiet_is_deferred_without_losing_date
         assert reminder.payload_json["local_date"] == "2026-09-14"
 
 
+async def test_digest_after_midnight_restart_is_deferred_from_previous_local_day(session_factory):
+    await make_ready_item(session_factory)
+    await update_notification_settings(
+        session_factory,
+        42,
+        daily_digest_time="21:00",
+        quiet_hours_start="22:30",
+        quiet_hours_end="08:00",
+    )
+    bot = FakeBot()
+    worker = ReminderWorker(session_factory, bot)
+
+    # First poll after downtime is 01:00 local; the previous day's 21:00
+    # digest is due but delivery remains blocked by quiet hours.
+    assert await worker.process_once(datetime(2026, 9, 14, 22, 0)) == 0
+    assert await worker.process_once(datetime(2026, 9, 15, 5, 0)) == 1
+    assert await worker.process_once(datetime(2026, 9, 15, 5, 1)) == 0
+    assert len(bot.messages) == 1
+
+
 async def test_digest_does_not_synthetic_catch_up_before_configured_time(session_factory):
     await make_ready_item(session_factory)
     bot = FakeBot()

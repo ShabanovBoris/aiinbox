@@ -869,6 +869,20 @@
   local 08:30 remains unsent until 09:00. Added regression coverage and
   synchronized the PR metadata to the new exact HEAD and 185 tests.
 
+## 2026-09-14 — PR #12 — ffc97a8 — CHANGES REQUIRED (review 4)
+
+- Reviewer: Orchestrator; GitHub COMMENT review:
+  https://github.com/ShabanovBoris/aiinbox/pull/12#pullrequestreview-5192510310
+  (reviewed HEAD `ffc97a8f30e315226bc63da30015949bec359736`).
+- Findings: MAJOR — the durable-evidence recovery did not materialize a
+  previous local date when the first poll after downtime occurred after
+  midnight during overnight quiet hours; MINOR — PR metadata had stale HEAD
+  and test count.
+- Resolved in same branch/PR #12: overnight quiet-hours polling after
+  midnight now records yesterday's due digest as PENDING evidence, while a
+  user with no prior poll still receives no synthetic digest before 09:00.
+  Added the 01:00 → 08:00 regression and synchronized PR metadata.
+
 ```text
 ## YYYY-MM-DD — PR #N — <reviewed HEAD sha> — OUTCOME
 
