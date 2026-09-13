@@ -38,7 +38,7 @@ squash merge с ожидаемым HEAD B. Вердикты фиксируютс
 | 8 | User profile | DONE |
 | 9 | Today/inbox/search | DONE |
 | 10 | Item actions | DONE |
-| 11 | Notifications | NOT_STARTED |
+| 11 | Notifications | IN_PROGRESS |
 | 12 | Production hardening | NOT_STARTED |
 | 13 | Final acceptance | NOT_STARTED |
 
@@ -470,6 +470,16 @@ Last verification:
 ruff check . → pass; ruff format --check . → pass; targeted Phase 10 tests → pass;
 PR #11 approved at HEAD `991b152079a4245c9e92346d16bbe64c67f6ef57`;
 full suite → 168 passed.
+
+### Phase 11 — Notifications — IN_PROGRESS
+
+Scope: persistent user notification settings, minimal `/settings` UI, a
+periodic reminder worker, once-per-local-day digest via `TodayService`,
+snooze resurfacing, quiet-hours deferral, and restart-safe reminder state.
+
+Remaining:
+□ implement and verify the Phase 11 vertical slice; then open PR for
+  Orchestrator review
 
 ### Шаблон фазы в работе
 
