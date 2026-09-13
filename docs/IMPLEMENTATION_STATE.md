@@ -336,7 +336,7 @@ Remaining:
   (rate-limits/geo); путь покрыт фейковым ydl_factory + MockTransport
 
 Last verification:
-ruff check . → pass; ruff format --check . → pass; pytest → 121 passed
+ruff check . → pass; ruff format --check . → pass; pytest → 122 passed
 (+ subtitles VTT/SRT/dedup + Kind:/Language: case-фикс; fallback chain: human
 unusable → auto → STT; subtitle oversize/transient retry; playlist reject;
 duration cap; TRANSCRIPT/DESCRIPTION persistence + resume с полным equality
