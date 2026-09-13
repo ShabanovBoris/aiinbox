@@ -883,6 +883,19 @@
   user with no prior poll still receives no synthetic digest before 09:00.
   Added the 01:00 → 08:00 regression and synchronized PR metadata.
 
+## 2026-09-14 — PR #12 — ffc97a8 — CHANGES REQUIRED (review 5)
+
+- Reviewer: Orchestrator; GitHub COMMENT review:
+  https://github.com/ShabanovBoris/aiinbox/pull/12#pullrequestreview-5192521430
+  (reviewed HEAD `ffc97a8f30e315226bc63da30015949bec359736`).
+- Findings: MAJOR — when the first poll after downtime occurred after
+  midnight, the previous local day's due digest was not materialized as
+  PENDING evidence; MINOR — PR metadata had a stale HEAD.
+- Resolved in same branch/PR #12 at `5c7bb663962327c80df7deb69cb9c918b762d0d8`:
+  overnight polling after midnight now records the previous local date as
+  PENDING evidence, the 01:00 → 08:00 regression is covered, and PR metadata
+  is synchronized.
+
 ```text
 ## YYYY-MM-DD — PR #N — <reviewed HEAD sha> — OUTCOME
 
