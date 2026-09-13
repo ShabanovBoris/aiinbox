@@ -855,6 +855,20 @@
   after overnight quiet hours; regression covers `21:00`, `22:30–08:00`, late
   poll at 23:00, delivery at 08:00, and no duplicate on the next poll.
 
+## 2026-09-14 — PR #12 — 7b235b4 — CHANGES REQUIRED (review 3)
+
+- Reviewer: Orchestrator; GitHub COMMENT review:
+  https://github.com/ShabanovBoris/aiinbox/pull/12#pullrequestreview-5192510310
+  (reviewed HEAD `7b235b409707af2dd8420caa7d1bc8c5b1ea67f7`).
+- Findings: MAJOR — generalized overnight recovery synthesized yesterday's
+  digest before the configured time for a new/enabled user; MINOR — PR body
+  still contained the previous HEAD and test count.
+- Resolved in same branch/PR #12: recovery now requires durable PENDING
+  evidence created by a due digest during quiet hours (or an explicitly
+  configured digest inside overnight quiet hours); a default `09:00` digest at
+  local 08:30 remains unsent until 09:00. Added regression coverage and
+  synchronized the PR metadata to the new exact HEAD and 185 tests.
+
 ```text
 ## YYYY-MM-DD — PR #N — <reviewed HEAD sha> — OUTCOME
 

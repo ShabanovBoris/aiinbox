@@ -73,20 +73,7 @@ def digest_target_date(
     if in_quiet_hours(local_now.time(), quiet_start, quiet_end):
         return None
 
-    current_time = local_now.time()
-    if current_time >= digest_time:
-        return local_now.date()
-
-    # Once overnight quiet hours have ended, a digest scheduled before or
-    # during that quiet window belongs to yesterday even when today's clock
-    # time has not reached the configured digest time. This preserves the
-    # local-date idempotency key after a restart or a late worker poll.
-    if quiet_start > quiet_end and current_time >= quiet_end:
-        return local_now.date() - timedelta(days=1)
-
-    # The same-day variant can defer a digest that was scheduled inside the
-    # quiet window until the window ends.
-    if current_time >= quiet_end and in_quiet_hours(digest_time, quiet_start, quiet_end):
+    if local_now.time() >= digest_time:
         return local_now.date()
     return None
 
@@ -264,7 +251,35 @@ class ReminderWorker:
                 quiet_start = parse_clock(settings["quiet_hours_start"])
                 quiet_end = parse_clock(settings["quiet_hours_end"])
             target_date = digest_target_date(local_now, digest_time, quiet_start, quiet_end)
+            digest_quiet = in_quiet_hours(digest_time, quiet_start, quiet_end)
+            if in_quiet_hours(local_now.time(), quiet_start, quiet_end):
+                # Durable evidence is created only after the configured time
+                # has passed; a later morning poll can then recover exactly
+                # this deferred local date without synthetic catch-up.
+                if local_now.time() >= digest_time:
+                    await self._defer_digest(
+                        session, user.id, datetime.combine(local_now.date(), time.min)
+                    )
+                await session.commit()
+                return 0
+            deferred = await session.scalar(
+                select(Reminder)
+                .where(
+                    Reminder.user_id == user.id,
+                    Reminder.type == DAILY_DIGEST,
+                    Reminder.status == "PENDING",
+                )
+                .order_by(Reminder.scheduled_at)
+            )
+            if deferred is not None:
+                target_date = deferred.scheduled_at.date()
+            elif quiet_start > quiet_end and digest_quiet and local_now.time() >= quiet_end:
+                # A digest configured inside overnight quiet hours was due on
+                # the preceding local date; materialize that fact before claim.
+                target_date = local_now.date() - timedelta(days=1)
+                await self._defer_digest(session, user.id, datetime.combine(target_date, time.min))
             if target_date is None:
+                await session.commit()
                 return 0
             # For a digest, scheduled_at is a local-calendar-day identity,
             # not a UTC instant; this survives a timezone change within that day.
@@ -301,7 +316,38 @@ class ReminderWorker:
             .on_conflict_do_nothing()
         )
         result = await session.execute(statement)
+        if result.rowcount == 1:
+            return True
+        result = await session.execute(
+            update(Reminder)
+            .where(
+                Reminder.user_id == user_id,
+                Reminder.type == DAILY_DIGEST,
+                Reminder.scheduled_at == scheduled_at,
+                Reminder.status == "PENDING",
+            )
+            .values(
+                status="SENT",
+                payload_json={"local_date": scheduled_at.date().isoformat()},
+                sent_at=now,
+            )
+        )
         return result.rowcount == 1
+
+    async def _defer_digest(self, session, user_id: int, scheduled_at: datetime) -> None:
+        """Persist a quiet-hours deferral so recovery has explicit evidence."""
+        await session.execute(
+            sqlite_insert(Reminder)
+            .values(
+                user_id=user_id,
+                item_id=None,
+                type=DAILY_DIGEST,
+                scheduled_at=scheduled_at,
+                status="PENDING",
+                payload_json={"local_date": scheduled_at.date().isoformat()},
+            )
+            .on_conflict_do_nothing()
+        )
 
     async def _process_snoozes(self, now: datetime) -> int:
         async with self.session_factory() as session:

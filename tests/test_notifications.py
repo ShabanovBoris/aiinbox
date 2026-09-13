@@ -107,6 +107,20 @@ async def test_digest_due_before_overnight_quiet_is_deferred_without_losing_date
         assert reminder.payload_json["local_date"] == "2026-09-14"
 
 
+async def test_digest_does_not_synthetic_catch_up_before_configured_time(session_factory):
+    await make_ready_item(session_factory)
+    bot = FakeBot()
+    worker = ReminderWorker(session_factory, bot)
+
+    # 08:30 local is before the default 09:00 digest and has no deferred row.
+    assert await worker.process_once(datetime(2026, 9, 14, 5, 30)) == 0
+    assert await worker.process_once(datetime(2026, 9, 14, 6, 0)) == 1
+    assert len(bot.messages) == 1
+    async with session_factory() as session:
+        reminder = await session.scalar(select(Reminder).where(Reminder.type == DAILY_DIGEST))
+        assert reminder.payload_json["local_date"] == "2026-09-14"
+
+
 def test_clock_parser_rejects_offsets_and_seconds():
     from app.services.notifications import parse_clock
 
