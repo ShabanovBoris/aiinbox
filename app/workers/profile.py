@@ -1,0 +1,75 @@
+"""Фоновый worker /profile_update: LLM patch → DB-side merge → уведомление.
+
+Durable job (ТЗ §16): постановка в handler, исполнение здесь; статус PENDING/
+RUNNING/DONE/FAILED переживает restart. Атомарный claim oldest PENDING.
+"""
+
+import asyncio
+import logging
+
+from sqlalchemy import update
+from sqlalchemy.ext.asyncio import async_sessionmaker
+
+from app.errors import AppError
+from app.llm.base import LlmProvider
+from app.services.profile import claim_oldest_profile_update, update_profile_from_patch
+from app.storage.models import ProfileUpdateJob
+
+log = logging.getLogger(__name__)
+
+
+class ProfileUpdateWorker:
+    def __init__(
+        self,
+        session_factory: async_sessionmaker,
+        provider: LlmProvider,
+        poll_seconds: float = 1.0,
+        on_done=None,
+    ):
+        self.session_factory = session_factory
+        self.provider = provider
+        self.poll_seconds = poll_seconds
+        # on_done(job, profile, changed) — auxiliary-колбэк (уведомление в Telegram)
+        self.on_done = on_done
+
+    async def run_forever(self, stop: asyncio.Event) -> None:
+        while not stop.is_set():
+            processed = await self.process_one()
+            if not processed:
+                try:
+                    await asyncio.wait_for(stop.wait(), timeout=self.poll_seconds)
+                except TimeoutError:
+                    pass
+
+    async def process_one(self) -> bool:
+        job = await claim_oldest_profile_update(self.session_factory)
+        if job is None:
+            return False
+        try:
+            profile, changed = await update_profile_from_patch(
+                self.session_factory, self.provider, job
+            )
+        except Exception as exc:
+            code = exc.code if isinstance(exc, AppError) else "LLM_FAILED"
+            log.warning("profile update failed job=%s code=%s", job.id, code)
+            await finish_with_error(self.session_factory, job.id, code, str(exc)[:500])
+            return True
+        log.info("profile updated job=%s user_id=%s changed=%s", job.id, job.user_id, changed)
+        if self.on_done is not None:
+            try:
+                await self.on_done(job, profile, changed)
+            except Exception:
+                log.exception("profile update notify failed job=%s", job.id)
+        return True
+
+
+async def finish_with_error(
+    session_factory: async_sessionmaker, job_id: int, code: str, message: str
+) -> None:
+    async with session_factory() as session:
+        await session.execute(
+            update(ProfileUpdateJob)
+            .where(ProfileUpdateJob.id == job_id)
+            .values(status="FAILED", error_code=code, error_message=message)
+        )
+        await session.commit()

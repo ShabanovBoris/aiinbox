@@ -8,9 +8,8 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.config import Settings
 from app.domain.enums import SourceType
-from app.llm.base import LlmError, LlmProvider
 from app.services.ingestion import ingest_message, ingest_voice
-from app.services.profile import update_profile_from_text
+from app.services.profile import enqueue_profile_update
 
 log = logging.getLogger(__name__)
 
@@ -94,10 +93,7 @@ async def on_voice_audio(
 
 
 def make_router(
-    settings: Settings,
-    session_factory: async_sessionmaker,
-    provider: LlmProvider | None = None,
-    max_audio_bytes: int = 20_000_000,
+    settings: Settings, session_factory: async_sessionmaker, max_audio_bytes: int = 20_000_000
 ) -> Router:
     router = Router()
 
@@ -134,7 +130,7 @@ def make_router(
         if not settings.is_allowed(message.from_user.id if message.from_user else None):
             return
         instruction = (message.text or "").removeprefix("/profile_update").strip()
-        await on_profile_update(message, settings, session_factory, provider, instruction)
+        await on_profile_update(message, settings, session_factory, instruction)
 
     return router
 
@@ -160,7 +156,6 @@ async def on_profile_update(
     message: Message,
     settings: Settings,
     session_factory,
-    provider: LlmProvider,
     instruction: str,
 ) -> None:
     if not instruction:
@@ -169,15 +164,12 @@ async def on_profile_update(
     user_id = message.from_user.id if message.from_user else None
     if not settings.is_allowed(user_id):
         return
-    try:
-        profile, changed = await update_profile_from_text(
-            session_factory,
-            provider,
-            telegram_user_id=user_id,
-            instruction=instruction,
-        )
-    except LlmError as exc:
-        await message.answer(f"Не удалось обновить профиль ({exc.code}).")
-        return
-    log.info("profile updated via /profile_update user_id=%s changed=%s", user_id, changed)
-    await message.answer("Профиль обновлён: " + ", ".join(changed))
+    # Durable job + быстрый ACK: LLM/merge выполняет фоновый worker (ТЗ §14/§68).
+    await enqueue_profile_update(
+        session_factory,
+        telegram_user_id=user_id,
+        chat_id=message.chat.id,
+        instruction=instruction,
+    )
+    log.info("profile update queued user_id=%s", user_id)
+    await message.answer("Принял. Обновляю профиль…")

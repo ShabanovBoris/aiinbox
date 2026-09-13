@@ -577,6 +577,35 @@
   720p bound, 800-char output bound, docs sync) закрыты.
 - Финализация: Phase 7 → DONE в IMPLEMENTATION_STATE.
 
+## 2026-09-13 — PR #9 — 6a2e1e8 — CHANGES REQUIRED
+
+- Phase 08 — User profile. Reviewer: Orchestrator; вердикт также на GitHub:
+  https://github.com/ShabanovBoris/aiinbox/pull/9#pullrequestreview-5189236544 (commit 6a2e1e8).
+- Findings:
+  1. MAJOR: profile seed не подключён к production flow (helper без вызова,
+     без путей/настроек).
+  2. MAJOR: constraints (generic dict) несовместимы со strict Structured
+     Outputs — non-empty constraints невозможно передать через live OpenAI.
+  3. MAJOR: field-level merge теряет данные при конкурентных /profile_update
+     (read-modify-write гонка).
+  4. MAJOR: /profile_update выполняет LLM в handler (ТЗ: только быстрый ACK).
+  5. MINOR: /profile не показывает constraints; constraints-only профиль
+     отображался как пустой.
+  6. MINOR: нет прямой регрессии «profile passed to analyzer».
+- Resolved (коммиты после 6a2e1e8 в этом же PR):
+  1. → apply_profile_seed на старте (profile.yaml; пустые профили получают seed,
+     существующие не перезаписываются; missing → no-op); регрессии.
+  2. → ConstraintEntry(key, value): строгая форма для Structured Outputs;
+     регрессия на generated schema и merge непустых constraints.
+  3. → DB-side атомарный json_patch merge — конкурентные обновления разных
+     полей не затирают друг друга; регрессия concurrent update profession +
+     interests → оба сохранены.
+  4. → durable ProfileUpdateJob (PENDING/RUNNING/DONE/FAILED) + фоновый
+     ProfileUpdateWorker (atomic claim, LLM+merge, уведомление); handler
+     только enqueue + быстрый ACK. Регрессии: enqueue durable job, job flow.
+  5. → format_profile показывает constraints; constraints-only профиль не пустой.
+  6. → регрессия test_analyzer_receives_profile_from_db.
+
 ## Шаблон записи
 
 ```text

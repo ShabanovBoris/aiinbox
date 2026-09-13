@@ -11,11 +11,12 @@ from app.domain.models import UserProfile
 from app.llm.base import LlmError
 from app.services.ingestion import ingest_message
 from app.services.profile import (
+    enqueue_profile_update,
     get_profile,
     load_profile_seed,
-    update_profile_from_text,
+    update_profile_from_patch,
 )
-from app.storage.models import User
+from app.storage.models import ProfileUpdateJob
 from tests.fakes import FakeLlmProvider
 
 
@@ -23,9 +24,10 @@ async def test_profile_persistence_across_sessions(tmp_path, session_factory):
     # Регрессия: профиль сохраняется в users.profile_json и переживает restart.
     await ingest_message(session_factory, telegram_user_id=42, chat_id=42, message_id=1, text="x")
     provider = FakeLlmProvider(profile_patch={"profession": "dev", "interests": ["ai"]})
-    profile, changed = await update_profile_from_text(
-        session_factory, provider, telegram_user_id=42, instruction="я разработчик"
+    job = await enqueue_profile_update(
+        session_factory, telegram_user_id=42, chat_id=42, instruction="я разработчик"
     )
+    profile, changed = await update_profile_from_patch(session_factory, provider, job)
     assert changed == ["profession", "interests"]
     assert profile.profession == "dev"
 
@@ -38,17 +40,21 @@ async def test_profile_persistence_across_sessions(tmp_path, session_factory):
 async def test_profile_update_merges_without_losing_fields(tmp_path, session_factory):
     # Регрессия: patch не удаляет незатронутые поля профиля (merge, не replacement).
     await ingest_message(session_factory, telegram_user_id=42, chat_id=42, message_id=1, text="x")
-    await update_profile_from_text(
+    job1 = await enqueue_profile_update(
+        session_factory, telegram_user_id=42, chat_id=42, instruction="start"
+    )
+    await update_profile_from_patch(
         session_factory,
         FakeLlmProvider(profile_patch={"profession": "dev", "interests": ["ai", "piano"]}),
-        telegram_user_id=42,
-        instruction="start",
+        job1,
     )
-    merged, _ = await update_profile_from_text(
+    job2 = await enqueue_profile_update(
+        session_factory, telegram_user_id=42, chat_id=42, instruction="сменить фокус"
+    )
+    merged, _ = await update_profile_from_patch(
         session_factory,
         FakeLlmProvider(profile_patch={"free_text": "фокус на агентах"}),
-        telegram_user_id=42,
-        instruction="сменить фокус",
+        job2,
     )
     # interests/profession сохранены, free_text добавлен
     assert merged.profession == "dev"
@@ -59,13 +65,11 @@ async def test_profile_update_merges_without_losing_fields(tmp_path, session_fac
 async def test_profile_update_invalid_patch_rejected(tmp_path, session_factory):
     await ingest_message(session_factory, telegram_user_id=42, chat_id=42, message_id=1, text="x")
     provider = FakeLlmProvider(profile_error=LlmError("INVALID_LLM_OUTPUT", "bad patch"))
+    job = await enqueue_profile_update(
+        session_factory, telegram_user_id=42, chat_id=42, instruction="инструкция"
+    )
     with pytest.raises(LlmError) as exc_info:
-        await update_profile_from_text(
-            session_factory,
-            provider,
-            telegram_user_id=42,
-            instruction="инструкция",
-        )
+        await update_profile_from_patch(session_factory, provider, job)
     assert exc_info.value.code == "INVALID_LLM_OUTPUT"
 
 
@@ -116,27 +120,31 @@ def capture_answers(monkeypatch) -> list[str]:
 
 async def test_on_profile_shows_saved_profile(settings, tmp_path, session_factory, monkeypatch):
     sent = capture_answers(monkeypatch)
-    await update_profile_from_text(
+    await ingest_message(session_factory, telegram_user_id=42, chat_id=42, message_id=1, text="x")
+    await update_profile_from_patch(
         session_factory,
         FakeLlmProvider(profile_patch={"profession": "dev"}),
-        telegram_user_id=42,
-        instruction="i",
+        await enqueue_profile_update(
+            session_factory, telegram_user_id=42, chat_id=42, instruction="i"
+        ),
     )
     await on_profile(make_message(42), settings, session_factory)
     assert any("Профессия: dev" in s for s in sent)
 
 
-async def test_on_profile_update_persists_changes(settings, tmp_path, session_factory, monkeypatch):
+async def test_on_profile_update_enqueues_durable_job(
+    settings, tmp_path, session_factory, monkeypatch
+):
+    # /profile_update: быстрый ACK + durable PENDING job; LLM выполняет worker.
     sent = capture_answers(monkeypatch)
-    provider = FakeLlmProvider(profile_patch={"profession": "ml engineer", "interests": ["ai"]})
     await on_profile_update(
         make_message(42, "/profile_update теперь ml"),
         settings,
         session_factory,
-        provider,
         "теперь ml",
     )
-    assert any(s.startswith("Профиль обновлён") for s in sent)
+    assert any(s.startswith("Принял") for s in sent)
     async with session_factory() as session:
-        user = await session.scalar(select(User).where(User.telegram_user_id == 42))
-        assert user is not None and user.profile_json["profession"] == "ml engineer"
+        job = await session.scalar(select(ProfileUpdateJob))
+        assert job is not None and job.status == "PENDING"
+        assert job.instruction == "теперь ml"

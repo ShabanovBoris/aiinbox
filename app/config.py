@@ -23,6 +23,9 @@ class Settings(BaseSettings):
     # Playwright fallback жёстко отключён (нет SSRF-safe browser boundary);
     # вернётся отдельным изменением с pinned/proxied browser network boundary.
 
+    # Profile seed (Phase 8): если файл существует, пустые профили получают seed
+    profile_seed_file: str = "profile.yaml"
+
     # Voice/audio (Phase 5)
     temp_dir: str = "./temp"
     max_audio_bytes: int = 20_000_000  # Telegram bot API отдаёт файлы до 20 MB
