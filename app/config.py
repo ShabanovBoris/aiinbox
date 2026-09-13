@@ -28,6 +28,11 @@ class Settings(BaseSettings):
     max_audio_bytes: int = 20_000_000  # Telegram bot API отдаёт файлы до 20 MB
     transcription_timeout_seconds: float = 120.0
 
+    # YouTube (Phase 6)
+    youtube_max_duration_seconds: int = 7200
+    youtube_max_audio_bytes: int = 50_000_000
+    subtitle_langs: str = "ru,en"
+
     # Сменный LLM-провайдер: model ids только через конфиг (PRODUCT_SPEC §29).
     llm_provider: str = "openai"
     openai_api_key: str = ""

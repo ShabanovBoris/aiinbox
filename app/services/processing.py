@@ -11,6 +11,7 @@ from app.errors import AppError
 from app.extractors.audio import AudioExtractor
 from app.extractors.text import TextExtractor
 from app.extractors.web import WebPageExtractor
+from app.extractors.youtube import YoutubeExtractor
 from app.services.analysis import Analyzer
 from app.storage.models import Content, Item
 
@@ -32,11 +33,13 @@ class ProcessingPipeline:
         priority: PriorityEngine,
         web_extractor: WebPageExtractor | None = None,
         audio_extractor: AudioExtractor | None = None,
+        youtube_extractor: YoutubeExtractor | None = None,
     ):
         self.analyzer = analyzer
         self.priority = priority
         self.web_extractor = web_extractor or WebPageExtractor()
         self.audio_extractor = audio_extractor
+        self.youtube_extractor = youtube_extractor
 
     async def run(self, session: AsyncSession, item: Item) -> None:
         analysis = None
@@ -85,6 +88,34 @@ class ProcessingPipeline:
         )
 
     async def _extract(self, session: AsyncSession, item: Item) -> NormalizedContent:
+        if item.source_type is SourceType.YOUTUBE:
+            if self.youtube_extractor is None:
+                raise AppError("UNSUPPORTED_SOURCE", "youtube extractor not wired")
+            content = await self.youtube_extractor.extract(item)
+            # TRANSCRIPT/DESCRIPTION персистятся атомарно с checkpoint'ом
+            # ANALYZING: retry не перекачивает видео и не повторяет STT (ТЗ §59).
+            session.add(
+                Content(
+                    item_id=item.id,
+                    kind=ContentKind.TRANSCRIPT,
+                    text=content.text,
+                    metadata_json={
+                        "duration_seconds": content.duration_seconds,
+                        "via_stt": content.metadata.get("via_stt"),
+                        "title": content.title,
+                    },
+                )
+            )
+            if content.metadata.get("description_excerpt"):
+                session.add(
+                    Content(
+                        item_id=item.id,
+                        kind=ContentKind.DESCRIPTION,
+                        text=content.metadata["description_excerpt"],
+                    )
+                )
+            content.duration_seconds = content.duration_seconds
+            return content
         if item.source_type in (SourceType.VOICE, SourceType.AUDIO):
             if self.audio_extractor is None:
                 raise AppError("UNSUPPORTED_SOURCE", "voice/audio extractor not wired")
@@ -126,7 +157,7 @@ class ProcessingPipeline:
     @staticmethod
     async def _restored_content(session: AsyncSession, item: Item) -> NormalizedContent | None:
         kind, url = ContentKind.WEB_TEXT, item.source_url
-        if item.source_type in (SourceType.VOICE, SourceType.AUDIO):
+        if item.source_type in (SourceType.VOICE, SourceType.AUDIO, SourceType.YOUTUBE):
             kind, url = ContentKind.TRANSCRIPT, None
         elif item.source_type is not SourceType.WEB:
             # TEXT: извлечение тривиально, content всегда восстанавливается из заметки.

@@ -33,7 +33,7 @@ squash merge с ожидаемым HEAD B. Вердикты фиксируютс
 | 3 | Web ingestion | DONE |
 | 4 | Architecture checkpoint | DONE |
 | 5 | Voice/audio | DONE |
-| 6 | YouTube | NOT_STARTED |
+| 6 | YouTube | IN_REVIEW |
 | 7 | Video visual analysis | NOT_STARTED |
 | 8 | User profile | NOT_STARTED |
 | 9 | Today/inbox/search | NOT_STARTED |
@@ -301,6 +301,34 @@ partial cleanup; атомарный oversized Item; resume с полным equal
 NormalizedContent включая duration; STT TIMEOUT маппинг; token redaction —
 TESTTOKEN отсутствует в INFO-логах при media download)
 smoke: headless старт без токена — bot disabled, SIGINT graceful
+
+### Phase 6 — YouTube — IN_REVIEW
+
+Completed:
+✓ Разбор YouTube URL: source_type=YOUTUBE (youtube.com/youtu.be/music/nocookie
+  hosts); WEB-классификация остальных
+✓ YoutubeExtractor: yt-dlp Python API (без shell/subprocess), noplaylist=True,
+  playlist URL → UNSUPPORTED_SOURCE (один URL — максимум одно видео)
+✓ Метаданные: title, description (excerpt в contents DESCRIPTION), duration,
+  canonical webpage_url
+✓ Транскрипт: human subtitles → automatic captions → аудио+STT fallback;
+  пригодность субтитров ≥ 40 символов; при пригодных субтитрах STT не вызывается
+✓ VTT/SRT парсер: теги/заголовки/дубликаты реплик, timestamps в metadata_json
+✓ Лимиты: duration cap (TOO_LARGE permanent), max_filesize аудио (TOO_LARGE),
+  socket_timeout
+✓ TRANSCRIPT + DESCRIPTION персистятся атомарно с checkpoint'ом ANALYZING;
+  resume из ANALYZING без повторного yt-dlp/STT (D-001)
+✓ Temp audio удаляется после STT (успех/ошибка)
+
+Remaining:
+□ Blocked (external): live yt-dlp против реального YouTube — отложен до Phase 12
+  (rate-limits/geo); путь покрыт фейковым ydl_factory + MockTransport
+
+Last verification:
+ruff check . → pass; ruff format --check . → pass; pytest → 110 passed
+(+ subtitles VTT/SRT/dedup, subs→no STT, auto-captions, STT fallback, playlist
+reject, duration cap, pipeline TRANSCRIPT/DESCRIPTION persistence + resume,
+youtube URL классификация)
 
 ### Шаблон фазы в работе
 
