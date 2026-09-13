@@ -529,14 +529,28 @@ Scope: adversarial acceptance of the complete MVP against PRODUCT_SPEC, with
 minimal bug fixes and regressions only; no new features or post-MVP work.
 
 Completed:
+✓ acceptance matrix: TEXT — PASS (`test_text_pipeline_end_to_end`); WEB — PASS
+  (secure fetch, persisted text, resume); VOICE — PASS (download/transcript/
+  persistence); YouTube subtitles — PASS (STT skipped); YouTube without
+  subtitles — PASS (audio/STT); visual video — PASS (vision and transcript-only
+  degradation); TODAY — PASS (eligible filter/order/limit); actions — PASS
+  (Done/Later/Archive/Retry); SEARCH — PASS (text/web/transcript FTS)
+✓ restart — PASS (Items/profile/queue/checkpoints/snooze/reminders and stale
+  PROCESSING recovery); security — PASS (SSRF, redirects, shell-safe args,
+  allowlist, prompt-injection isolation); provider boundary — PASS (OpenAI SDK
+  confined to adapters, model IDs from config); FAILED Item — PASS (error,
+  persistence, retry and intermediate-result reuse)
+✓ fresh database startup — PASS: empty SQLite upgraded through latest migration;
+  headless app started and exited cleanly on SIGINT
+✓ README verification — PASS via `uv run --no-sync`; Docker build remains
+  externally unverified because Docker CLI is unavailable on this host
 
 Remaining:
-□ пройти scenarios 1–13, fresh database installation, README commands,
-  security/provider-boundary review и final quality gate; затем отправить PR
-  на внешний review Orchestrator'у
+□ дождаться verdict Orchestrator'а; исправления при необходимости выполнять
+  в этой же ветке и PR Phase 13
 
 Last verification:
-pytest — 190 passed; Phase 12 merge synchronized to `main`.
+`uv run --no-sync pytest` — 190 passed; Ruff check/format и `git diff --check` — pass.
 
 ### Шаблон фазы в работе
 
