@@ -255,6 +255,19 @@ class YoutubeExtractor:
             await asyncio.sleep(self.backoff_seconds * (2**attempt))
         raise last_error  # pragma: no cover
 
+    async def download_video(self, url: str, work_dir: Path) -> Path:
+        """Скачивание видео для визуального анализа (Phase 7)."""
+        options = {
+            "quiet": True,
+            "no_warnings": True,
+            "noplaylist": True,
+            "format": "best[height<=720]/best",
+            "max_filesize": self.max_audio_bytes,
+            "outtmpl": str(work_dir / "%(id)s.%(ext)s"),
+            "socket_timeout": self.timeout_seconds,
+        }
+        return await self._run_download(url, options)
+
     async def _download_audio(self, url: str, work_dir: Path) -> Path:
         options = {
             "quiet": True,
@@ -265,7 +278,9 @@ class YoutubeExtractor:
             "outtmpl": str(work_dir / "%(id)s.%(ext)s"),
             "socket_timeout": self.timeout_seconds,
         }
+        return await self._run_download(url, options)
 
+    async def _run_download(self, url: str, options: dict) -> Path:
         def _download() -> Path:
             with self._ydl_factory(options) as ydl:
                 info = ydl.extract_info(url, download=True)

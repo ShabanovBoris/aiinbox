@@ -1,8 +1,18 @@
 from pathlib import Path
 from typing import Protocol
 
+from pydantic import BaseModel
+
 from app.domain.models import AnalysisResult, NormalizedContent, UserProfile
 from app.errors import AppError
+
+
+class LlmCapabilities(BaseModel):
+    """Возможности провайдера (ТЗ §24): pipeline деградирует изящно, если
+    vision недоступен — Item всё равно достигает READY по транскрипту."""
+
+    structured_output: bool = True
+    vision: bool = False
 
 
 class LlmError(AppError):
@@ -15,12 +25,18 @@ class LlmProvider(Protocol):
     Расширение контракта (summarize/transcribe/vision) — по мере фаз, не заранее.
     """
 
+    capabilities: LlmCapabilities
+
     async def analyze(
         self,
         content: NormalizedContent,
         profile: UserProfile,
         categories: list[str],
     ) -> AnalysisResult: ...
+
+    async def describe_images(self, images: list[Path], context: str | None) -> str:
+        """Компактное описание визуального контента кадров (ТЗ §23)."""
+        ...
 
 
 class TranscriptionProvider(Protocol):

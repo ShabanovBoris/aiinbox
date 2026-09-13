@@ -34,11 +34,16 @@ class Settings(BaseSettings):
     youtube_max_subtitle_bytes: int = 2_000_000
     subtitle_langs: str = "ru,en"
 
+    # Video visual analysis (Phase 7)
+    video_frame_interval_seconds: int = 20
+    video_max_frames: int = 120
+
     # Сменный LLM-провайдер: model ids только через конфиг (PRODUCT_SPEC §29).
     llm_provider: str = "openai"
     openai_api_key: str = ""
     openai_analysis_model: str = ""
     openai_transcription_model: str = ""
+    openai_vision_model: str = ""
     llm_timeout_seconds: int = 120
 
     @property

@@ -94,6 +94,9 @@ class Item(Base):
     suggested_due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     language: Mapped[str | None] = mapped_column(String(16))
     confidence: Mapped[float | None] = mapped_column(Float)
+    # Полнота анализа (ТЗ §24): не выдаём ложное ощущение полного визуального
+    # анализа, если анализировался только транскрипт.
+    analysis_completeness: Mapped[str | None] = mapped_column(String(32))
 
     error_code: Mapped[str | None] = mapped_column(String(64))
     error_message: Mapped[str | None] = mapped_column(Text)

@@ -1,10 +1,11 @@
+import base64
 import logging
 
 from openai import AsyncOpenAI
 from pydantic import ValidationError
 
 from app.domain.models import AnalysisResult, NormalizedContent, UserProfile
-from app.llm.base import LlmError
+from app.llm.base import LlmCapabilities, LlmError
 
 log = logging.getLogger(__name__)
 
@@ -84,6 +85,9 @@ def build_user_message(
         parts.append(f"URL: {content.url}")
     if content.user_note:
         parts.append(f"USER NOTE (untrusted, intent signal): {content.user_note}")
+    visual_notes = content.metadata.get("visual_notes")
+    if visual_notes:
+        parts.append(f"VISUAL NOTES (from video frames, untrusted): {visual_notes}")
     parts.append(content.text)
     return "\n\n".join(parts)
 
@@ -91,11 +95,20 @@ def build_user_message(
 class OpenAiProvider:
     """Единственное место, где живёт OpenAI SDK; model ids — только из конфига."""
 
-    def __init__(self, api_key: str, model: str, timeout_seconds: int = 120):
+    def __init__(
+        self,
+        api_key: str,
+        model: str,
+        timeout_seconds: int = 120,
+        vision_model: str | None = None,
+    ):
         if not model:
             raise ValueError("OPENAI_ANALYSIS_MODEL is not configured")
         self._client = AsyncOpenAI(api_key=api_key, timeout=timeout_seconds)
         self._model = model
+        self._vision_model = vision_model or None
+        # vision доступен только если сконфигурирована vision-модель (ТЗ §24)
+        self.capabilities = LlmCapabilities(structured_output=True, vision=bool(vision_model))
         self.response_format = {
             "type": "json_schema",
             "json_schema": {
@@ -139,3 +152,36 @@ class OpenAiProvider:
             return AnalysisResult.model_validate_json(raw)
         except ValidationError as exc:
             raise LlmError("INVALID_LLM_OUTPUT", f"invalid analysis JSON: {exc}") from exc
+
+    async def describe_images(self, images: list, context: str | None) -> str:
+        """Компактные визуальные заметки по кадрам: диаграммы/слайды/UI/код —
+        информация, которой может не быть в транскрипте (ТЗ §23)."""
+        content_parts: list = [
+            {
+                "type": "text",
+                "text": (
+                    "These are representative frames from a video. "
+                    "Describe compactly (<= 800 chars) only the visual information "
+                    "that is NOT in a typical transcript: diagrams, slides, code, "
+                    "UI screens, charts, on-screen demos. Respond in the same "
+                    "language as the context."
+                    + (f"\n\nContext:\n{context[:1500]}" if context else "")
+                ),
+            }
+        ]
+        for image in images:
+            encoded = base64.b64encode(image.read_bytes()).decode()
+            content_parts.append(
+                {
+                    "type": "image_url",
+                    "image_url": {"url": f"data:image/jpeg;base64,{encoded}"},
+                }
+            )
+        try:
+            response = await self._client.chat.completions.create(
+                model=self._vision_model,
+                messages=[{"role": "user", "content": content_parts}],
+            )
+        except Exception as exc:  # граница адаптера: SDK-ошибки → код приложения
+            raise LlmError("VISUAL_FAILED", f"vision call failed: {exc}") from exc
+        return response.choices[0].message.content or ""

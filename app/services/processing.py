@@ -1,4 +1,8 @@
+import asyncio
 import logging
+import shutil
+from pathlib import Path
+from uuid import uuid4
 
 from pydantic import ValidationError
 from sqlalchemy import select
@@ -13,6 +17,7 @@ from app.extractors.text import TextExtractor
 from app.extractors.web import WebPageExtractor
 from app.extractors.youtube import YoutubeExtractor
 from app.services.analysis import Analyzer
+from app.services.frames import extract_representative_frames
 from app.storage.models import Content, Item
 
 log = logging.getLogger(__name__)
@@ -34,12 +39,16 @@ class ProcessingPipeline:
         web_extractor: WebPageExtractor | None = None,
         audio_extractor: AudioExtractor | None = None,
         youtube_extractor: YoutubeExtractor | None = None,
+        visual_frame_interval_seconds: int = 20,
+        visual_max_frames: int = 120,
     ):
         self.analyzer = analyzer
         self.priority = priority
         self.web_extractor = web_extractor or WebPageExtractor()
         self.audio_extractor = audio_extractor
         self.youtube_extractor = youtube_extractor
+        self.visual_frame_interval_seconds = visual_frame_interval_seconds
+        self.visual_max_frames = visual_max_frames
 
     async def run(self, session: AsyncSession, item: Item) -> None:
         analysis = None
@@ -64,10 +73,15 @@ class ProcessingPipeline:
 
             item.processing_stage = "ANALYZING"
             await session.commit()
+            # Phase 7: visual enrichment — optional, graceful (ТЗ §23–24, §39).
+            visual_notes = await self._visual_analysis(session, item, content)
+            if visual_notes:
+                content.metadata["visual_notes"] = visual_notes
             # Phase 2 использует default-профиль; профиль пользователя — Phase 8.
             analysis = await self.analyzer.analyze(
                 content, session, item.user_id, profile=DEFAULT_PROFILE
             )
+            item.analysis_completeness = self._completeness(item, visual_notes)
 
             item.processing_stage = "PRIORITIZING"
             # Дорогой результат пишется ДО checkpoint-commit: падение после
@@ -86,6 +100,61 @@ class ProcessingPipeline:
             item.item_type.value if item.item_type else None,
             item.priority_score,
         )
+
+    async def _visual_analysis(
+        self, session: AsyncSession, item: Item, content: NormalizedContent
+    ) -> str | None:
+        """Phase 7: representative frames → vision → compact visual notes.
+
+        Graceful по ТЗ §39/§24: нет vision-capability / ffmpeg / ошибка — Item
+        продолжается по транскрипту с completeness=TRANSCRIPT_ONLY."""
+        capabilities = getattr(self.analyzer.provider, "capabilities", None)
+        if not capabilities or not capabilities.vision:
+            return None
+        if item.source_type is not SourceType.YOUTUBE or self.youtube_extractor is None:
+            return None
+        work_dir = Path(self.youtube_extractor.temp_dir) / f"vis-{uuid4().hex}"
+        work_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            video = await self.youtube_extractor.download_video(item.source_url, work_dir)
+            frames = extract_representative_frames(
+                video,
+                work_dir / "frames",
+                interval_seconds=self.visual_frame_interval_seconds,
+                max_frames=self.visual_max_frames,
+            )
+            if not frames:
+                return None
+            notes = await self.analyzer.provider.describe_images(
+                frames, context=content.text[:1500]
+            )
+            if notes:
+                session.add(
+                    Content(
+                        item_id=item.id,
+                        kind=ContentKind.VISUAL_NOTES,
+                        text=notes,
+                        metadata_json={"frames": len(frames)},
+                    )
+                )
+                return notes
+            return None
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            # vision failure не роняет Item с валидным транскриптом (ТЗ §39)
+            log.warning("visual analysis skipped item_id=%s: %s", item.id, exc)
+            return None
+        finally:
+            shutil.rmtree(work_dir, ignore_errors=True)
+
+    @staticmethod
+    def _completeness(item: Item, visual_notes: str | None) -> str:
+        if item.source_type in (SourceType.VOICE, SourceType.AUDIO):
+            return "TRANSCRIPT_ONLY"
+        if item.source_type is SourceType.YOUTUBE:
+            return "TRANSCRIPT_AND_VISUAL" if visual_notes else "TRANSCRIPT_ONLY"
+        return "FULL_TEXT"
 
     async def _extract(self, session: AsyncSession, item: Item) -> NormalizedContent:
         if item.source_type is SourceType.YOUTUBE:
