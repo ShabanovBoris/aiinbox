@@ -808,6 +808,16 @@
 - Resolved: focused concurrent YouTube regression добавлен в `tests/test_ingestion.py`;
   durable approval и факт его invalidation записаны в этот журнал.
 
+## 2026-09-14 — PR #11 — 8953c81 — CHANGES REQUIRED (review 4)
+
+- Reviewer: Orchestrator; GitHub COMMENT review:
+  https://github.com/ShabanovBoris/aiinbox/pull/11#pullrequestreview-5192310392
+  (reviewed HEAD `8953c81bca5d8bc4603beb075ab173d519fdd9c7`).
+- Findings: MINOR source-of-truth drift — IMPLEMENTATION_STATE и PR body
+  указывали 166 tests / 15 targeted вместо фактических 168.
+- Resolved: count синхронизирован в IMPLEMENTATION_STATE и PR body; product
+  code не изменялся.
+
 ```text
 ## YYYY-MM-DD — PR #N — <reviewed HEAD sha> — OUTCOME
 

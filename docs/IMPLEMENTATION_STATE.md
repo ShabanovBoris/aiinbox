@@ -468,7 +468,7 @@ Remaining:
   в этой же ветке и PR #11
 
 Last verification:
-ruff check . → pass; ruff format --check . → pass; targeted tests → 15 passed;
+ruff check . → pass; ruff format --check . → pass; targeted Phase 10 tests → pass;
 PR #11 открыт и exact-head REVIEW REQUEST отправлен; full suite → 168 passed.
 
 ### Шаблон фазы в работе
