@@ -37,7 +37,7 @@ squash merge с ожидаемым HEAD B. Вердикты фиксируютс
 | 7 | Video visual analysis | DONE |
 | 8 | User profile | DONE |
 | 9 | Today/inbox/search | DONE |
-| 10 | Item actions | IN_PROGRESS |
+| 10 | Item actions | IN_REVIEW |
 | 11 | Notifications | NOT_STARTED |
 | 12 | Production hardening | NOT_STARTED |
 | 13 | Final acceptance | NOT_STARTED |
@@ -449,7 +449,7 @@ cover Today filtering/sorting/limits, FTS title/transcript/web/archived search,
 inbox/category scoping, and READY-to-FTS projection synchronization; headless
 smoke with empty Telegram token → startup, migration, and graceful SIGINT pass.
 
-### Phase 10 — Item actions and feedback events — IN_PROGRESS
+### Phase 10 — Item actions and feedback events — IN_REVIEW
 
 Completed:
 ✓ транзакционные Done, Archive, Later/Snooze, Cancel и Retry с user scoping и
@@ -462,12 +462,12 @@ Completed:
 ✓ action, migration и handler regressions
 
 Remaining:
-□ завершить self-review, обновить PR-документацию, создать PR #11 и отправить
-  REVIEW REQUEST Orchestrator'у
+□ дождаться вердикта Orchestrator'а; исправления при необходимости выполнять
+  в этой же ветке и PR #11
 
 Last verification:
 ruff check . → pass; ruff format --check . → pass; targeted tests → 15 passed;
-full suite from Phase 9 → 165 passed.
+PR #11 открыт и exact-head REVIEW REQUEST отправлен; full suite → 166 passed.
 
 ### Шаблон фазы в работе
 
