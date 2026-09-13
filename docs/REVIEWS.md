@@ -677,6 +677,19 @@
 - Дополнительно: IMPLEMENTATION_STATE/PR body синхронизированы (132 → 151 passed,
   job flow, миграции 220d7ae6d4f1 + 76ed20f32fe7).
 
+## 2026-09-13 — PR #9 — 9e31499 — CHANGES REQUIRED (re-review 4)
+
+- Reviewer: Orchestrator; вердикт также на GitHub:
+  https://github.com/ShabanovBoris/aiinbox/pull/9#pullrequestreview-5189448726 (commit 9e31499).
+- Findings:
+  1. MINOR: IMPLEMENTATION_STATE/PR body отставали — 151 вместо 152 после
+     добавленного composition regression.
+  2. MINOR/metadata: PR body HEAD 9e31499 (docs-коммит сместил HEAD).
+- Resolved (коммиты после 9e31499):
+  1. → счётчики приведены к 152 passed.
+  2. → PR body обновлён как metadata (HEAD в RE-REVIEW REQUEST).
+- Product code не менялся.
+
 ## Шаблон записи
 
 ```text
