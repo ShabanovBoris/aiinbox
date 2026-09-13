@@ -477,6 +477,22 @@
      auto endpoint не запрашивался.
   3. → IMPLEMENTATION_STATE обновлён (121 passed, новые тесты перечислены).
 
+## 2026-09-13 — PR #7 — 7856a6d — CHANGES REQUIRED (re-review 4)
+
+- Reviewer: Orchestrator; вердикт также на GitHub:
+  https://github.com/ShabanovBoris/aiinbox/pull/7#pullrequestreview-5188870003 (commit 7856a6d).
+- Findings:
+  1. MINOR: заявленный malformed-track regression отсутствовал в test_youtube.py
+     (production fix применён, тест не добавлен).
+  2. MINOR: IMPLEMENTATION_STATE утверждал наличие этого теста.
+  3. MINOR/metadata: PR body stale (110 passed, старый HEAD).
+- Production fix (safe track.get("url")) и усиленный strict-priority тест
+  подтверждены корректными.
+- Resolved (коммит после 7856a6d):
+  1. → test_malformed_human_track_does_not_break_fallback фактически добавлен
+     (human track без url → valid auto → success, STT == 0); pytest 122 passed.
+  2. → PR body обновлён как metadata без commit.
+
 ## Шаблон записи
 
 ```text

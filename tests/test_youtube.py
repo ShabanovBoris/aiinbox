@@ -485,3 +485,26 @@ async def test_human_preferred_over_auto_across_langs(tmp_path):
     assert transcriber.calls == 0  # human de пригодны — до auto ru не доходит
     assert "Немецкий транскрипт" in content.text  # выбран human de, не auto ru
     assert auto_requested["count"] == 0  # auto endpoint вообще не запрашивался
+
+
+async def test_malformed_human_track_does_not_break_fallback(tmp_path):
+    # Регрессия: human track БЕЗ url (malformed) не роняет весь fallback chain —
+    # должен быть испробован валидный auto candidate; STT == 0.
+    info = make_info(
+        subtitles={"ru": [{"ext": "vtt"}]},  # track без url
+        automatic_captions={"en": [{"ext": "vtt", "url": "https://sub.example.com/auto.vtt"}]},
+    )
+
+    def handler(request):
+        return httpx.Response(200, text=SUBTITLE_VTT)
+
+    extractor, transcriber, _ = make_youtube(
+        tmp_path,
+        [info],
+        http_client_factory=lambda: httpx.AsyncClient(
+            transport=httpx.MockTransport(handler), follow_redirects=True, timeout=5
+        ),
+    )
+    content = await extractor.extract(make_youtube_item())
+    assert "оркестрация" in content.text
+    assert transcriber.calls == 0
