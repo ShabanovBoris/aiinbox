@@ -494,7 +494,7 @@ Remaining:
   в этой же ветке и PR #12
 
 Last verification:
-ruff check . → pass; ruff format --check . → pass; pytest → 186 passed;
+ruff check . → pass; ruff format --check . → pass; pytest → 187 passed;
 git diff --check → pass.
 
 ### Шаблон фазы в работе

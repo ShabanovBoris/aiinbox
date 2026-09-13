@@ -858,7 +858,7 @@
 ## 2026-09-14 — PR #12 — 7b235b4 — CHANGES REQUIRED (review 3)
 
 - Reviewer: Orchestrator; GitHub COMMENT review:
-  https://github.com/ShabanovBoris/aiinbox/pull/12#pullrequestreview-5192510310
+  https://github.com/ShabanovBoris/aiinbox/pull/12#pullrequestreview-5192521430
   (reviewed HEAD `7b235b409707af2dd8420caa7d1bc8c5b1ea67f7`).
 - Findings: MAJOR — generalized overnight recovery synthesized yesterday's
   digest before the configured time for a new/enabled user; MINOR — PR body
@@ -883,18 +883,18 @@
   user with no prior poll still receives no synthetic digest before 09:00.
   Added the 01:00 → 08:00 regression and synchronized PR metadata.
 
-## 2026-09-14 — PR #12 — ffc97a8 — CHANGES REQUIRED (review 5)
+## 2026-09-14 — PR #12 — d9bcbcf — CHANGES REQUIRED (review 5)
 
 - Reviewer: Orchestrator; GitHub COMMENT review:
-  https://github.com/ShabanovBoris/aiinbox/pull/12#pullrequestreview-5192521430
-  (reviewed HEAD `ffc97a8f30e315226bc63da30015949bec359736`).
-- Findings: MAJOR — when the first poll after downtime occurred after
-  midnight, the previous local day's due digest was not materialized as
-  PENDING evidence; MINOR — PR metadata had a stale HEAD.
-- Resolved in same branch/PR #12 at `5c7bb663962327c80df7deb69cb9c918b762d0d8`:
-  overnight polling after midnight now records the previous local date as
-  PENDING evidence, the 01:00 → 08:00 regression is covered, and PR metadata
-  is synchronized.
+  https://github.com/ShabanovBoris/aiinbox/pull/12#pullrequestreview-5192530844
+  (reviewed HEAD `d9bcbcf52fb60a12464e3c274b6b2052cd721b36`).
+- Findings: MAJOR — overnight recovery synthesized a previous-day digest for
+  a user created or enabled after that due-time; MINOR — review journal had an
+  incorrect exact-head association for review `5192510310`.
+- Resolved in same branch/PR #12 at the next exact HEAD: recovery compares
+  user activation timestamps with the due-time, a new-user regression covers
+  01:00 → no stale delivery at 08:00 → today's digest at 09:00, and the review
+  journal association is corrected.
 
 ```text
 ## YYYY-MM-DD — PR #N — <reviewed HEAD sha> — OUTCOME

@@ -127,6 +127,27 @@ async def test_digest_after_midnight_restart_is_deferred_from_previous_local_day
     assert len(bot.messages) == 1
 
 
+async def test_new_user_after_midnight_has_no_stale_digest(session_factory):
+    user_id, _ = await make_ready_item(session_factory)
+    async with session_factory() as session:
+        user = await session.get(User, user_id)
+        # User was created at 01:00 local on the simulated day, after the
+        # previous day's 09:00 schedule had already passed.
+        user.created_at = datetime(2026, 9, 14, 22, 0)
+        user.updated_at = datetime(2026, 9, 14, 22, 0)
+        await session.commit()
+    bot = FakeBot()
+    worker = ReminderWorker(session_factory, bot)
+
+    assert await worker.process_once(datetime(2026, 9, 14, 22, 0)) == 0
+    assert await worker.process_once(datetime(2026, 9, 15, 5, 0)) == 0
+    assert await worker.process_once(datetime(2026, 9, 15, 6, 0)) == 1
+    assert len(bot.messages) == 1
+    async with session_factory() as session:
+        reminder = await session.scalar(select(Reminder).where(Reminder.type == DAILY_DIGEST))
+        assert reminder.payload_json["local_date"] == "2026-09-15"
+
+
 async def test_digest_does_not_synthetic_catch_up_before_configured_time(session_factory):
     await make_ready_item(session_factory)
     bot = FakeBot()

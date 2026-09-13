@@ -265,9 +265,15 @@ class ReminderWorker:
                     # the overnight quiet window.
                     deferred_date = local_now.date() - timedelta(days=1)
                 if deferred_date is not None:
-                    await self._defer_digest(
-                        session, user.id, datetime.combine(deferred_date, time.min)
+                    due_at = datetime.combine(deferred_date, digest_time, tzinfo=zone)
+                    activation_at = max(
+                        value for value in (user.created_at, user.updated_at) if value is not None
                     )
+                    activation_utc = activation_at.replace(tzinfo=UTC)
+                    if activation_utc <= due_at.astimezone(UTC):
+                        await self._defer_digest(
+                            session, user.id, datetime.combine(deferred_date, time.min)
+                        )
                 await session.commit()
                 return 0
             deferred = await session.scalar(
