@@ -549,7 +549,8 @@
      max_video_bytes, audio — max_audio_bytes; regression test_video_byte_limit_
      enforced_independently (max_video < actual < max_audio → TOO_LARGE).
   2. → прямой assert working.calls[0][0].metadata["visual_notes"] == notes[0].text.
-  3. → IMPLEMENTATION_STATE 131 passed + новые регрессии перечислены.
+  3. → IMPLEMENTATION_STATE: 127 → 131 passed + новые регрессии перечислены
+     (финальный счётчик после video-limit regression — 132).
   4. → review ID исправлен.
   5. → PR body обновлён как metadata.
 
