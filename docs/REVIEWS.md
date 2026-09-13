@@ -920,6 +920,18 @@
 - Resolved in same branch/PR #12: the two durable journal associations are
   corrected; product code was already accepted as clean.
 
+## 2026-09-14 — PR #12 — c066cac — APPROVED (review 8)
+
+- Reviewer: Orchestrator; GitHub COMMENT review:
+  https://github.com/ShabanovBoris/aiinbox/pull/12#pullrequestreview-5192565760
+  (approved HEAD `c066cacc00ef8ab1da138872b62b9f1e828c99db`).
+- Confirmed: the delta from `30dee0d` is journal-only; product code and tests
+  are unchanged, exact PR HEAD/body are synchronized, and local verification
+  is Ruff PASS, `pytest` 187 passed, and `git diff --check` PASS.
+- Protocol next step: status-finalization commit only, changing
+  `IMPLEMENTATION_STATE` from `IN_REVIEW` to `DONE` and recording approved
+  HEAD `c066cacc00ef8ab1da138872b62b9f1e828c99db`.
+
 ```text
 ## YYYY-MM-DD — PR #N — <reviewed HEAD sha> — OUTCOME
 
