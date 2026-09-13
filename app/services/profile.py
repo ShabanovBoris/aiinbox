@@ -91,13 +91,19 @@ async def enqueue_profile_update(
     telegram_user_id: int,
     chat_id: int,
     instruction: str,
+    default_timezone: str = "UTC",
 ) -> ProfileUpdateJob:
     """/profile_update: durable job — handler отвечает мгновенно,
     LLM/merge выполняет фоновый worker (ТЗ: handler без тяжёлой работы)."""
     from app.services.ingestion import get_or_create_user
 
     async with session_factory() as session:
-        user = await get_or_create_user(session, telegram_user_id=telegram_user_id, chat_id=chat_id)
+        user = await get_or_create_user(
+            session,
+            telegram_user_id=telegram_user_id,
+            chat_id=chat_id,
+            timezone=default_timezone,
+        )
         job = ProfileUpdateJob(user_id=user.id, instruction=instruction, status="PENDING")
         session.add(job)
         await session.commit()

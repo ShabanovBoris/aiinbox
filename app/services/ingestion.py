@@ -13,12 +13,16 @@ log = logging.getLogger(__name__)
 
 
 async def get_or_create_user(
-    session: AsyncSession, *, telegram_user_id: int, chat_id: int | None
+    session: AsyncSession,
+    *,
+    telegram_user_id: int,
+    chat_id: int | None,
+    timezone: str = "UTC",
 ) -> User:
     user = await session.scalar(select(User).where(User.telegram_user_id == telegram_user_id))
     if user is not None:
         return user
-    user = User(telegram_user_id=telegram_user_id, telegram_chat_id=chat_id)
+    user = User(telegram_user_id=telegram_user_id, telegram_chat_id=chat_id, timezone=timezone)
     session.add(user)
     try:
         await session.flush()
@@ -46,6 +50,7 @@ async def ingest_message(
     chat_id: int,
     message_id: int,
     text: str,
+    default_timezone: str = "UTC",
 ) -> IngestResult:
     """Идемпотентная точка входа сообщения: Telegram update → Item(s) QUEUED.
 
@@ -55,7 +60,12 @@ async def ingest_message(
     """
     note, raw_urls = parse_message(text)
     async with session_factory() as session:
-        user = await get_or_create_user(session, telegram_user_id=telegram_user_id, chat_id=chat_id)
+        user = await get_or_create_user(
+            session,
+            telegram_user_id=telegram_user_id,
+            chat_id=chat_id,
+            timezone=default_timezone,
+        )
         user_id = user.id
         items: list[Item] = []
         duplicates: list[str] = []
@@ -172,6 +182,7 @@ async def ingest_voice(
     duration_seconds: int | None,
     source_type: SourceType,
     too_large: tuple[int, int] | None = None,
+    default_timezone: str = "UTC",
 ) -> IngestResult:
     """Voice/audio → один Item с file_id; сам файл скачивается позже,
     в extraction-этапе воркера (handler не делает тяжёлой работы).
@@ -180,7 +191,12 @@ async def ingest_voice(
     с метаданными (PRODUCT_SPEC §66) — без промежуточного claimable QUEUED.
     """
     async with session_factory() as session:
-        user = await get_or_create_user(session, telegram_user_id=telegram_user_id, chat_id=chat_id)
+        user = await get_or_create_user(
+            session,
+            telegram_user_id=telegram_user_id,
+            chat_id=chat_id,
+            timezone=default_timezone,
+        )
         # user.id до транзакции: rollback истекает объекты (см. ingest_message).
         user_id = user.id
         item = _make_media_item(user_id, message_id, file_id, duration_seconds, source_type)

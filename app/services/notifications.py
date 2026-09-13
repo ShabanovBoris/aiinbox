@@ -6,11 +6,13 @@ digest or snooze reminder.
 """
 
 import asyncio
+import json
 import logging
-from datetime import UTC, datetime, time
+import re
+from datetime import UTC, date, datetime, time, timedelta
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from app.bot.formatting import format_today
@@ -44,13 +46,9 @@ def parse_timezone(value: str) -> ZoneInfo:
 
 def parse_clock(value: str) -> time:
     """Parse the deliberately small HH:MM settings contract."""
-    try:
-        parsed = time.fromisoformat(value)
-    except ValueError as exc:
-        raise ValueError("Время должно быть в формате HH:MM") from exc
-    if parsed.second or parsed.microsecond:
+    if not isinstance(value, str) or re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", value) is None:
         raise ValueError("Время должно быть в формате HH:MM")
-    return parsed
+    return time.fromisoformat(value)
 
 
 def settings_for(user: User) -> dict:
@@ -66,6 +64,22 @@ def in_quiet_hours(local_time: time, start: time, end: time) -> bool:
     if start < end:
         return start <= local_time < end
     return local_time >= start or local_time < end
+
+
+def digest_target_date(
+    local_now: datetime, digest_time: time, quiet_start: time, quiet_end: time
+) -> date | None:
+    """Return the local day whose digest is due, or None when it is not due."""
+    digest_quiet = in_quiet_hours(digest_time, quiet_start, quiet_end)
+    if not digest_quiet:
+        return local_now.date() if local_now.time() >= digest_time else None
+    if in_quiet_hours(local_now.time(), quiet_start, quiet_end):
+        return None
+    if quiet_start > quiet_end and local_now.time() < quiet_start:
+        # Overnight quiet hours deferred an evening digest to the following
+        # morning; keep yesterday's local date as the idempotency key.
+        return local_now.date() - timedelta(days=1)
+    return local_now.date() if local_now.time() >= quiet_end else None
 
 
 async def get_notification_settings(
@@ -100,16 +114,27 @@ async def update_notification_settings(
             return None
         if timezone is not None:
             user.timezone = timezone
-        settings = settings_for(user)
-        values = {
+        settings_patch = {
             "daily_digest_enabled": daily_digest_enabled,
             "daily_digest_time": daily_digest_time,
             "quiet_hours_start": quiet_hours_start,
             "quiet_hours_end": quiet_hours_end,
         }
-        settings.update({key: value for key, value in values.items() if value is not None})
-        user.settings_json = settings
+        settings_patch = {key: value for key, value in settings_patch.items() if value is not None}
+        values = {}
+        if timezone is not None:
+            values["timezone"] = timezone
+        if settings_patch:
+            # json_patch is evaluated by SQLite against the row currently being
+            # updated, so concurrent disjoint updates do not lose each other.
+            values["settings_json"] = func.json_patch(
+                func.coalesce(User.settings_json, "{}"), json.dumps(settings_patch)
+            )
+        if values:
+            await session.execute(update(User).where(User.id == user.id).values(**values))
         await session.commit()
+        await session.refresh(user)
+        settings = settings_for(user)
         return user, settings
 
 
@@ -172,12 +197,20 @@ class ReminderWorker:
     """Periodic asyncio worker; SQLite remains the scheduler and idempotency store."""
 
     def __init__(
-        self, session_factory, bot, default_timezone: str = "UTC", poll_seconds: float = 60.0
+        self,
+        session_factory,
+        bot,
+        default_timezone: str = "UTC",
+        poll_seconds: float = 60.0,
+        max_send_attempts: int = 3,
+        retry_backoff_seconds: float = 0.1,
     ):
         self.session_factory = session_factory
         self.bot = bot
         self.default_timezone = default_timezone
         self.poll_seconds = poll_seconds
+        self.max_send_attempts = max(1, max_send_attempts)
+        self.retry_backoff_seconds = max(0.0, retry_backoff_seconds)
 
     async def run_forever(self, stop: asyncio.Event) -> None:
         while not stop.is_set():
@@ -211,18 +244,29 @@ class ReminderWorker:
             settings = settings_for(user)
             if not settings["daily_digest_enabled"]:
                 return 0
-            digest_time = parse_clock(settings["daily_digest_time"])
-            if local_now.time() < digest_time:
+            try:
+                digest_time = parse_clock(settings["daily_digest_time"])
+                quiet_start = parse_clock(settings["quiet_hours_start"])
+                quiet_end = parse_clock(settings["quiet_hours_end"])
+            except ValueError:
+                log.warning("invalid notification clock user_id=%s; using defaults", user.id)
+                settings = dict(_DEFAULT_SETTINGS)
+                digest_time = parse_clock(settings["daily_digest_time"])
+                quiet_start = parse_clock(settings["quiet_hours_start"])
+                quiet_end = parse_clock(settings["quiet_hours_end"])
+            target_date = digest_target_date(local_now, digest_time, quiet_start, quiet_end)
+            if target_date is None:
                 return 0
-            local_midnight = datetime.combine(local_now.date(), time.min, tzinfo=zone)
-            scheduled_at = local_midnight.astimezone(UTC).replace(tzinfo=None)
+            # For a digest, scheduled_at is a local-calendar-day identity,
+            # not a UTC instant; this survives a timezone change within that day.
+            scheduled_at = datetime.combine(target_date, time.min)
             claimed = await self._claim_digest(session, user.id, scheduled_at, now)
             if not claimed:
                 return 0
             items = await TodayService().list_items(session, user.id)
             await session.commit()
         try:
-            await self.bot.send_message(user.telegram_chat_id, format_today(items))
+            await self._send_with_retry(user.telegram_chat_id, format_today(items))
         except Exception:
             log.exception("daily digest delivery failed user_id=%s", user_id)
             await self._mark_failed(user_id, None, DAILY_DIGEST, scheduled_at)
@@ -298,7 +342,7 @@ class ReminderWorker:
         delivered = 0
         for reminder, item, chat_id in processed:
             try:
-                await self.bot.send_message(
+                await self._send_with_retry(
                     chat_id, f"⏰ Вернулся отложенный Item: {item.title or 'Без названия'}"
                 )
             except Exception:
@@ -325,3 +369,14 @@ class ReminderWorker:
                 .values(status="FAILED")
             )
             await session.commit()
+
+    async def _send_with_retry(self, chat_id: int, text: str) -> None:
+        """Retry an unknown Telegram failure finitely before terminal FAILED."""
+        for attempt in range(self.max_send_attempts):
+            try:
+                await self.bot.send_message(chat_id, text)
+                return
+            except Exception:
+                if attempt + 1 == self.max_send_attempts:
+                    raise
+                await asyncio.sleep(self.retry_backoff_seconds * (2**attempt))

@@ -18,9 +18,10 @@ squash merge с ожидаемым HEAD B. Вердикты фиксируютс
 
 ## Contract addendum — PR #1 — orchestration protocol adoption
 
-Статус: Phase 11 — Notifications — IN_PROGRESS в ветке
-`phase/11-notifications`. Вердикты и история ревью — в `docs/REVIEWS.md`;
-acceptance и squash merge выполняет Orchestrator по протоколу §9.2.
+Статус: APPROVED @ 5611be6b52fc546cd4dd060b985d24af8619ed88
+(GitHub review: pullrequestreview-5187945174). Вердикты и история ревью —
+в `docs/REVIEWS.md`. Squash merge выполняет Orchestrator; Phase 1 начинается
+только после merge и sync main (протокол §9.2, §23).
 
 ## Phases
 
@@ -37,7 +38,7 @@ acceptance и squash merge выполняет Orchestrator по протокол
 | 8 | User profile | DONE |
 | 9 | Today/inbox/search | DONE |
 | 10 | Item actions | DONE |
-| 11 | Notifications | IN_PROGRESS |
+| 11 | Notifications | IN_REVIEW |
 | 12 | Production hardening | NOT_STARTED |
 | 13 | Final acceptance | NOT_STARTED |
 
@@ -470,7 +471,7 @@ ruff check . → pass; ruff format --check . → pass; targeted Phase 10 tests �
 PR #11 approved at HEAD `991b152079a4245c9e92346d16bbe64c67f6ef57`;
 full suite → 168 passed.
 
-### Phase 11 — Notifications — IN_PROGRESS
+### Phase 11 — Notifications — IN_REVIEW
 
 Scope: persistent user notification settings, minimal `/settings` UI, a
 periodic reminder worker, once-per-local-day digest via `TodayService`,
@@ -489,10 +490,11 @@ Completed:
   Telegram settings regressions
 
 Remaining:
-□ открыть PR и передать Phase 11 Orchestrator'у на review
+□ дождаться вердикта Orchestrator'а; исправления при необходимости выполнять
+  в этой же ветке и PR #12
 
 Last verification:
-ruff check . → pass; ruff format --check . → pass; pytest → 177 passed;
+ruff check . → pass; ruff format --check . → pass; pytest → 183 passed;
 git diff --check → pass.
 
 ### Шаблон фазы в работе

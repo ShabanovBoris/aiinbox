@@ -41,6 +41,15 @@ async def test_authorized_text_creates_item_and_replies(settings, session_factor
         assert item.user_note == "hello"
 
 
+async def test_new_user_gets_configured_default_timezone(settings, session_factory, monkeypatch):
+    settings.default_timezone = "Europe/Moscow"
+    capture_answers(monkeypatch)
+    await on_text(make_message(42), settings, session_factory)
+    async with session_factory() as session:
+        user = await session.scalar(select(User).where(User.telegram_user_id == 42))
+        assert user.timezone == "Europe/Moscow"
+
+
 async def test_unauthorized_user_is_ignored(settings, session_factory, monkeypatch):
     sent = capture_answers(monkeypatch)
     await on_text(make_message(999), settings, session_factory)

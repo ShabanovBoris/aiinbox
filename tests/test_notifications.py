@@ -1,6 +1,7 @@
 import asyncio
 from datetime import datetime, timedelta
 
+import pytest
 from sqlalchemy import select
 
 from app.domain.enums import ItemState, ItemType, ProcessingStatus, SourceType
@@ -16,12 +17,14 @@ from app.storage.models import Item, Reminder, User
 
 
 class FakeBot:
-    def __init__(self, fail=False):
+    def __init__(self, fail=False, failures=0):
         self.fail = fail
+        self.failures = failures
         self.messages = []
 
     async def send_message(self, chat_id, text, **kwargs):
-        if self.fail:
+        if self.fail or self.failures:
+            self.failures = max(0, self.failures - 1)
             raise RuntimeError("telegram unavailable")
         self.messages.append((chat_id, text))
 
@@ -62,6 +65,36 @@ async def test_timezone_digest_is_once_per_local_day(session_factory):
         assert reminder.status == "SENT"
 
 
+async def test_digest_due_during_quiet_hours_is_deferred_to_morning(session_factory):
+    await make_ready_item(session_factory)
+    await update_notification_settings(
+        session_factory,
+        42,
+        daily_digest_time="23:00",
+        quiet_hours_start="22:30",
+        quiet_hours_end="08:00",
+    )
+    bot = FakeBot()
+    worker = ReminderWorker(session_factory, bot)
+    assert await worker.process_once(datetime(2026, 9, 14, 20, 0)) == 0
+    assert await worker.process_once(datetime(2026, 9, 15, 4, 59)) == 0
+    assert await worker.process_once(datetime(2026, 9, 15, 6, 0)) == 1
+    async with session_factory() as session:
+        reminder = await session.scalar(select(Reminder).where(Reminder.type == DAILY_DIGEST))
+        assert reminder.payload_json["local_date"] == "2026-09-14"
+
+
+def test_clock_parser_rejects_offsets_and_seconds():
+    from app.services.notifications import parse_clock
+
+    with pytest.raises(ValueError):
+        parse_clock("09:00Z")
+    with pytest.raises(ValueError):
+        parse_clock("09:00+03:00")
+    with pytest.raises(ValueError):
+        parse_clock("09:00:01")
+
+
 async def test_digest_does_not_duplicate_after_worker_restart(session_factory):
     await make_ready_item(session_factory)
     now = datetime(2026, 9, 14, 6, 30)
@@ -82,6 +115,35 @@ async def test_concurrent_workers_claim_one_digest(session_factory):
     )
     assert sorted(results) == [0, 1]
     assert len(first_bot.messages) + len(second_bot.messages) == 1
+
+
+async def test_timezone_change_same_local_day_does_not_duplicate_digest(session_factory):
+    await make_ready_item(session_factory)
+    now = datetime(2026, 9, 14, 10, 0)  # 13:00 Europe/Moscow
+    bot = FakeBot()
+    worker = ReminderWorker(session_factory, bot)
+    assert await worker.process_once(now) == 1
+    await update_notification_settings(session_factory, 42, timezone="UTC")
+    assert await worker.process_once(now) == 0
+
+
+async def test_concurrent_disjoint_settings_updates_are_merged(session_factory):
+    await make_ready_item(session_factory)
+    await asyncio.gather(
+        update_notification_settings(session_factory, 42, daily_digest_time="08:30"),
+        update_notification_settings(session_factory, 42, quiet_hours_start="20:00"),
+    )
+    current = await get_notification_settings(session_factory, 42)
+    assert current[1]["daily_digest_time"] == "08:30"
+    assert current[1]["quiet_hours_start"] == "20:00"
+
+
+async def test_transient_notification_failure_retries_before_terminal_failure(session_factory):
+    await make_ready_item(session_factory)
+    bot = FakeBot(failures=2)
+    worker = ReminderWorker(session_factory, bot, retry_backoff_seconds=0)
+    assert await worker.process_once(datetime(2026, 9, 14, 6, 30)) == 1
+    assert len(bot.messages) == 1
 
 
 async def test_snoozed_item_becomes_active_and_notifies(session_factory):

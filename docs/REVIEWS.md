@@ -827,6 +827,20 @@
   синхронизацию; product code не менялся; `pytest` — 168 passed.
 - Следующий шаг по протоколу: status-finalization commit и MERGE READY.
 
+## 2026-09-14 — PR #12 — d5634eb — CHANGES REQUIRED (review 1)
+
+- Reviewer: Orchestrator; GitHub COMMENT review:
+  https://github.com/ShabanovBoris/aiinbox/pull/12#pullrequestreview-5192477103
+  (reviewed HEAD `d5634ebedffd746ce00aab0543ee4220467fad5c`).
+- Findings: MAJOR — digest quiet hours, strict HH:MM parsing, configured
+  default timezone, once-per-local-day key across timezone changes, concurrent
+  disjoint settings updates, and bounded transient Telegram retries; MINOR —
+  restore the historical Contract addendum and synchronize Phase 11 docs.
+- Resolved in same branch/PR #12: digest quiet-hours deferral and strict clock
+  validation; configured timezone propagation and local-date idempotency key;
+  DB-side JSON patch merge; bounded Telegram retry/backoff; durable docs and
+  regressions updated. Phase 11 remains IN_REVIEW pending re-review.
+
 ```text
 ## YYYY-MM-DD — PR #N — <reviewed HEAD sha> — OUTCOME
 
