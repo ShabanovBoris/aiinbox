@@ -206,3 +206,30 @@ async def test_concurrent_overlapping_url_dedup_converges(session_factory):
             )
             == 3
         )
+
+
+async def test_concurrent_youtube_url_resolve_preserves_source_type(session_factory):
+    # Regression: race-resolve must retain YouTube semantics for later processing.
+    results = await asyncio.gather(
+        ingest_message(
+            session_factory,
+            telegram_user_id=42,
+            chat_id=42,
+            message_id=10,
+            text="https://www.youtube.com/watch?v=shared https://www.youtube.com/watch?v=first",
+        ),
+        ingest_message(
+            session_factory,
+            telegram_user_id=42,
+            chat_id=42,
+            message_id=11,
+            text="https://www.youtube.com/watch?v=shared https://www.youtube.com/watch?v=second",
+        ),
+    )
+    items = [item for result in results for item in result.items]
+    assert {item.source_url for item in items} == {
+        "https://www.youtube.com/watch?v=shared",
+        "https://www.youtube.com/watch?v=first",
+        "https://www.youtube.com/watch?v=second",
+    }
+    assert all(item.source_type is SourceType.YOUTUBE for item in items)
