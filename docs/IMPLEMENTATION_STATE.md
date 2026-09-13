@@ -39,7 +39,7 @@ squash merge с ожидаемым HEAD B. Вердикты фиксируютс
 | 9 | Today/inbox/search | DONE |
 | 10 | Item actions | DONE |
 | 11 | Notifications | DONE |
-| 12 | Production hardening | NOT_STARTED |
+| 12 | Production hardening | IN_PROGRESS |
 | 13 | Final acceptance | NOT_STARTED |
 
 Post-MVP этапы (промпты 14–18: Ollama, LLM router, behaviour ranking, HTTP API,
@@ -496,6 +496,22 @@ Remaining:
 Last verification:
 ruff check . → pass; ruff format --check . → pass; pytest → 187 passed;
 git diff --check → pass.
+
+### Phase 12 — Production hardening — IN_PROGRESS
+
+Scope: restart recovery, atomic worker claims, intermediate-result reuse,
+bounded external retries, timeouts, cleanup, graceful shutdown, contextual
+logging, container/runtime documentation, migration checks, and security
+re-review. New product features are out of scope.
+
+Completed:
+
+Remaining:
+□ проверить и усилить production hardening по Prompt 12; затем отправить PR
+  на внешний review Orchestrator'у
+
+Last verification:
+pytest — 187 passed
 
 ### Шаблон фазы в работе
 
