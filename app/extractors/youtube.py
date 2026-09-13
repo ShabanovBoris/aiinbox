@@ -180,16 +180,19 @@ class YoutubeExtractor:
             tracks = info.get(source) or {}
             for lang in self.subtitle_langs:
                 for track in tracks.get(lang) or []:
-                    if track.get("ext") in ("vtt", "srt") and track["url"] not in seen:
-                        seen.add(track["url"])
-                        candidates.append(track["url"])
+                    url = track.get("url")
+                    # safe get: track без url не должен ронять fallback chain
+                    if url and track.get("ext") in ("vtt", "srt") and url not in seen:
+                        seen.add(url)
+                        candidates.append(url)
             for lang, lang_tracks in tracks.items():
                 if lang in self.subtitle_langs:
                     continue
                 for track in lang_tracks or []:
-                    if track.get("ext") in ("vtt", "srt") and track["url"] not in seen:
-                        seen.add(track["url"])
-                        candidates.append(track["url"])
+                    url = track.get("url")
+                    if url and track.get("ext") in ("vtt", "srt") and url not in seen:
+                        seen.add(url)
+                        candidates.append(url)
 
         collect("subtitles")
         collect("automatic_captions")

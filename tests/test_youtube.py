@@ -466,13 +466,13 @@ async def test_human_preferred_over_auto_across_langs(tmp_path):
         subtitles={"de": [{"ext": "vtt", "url": "https://sub.example.com/de.vtt"}]},
         automatic_captions={"ru": [{"ext": "vtt", "url": "https://sub.example.com/ru.vtt"}]},
     )
-    responses = {
-        "/de.vtt": httpx.Response(200, text=SUBTITLE_VTT),
-        "/ru.vtt": httpx.Response(200, text=SUBTITLE_VTT),
-    }
+    auto_requested = {"count": 0}
 
     def handler(request):
-        return responses[request.url.path]
+        if request.url.path == "/auto.vtt":
+            auto_requested["count"] += 1
+            return httpx.Response(200, text=SUBTITLE_VTT)
+        return httpx.Response(200, text="Немецкий транскрипт: agentische Architektur.")
 
     extractor, transcriber, _ = make_youtube(
         tmp_path,
@@ -481,5 +481,7 @@ async def test_human_preferred_over_auto_across_langs(tmp_path):
             transport=httpx.MockTransport(handler), follow_redirects=True, timeout=5
         ),
     )
-    await extractor.extract(make_youtube_item())
+    content = await extractor.extract(make_youtube_item())
     assert transcriber.calls == 0  # human de пригодны — до auto ru не доходит
+    assert "Немецкий транскрипт" in content.text  # выбран human de, не auto ru
+    assert auto_requested["count"] == 0  # auto endpoint вообще не запрашивался

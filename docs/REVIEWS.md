@@ -461,6 +461,22 @@
      ВСЕ auto. Регрессия: human de + auto ru → выбран human de.
   3. → PR body обновлён как metadata.
 
+## 2026-09-13 — PR #7 — 3191f1b — CHANGES REQUIRED (re-review 3)
+
+- Reviewer: Orchestrator; вердикт также на GitHub:
+  https://github.com/ShabanovBoris/aiinbox/pull/7#pullrequestreview-5188859664 (commit 3191f1b).
+- Findings:
+  1. MAJOR: _subtitle_candidates использовал track["url"] — malformed track без
+     url давал KeyError и обрушивал весь fallback.
+  2. MINOR: strict-priority тест не доказывал порядок (одинаковые payloads).
+  3. MINOR: IMPLEMENTATION_STATE/PR body отставали (121/110 passed, старый HEAD).
+- Resolved (коммиты после 3191f1b):
+  1. → safe track.get("url") в collect(); malformed human track не роняет chain.
+     Regression: human track без url → valid auto → success, STT == 0.
+  2. → тест усилен разными payloads и счётчиком auto-запросов: content из human de,
+     auto endpoint не запрашивался.
+  3. → IMPLEMENTATION_STATE обновлён (121 passed, новые тесты перечислены).
+
 ## Шаблон записи
 
 ```text
