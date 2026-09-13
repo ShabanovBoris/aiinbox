@@ -7,6 +7,11 @@ from app.workers.processing import ProcessingWorker, requeue_stale
 from tests.fakes import FakePipeline
 
 
+class HangingPipeline:
+    async def run(self, session, item):
+        await asyncio.Future()
+
+
 async def seed(session_factory, message_id: int = 1, text: str = "note"):
     return (
         await ingest_message(
@@ -83,6 +88,20 @@ async def test_worker_marks_failed_on_exception(session_factory):
     assert stored.processing_stage == "INGESTED"
     assert stored.error_code == "UNKNOWN"
     assert "boom" in stored.error_message
+
+
+async def test_worker_applies_end_to_end_processing_timeout(session_factory):
+    item = await seed(session_factory)
+    worker = ProcessingWorker(
+        session_factory,
+        HangingPipeline(),
+        poll_seconds=0.01,
+        processing_timeout_seconds=0.01,
+    )
+    assert await worker.process_one() is True
+    stored = await get_item(session_factory, item.id)
+    assert stored.processing_status is ProcessingStatus.FAILED
+    assert stored.error_code == "PROCESSING_TIMEOUT"
 
 
 async def test_worker_claims_oldest_first(session_factory):

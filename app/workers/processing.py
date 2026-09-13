@@ -54,10 +54,14 @@ class ProcessingWorker:
         poll_seconds: float = 1.0,
         on_result=None,
         on_failure=None,
+        processing_timeout_seconds: float = 900.0,
     ):
         self.session_factory = session_factory
         self.pipeline = pipeline
         self.poll_seconds = poll_seconds
+        # The worker owns the end-to-end deadline so a hung provider cannot
+        # keep an Item in PROCESSING forever; startup recovery then requeues it.
+        self.processing_timeout_seconds = processing_timeout_seconds
         # on_result — auxiliary-колбэк (доставка результата в Telegram);
         # его сбой не должен ломать уже готовый результат.
         self.on_result = on_result
@@ -121,11 +125,35 @@ class ProcessingWorker:
                 if item is None:
                     return True
                 # Пайплайн сам коммитит стадии и READY (durable checkpoint).
-                await self.pipeline.run(session, item)
+                await asyncio.wait_for(
+                    self.pipeline.run(session, item), timeout=self.processing_timeout_seconds
+                )
+        except TimeoutError:
+            exc = AppError(
+                "PROCESSING_TIMEOUT",
+                f"item processing exceeded {self.processing_timeout_seconds}s",
+            )
+            log.error(
+                "item processing timeout item_id=%s user_id=%s source_type=%s stage=%s",
+                item_id,
+                getattr(item, "user_id", None),
+                getattr(getattr(item, "source_type", None), "value", None),
+                getattr(item, "processing_stage", None),
+            )
+            await self.mark_failed(item_id, exc)
+            return True
         except Exception as exc:
             # Ошибка обработки не теряет Item: он переходит в FAILED с кодом
             # и остаётся доступным для Retry (PRODUCT_SPEC §56, §59).
-            log.exception("item processing failed id=%s error=%s", item_id, exc)
+            log.exception(
+                "item processing failed item_id=%s user_id=%s source_type=%s "
+                "stage=%s error_code=%s",
+                item_id,
+                getattr(item, "user_id", None),
+                getattr(getattr(item, "source_type", None), "value", None),
+                getattr(item, "processing_stage", None),
+                getattr(exc, "code", "UNKNOWN"),
+            )
             await self.mark_failed(item_id, exc)
             if self.on_failure is not None:
                 async with self.session_factory() as session:

@@ -206,6 +206,7 @@ async def run(settings: Settings) -> None:
                     settings.processing_poll_seconds,
                     on_result,
                     on_failure,
+                    settings.processing_timeout_seconds,
                 ).run_forever(stop),
                 name=f"processing-worker-{i}",
             )
@@ -219,10 +220,23 @@ async def run(settings: Settings) -> None:
             await asyncio.gather(polling, return_exceptions=True)
             if bot is not None:
                 await bot.session.close()
-        # Воркеры завершают текущий Item и выходят по stop; отмена только как страховка.
-        for task in worker_tasks + profile_tasks + reminder_tasks:
-            task.cancel()
-        await asyncio.gather(*worker_tasks, *profile_tasks, *reminder_tasks, return_exceptions=True)
+        # Сначала даём воркерам завершить текущую атомарную операцию; cancel —
+        # только bounded fallback для зависшего внешнего provider call.
+        all_worker_tasks = worker_tasks + profile_tasks + reminder_tasks
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(*all_worker_tasks, return_exceptions=True),
+                timeout=settings.shutdown_timeout_seconds,
+            )
+        except TimeoutError:
+            log.warning(
+                "shutdown timeout seconds=%s; cancelling remaining worker tasks",
+                settings.shutdown_timeout_seconds,
+            )
+            for task in all_worker_tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*all_worker_tasks, return_exceptions=True)
     finally:
         await engine.dispose()
         log.info("shutdown complete")

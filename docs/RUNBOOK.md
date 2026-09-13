@@ -3,8 +3,12 @@
 Как запускать, проверять и диагностировать Personal AI Inbox.
 Заполняется по мере появления реальных команд и проблем; не выдумывать команды заранее.
 
-Статус: Phase 11 — Notifications реализуется в ветке
-`phase/11-notifications`; PR #12 открыт и находится на re-review.
+Статус: Phase 11 — Notifications завершена; Phase 12 — Production hardening
+реализуется в ветке `phase/12-production-hardening`.
+
+После squash merge PR #12 Phase 11 завершена. Текущая разработка Phase 12
+идёт в `phase/12-production-hardening`; запуск и проверка ниже описывают
+актуальный `main`/phase-код.
 
 FTS5 индекс `item_search` контролируется приложением: после обработки Item он
 синхронизируется вместе с READY, а перед поиском индекс пользователя
@@ -25,6 +29,19 @@ Daily digest отправляется один раз за локальный д
 отложенные Items возвращаются после `snoozed_until`, кроме quiet hours.
 `ReminderWorker` запускается вместе с Telegram bot и не требует внешнего
 scheduler.
+
+## Production hardening
+
+`ProcessingWorker` применяет `PROCESSING_TIMEOUT_SECONDS` к одной полной
+обработке Item. При превышении Item получает `PROCESSING_TIMEOUT` и остаётся
+доступным для Retry; обычный restart дополнительно возвращает все
+`PROCESSING` Items в `QUEUED` через `requeue_stale`. При SIGTERM/SIGINT сначала
+подаётся stop-сигнал и воркерам даётся `SHUTDOWN_TIMEOUT_SECONDS` на завершение
+текущей операции, после чего зависшие задачи отменяются.
+
+Для Docker см. корневой `README.md`: образ содержит Python 3.12 и ffmpeg,
+SQLite должен быть вынесен в volume `/data`. Playwright fallback отключён по
+решению безопасности, поэтому Chromium-зависимости в образ не устанавливаются.
 
 ## Контракты репозитория
 
