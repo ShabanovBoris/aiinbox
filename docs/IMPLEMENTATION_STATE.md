@@ -35,8 +35,8 @@ squash merge с ожидаемым HEAD B. Вердикты фиксируютс
 | 5 | Voice/audio | DONE |
 | 6 | YouTube | DONE |
 | 7 | Video visual analysis | DONE |
-| 8 | User profile | IN_REVIEW |
-| 9 | Today/inbox/search | IN_PROGRESS |
+| 8 | User profile | DONE |
+| 9 | Today/inbox/search | IN_REVIEW |
 | 10 | Item actions | NOT_STARTED |
 | 11 | Notifications | NOT_STARTED |
 | 12 | Production hardening | NOT_STARTED |
@@ -439,7 +439,7 @@ Remaining:
 
 Last verification:
 ruff check . → pass; ruff format --check . → pass;
-pytest → 157 passed; fresh migration creates `item_search` and retrieval tests
+pytest → 159 passed; fresh migration creates `item_search` and retrieval tests
 cover Today filtering/sorting/limits, FTS title/transcript/web/archived search,
 inbox/category scoping, and READY-to-FTS projection synchronization; headless
 smoke with empty Telegram token → startup, migration, and graceful SIGINT pass.

@@ -745,6 +745,21 @@
 - Финализация Phase 8 выполняется отдельным commit только для этого файла и
   `docs/IMPLEMENTATION_STATE.md`; Phase 9 до merge не начинать.
 
+## 2026-09-13 — PR #10 — 45eaca9 — CHANGES REQUIRED (review 1)
+
+- Reviewer: Orchestrator; вердикт также на GitHub:
+  https://github.com/ShabanovBoris/aiinbox/pull/10#pullrequestreview-5192188491
+  (reviewed HEAD `45eaca9e3b9732e5b8a10d2f83103fc09a395163`).
+- Findings:
+  1. MAJOR: `/inbox` и `/category` могли сформировать сообщение длиннее
+     Telegram limit 4096; нужны безопасное ограничение/усечение и worst-case
+     regressions.
+  2. MINOR: durable docs отставали: phase table не отражала Phase 8 `DONE` и
+     Phase 9 `IN_REVIEW`, а RUNBOOK утверждал, что PR #10 ещё не открыт.
+- Resolved (коммиты после 45eaca9): bounded formatting для Telegram,
+  worst-case tests, синхронизация IMPLEMENTATION_STATE и RUNBOOK; product code
+  вне этого исправления не менялся.
+
 ## Шаблон записи
 
 ```text
