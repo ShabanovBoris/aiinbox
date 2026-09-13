@@ -61,6 +61,7 @@ class YoutubeExtractor:
         temp_dir: Path,
         max_duration_seconds: int = 7200,
         max_audio_bytes: int = 50_000_000,
+        max_video_bytes: int = 50_000_000,
         max_subtitle_bytes: int = 2_000_000,
         subtitle_langs: tuple[str, ...] = ("ru", "en"),
         ydl_factory: Callable[[dict], Any] = default_ydl_factory,
@@ -73,6 +74,7 @@ class YoutubeExtractor:
         self.temp_dir = Path(temp_dir)
         self.max_duration_seconds = max_duration_seconds
         self.max_audio_bytes = max_audio_bytes
+        self.max_video_bytes = max_video_bytes
         self.max_subtitle_bytes = max_subtitle_bytes
         self.subtitle_langs = subtitle_langs
         self._ydl_factory = ydl_factory
@@ -255,6 +257,20 @@ class YoutubeExtractor:
             await asyncio.sleep(self.backoff_seconds * (2**attempt))
         raise last_error  # pragma: no cover
 
+    async def download_video(self, url: str, work_dir: Path) -> Path:
+        """Скачивание видео для визуального анализа (Phase 7)."""
+        options = {
+            "quiet": True,
+            "no_warnings": True,
+            "noplaylist": True,
+            # без /best fallback: >720p-фоллбек нарушил бы заявленный bound
+            "format": "best[height<=720]",
+            "max_filesize": self.max_video_bytes,
+            "outtmpl": str(work_dir / "%(id)s.%(ext)s"),
+            "socket_timeout": self.timeout_seconds,
+        }
+        return await self._run_download(url, options, self.max_video_bytes)
+
     async def _download_audio(self, url: str, work_dir: Path) -> Path:
         options = {
             "quiet": True,
@@ -265,7 +281,9 @@ class YoutubeExtractor:
             "outtmpl": str(work_dir / "%(id)s.%(ext)s"),
             "socket_timeout": self.timeout_seconds,
         }
+        return await self._run_download(url, options, self.max_audio_bytes)
 
+    async def _run_download(self, url: str, options: dict, byte_limit: int) -> Path:
         def _download() -> Path:
             with self._ydl_factory(options) as ydl:
                 info = ydl.extract_info(url, download=True)
@@ -277,10 +295,10 @@ class YoutubeExtractor:
                     if not candidates:
                         raise AppError("DOWNLOAD_FAILED", "audio file missing after download")
                     path = candidates[0]
-                if path.stat().st_size > self.max_audio_bytes:
+                if path.stat().st_size > byte_limit:
                     raise AppError(
                         "TOO_LARGE",
-                        f"audio exceeds {self.max_audio_bytes} bytes",
+                        f"download exceeds {byte_limit} bytes",
                         permanent=True,
                     )
                 return path

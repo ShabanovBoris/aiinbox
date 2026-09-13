@@ -503,6 +503,80 @@
   track, fallback order/priority).
 - Финализация: Phase 6 → DONE в IMPLEMENTATION_STATE.
 
+## 2026-09-13 — PR #8 — dd6e628 — CHANGES REQUIRED
+
+- Phase 07 — Video visual analysis. Reviewer: Orchestrator; вердикт также на GitHub:
+  https://github.com/ShabanovBoris/aiinbox/pull/8#pullrequestreview-5188934101 (commit dd6e628).
+- Findings:
+  1. MAJOR/RESUMABILITY: successful visual enrichment не персистился до Analyzer —
+     сбой structured analysis после успешного vision откатывал VISUAL_NOTES, retry
+     повторял download/ffmpeg/vision (нарушение AGENTS §18).
+  2. MAJOR/ASYNC: ffmpeg subprocess.run блокировал event loop.
+  3. MAJOR/GRACEFUL: work_dir.mkdir вне try/except — FS-ошибка роняла Item с
+     валидным транскриптом.
+  4. MINOR: format best[height<=720]/best допускал >720p fallback.
+  5. MINOR: visual notes не ограничены детерминированным лимитом.
+  6. MINOR: IMPLEMENTATION_STATE оставался NOT_STARTED для Phase 7.
+- Resolved (коммиты после dd6e628 в этом же PR):
+  1. → VISUAL_NOTES коммитится до Analyzer; resume восстанавливает visual_notes
+     из VISUAL_NOTES row и пропускает vision. Регрессия: analyze fail once →
+     FAILED → retry → READY, describe/frames calls == 1, notes идентичны.
+  2. → frames extraction через asyncio.to_thread. Регрессия: runner выполняется
+     не в главном потоке.
+  3. → mkdir внутри graceful-границы. Регрессия: блокирующий файл на пути
+     visual work_dir → READY + TRANSCRIPT_ONLY.
+  4. → format best[height<=720] без /best fallback; отдельный
+     youtube_max_video_bytes (Settings/.env/composition).
+  5. → детерминированная обрезка visual notes до 800 символов на границе
+     приложения. Регрессия: 1000-символьные notes → 800.
+  6. → Phase 7 в IMPLEMENTATION_STATE (IN_REVIEW + верификация).
+
+## 2026-09-13 — PR #8 — 3d72605 — CHANGES REQUIRED (re-review)
+
+- Reviewer: Orchestrator; вердикт также на GitHub:
+  https://github.com/ShabanovBoris/aiinbox/pull/8#pullrequestreview-5189002409 (commit 3d72605).
+- Findings:
+  1. MAJOR: youtube_max_video_bytes не enforced end-to-end — post-check в
+     _run_download использовал max_audio_bytes.
+  2. MINOR: retry-regression не доказывал равенство visual notes (прямой assert
+     отсутствовал).
+  3. MINOR: IMPLEMENTATION_STATE stale (127 вместо 131).
+  4. MINOR: REVIEWS содержал неверный review ID для dd6e628 (5188734132 вместо
+     реального 5188934101).
+  5. MINOR/metadata: PR body stale.
+- Resolved (коммиты после 3d72605):
+  1. → _run_download(url, options, byte_limit): download_video передаёт
+     max_video_bytes, audio — max_audio_bytes; regression test_video_byte_limit_
+     enforced_independently (max_video < actual < max_audio → TOO_LARGE).
+  2. → прямой assert working.calls[0][0].metadata["visual_notes"] == notes[0].text.
+  3. → IMPLEMENTATION_STATE: 127 → 131 passed + новые регрессии перечислены
+     (финальный счётчик после video-limit regression — 132).
+  4. → review ID исправлен.
+  5. → PR body обновлён как metadata.
+
+## 2026-09-13 — PR #8 — 86ea2b7 — CHANGES REQUIRED (re-review 2)
+
+- Reviewer: Orchestrator; вердикт также на GitHub:
+  https://github.com/ShabanovBoris/aiinbox/pull/8#pullrequestreview-5189028380 (commit 86ea2b7).
+- Findings:
+  1. MINOR/§9.1: в docs/REVIEWS.md отсутствовала durable запись самого вердикта
+     86ea2b7 (CHANGES REQUIRED с двумя MINOR).
+  2. MINOR/metadata: PR body показывал HEAD 86ea2b7 и 132 passed — HEAD устарел
+     после docs-коммита.
+- Resolved (коммит после 86ea2b7):
+  1. → эта запись добавлена в docs/REVIEWS.md.
+  2. → PR body обновлён как metadata без commit (HEAD фиксируется в
+     RE-REVIEW REQUEST).
+
+## 2026-09-13 — PR #8 — 0082e96 — APPROVED
+
+- Phase 07 — Video visual analysis. Reviewer: Orchestrator; вердикт также на GitHub:
+  https://github.com/ShabanovBoris/aiinbox/pull/8#pullrequestreview-5189044462 (commit 0082e96).
+- Reviewed HEAD: 0082e965471eb4e420046d4b460bfafdabc3d0bc. mergeable/clean.
+- Все findings (visual persistence до Analyzer, ffmpeg off loop, graceful mkdir,
+  720p bound, 800-char output bound, docs sync) закрыты.
+- Финализация: Phase 7 → DONE в IMPLEMENTATION_STATE.
+
 ## Шаблон записи
 
 ```text

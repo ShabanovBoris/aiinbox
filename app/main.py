@@ -35,7 +35,10 @@ def build_provider(settings: Settings) -> OpenAiProvider:
     if not settings.openai_api_key or not settings.openai_analysis_model:
         raise SystemExit("OPENAI_API_KEY and OPENAI_ANALYSIS_MODEL must be configured")
     return OpenAiProvider(
-        settings.openai_api_key, settings.openai_analysis_model, settings.llm_timeout_seconds
+        settings.openai_api_key,
+        settings.openai_analysis_model,
+        settings.llm_timeout_seconds,
+        vision_model=settings.openai_vision_model or None,
     )
 
 
@@ -66,6 +69,7 @@ def build_extractors(settings: Settings, bot) -> tuple:
         temp_dir=Path(settings.temp_dir) / "youtube",
         max_duration_seconds=settings.youtube_max_duration_seconds,
         max_audio_bytes=settings.youtube_max_audio_bytes,
+        max_video_bytes=settings.youtube_max_video_bytes,
         max_subtitle_bytes=settings.youtube_max_subtitle_bytes,
         subtitle_langs=tuple(
             lang.strip() for lang in settings.subtitle_langs.split(",") if lang.strip()
@@ -122,6 +126,8 @@ async def run(settings: Settings) -> None:
             web_extractor,
             audio_extractor,
             youtube_extractor,
+            visual_frame_interval_seconds=settings.video_frame_interval_seconds,
+            visual_max_frames=settings.video_max_frames,
         )
 
         stop = asyncio.Event()

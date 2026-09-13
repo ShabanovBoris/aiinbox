@@ -34,7 +34,7 @@ squash merge с ожидаемым HEAD B. Вердикты фиксируютс
 | 4 | Architecture checkpoint | DONE |
 | 5 | Voice/audio | DONE |
 | 6 | YouTube | DONE |
-| 7 | Video visual analysis | NOT_STARTED |
+| 7 | Video visual analysis | DONE |
 | 8 | User profile | NOT_STARTED |
 | 9 | Today/inbox/search | NOT_STARTED |
 | 10 | Item actions | NOT_STARTED |
@@ -348,6 +348,41 @@ unusable → auto → STT; subtitle oversize/transient retry; playlist reject;
 duration cap; TRANSCRIPT/DESCRIPTION persistence + resume с полным equality
 NormalizedContent; youtube URL классификация + www.youtube-nocookie; production
 composition test)
+
+### Phase 7 — Video visual analysis — DONE
+
+APPROVED @ 0082e965471eb4e420046d4b460bfafdabc3d0bc (Orchestrator, GitHub review
+pullrequestreview-5189044462). Ревью прошло два круга: durable visual notes
+(persist до Analyzer, resume без повторного vision), ffmpeg off event loop,
+graceful mkdir, 720p bound, 800-char output bound.
+
+Completed:
+✓ LlmCapabilities (structured_output/vision) — vision доступен только при
+  сконфигурированной OPENAI_VISION_MODEL; LlmProvider protocol расширен
+  describe_images (ТЗ §24, §27)
+✓ YoutubeExtractor.download_video (best<=720p, filesize cap, noplaylist)
+✓ frames.py: ffmpeg periodic sampling (args list, без shell, timeout), лимит
+  VIDEO_MAX_FRAMES, дедупликация идентичных кадров по хэшу
+✓ Pipeline: visual enrichment после персистенции TRANSCRIPT (graceful —
+  vision failure/ffmpeg missing/отмена не роняют Item с транскриптом, ТЗ §39);
+  VISUAL_NOTES персистится; analysis_completeness =
+  TRANSCRIPT_AND_VISUAL / TRANSCRIPT_ONLY / FULL_TEXT
+✓ VISUAL NOTES передаются анализатору как untrusted input
+✓ Миграция 1eb65025a8b6 (items.analysis_completeness)
+✓ Конфиг: VIDEO_FRAME_INTERVAL_SECONDS, VIDEO_MAX_FRAMES, OPENAI_VISION_MODEL
+
+Remaining:
+□ Blocked (external): live vision (реальный OpenAI) и реальный ffmpeg — нет
+  ключа/бинарника; путь покрыт фейками (FakeLlmProvider.describe_images,
+  injectable frames runner)
+
+Last verification:
+ruff check . → pass; ruff format --check . → pass; pytest → 132 passed
+(+ visual persistence до Analyzer и reuse на retry (describe/frames calls == 1),
+frames off event loop, mkdir failure → READY TRANSCRIPT_ONLY, notes truncation 800,
+720p bound без /best, video byte limit enforced отдельно от audio,
+malformed-track regression)
+smoke: headless старт без токена — bot disabled, SIGINT graceful
 
 ### Шаблон фазы в работе
 
