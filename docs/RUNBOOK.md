@@ -3,13 +3,20 @@
 Как запускать, проверять и диагностировать Personal AI Inbox.
 Заполняется по мере появления реальных команд и проблем; не выдумывать команды заранее.
 
-Статус: Phase 9 — Today/inbox/search реализуется в ветке
-`phase/09-today-inbox-search`; PR #10 открыт и ожидает внешнего ревью.
+Статус: Phase 10 — Item actions реализуется в ветке
+`phase/10-item-actions`; PR ещё не открыт.
 
 FTS5 индекс `item_search` контролируется приложением: после обработки Item он
 синхронизируется вместе с READY, а перед поиском индекс пользователя
 пересобирается. Это позволяет искать также в `contents` и автоматически
 подхватывать Items, созданные до FTS-миграции.
+
+Item actions выполняются callback-кнопками Telegram и сохраняются транзакционно:
+Done, Later (завтра/неделя/месяц), Archive и Retry для FAILED. События лежат в
+таблице `events`; lifecycle state и timestamps — в `items`. При сбое обработки
+пользователь получает кнопку Retry, а повтор действия не создаёт дубликат
+события. Retry сохраняет `processing_stage`, поэтому уже извлечённый контент не
+обрабатывается заново.
 
 ## Контракты репозитория
 
@@ -115,7 +122,6 @@ sqlite3 data/app.db "SELECT id, error_code, error_message FROM items WHERE proce
 
 - Зависшие `PROCESSING` после падения процесса возвращаются в `QUEUED`
   автоматически при следующем старте (`requeue_stale`).
-- Retry из Telegram появится в Phase 10; до этого повторную обработку FAILED
-  можно запустить вручную (stage сохраняется, retry продолжит с durable
-  checkpoint'а; error-поля очищаются, чтобы не остаться на успешном READY):
+- Retry из Telegram доступен для FAILED Items; он сохраняет stage и продолжает
+  с durable checkpoint'а, очищая error-поля. Ручной fallback при диагностике:
   `UPDATE items SET processing_status='QUEUED', error_code=NULL, error_message=NULL WHERE id=...`.

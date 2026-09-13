@@ -14,9 +14,15 @@ from app.workers.processing import ProcessingWorker, requeue_stale
 from tests.fakes import FakeLlmProvider, make_analysis
 
 
-def make_worker(session_factory, provider, on_result=None):
+def make_worker(session_factory, provider, on_result=None, on_failure=None):
     pipeline = ProcessingPipeline(Analyzer(provider), PriorityEngine())
-    return ProcessingWorker(session_factory, pipeline, poll_seconds=0.01, on_result=on_result)
+    return ProcessingWorker(
+        session_factory,
+        pipeline,
+        poll_seconds=0.01,
+        on_result=on_result,
+        on_failure=on_failure,
+    )
 
 
 async def seed(session_factory, text="Изучить AI agents", message_id=1):
@@ -101,6 +107,20 @@ async def test_provider_failure_fails_item_with_llm_code(session_factory):
     stored = await get_item(session_factory, item.id)
     assert stored.error_code == "LLM_FAILED"
     assert stored.user_note == "Изучить AI agents"
+
+
+async def test_provider_failure_notifies_retry_surface(session_factory):
+    item = await seed(session_factory)
+    notified = []
+
+    async def on_failure(failed_item):
+        notified.append(failed_item)
+
+    provider = FakeLlmProvider(error=LlmError("LLM_FAILED", "provider unreachable"))
+    worker = make_worker(session_factory, provider, on_failure=on_failure)
+    assert await worker.process_one() is True
+    assert [failed.id for failed in notified] == [item.id]
+    assert notified[0].processing_status is ProcessingStatus.FAILED
 
 
 async def test_result_delivery_failure_keeps_item_ready(session_factory):

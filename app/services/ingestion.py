@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.domain.enums import ProcessingStatus, SourceType
 from app.extractors.youtube import is_youtube_url
 from app.services.url_parsing import normalize_url, parse_message
-from app.storage.models import Item, User
+from app.storage.models import Event, Item, User
 
 log = logging.getLogger(__name__)
 
@@ -84,6 +84,7 @@ async def ingest_message(
         for item in items:
             session.add(item)
         try:
+            await _add_created_events(session, items)
             await session.commit()
         except IntegrityError:
             # Гонка дедупликации: параллельный запрос сохранил тот же URL.
@@ -151,6 +152,16 @@ def _make_web_item(
     )
 
 
+async def _add_created_events(session: AsyncSession, items: list[Item]) -> None:
+    """Persist one CREATED event per newly materialized Item before its commit."""
+    if not items:
+        return
+    await session.flush()
+    session.add_all(
+        [Event(user_id=item.user_id, item_id=item.id, event_type="CREATED") for item in items]
+    )
+
+
 async def ingest_voice(
     session_factory: async_sessionmaker,
     *,
@@ -180,6 +191,7 @@ async def ingest_voice(
             item.error_message = f"file too large: {actual} > {limit} bytes"
         session.add(item)
         try:
+            await _add_created_events(session, [item])
             await session.commit()
         except IntegrityError:
             await session.rollback()
@@ -256,12 +268,20 @@ async def _ingest_web_urls(
             return items, duplicates
 
         created = [
-            _make_web_item(user_id, message_id, index, normalized, note)
+            _make_web_item(
+                user_id,
+                message_id,
+                index,
+                normalized,
+                note,
+                SourceType.YOUTUBE if is_youtube_url(normalized) else SourceType.WEB,
+            )
             for index, normalized in still_missing
         ]
         for item in created:
             session.add(item)
         try:
+            await _add_created_events(session, created)
             await session.commit()
             items.extend(created)
             return items, duplicates

@@ -4,10 +4,10 @@ import pytest
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 
-from app.domain.enums import ProcessingStatus, SourceType
-from app.services.ingestion import ingest_message
+from app.domain.enums import ItemState, ProcessingStatus, SourceType
+from app.services.ingestion import _ingest_web_urls, ingest_message
 from app.services.url_parsing import normalize_url, parse_message
-from app.storage.models import Item, User
+from app.storage.models import Event, Item, User
 
 
 async def ingest(session_factory, message_id: int = 1, text: str = "Изучить AI agents"):
@@ -33,6 +33,12 @@ async def test_duplicate_update_returns_same_item(session_factory):
     assert second.items[0].id == first.items[0].id
     async with session_factory() as session:
         assert await session.scalar(select(func.count()).select_from(Item)) == 1
+        assert (
+            await session.scalar(
+                select(func.count()).select_from(Event).where(Event.event_type == "CREATED")
+            )
+            == 1
+        )
 
 
 async def test_url_message_creates_web_item_with_note(session_factory):
@@ -66,6 +72,12 @@ async def test_duplicate_url_across_messages_is_skipped(session_factory):
     assert second.duplicates == ["https://example.com/a"]
     async with session_factory() as session:
         assert await session.scalar(select(func.count()).select_from(Item)) == 1
+        assert (
+            await session.scalar(
+                select(func.count()).select_from(Event).where(Event.event_type == "CREATED")
+            )
+            == 1
+        )
 
 
 async def test_repeated_url_inside_single_message_deduplicated(session_factory):
@@ -187,3 +199,93 @@ async def test_concurrent_overlapping_url_dedup_converges(session_factory):
         "https://example.com/b",
         "https://example.com/c",
     ]
+    async with session_factory() as session:
+        assert (
+            await session.scalar(
+                select(func.count()).select_from(Event).where(Event.event_type == "CREATED")
+            )
+            == 3
+        )
+
+
+async def test_concurrent_youtube_url_resolve_preserves_source_type(session_factory):
+    # Regression: race-resolve must retain YouTube semantics for later processing.
+    results = await asyncio.gather(
+        ingest_message(
+            session_factory,
+            telegram_user_id=42,
+            chat_id=42,
+            message_id=10,
+            text="https://www.youtube.com/watch?v=shared https://www.youtube.com/watch?v=first",
+        ),
+        ingest_message(
+            session_factory,
+            telegram_user_id=42,
+            chat_id=42,
+            message_id=11,
+            text="https://www.youtube.com/watch?v=shared https://www.youtube.com/watch?v=second",
+        ),
+    )
+    items = [item for result in results for item in result.items]
+    assert {item.source_url for item in items} == {
+        "https://www.youtube.com/watch?v=shared",
+        "https://www.youtube.com/watch?v=first",
+        "https://www.youtube.com/watch?v=second",
+    }
+    assert all(item.source_type is SourceType.YOUTUBE for item in items)
+
+
+async def test_youtube_race_resolve_has_source_type_and_one_created_event(
+    session_factory, monkeypatch
+):
+    """Force the unique conflict so this test covers rollback and re-resolve."""
+    async with session_factory() as setup:
+        user = User(telegram_user_id=42, telegram_chat_id=42)
+        setup.add(user)
+        await setup.commit()
+        user_id = user.id
+
+    first_url = "https://www.youtube.com/watch?v=claimed"
+    second_url = "https://www.youtube.com/watch?v=resolved"
+    injected = False
+    async with session_factory() as session:
+        original_flush = session.flush
+
+        async def flush_with_competing_insert(*, objects=None):
+            nonlocal injected
+            if not injected:
+                injected = True
+                async with session_factory() as rival:
+                    rival_item = Item(
+                        user_id=user_id,
+                        telegram_message_id=99,
+                        source_index=0,
+                        processing_status=ProcessingStatus.QUEUED,
+                        state=ItemState.ACTIVE,
+                        source_type=SourceType.YOUTUBE,
+                        source_url=first_url,
+                        processing_stage="INGESTED",
+                        user_note="",
+                    )
+                    rival.add(rival_item)
+                    await rival.flush()
+                    rival.add(Event(user_id=user_id, item_id=rival_item.id, event_type="CREATED"))
+                    await rival.commit()
+            return await original_flush(objects=objects)
+
+        monkeypatch.setattr(session, "flush", flush_with_competing_insert)
+        items, duplicates = await _ingest_web_urls(
+            session, user_id, 100, "", [first_url, second_url]
+        )
+
+    assert duplicates == [first_url]
+    assert len(items) == 1
+    assert items[0].source_url == second_url
+    assert items[0].source_type is SourceType.YOUTUBE
+    async with session_factory() as session:
+        assert (
+            await session.scalar(
+                select(func.count()).select_from(Event).where(Event.event_type == "CREATED")
+            )
+            == 2
+        )

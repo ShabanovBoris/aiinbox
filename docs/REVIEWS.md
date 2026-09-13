@@ -771,7 +771,61 @@
 - Следующий шаг по протоколу: status-finalization commit изменяет только
   `docs/REVIEWS.md` и `docs/IMPLEMENTATION_STATE.md`, затем MERGE READY.
 
-## Шаблон записи
+## 2026-09-14 — PR #11 — f2c60e8 — CHANGES REQUIRED (review 1)
+
+- Reviewer: Orchestrator; вердикт также на GitHub:
+  https://github.com/ShabanovBoris/aiinbox/pull/11#pullrequestreview-5192269128
+  (reviewed HEAD `f2c60e8af400ef74ccf7b34c3c0545f5db44e72c`).
+- Findings:
+  1. MAJOR: минимальный event contract требует `CREATED`; ingestion не писал
+     его для новых text/URL/voice/audio Items. Нужны атомарная запись и
+     regressions на replay/dedup.
+  2. MINOR: wording в IMPLEMENTATION_STATE слишком широко обещал idempotency
+     всех callback'ов, хотя повторный snooze пересчитывает timestamp.
+- Resolved: `CREATED` добавлен атомарно с каждым новым Item; replay и
+  deduplicated URL не создают дополнительное событие; wording сужен до
+  гарантированных repeated Done/Retry.
+
+## 2026-09-14 — PR #11 — 08d19a5 — APPROVED (review 2)
+
+- Reviewer: Orchestrator; GitHub COMMENT review:
+  https://github.com/ShabanovBoris/aiinbox/pull/11#pullrequestreview-5192287650
+  (reviewed HEAD `08d19a59f58d67c419177206e78df0327cba6101`).
+- Подтверждено: оба предыдущих finding'а закрыты, product-code blocker'ов нет;
+  `pytest` — 166 passed, exact HEAD совпадал с PR.
+- Approval впоследствии инвалидирован для merge последующим product-code commit
+  `8417e9b`; поэтому потребовался новый re-review.
+
+## 2026-09-14 — PR #11 — 8417e9b — CHANGES REQUIRED (review 3)
+
+- Reviewer: Orchestrator; GitHub COMMENT review:
+  https://github.com/ShabanovBoris/aiinbox/pull/11#pullrequestreview-5192294422
+  (reviewed HEAD `8417e9b6d5f286f74c662814ae1a96d17f486f3d`).
+- Findings:
+  1. MAJOR: product fix для YouTube race-resolve был добавлен без focused
+     regression test на `SourceType.YOUTUBE` и exactly-once `CREATED`.
+  2. MINOR/§9.1: отсутствовала durable запись approval `08d19a5 / 5192287650`.
+- Resolved: focused concurrent YouTube regression добавлен в `tests/test_ingestion.py`;
+  durable approval и факт его invalidation записаны в этот журнал.
+
+## 2026-09-14 — PR #11 — 8953c81 — CHANGES REQUIRED (review 4)
+
+- Reviewer: Orchestrator; GitHub COMMENT review:
+  https://github.com/ShabanovBoris/aiinbox/pull/11#pullrequestreview-5192310392
+  (reviewed HEAD `8953c81bca5d8bc4603beb075ab173d519fdd9c7`).
+- Findings: MINOR source-of-truth drift — IMPLEMENTATION_STATE и PR body
+  указывали 166 tests / 15 targeted вместо фактических 168.
+- Resolved: count синхронизирован в IMPLEMENTATION_STATE и PR body; product
+  code не изменялся.
+
+## 2026-09-14 — PR #11 — 991b152 — APPROVED (review 5)
+
+- Reviewer: Orchestrator; GitHub COMMENT review:
+  https://github.com/ShabanovBoris/aiinbox/pull/11#pullrequestreview-5192331551
+  (reviewed HEAD `991b152079a4245c9e92346d16bbe64c67f6ef57`).
+- Подтверждено: delta от `8953c81` содержит только документальную
+  синхронизацию; product code не менялся; `pytest` — 168 passed.
+- Следующий шаг по протоколу: status-finalization commit и MERGE READY.
 
 ```text
 ## YYYY-MM-DD — PR #N — <reviewed HEAD sha> — OUTCOME

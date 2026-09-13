@@ -37,7 +37,7 @@ squash merge с ожидаемым HEAD B. Вердикты фиксируютс
 | 7 | Video visual analysis | DONE |
 | 8 | User profile | DONE |
 | 9 | Today/inbox/search | DONE |
-| 10 | Item actions | NOT_STARTED |
+| 10 | Item actions | DONE |
 | 11 | Notifications | NOT_STARTED |
 | 12 | Production hardening | NOT_STARTED |
 | 13 | Final acceptance | NOT_STARTED |
@@ -420,10 +420,11 @@ smoke: headless старт без токена — bot disabled, SIGINT graceful
 ### Phase 9 — Today/inbox/search — DONE
 
 APPROVED @ 591cd2e8e7279b725977341caa56dd31fa43899f (Orchestrator, GitHub review
-5192209948). Status finalized after external approval; PR #10 is ready for
-merge with the protocol handshake.
+5192209948). Status finalized after external approval; PR #10 was squash-merged
+by the Orchestrator into `main` as
+`39bf58762b031327873a566861b28cc0a4a471f2`.
 
-PR #10 открыт: `phase/09-today-inbox-search` → `main`.
+PR #10 закрыт: `phase/09-today-inbox-search` → `main`, `merged=true`.
 
 Completed:
 ✓ `TodayService`: READY + ACTIVE actionable Items (ACTION/LEARN/READ/WATCH),
@@ -447,6 +448,28 @@ pytest → 159 passed; fresh migration creates `item_search` and retrieval tests
 cover Today filtering/sorting/limits, FTS title/transcript/web/archived search,
 inbox/category scoping, and READY-to-FTS projection synchronization; headless
 smoke with empty Telegram token → startup, migration, and graceful SIGINT pass.
+
+### Phase 10 — Item actions and feedback events — DONE
+
+Completed:
+✓ транзакционные Done, Archive, Later/Snooze, Cancel и Retry с user scoping;
+  повторные Done/Retry idempotent без дублирования событий
+✓ `completed_at`, `archived_at`, `snoozed_until` и durable `events` table через
+  Alembic migration; Retry сохраняет processing checkpoint и очищает только
+  error fields
+✓ inline Telegram keyboard, Later choices и URL Open; `/today` записывает
+  `TODAY_SHOWN`
+✓ ingestion атомарно пишет `CREATED` ровно для новых text/URL/voice/audio Items;
+  Telegram replay и deduplicated URL не создают дополнительное событие
+✓ action, migration и handler regressions
+
+Remaining:
+□ нет; Phase 10 approved Orchestrator'ом для PR #11
+
+Last verification:
+ruff check . → pass; ruff format --check . → pass; targeted Phase 10 tests → pass;
+PR #11 approved at HEAD `991b152079a4245c9e92346d16bbe64c67f6ef57`;
+full suite → 168 passed.
 
 ### Шаблон фазы в работе
 
