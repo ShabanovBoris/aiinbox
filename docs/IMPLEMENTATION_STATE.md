@@ -546,16 +546,17 @@ Completed:
   externally unverified because Docker CLI is unavailable on this host
 ✓ long-content safety — PASS: short content skips chunking; long content is
   split without loss into bounded chunks, summarized, aggregated and analyzed
+  with durable `CHUNK_SUMMARY` checkpoints and bounded aggregate input
 ✓ Telegram `/help` — PASS: authorized command exposes the complete MVP surface
 ✓ `docker-compose.yml` — PASS by static YAML/config review: one app service,
   absolute SQLite path and persistent `/data` volume; Docker runtime remains
   externally unverified
 
 Remaining:
-□ исправить findings review `5192744658` в этом же PR #14 и получить approval
+□ отправить re-review для текущего exact HEAD PR #14 и получить approval
 
 Last verification:
-`uv run --no-sync pytest` — 193 passed; Ruff check/format и `git diff --check` — pass.
+`uv run --no-sync pytest` — 195 passed; Ruff check/format и `git diff --check` — pass.
 
 ### Шаблон фазы в работе
 

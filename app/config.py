@@ -52,6 +52,7 @@ class Settings(BaseSettings):
     openai_vision_model: str = ""
     llm_timeout_seconds: int = 120
     llm_chunk_size_chars: int = 12_000
+    llm_chunk_overlap_chars: int = 0
 
     @property
     def allowed_user_ids(self) -> frozenset[int]:

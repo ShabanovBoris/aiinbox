@@ -42,6 +42,7 @@ class FakeLlmProvider:
         describe_notes: str | None = None,
         describe_fail: bool = False,
         analyze_failures: int = 0,
+        summarize_failures: int = 0,
         profile_patch: dict | None = None,
         profile_error: LlmError | None = None,
     ):
@@ -56,6 +57,7 @@ class FakeLlmProvider:
         self.describe_fail = describe_fail
         self.describe_calls = 0
         self.analyze_failures = analyze_failures
+        self.summarize_failures = summarize_failures
         self.profile_patch = profile_patch
         self.profile_error = profile_error
         self.profile_calls = []
@@ -74,6 +76,9 @@ class FakeLlmProvider:
 
     async def summarize_chunk(self, text: str) -> str:
         self.summarize_calls.append(text)
+        if self.summarize_failures > 0:
+            self.summarize_failures -= 1
+            raise LlmError("LLM_FAILED", "summarize failed")
         return text
 
     async def describe_images(self, images, context):

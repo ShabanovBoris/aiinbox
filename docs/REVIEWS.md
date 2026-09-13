@@ -991,3 +991,15 @@
   `pytest` 190 passed, `git diff --check` PASS.
 - Protocol next step: one status-finalization commit only, changing Phase 12
   `IN_REVIEW` → `DONE` and recording approved HEAD `f168117ddb…`.
+
+## 2026-09-14 — PR #14 — fa74b83 — CHANGES REQUIRED (review 2)
+
+- Reviewer: Orchestrator; GitHub COMMENT review:
+  https://github.com/ShabanovBoris/aiinbox/pull/14#pullrequestreview-5192770822
+  (reviewed HEAD `fa74b837b14db2f334fe141352f7ea2ad8ef0659`).
+- Findings: MAJOR — chunk aggregate was unbounded; MAJOR — completed chunk
+  summaries were not durable across restart; MINOR — chunk size/overlap config
+  was incomplete.
+- Resolved in same branch/PR #14: `CHUNK_SUMMARY` rows are committed before
+  subsequent provider calls and reused on retry, aggregate input is bounded,
+  and chunk size/overlap are configured and tested.
