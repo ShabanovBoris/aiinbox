@@ -34,7 +34,7 @@ squash merge с ожидаемым HEAD B. Вердикты фиксируютс
 | 4 | Architecture checkpoint | DONE |
 | 5 | Voice/audio | DONE |
 | 6 | YouTube | DONE |
-| 7 | Video visual analysis | IN_REVIEW |
+| 7 | Video visual analysis | DONE |
 | 8 | User profile | NOT_STARTED |
 | 9 | Today/inbox/search | NOT_STARTED |
 | 10 | Item actions | NOT_STARTED |
@@ -349,7 +349,12 @@ duration cap; TRANSCRIPT/DESCRIPTION persistence + resume с полным equali
 NormalizedContent; youtube URL классификация + www.youtube-nocookie; production
 composition test)
 
-### Phase 7 — Video visual analysis — IN_REVIEW
+### Phase 7 — Video visual analysis — DONE
+
+APPROVED @ 0082e965471eb4e420046d4b460bfafdabc3d0bc (Orchestrator, GitHub review
+pullrequestreview-5189044462). Ревью прошло два круга: durable visual notes
+(persist до Analyzer, resume без повторного vision), ffmpeg off event loop,
+graceful mkdir, 720p bound, 800-char output bound.
 
 Completed:
 ✓ LlmCapabilities (structured_output/vision) — vision доступен только при
