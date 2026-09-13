@@ -609,7 +609,7 @@
 ## 2026-09-13 — PR #9 — 2d149b9 — CHANGES REQUIRED (re-review)
 
 - Phase 08 — User profile. Reviewer: Orchestrator; вердикт также на GitHub:
-  https://github.com/ShabanovBoris/aiinbox/pull/9#pullrequestreview-5189252785 (commit 2d149b9).
+  https://github.com/ShabanovBoris/aiinbox/pull/9#pullrequestreview-5189341550 (commit 2d149b9).
 - Findings:
   1. MAJOR: constraints list[ConstraintEntry] персистился в profile_json как
      массив, UserProfile ждёт dict → get_profile фолбэкался на default.
@@ -637,6 +637,29 @@
   7. → фактически добавлены: analyzer-from-DB, concurrent json_patch merge,
      worker lifecycle (DONE/FAILED), seed regressions; pytest 132 → 140 passed.
   8. → IMPLEMENTATION_STATE/PR body синхронизированы (76ed20f32fe7 указан).
+
+## 2026-09-13 — PR #9 — 4e8ff19 — CHANGES REQUIRED (re-review 2)
+
+- Reviewer: Orchestrator; вердикт также на GitHub:
+  https://github.com/ShabanovBoris/aiinbox/pull/9#pullrequestreview-5189398561 (commit 4e8ff19).
+- Findings:
+  1. MAJOR/RESUMABILITY: profile mutation и job DONE — две транзакции; крэш между
+     ними оставлял применённый update в RUNNING → recovery повторял update.
+  2. MAJOR/SEED: /profile читал user.profile_json напрямую, обходя lazy seed;
+     первый /profile не создавал/не сидировал пользователя.
+  3. MINOR: constraints regression не покрывал ConstraintEntry → dict → persisted.
+  4. MINOR: IMPLEMENTATION_STATE stale (140 passed, старый flow).
+  5. MINOR/§9.1: неверный review ID для 2d149b9 (5189252785 → 5189341550).
+  6. MINOR/metadata: PR body stale (140 passed, HEAD 2d149b9, без 76ed20f32fe7).
+- Resolved (коммиты после 4e8ff19):
+  1. → update_profile_from_patch: одна транзакция json_patch merge + job DONE
+     (атомарность); регрессия idempotent recovery после side effect boundary.
+  2. → /profile через get_or_create_user + get_profile (lazy seed для первого
+     /profile; созданный после старта пользователь получает seed).
+  3. → constraints regression: ConstraintEntry[] → dict → persisted (regression).
+  4. → review ID исправлен.
+  5. → IMPLEMENTATION_STATE: 149 → 151 passed, job flow описан.
+  6. → PR body обновлён как metadata.
 
 ## Шаблон записи
 

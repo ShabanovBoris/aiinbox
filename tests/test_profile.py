@@ -71,6 +71,34 @@ async def test_profile_update_merges_without_losing_fields(tmp_path, session_fac
     assert merged.free_text == "фокус на агентах"
 
 
+async def test_constraints_entries_merged_into_dict(tmp_path, session_factory):
+    # Регрессия: ConstraintEntry[] → dict в persisted профиле (strict-совместимая
+    # форма для Structured Outputs), непустые constraints читаются обратно.
+    job = await enqueue_profile_update(
+        session_factory, telegram_user_id=42, chat_id=42, instruction="лимиты времени"
+    )
+    merged, _ = await update_profile_from_patch(
+        session_factory,
+        FakeLlmProvider(
+            profile_patch={
+                "constraints": [
+                    {"key": "weekday_free_minutes", "value": 60},
+                    {"key": "weekend_free_minutes", "value": 180},
+                ]
+            }
+        ),
+        job,
+    )
+    assert merged.constraints == {
+        "weekday_free_minutes": 60,
+        "weekend_free_minutes": 180,
+    }
+    async with session_factory() as session:
+        user = await session.get(User, 1)
+    # persisted profile_json.constraints — dict, а не массив
+    assert isinstance(user.profile_json["constraints"], dict)
+
+
 async def test_profile_update_invalid_patch_rejected(tmp_path, session_factory):
     await ingest_message(session_factory, telegram_user_id=42, chat_id=42, message_id=1, text="x")
     provider = FakeLlmProvider(profile_error=LlmError("INVALID_LLM_OUTPUT", "bad patch"))
@@ -342,3 +370,30 @@ async def test_profile_update_notification_uses_telegram_chat(tmp_path, session_
     callback = _profile_done_notifier(FakeBot(), session_factory)
     await callback(job, profile, ["profession"])
     assert sent == [(7777, "Профиль обновлён: " + ", ".join(["profession"]))]
+
+
+async def test_recovery_after_mutation_is_idempotent(tmp_path, session_factory):
+    # Регрессия recovery после side effect boundary: profile уже применён, но job
+    # остался RUNNING (крэш до атомарности в старой схеме) → recovery → повторная
+    # обработка → финальный профиль консистентен (replace-merge идемпотентен).
+    await enqueue_profile_update(
+        session_factory, telegram_user_id=42, chat_id=42, instruction="i"
+    )
+    provider = FakeLlmProvider(profile_patch={"profession": "dev"})
+    worker = ProfileUpdateWorker(session_factory, provider, poll_seconds=0.01)
+    assert await worker.process_one() is True
+
+    # искусственно "крэшим": job назад в RUNNING
+    async with session_factory() as session:
+        row = await session.get(ProfileUpdateJob, 1)
+        row.status = "RUNNING"
+        await session.commit()
+    assert await requeue_running_profile_jobs(session_factory) == 1
+
+    assert await worker.process_one() is True
+    async with session_factory() as session:
+        stored = await session.get(ProfileUpdateJob, 1)
+        assert stored.status == "DONE"
+    async with session_factory() as session:
+        profile = await get_profile(session, 1)
+    assert profile.profession == "dev"  # replace-merge идемпотентен

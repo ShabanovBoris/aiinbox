@@ -3,7 +3,6 @@ import logging
 from aiogram import F, Router
 from aiogram.filters import Command, CommandStart
 from aiogram.types import Message
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.config import Settings
@@ -139,16 +138,15 @@ async def on_profile(message: Message, settings: Settings, session_factory) -> N
     if not settings.is_allowed(message.from_user.id if message.from_user else None):
         return
     from app.bot.formatting import format_profile
-    from app.domain.models import UserProfile
-    from app.storage.models import User as UserRow
+    from app.services.ingestion import get_or_create_user
+    from app.services.profile import get_profile
 
     async with session_factory() as session:
-        user = await session.scalar(
-            select(UserRow).where(UserRow.telegram_user_id == message.from_user.id)
+        # get_or_create + get_profile: lazy seed работает и для первого /profile
+        user = await get_or_create_user(
+            session, telegram_user_id=message.from_user.id, chat_id=message.chat.id
         )
-        profile = UserProfile()
-        if user is not None and user.profile_json:
-            profile = UserProfile.model_validate(user.profile_json)
+        profile = await get_profile(session, user.id)
     await message.answer(format_profile(profile))
 
 

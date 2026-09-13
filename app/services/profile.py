@@ -188,6 +188,8 @@ async def update_profile_from_patch(
         data["constraints"] = merged_constraints
 
     async with session_factory() as session:
+        # одна транзакция: profile mutation + job DONE — крэш между ними
+        # невозможен, повтор natural-language update исключён
         await session.execute(
             update(User)
             .where(User.id == job.user_id)
@@ -196,6 +198,11 @@ async def update_profile_from_patch(
                     func.coalesce(User.profile_json, "{}"), json.dumps(data)
                 )
             )
+        )
+        await session.execute(
+            update(ProfileUpdateJob)
+            .where(ProfileUpdateJob.id == job.id)
+            .values(status="DONE")
         )
         await session.commit()
         merged = await get_profile(session, job.user_id)

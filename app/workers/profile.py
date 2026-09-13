@@ -14,7 +14,6 @@ from app.errors import AppError
 from app.llm.base import LlmProvider
 from app.services.profile import (
     claim_oldest_profile_update,
-    finish_profile_update,
     update_profile_from_patch,
 )
 from app.storage.models import ProfileUpdateJob
@@ -50,6 +49,8 @@ class ProfileUpdateWorker:
         if job is None:
             return False
         try:
+            # update_profile_from_patch атомарно применяет merge И переводит
+            # job в DONE одной транзакцией (protocol §9.2-подобная семантика)
             profile, changed = await update_profile_from_patch(
                 self.session_factory, self.provider, job
             )
@@ -58,8 +59,6 @@ class ProfileUpdateWorker:
             log.warning("profile update failed job=%s code=%s", job.id, code)
             await finish_with_error(self.session_factory, job.id, code, str(exc)[:500])
             return True
-        # успех: job PENDING/RUNNING -> DONE (durable)
-        await finish_profile_update(self.session_factory, job)
         log.info("profile updated job=%s user_id=%s changed=%s", job.id, job.user_id, changed)
         if self.on_done is not None:
             result = self.on_done(job, profile, changed)
