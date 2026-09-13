@@ -2,7 +2,7 @@ import asyncio
 import logging
 
 from app.domain.enums import ProcessingStatus
-from app.main import _drain_worker_tasks
+from app.main import _drain_worker_tasks, _start_polling
 from app.services.ingestion import ingest_message
 from app.storage.models import Item
 from app.workers.processing import ProcessingWorker, requeue_stale
@@ -120,6 +120,18 @@ async def test_shutdown_drain_waits_for_inflight_worker_before_transport_close()
     await _drain_worker_tasks([task], timeout=1)
     events.append("transport-close")
     assert events == ["worker-complete", "transport-close"]
+
+
+async def test_polling_does_not_close_transport_owned_by_shutdown_coordinator():
+    calls = []
+
+    class Dispatcher:
+        async def start_polling(self, bot, **kwargs):
+            calls.append((bot, kwargs))
+
+    bot = object()
+    await _start_polling(Dispatcher(), bot)
+    assert calls == [(bot, {"handle_signals": False, "close_bot_session": False})]
 
 
 async def test_worker_claims_oldest_first(session_factory):

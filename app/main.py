@@ -108,6 +108,11 @@ async def _drain_worker_tasks(tasks: list[asyncio.Task], timeout: float) -> None
         await asyncio.gather(*tasks, return_exceptions=True)
 
 
+async def _start_polling(dispatcher, bot) -> None:
+    """Keep Telegram transport owned by the outer shutdown coordinator."""
+    await dispatcher.start_polling(bot, handle_signals=False, close_bot_session=False)
+
+
 def _profile_done_notifier(bot, session_factory):
     """Уведомление о завершении /profile_update: адресат — users.telegram_chat_id
     (job.user_id — внутренний PK). Возвращает coroutine или None (headless)."""
@@ -164,9 +169,7 @@ async def run(settings: Settings) -> None:
             dispatcher.include_router(
                 make_router(settings, session_factory, settings.max_audio_bytes)
             )
-            polling = asyncio.create_task(
-                dispatcher.start_polling(bot, handle_signals=False), name="telegram-polling"
-            )
+            polling = asyncio.create_task(_start_polling(dispatcher, bot), name="telegram-polling")
             on_result = lambda item: send_item_result(bot, session_factory, item)  # noqa: E731
             log.info("telegram bot started")
         else:

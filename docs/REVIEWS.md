@@ -953,3 +953,16 @@
 - Resolved in same branch/PR #13: Telegram closes after bounded worker drain;
   Docker uses absolute `sqlite+aiosqlite:////data/app.db`; processing logs are
   being unified with all required fields; shutdown regression is being added.
+
+## 2026-09-14 — PR #13 — cd8be1f — CHANGES REQUIRED (review 2)
+
+- Reviewer: Orchestrator; GitHub COMMENT review:
+  https://github.com/ShabanovBoris/aiinbox/pull/13#pullrequestreview-5192651196
+  (reviewed HEAD `cd8be1f307a46a72bc5b88c657cf9b77a34c8c6d`).
+- Finding: MAJOR — aiogram `start_polling` defaulted to
+  `close_bot_session=True`, so cancellation closed Telegram transport before
+  the worker drain despite the explicit close being moved later. The existing
+  drain test did not verify aiogram session ownership.
+- Resolved in same branch/PR #13: polling passes `close_bot_session=False`,
+  explicit close remains after bounded drain, and a regression verifies the
+  polling ownership flag plus in-flight drain ordering.
