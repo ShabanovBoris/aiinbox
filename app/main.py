@@ -93,6 +93,26 @@ def build_extractors(settings: Settings, bot) -> tuple:
     return web_extractor, audio_extractor, youtube_extractor
 
 
+async def _drain_worker_tasks(tasks: list[asyncio.Task], timeout: float) -> None:
+    """Wait for worker completion before transport closure, with bounded fallback."""
+    try:
+        await asyncio.wait_for(
+            asyncio.gather(*tasks, return_exceptions=True),
+            timeout=timeout,
+        )
+    except TimeoutError:
+        log.warning("shutdown timeout seconds=%s; cancelling remaining worker tasks", timeout)
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
+async def _start_polling(dispatcher, bot) -> None:
+    """Keep Telegram transport owned by the outer shutdown coordinator."""
+    await dispatcher.start_polling(bot, handle_signals=False, close_bot_session=False)
+
+
 def _profile_done_notifier(bot, session_factory):
     """Уведомление о завершении /profile_update: адресат — users.telegram_chat_id
     (job.user_id — внутренний PK). Возвращает coroutine или None (headless)."""
@@ -149,9 +169,7 @@ async def run(settings: Settings) -> None:
             dispatcher.include_router(
                 make_router(settings, session_factory, settings.max_audio_bytes)
             )
-            polling = asyncio.create_task(
-                dispatcher.start_polling(bot, handle_signals=False), name="telegram-polling"
-            )
+            polling = asyncio.create_task(_start_polling(dispatcher, bot), name="telegram-polling")
             on_result = lambda item: send_item_result(bot, session_factory, item)  # noqa: E731
             log.info("telegram bot started")
         else:
@@ -206,6 +224,7 @@ async def run(settings: Settings) -> None:
                     settings.processing_poll_seconds,
                     on_result,
                     on_failure,
+                    settings.processing_timeout_seconds,
                 ).run_forever(stop),
                 name=f"processing-worker-{i}",
             )
@@ -217,12 +236,14 @@ async def run(settings: Settings) -> None:
         if polling is not None:
             polling.cancel()
             await asyncio.gather(polling, return_exceptions=True)
-            if bot is not None:
-                await bot.session.close()
-        # Воркеры завершают текущий Item и выходят по stop; отмена только как страховка.
-        for task in worker_tasks + profile_tasks + reminder_tasks:
-            task.cancel()
-        await asyncio.gather(*worker_tasks, *profile_tasks, *reminder_tasks, return_exceptions=True)
+        # Сначала даём воркерам завершить текущую атомарную операцию; cancel —
+        # только bounded fallback для зависшего внешнего provider call.
+        all_worker_tasks = worker_tasks + profile_tasks + reminder_tasks
+        await _drain_worker_tasks(all_worker_tasks, settings.shutdown_timeout_seconds)
+        if bot is not None:
+            # Delivery callbacks must keep the Telegram session alive until
+            # all workers have drained or the bounded shutdown deadline ends.
+            await bot.session.close()
     finally:
         await engine.dispose()
         log.info("shutdown complete")

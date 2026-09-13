@@ -940,3 +940,41 @@
 - New HEAD: <sha>                        # после status-finalization/fixes
 - Notes: <bootstrap/scope, если есть>
 ```
+
+## 2026-09-14 — PR #13 — 2ac0d58 — CHANGES REQUIRED (review 1)
+
+- Reviewer: Orchestrator; GitHub COMMENT review:
+  https://github.com/ShabanovBoris/aiinbox/pull/13#pullrequestreview-5192628276
+  (reviewed HEAD `2ac0d589218f7b5cdae394e1f6cdbf84da1a86b8`).
+- Findings: MAJOR — Telegram transport закрывался до worker drain; MAJOR —
+  Docker README/default path не направлял SQLite в `/data`; MINOR — timeout и
+  error logs не имели единой contextual shape; MINOR — отсутствовала shutdown
+  regression на in-flight completion/delivery.
+- Resolved in same branch/PR #13: Telegram closes after bounded worker drain;
+  Docker uses absolute `sqlite+aiosqlite:////data/app.db`; processing logs are
+  being unified with all required fields; shutdown regression is being added.
+
+## 2026-09-14 — PR #13 — cd8be1f — CHANGES REQUIRED (review 2)
+
+- Reviewer: Orchestrator; GitHub COMMENT review:
+  https://github.com/ShabanovBoris/aiinbox/pull/13#pullrequestreview-5192651196
+  (reviewed HEAD `cd8be1f307a46a72bc5b88c657cf9b77a34c8c6d`).
+- Finding: MAJOR — aiogram `start_polling` defaulted to
+  `close_bot_session=True`, so cancellation closed Telegram transport before
+  the worker drain despite the explicit close being moved later. The existing
+  drain test did not verify aiogram session ownership.
+- Resolved in same branch/PR #13: polling passes `close_bot_session=False`,
+  explicit close remains after bounded drain, and a regression verifies the
+  polling ownership flag plus in-flight drain ordering.
+
+## 2026-09-14 — PR #13 — f168117 — APPROVED (review 3)
+
+- Reviewer: Orchestrator; GitHub COMMENT review:
+  https://github.com/ShabanovBoris/aiinbox/pull/13#pullrequestreview-5192677471
+  (approved HEAD `f168117ddbfbfe95fb5f09bac8e65c81547159da`).
+- Confirmed: targeted shutdown/session-ownership fixes are correct; product
+  findings are closed, PR metadata is synchronized, and Docker build absence
+  is an accepted external limitation. Recorded verification: Ruff PASS,
+  `pytest` 190 passed, `git diff --check` PASS.
+- Protocol next step: one status-finalization commit only, changing Phase 12
+  `IN_REVIEW` → `DONE` and recording approved HEAD `f168117ddb…`.

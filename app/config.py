@@ -11,6 +11,8 @@ class Settings(BaseSettings):
     database_url: str = "sqlite+aiosqlite:///data/app.db"
     processing_concurrency: int = 2
     processing_poll_seconds: float = 1.0
+    processing_timeout_seconds: float = 900.0
+    shutdown_timeout_seconds: float = 30.0
     default_timezone: str = "UTC"
 
     # Web extraction (Phase 3)

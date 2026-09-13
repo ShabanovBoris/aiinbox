@@ -154,3 +154,20 @@ APScheduler, Redis или отдельной блокировки; partial uniqu
 Consequences: авария после durable claim, но до фактической отправки, может
 потерять одно уведомление, зато не создаёт повторную доставку после restart;
 ошибка Telegram записывается как `FAILED` и не ломает worker.
+
+## D-008 — bounded processing deadline и graceful shutdown (этап 12)
+
+Context: один внешний provider или subprocess может зависнуть, а SIGTERM не
+должен немедленно прерывать текущий Item без шанса на checkpoint.
+
+Decision: `ProcessingWorker` ограничивает полную обработку Item через
+`PROCESSING_TIMEOUT_SECONDS`; при штатном завершении сначала выставляется stop,
+воркерам даётся `SHUTDOWN_TIMEOUT_SECONDS`, и только затем оставшиеся задачи
+отменяются.
+
+Reason: timeout оставляет Item в контролируемом FAILED/retryable состоянии, а
+bounded graceful window сохраняет уже записанные checkpoints без отдельного
+внешнего supervisor или distributed queue.
+
+Consequences: принудительная отмена после shutdown deadline может оставить
+PROCESSING Item, который будет безопасно requeue при следующем старте.

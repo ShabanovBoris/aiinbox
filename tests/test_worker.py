@@ -1,10 +1,17 @@
 import asyncio
+import logging
 
 from app.domain.enums import ProcessingStatus
+from app.main import _drain_worker_tasks, _start_polling
 from app.services.ingestion import ingest_message
 from app.storage.models import Item
 from app.workers.processing import ProcessingWorker, requeue_stale
 from tests.fakes import FakePipeline
+
+
+class HangingPipeline:
+    async def run(self, session, item):
+        await asyncio.Future()
 
 
 async def seed(session_factory, message_id: int = 1, text: str = "note"):
@@ -63,7 +70,8 @@ async def test_concurrent_workers_claim_distinct_items(session_factory):
     assert sorted(c for c in claimed if c is not None) == [first.id, second.id]
 
 
-async def test_worker_processes_queued_to_ready(session_factory):
+async def test_worker_processes_queued_to_ready(session_factory, caplog):
+    caplog.set_level(logging.INFO)
     item = await seed(session_factory)
     worker = make_worker(session_factory)
     assert await worker.process_one() is True
@@ -71,6 +79,8 @@ async def test_worker_processes_queued_to_ready(session_factory):
     assert stored.processing_status is ProcessingStatus.READY
     assert stored.processing_stage == "READY"
     assert stored.error_code is None
+    assert f"item_id={item.id}" in caplog.text
+    assert "result=READY" in caplog.text
 
 
 async def test_worker_marks_failed_on_exception(session_factory):
@@ -83,6 +93,45 @@ async def test_worker_marks_failed_on_exception(session_factory):
     assert stored.processing_stage == "INGESTED"
     assert stored.error_code == "UNKNOWN"
     assert "boom" in stored.error_message
+
+
+async def test_worker_applies_end_to_end_processing_timeout(session_factory):
+    item = await seed(session_factory)
+    worker = ProcessingWorker(
+        session_factory,
+        HangingPipeline(),
+        poll_seconds=0.01,
+        processing_timeout_seconds=0.01,
+    )
+    assert await worker.process_one() is True
+    stored = await get_item(session_factory, item.id)
+    assert stored.processing_status is ProcessingStatus.FAILED
+    assert stored.error_code == "PROCESSING_TIMEOUT"
+
+
+async def test_shutdown_drain_waits_for_inflight_worker_before_transport_close():
+    events = []
+
+    async def in_flight_worker():
+        await asyncio.sleep(0)
+        events.append("worker-complete")
+
+    task = asyncio.create_task(in_flight_worker())
+    await _drain_worker_tasks([task], timeout=1)
+    events.append("transport-close")
+    assert events == ["worker-complete", "transport-close"]
+
+
+async def test_polling_does_not_close_transport_owned_by_shutdown_coordinator():
+    calls = []
+
+    class Dispatcher:
+        async def start_polling(self, bot, **kwargs):
+            calls.append((bot, kwargs))
+
+    bot = object()
+    await _start_polling(Dispatcher(), bot)
+    assert calls == [(bot, {"handle_signals": False, "close_bot_session": False})]
 
 
 async def test_worker_claims_oldest_first(session_factory):
