@@ -32,7 +32,7 @@ squash merge с ожидаемым HEAD B. Вердикты фиксируютс
 | 2 | Text end-to-end | DONE |
 | 3 | Web ingestion | DONE |
 | 4 | Architecture checkpoint | DONE |
-| 5 | Voice/audio | IN_REVIEW |
+| 5 | Voice/audio | DONE |
 | 6 | YouTube | NOT_STARTED |
 | 7 | Video visual analysis | NOT_STARTED |
 | 8 | User profile | NOT_STARTED |
@@ -258,7 +258,12 @@ ruff check . → pass; ruff format --check . → pass; pytest → 84 passed
 (+ Phase 4 регрессии фактически в suite: FAILED сохраняет checkpoint и retry
 без повторного download/LLM; конкурентная дедупликация пересекающихся URL)
 
-### Phase 5 — Voice/audio — IN_REVIEW
+### Phase 5 — Voice/audio — DONE
+
+APPROVED @ 05bb0ee1bbe2a8370a9d5e2df37b64bcc4c84ed7 (Orchestrator, GitHub review
+pullrequestreview-5188651120). Ревью прошло три круга: temp cleanup/byte-cap,
+durable oversized Item (atomic), Telegram retry policy + permanent-классификация
+aiogram errors, STT TIMEOUT маппинг, token redaction в логах.
 
 Completed:
 ✓ Voice/audio ingestion: ingest_voice → Item QUEUED с source_file_id
