@@ -36,7 +36,7 @@ squash merge с ожидаемым HEAD B. Вердикты фиксируютс
 | 6 | YouTube | DONE |
 | 7 | Video visual analysis | DONE |
 | 8 | User profile | DONE |
-| 9 | Today/inbox/search | IN_REVIEW |
+| 9 | Today/inbox/search | DONE |
 | 10 | Item actions | NOT_STARTED |
 | 11 | Notifications | NOT_STARTED |
 | 12 | Production hardening | NOT_STARTED |
@@ -417,7 +417,11 @@ Last verification:
 ruff check . → pass; ruff format --check . → pass; pytest → 152 passed
 smoke: headless старт без токена — bot disabled, SIGINT graceful
 
-### Phase 9 — Today/inbox/search — IN_REVIEW
+### Phase 9 — Today/inbox/search — DONE
+
+APPROVED @ 591cd2e8e7279b725977341caa56dd31fa43899f (Orchestrator, GitHub review
+5192209948). Status finalized after external approval; PR #10 is ready for
+merge with the protocol handshake.
 
 PR #10 открыт: `phase/09-today-inbox-search` → `main`.
 
