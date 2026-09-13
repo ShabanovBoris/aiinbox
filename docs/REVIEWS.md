@@ -896,6 +896,19 @@
   01:00 → no stale delivery at 08:00 → today's digest at 09:00, and the review
   journal association is corrected.
 
+## 2026-09-14 — PR #12 — 72bacd9 — CHANGES REQUIRED (review 6)
+
+- Reviewer: Orchestrator; GitHub COMMENT review:
+  https://github.com/ShabanovBoris/aiinbox/pull/12#pullrequestreview-5192543163
+  (reviewed HEAD `72bacd931ad18322121681b1fa60463d25f15035`).
+- Findings: MAJOR — generic `updated_at` cannot represent digest activation;
+  unrelated settings changes could suppress a legitimate deferred digest.
+  MINOR — review IDs `5192510310` and `5192521430` were associated with the
+  wrong reviewed HEADs.
+- Resolved in same branch/PR #12: digest eligibility now uses dedicated
+  `daily_digest_enabled_at`, with migration/backfill and regression coverage;
+  journal associations are corrected.
+
 ```text
 ## YYYY-MM-DD — PR #N — <reviewed HEAD sha> — OUTCOME
 
