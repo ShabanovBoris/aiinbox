@@ -858,7 +858,7 @@
 ## 2026-09-14 — PR #12 — 7b235b4 — CHANGES REQUIRED (review 3)
 
 - Reviewer: Orchestrator; GitHub COMMENT review:
-  https://github.com/ShabanovBoris/aiinbox/pull/12#pullrequestreview-5192521430
+  https://github.com/ShabanovBoris/aiinbox/pull/12#pullrequestreview-5192510310
   (reviewed HEAD `7b235b409707af2dd8420caa7d1bc8c5b1ea67f7`).
 - Findings: MAJOR — generalized overnight recovery synthesized yesterday's
   digest before the configured time for a new/enabled user; MINOR — PR body
@@ -908,6 +908,17 @@
 - Resolved in same branch/PR #12: digest eligibility now uses dedicated
   `daily_digest_enabled_at`, with migration/backfill and regression coverage;
   journal associations are corrected.
+
+## 2026-09-14 — PR #12 — 30dee0d — CHANGES REQUIRED (review 7)
+
+- Reviewer: Orchestrator; GitHub COMMENT review:
+  https://github.com/ShabanovBoris/aiinbox/pull/12#pullrequestreview-5192558920
+  (reviewed HEAD `30dee0dd5c55be16fef911676217f83dfae7030f`).
+- Finding: MINOR — `REVIEWS.md` associated review `5192510310` with the
+  wrong HEAD; correct mapping is `7b235b4 → 5192510310` and
+  `ffc97a8 → 5192521430`.
+- Resolved in same branch/PR #12: the two durable journal associations are
+  corrected; product code was already accepted as clean.
 
 ```text
 ## YYYY-MM-DD — PR #N — <reviewed HEAD sha> — OUTCOME
