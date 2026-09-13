@@ -16,8 +16,13 @@ from app.llm.openai import OpenAiProvider
 from app.llm.transcription import OpenAiTranscriptionProvider
 from app.services.analysis import Analyzer
 from app.services.processing import ProcessingPipeline
-from app.services.profile import apply_profile_seed
+from app.services.profile import (
+    apply_profile_seed,
+    configure_profile_seed,
+    requeue_running_profile_jobs,
+)
 from app.storage.database import make_engine, make_session_factory
+from app.storage.models import User
 from app.workers.processing import ProcessingWorker, requeue_stale
 from app.workers.profile import ProfileUpdateWorker
 
@@ -87,12 +92,29 @@ def build_extractors(settings: Settings, bot) -> tuple:
     return web_extractor, audio_extractor, youtube_extractor
 
 
+def _profile_done_notifier(bot, session_factory):
+    """Уведомление о завершении /profile_update: адресат — users.telegram_chat_id
+    (job.user_id — внутренний PK). Возвращает coroutine или None (headless)."""
+
+    async def notify(job, profile, changed):
+        async with session_factory() as session:
+            user = await session.get(User, job.user_id)
+            chat_id = user.telegram_chat_id if user else None
+        if chat_id is None:
+            return
+        await bot.send_message(chat_id, "Профиль обновлён: " + ", ".join(changed))
+
+    return notify
+
+
 async def run(settings: Settings) -> None:
     engine = make_engine(settings)
     session_factory = make_session_factory(engine)
     try:
         await requeue_stale(session_factory)
+        await requeue_running_profile_jobs(session_factory)
         await apply_profile_seed(session_factory, settings.profile_seed_file)
+        configure_profile_seed(settings.profile_seed_file)
 
         analyzer = Analyzer(build_provider(settings))
         polling = None
@@ -139,15 +161,7 @@ async def run(settings: Settings) -> None:
             visual_max_frames=settings.video_max_frames,
         )
 
-        def on_profile_done(job, profile, changed):
-            if bot is None:
-                return None
-
-            async def _notify():
-                text = "Профиль обновлён: " + ", ".join(changed)
-                await bot.send_message(job.user_id, text)
-
-            return _notify()
+        on_profile_done = _profile_done_notifier(bot, session_factory) if bot is not None else None
 
         stop = asyncio.Event()
         loop = asyncio.get_running_loop()

@@ -1,5 +1,7 @@
 """Phase 8: персональный профиль — persistence, /profile, /profile_update."""
 
+import asyncio
+
 import pytest
 from aiogram.types import Chat, Message
 from aiogram.types import User as TgUser
@@ -8,15 +10,22 @@ from sqlalchemy import select
 from app.bot.formatting import format_profile
 from app.bot.handlers import on_profile, on_profile_update
 from app.domain.models import UserProfile
+from app.domain.priority import PriorityEngine
 from app.llm.base import LlmError
+from app.services.analysis import Analyzer
 from app.services.ingestion import ingest_message
+from app.services.processing import ProcessingPipeline
 from app.services.profile import (
+    apply_profile_seed,
     enqueue_profile_update,
     get_profile,
     load_profile_seed,
+    requeue_running_profile_jobs,
     update_profile_from_patch,
 )
-from app.storage.models import ProfileUpdateJob
+from app.storage.models import ProfileUpdateJob, User
+from app.workers.processing import ProcessingWorker
+from app.workers.profile import ProfileUpdateWorker
 from tests.fakes import FakeLlmProvider
 
 
@@ -148,3 +157,188 @@ async def test_on_profile_update_enqueues_durable_job(
         job = await session.scalar(select(ProfileUpdateJob))
         assert job is not None and job.status == "PENDING"
         assert job.instruction == "теперь ml"
+
+
+async def test_analyzer_receives_profile_from_db(tmp_path, session_factory):
+    # Регрессия acceptance «profile passed to analyzer»: pipeline передаёт
+    # сохранённый профиль пользователя, а не default.
+    await ingest_message(session_factory, telegram_user_id=42, chat_id=42, message_id=1, text="x")
+    await update_profile_from_patch(
+        session_factory,
+        FakeLlmProvider(profile_patch={"profession": "dev", "interests": ["ai", "piano"]}),
+        await enqueue_profile_update(
+            session_factory, telegram_user_id=42, chat_id=42, instruction="i"
+        ),
+    )
+    provider = FakeLlmProvider(vision=False)
+    worker = ProcessingWorker(
+        session_factory, ProcessingPipeline(Analyzer(provider), PriorityEngine()), poll_seconds=0.01
+    )
+    await worker.process_one()
+    ((_, received_profile, _),) = provider.calls
+    assert received_profile.profession == "dev"
+    assert received_profile.interests == ["ai", "piano"]
+
+
+async def test_profile_seed_applied_to_empty_profiles_only(tmp_path, session_factory):
+    seed = tmp_path / "profile.yaml"
+    seed.write_text("profession: dev\n", encoding="utf-8")
+    await ingest_message(session_factory, telegram_user_id=42, chat_id=42, message_id=1, text="x")
+    await ingest_message(
+        session_factory, telegram_user_id=1000, chat_id=1000, message_id=2, text="y"
+    )
+    # существующий профиль второго пользователя не перезаписывается
+    async with session_factory() as session:
+        user = await session.get(User, 2)
+        user.profile_json = {"profession": "existing"}
+        await session.commit()
+
+    applied = await apply_profile_seed(session_factory, seed)
+    assert applied == 1  # только пользователь с NULL профилем
+    async with session_factory() as session:
+        first = await get_profile(session, 1)
+        second = await get_profile(session, 2)
+    assert first.profession == "dev"
+    assert second.profession == "existing"
+
+
+async def test_missing_seed_file_is_noop(tmp_path, session_factory):
+    assert await apply_profile_seed(session_factory, tmp_path / "nope.yaml") == 0
+
+
+async def test_lazily_created_user_gets_seed_immediately(tmp_path, session_factory, monkeypatch):
+    # Регрессия: пользователь, созданный ПОСЛЕ старта, получает seed при первом
+    # чтении профиля (lazy seed), существующий профиль не перезаписывается.
+    from app.services.profile import configure_profile_seed
+
+    seed = tmp_path / "profile.yaml"
+    seed.write_text("profession: seeded\n", encoding="utf-8")
+    configure_profile_seed(seed)
+    try:
+        await ingest_message(
+            session_factory, telegram_user_id=777, chat_id=777, message_id=1, text="x"
+        )
+        async with session_factory() as session:
+            profile = await get_profile(session, 1)
+        assert profile.profession == "seeded"
+
+        # существующий профиль не перезаписывается
+        await update_profile_from_patch(
+            session_factory,
+            FakeLlmProvider(profile_patch={"profession": "custom"}),
+            await enqueue_profile_update(
+                session_factory, telegram_user_id=777, chat_id=777, instruction="i"
+            ),
+        )
+        async with session_factory() as session:
+            profile = await get_profile(session, 1)
+        assert profile.profession == "custom"
+    finally:
+        configure_profile_seed("")
+
+
+async def test_profile_update_concurrent_disjoint_fields_merge(tmp_path, session_factory):
+    # Регрессия: конкурентные /profile_update разных полей не затирают друг друга
+    # (DB-side json_patch merge).
+    await asyncio.gather(
+        update_profile_from_patch(
+            session_factory,
+            FakeLlmProvider(profile_patch={"profession": "dev"}),
+            await enqueue_profile_update(
+                session_factory, telegram_user_id=42, chat_id=42, instruction="a"
+            ),
+        ),
+        update_profile_from_patch(
+            session_factory,
+            FakeLlmProvider(profile_patch={"free_text": "фокус"}),
+            await enqueue_profile_update(
+                session_factory, telegram_user_id=42, chat_id=42, instruction="b"
+            ),
+        ),
+    )
+    async with session_factory() as session:
+        profile = await get_profile(session, 1)
+    assert profile.profession == "dev"
+    assert profile.free_text == "фокус"
+
+
+async def test_profile_update_job_lifecycle_done(tmp_path, session_factory):
+    # Регрессия: PENDING -> RUNNING (claim) -> DONE (успех) — job не остаётся
+    # навсегда в RUNNING.
+    job = await enqueue_profile_update(
+        session_factory, telegram_user_id=42, chat_id=42, instruction="i"
+    )
+    provider = FakeLlmProvider(profile_patch={"profession": "x"})
+    worker = ProfileUpdateWorker(session_factory, provider, poll_seconds=0.01)
+    assert await worker.process_one() is True
+    async with session_factory() as session:
+        stored = await session.get(ProfileUpdateJob, job.id)
+        assert stored.status == "DONE"
+    async with session_factory() as session:
+        profile = await get_profile(session, 1)
+    assert profile.profession == "x"
+
+
+async def test_profile_update_job_failure_lifecycle(tmp_path, session_factory):
+    job = await enqueue_profile_update(
+        session_factory, telegram_user_id=42, chat_id=42, instruction="i"
+    )
+    worker = ProfileUpdateWorker(
+        session_factory,
+        FakeLlmProvider(profile_error=LlmError("INVALID_LLM_OUTPUT", "bad")),
+        poll_seconds=0.01,
+    )
+    assert await worker.process_one() is True
+    async with session_factory() as session:
+        stored = await session.get(ProfileUpdateJob, job.id)
+        assert stored.status == "FAILED"
+        assert stored.error_code == "INVALID_LLM_OUTPUT"
+    async with session_factory() as session:
+        profile = await get_profile(session, 1)
+    assert profile.profession is None
+
+
+async def test_running_profile_job_recovered_on_startup(tmp_path, session_factory):
+    # Регрессия: RUNNING job после смерти процесса возвращается в PENDING на
+    # старте и успешно обрабатывается.
+    job = await enqueue_profile_update(
+        session_factory, telegram_user_id=42, chat_id=42, instruction="i"
+    )
+    async with session_factory() as session:
+        row = await session.get(ProfileUpdateJob, job.id)
+        row.status = "RUNNING"
+        await session.commit()
+
+    assert await requeue_running_profile_jobs(session_factory) == 1
+    worker = ProfileUpdateWorker(
+        session_factory, FakeLlmProvider(profile_patch={"profession": "x"}), poll_seconds=0.01
+    )
+    assert await worker.process_one() is True
+    async with session_factory() as session:
+        stored = await session.get(ProfileUpdateJob, job.id)
+        assert stored.status == "DONE"
+
+
+async def test_profile_update_notification_uses_telegram_chat(tmp_path, session_factory):
+    # Регрессия: уведомление адресуется на telegram_chat_id, а не на внутренний
+    # users.id.
+    import asyncio  # noqa: F401
+
+    from app.domain.models import UserProfile
+
+    await ingest_message(session_factory, telegram_user_id=42, chat_id=7777, message_id=1, text="x")
+    job = await enqueue_profile_update(
+        session_factory, telegram_user_id=42, chat_id=7777, instruction="i"
+    )
+    profile = UserProfile()
+    sent: list[tuple[int, str]] = []
+
+    class FakeBot:
+        async def send_message(self, chat_id, text):
+            sent.append((chat_id, text))
+
+    from app.main import _profile_done_notifier
+
+    callback = _profile_done_notifier(FakeBot(), session_factory)
+    await callback(job, profile, ["profession"])
+    assert sent == [(7777, "Профиль обновлён: " + ", ".join(["profession"]))]

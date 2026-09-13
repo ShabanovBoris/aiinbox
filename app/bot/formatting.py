@@ -32,6 +32,10 @@ def format_profile(profile: UserProfile) -> str:
         lines.append("Цели: " + "; ".join(f"{g.name} ({g.weight})" for g in profile.goals))
     if profile.interests:
         lines.append(f"Интересы: {', '.join(profile.interests)}")
+    if profile.constraints:
+        lines.append(
+            "Constraints: " + "; ".join(f"{k}: {v}" for k, v in profile.constraints.items())
+        )
     if profile.free_text:
         lines.append(f"Заметки: {profile.free_text}")
     if len(lines) == 1:

@@ -606,6 +606,38 @@
   5. → format_profile показывает constraints; constraints-only профиль не пустой.
   6. → регрессия test_analyzer_receives_profile_from_db.
 
+## 2026-09-13 — PR #9 — 2d149b9 — CHANGES REQUIRED (re-review)
+
+- Phase 08 — User profile. Reviewer: Orchestrator; вердикт также на GitHub:
+  https://github.com/ShabanovBoris/aiinbox/pull/9#pullrequestreview-5189252785 (commit 2d149b9).
+- Findings:
+  1. MAJOR: constraints list[ConstraintEntry] персистился в profile_json как
+     массив, UserProfile ждёт dict → get_profile фолбэкался на default.
+  2. MAJOR: успешный ProfileUpdateJob не финализировался (RUNNING навсегда).
+  3. MAJOR/RESUMABILITY: RUNNING job не восстанавливался на restart/отмене.
+  4. MAJOR: уведомление использовало внутренний users.id как Telegram chat id.
+  5. MAJOR: YAML seed неэффективен на чистой БД / для пользователей, созданных
+     после старта.
+  6. MINOR: /profile не показывал constraints; constraints-only профиль — пустой.
+  7. MINOR: заявленные регрессии отсутствовали на HEAD (apply_profile_seed,
+     concurrent gather, worker lifecycle, analyzer-from-DB).
+  8. MINOR: docs опережали код; PR body не упоминал миграцию 76ed20f32fe7.
+- Resolved (коммиты после 2d149b9 в этом же PR):
+  1. → ConstraintEntry[] конвертируется в dict до json_patch merge; непустые
+     constraints персистятся объектом и читаются обратно (регрессия merge).
+  2. → успех завершает job: finish_profile_update(status=DONE).
+  3. → requeue_running_profile_jobs на старте: RUNNING → PENDING; регрессия:
+     claim → simulated death → recovery → job обработан.
+  4. → уведомление адресуется на users.telegram_chat_id; headless on_done None
+     обрабатывается; регрессия test_profile_update_notification_uses_telegram_chat.
+  5. → configure_profile_seed + ленивый seed в get_profile: пользователь,
+     созданный после старта, получает seed сразу; существующий не перезаписывается
+     (регрессия test_lazily_created_user_gets_seed_immediately).
+  6. → format_profile показывает constraints; constraints-only профиль не пустой.
+  7. → фактически добавлены: analyzer-from-DB, concurrent json_patch merge,
+     worker lifecycle (DONE/FAILED), seed regressions; pytest 132 → 140 passed.
+  8. → IMPLEMENTATION_STATE/PR body синхронизированы (76ed20f32fe7 указан).
+
 ## Шаблон записи
 
 ```text

@@ -12,7 +12,11 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.errors import AppError
 from app.llm.base import LlmProvider
-from app.services.profile import claim_oldest_profile_update, update_profile_from_patch
+from app.services.profile import (
+    claim_oldest_profile_update,
+    finish_profile_update,
+    update_profile_from_patch,
+)
 from app.storage.models import ProfileUpdateJob
 
 log = logging.getLogger(__name__)
@@ -54,12 +58,16 @@ class ProfileUpdateWorker:
             log.warning("profile update failed job=%s code=%s", job.id, code)
             await finish_with_error(self.session_factory, job.id, code, str(exc)[:500])
             return True
+        # успех: job PENDING/RUNNING -> DONE (durable)
+        await finish_profile_update(self.session_factory, job)
         log.info("profile updated job=%s user_id=%s changed=%s", job.id, job.user_id, changed)
         if self.on_done is not None:
-            try:
-                await self.on_done(job, profile, changed)
-            except Exception:
-                log.exception("profile update notify failed job=%s", job.id)
+            result = self.on_done(job, profile, changed)
+            if result is not None:  # headless-режим: callback без бота вернёт None
+                try:
+                    await result
+                except Exception:
+                    log.exception("profile update notify failed job=%s", job.id)
         return True
 
 

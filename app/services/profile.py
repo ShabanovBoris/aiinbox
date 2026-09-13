@@ -22,6 +22,14 @@ from app.storage.models import ProfileUpdateJob, User
 
 log = logging.getLogger(__name__)
 
+# Путь к seed-файлу, настраивается на старте (configure_profile_seed).
+_seed_path: str | None = None
+
+
+def configure_profile_seed(path: str | Path) -> None:
+    global _seed_path
+    _seed_path = str(path)
+
 
 async def get_profile(session: AsyncSession, user_id: int) -> UserProfile:
     user = await session.get(User, user_id)
@@ -30,6 +38,15 @@ async def get_profile(session: AsyncSession, user_id: int) -> UserProfile:
             return UserProfile.model_validate(user.profile_json)
         except ValidationError:
             log.warning("corrupted profile_json for user %s — using default", user_id)
+        return UserProfile()
+    # Ленивый seed: пользователь создан после старта — seed применяется сразу
+    # при первом чтении профиля; существующие профили не перезаписываются.
+    if user is not None and user.profile_json is None and _seed_path:
+        seed = load_profile_seed(_seed_path)
+        if seed is not None:
+            user.profile_json = seed.model_dump()
+            await session.commit()
+            return seed
     return UserProfile()
 
 
@@ -114,6 +131,20 @@ async def claim_oldest_profile_update(
         return await session.get(ProfileUpdateJob, claimed)
 
 
+async def requeue_running_profile_jobs(session_factory: async_sessionmaker) -> int:
+    """Startup recovery: RUNNING job после смерти процесса возвращается в PENDING."""
+    async with session_factory() as session:
+        result = await session.execute(
+            update(ProfileUpdateJob)
+            .where(ProfileUpdateJob.status == "RUNNING")
+            .values(status="PENDING")
+        )
+        await session.commit()
+        if result.rowcount:
+            log.warning("requeued RUNNING profile jobs count=%s", result.rowcount)
+        return result.rowcount
+
+
 async def finish_profile_update(
     session_factory: async_sessionmaker,
     job: ProfileUpdateJob,
@@ -142,11 +173,19 @@ async def update_profile_from_patch(
 
     RFC 7396 merge на уровне БД: конкурентные обновления РАЗНЫХ полей не
     затирают друг друга (read-modify-write гонка исключена).
+    constraints приходят как list[ConstraintEntry] → конвертируются в dict
+    до merge (UserProfile.constraints — dict).
     """
     async with session_factory() as session:
         current = await get_profile(session, job.user_id)
     patch: ProfilePatch = await provider.profile_update(job.instruction, current)
     data = patch.model_dump(exclude_unset=True, exclude_none=True)
+    if "constraints" in data and data["constraints"] is not None:
+        entries = data.pop("constraints")
+        merged_constraints = dict(current.constraints)
+        for entry in entries:
+            merged_constraints[entry["key"]] = entry["value"]
+        data["constraints"] = merged_constraints
 
     async with session_factory() as session:
         await session.execute(
