@@ -6,6 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.domain.enums import ItemState, ProcessingStatus
+from app.services.notifications import add_snooze_reminder, cancel_snooze_reminders
 from app.storage.models import Event, Item, User
 
 
@@ -40,22 +41,27 @@ async def apply_item_action(
                 item.state = ItemState.DONE
                 item.completed_at = _utc_now()
                 item.snoozed_until = None
+                await cancel_snooze_reminders(session, user.id, item.id)
                 event_type = "DONE"
         elif action == "archive":
             if item.state is not ItemState.ARCHIVED:
                 item.state = ItemState.ARCHIVED
                 item.archived_at = _utc_now()
                 item.snoozed_until = None
+                await cancel_snooze_reminders(session, user.id, item.id)
                 event_type = "ARCHIVED"
         elif action == "snooze" and snoozed_until is not None:
             if item.state is not ItemState.SNOOZED or item.snoozed_until != snoozed_until:
                 item.state = ItemState.SNOOZED
                 item.snoozed_until = snoozed_until
                 event_type = "SNOOZED"
+                await cancel_snooze_reminders(session, user.id, item.id)
+                await add_snooze_reminder(session, user.id, item.id, snoozed_until)
         elif action == "cancel_snooze":
             if item.state is ItemState.SNOOZED:
                 item.state = ItemState.ACTIVE
                 item.snoozed_until = None
+                await cancel_snooze_reminders(session, user.id, item.id)
         elif action == "retry":
             if item.processing_status is ProcessingStatus.FAILED:
                 item.processing_status = ProcessingStatus.QUEUED

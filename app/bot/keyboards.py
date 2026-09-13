@@ -41,3 +41,11 @@ def snooze_keyboard(item_id: int) -> InlineKeyboardMarkup:
             ],
         ]
     )
+
+
+def settings_keyboard(enabled: bool) -> InlineKeyboardMarkup:
+    """Minimal settings projection: the common digest toggle is one tap."""
+    label = "🔕 Выключить digest" if enabled else "🔔 Включить digest"
+    return InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text=label, callback_data="settings:digest")]]
+    )
