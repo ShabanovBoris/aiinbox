@@ -554,6 +554,20 @@
   4. → review ID исправлен.
   5. → PR body обновлён как metadata.
 
+## 2026-09-13 — PR #8 — 86ea2b7 — CHANGES REQUIRED (re-review 2)
+
+- Reviewer: Orchestrator; вердикт также на GitHub:
+  https://github.com/ShabanovBoris/aiinbox/pull/8#pullrequestreview-5189028380 (commit 86ea2b7).
+- Findings:
+  1. MINOR/§9.1: в docs/REVIEWS.md отсутствовала durable запись самого вердикта
+     86ea2b7 (CHANGES REQUIRED с двумя MINOR).
+  2. MINOR/metadata: PR body показывал HEAD 86ea2b7 и 132 passed — HEAD устарел
+     после docs-коммита.
+- Resolved (коммит после 86ea2b7):
+  1. → эта запись добавлена в docs/REVIEWS.md.
+  2. → PR body обновлён как metadata без commit (HEAD фиксируется в
+     RE-REVIEW REQUEST).
+
 ## Шаблон записи
 
 ```text
