@@ -417,7 +417,9 @@ Last verification:
 ruff check . → pass; ruff format --check . → pass; pytest → 152 passed
 smoke: headless старт без токена — bot disabled, SIGINT graceful
 
-### Phase 9 — Today/inbox/search — IN_PROGRESS
+### Phase 9 — Today/inbox/search — IN_REVIEW
+
+PR #10 открыт: `phase/09-today-inbox-search` → `main`.
 
 Completed:
 ✓ `TodayService`: READY + ACTIVE actionable Items (ACTION/LEARN/READ/WATCH),
@@ -432,8 +434,8 @@ Completed:
   table or pagination framework
 
 Remaining:
-□ quality/review cycle: run final manual smoke, commit, push, open PR, and send
-  REVIEW REQUEST to the Orchestrator
+□ ждать вердикта Orchestrator'а; исправления при необходимости выполнять в
+  этой же ветке и PR
 
 Last verification:
 ruff check . → pass; ruff format --check . → pass;
