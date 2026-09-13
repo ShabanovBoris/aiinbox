@@ -3,7 +3,12 @@ from typing import Protocol
 
 from pydantic import BaseModel
 
-from app.domain.models import AnalysisResult, NormalizedContent, UserProfile
+from app.domain.models import (
+    AnalysisResult,
+    NormalizedContent,
+    ProfilePatch,
+    UserProfile,
+)
 from app.errors import AppError
 
 
@@ -36,6 +41,10 @@ class LlmProvider(Protocol):
 
     async def describe_images(self, images: list[Path], context: str | None) -> str:
         """Компактное описание визуального контента кадров (ТЗ §23)."""
+        ...
+
+    async def profile_update(self, instruction: str, current: UserProfile) -> ProfilePatch:
+        """Natural language → валидированный ProfilePatch (Phase 8)."""
         ...
 
 

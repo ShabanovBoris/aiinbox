@@ -91,6 +91,7 @@ async def run(settings: Settings) -> None:
     try:
         await requeue_stale(session_factory)
 
+        analyzer = Analyzer(build_provider(settings))
         polling = None
         bot = None
         on_result = None
@@ -109,7 +110,12 @@ async def run(settings: Settings) -> None:
             )
             dispatcher = Dispatcher()
             dispatcher.include_router(
-                make_router(settings, session_factory, settings.max_audio_bytes)
+                make_router(
+                    settings,
+                    session_factory,
+                    provider=analyzer.provider,
+                    max_audio_bytes=settings.max_audio_bytes,
+                )
             )
             polling = asyncio.create_task(
                 dispatcher.start_polling(bot, handle_signals=False), name="telegram-polling"
@@ -121,7 +127,7 @@ async def run(settings: Settings) -> None:
 
         web_extractor, audio_extractor, youtube_extractor = build_extractors(settings, bot)
         pipeline = ProcessingPipeline(
-            Analyzer(build_provider(settings)),
+            analyzer,
             PriorityEngine(),
             web_extractor,
             audio_extractor,

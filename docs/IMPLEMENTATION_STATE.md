@@ -35,7 +35,7 @@ squash merge с ожидаемым HEAD B. Вердикты фиксируютс
 | 5 | Voice/audio | DONE |
 | 6 | YouTube | DONE |
 | 7 | Video visual analysis | DONE |
-| 8 | User profile | NOT_STARTED |
+| 8 | User profile | IN_REVIEW |
 | 9 | Today/inbox/search | NOT_STARTED |
 | 10 | Item actions | NOT_STARTED |
 | 11 | Notifications | NOT_STARTED |
@@ -382,6 +382,28 @@ ruff check . → pass; ruff format --check . → pass; pytest → 132 passed
 frames off event loop, mkdir failure → READY TRANSCRIPT_ONLY, notes truncation 800,
 720p bound без /best, video byte limit enforced отдельно от audio,
 malformed-track regression)
+smoke: headless старт без токена — bot disabled, SIGINT graceful
+
+### Phase 8 — User profile — IN_REVIEW
+
+Completed:
+✓ users.profile_json (миграция 220d7ae6d4f1); profile seed через YAML
+  (profile.example.yaml, load_profile_seed)
+✓ ProfilePatch (extra=forbid): natural language → strict Structured Outputs →
+  валидация; field-level merge — незатронутые поля не теряются
+✓ OpenAiProvider.profile_update: strict schema + валидация, ошибки
+  LLM_FAILED/INVALID_LLM_OUTPUT; FakeLlmProvider.profile_update в тестах
+✓ update_profile_from_text: telegram_user_id-based, возвращает изменённые поля
+✓ /profile (format_profile) и /profile_update (allowlist, persist → ACK)
+✓ Pipeline: analyzer получает профиль пользователя из БД (не default)
+✓ Регрессии: persistence across sessions, merge без потери полей, invalid patch
+  rejected, seed yaml, /profile показ, /profile_update persist
+
+Remaining:
+□ Blocked (external): live LLM profile_update — нет ключа; путь покрыт фейками
+
+Last verification:
+ruff check . → pass; ruff format --check . → pass; pytest → 140 passed
 smoke: headless старт без токена — bot disabled, SIGINT graceful
 
 ### Шаблон фазы в работе

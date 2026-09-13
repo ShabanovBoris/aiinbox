@@ -28,6 +28,8 @@ class User(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     telegram_user_id: Mapped[int] = mapped_column(BigInteger, unique=True, index=True)
     telegram_chat_id: Mapped[int | None] = mapped_column(BigInteger)
+    # Персональный профиль (Phase 8) — JSON в users; отдельные таблицы не нужны.
+    profile_json: Mapped[dict | None] = mapped_column(JSON)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), onupdate=func.now()

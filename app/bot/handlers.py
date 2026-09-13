@@ -1,13 +1,16 @@
 import logging
 
 from aiogram import F, Router
-from aiogram.filters import CommandStart
+from aiogram.filters import Command, CommandStart
 from aiogram.types import Message
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.config import Settings
 from app.domain.enums import SourceType
+from app.llm.base import LlmError, LlmProvider
 from app.services.ingestion import ingest_message, ingest_voice
+from app.services.profile import update_profile_from_text
 
 log = logging.getLogger(__name__)
 
@@ -91,7 +94,10 @@ async def on_voice_audio(
 
 
 def make_router(
-    settings: Settings, session_factory: async_sessionmaker, max_audio_bytes: int = 20_000_000
+    settings: Settings,
+    session_factory: async_sessionmaker,
+    provider: LlmProvider | None = None,
+    max_audio_bytes: int = 20_000_000,
 ) -> Router:
     router = Router()
 
@@ -117,4 +123,61 @@ def make_router(
             message, settings, session_factory, message.audio, True, max_audio_bytes
         )
 
+    @router.message(Command("profile"))
+    async def profile(message: Message) -> None:
+        if not settings.is_allowed(message.from_user.id if message.from_user else None):
+            return
+        await on_profile(message, settings, session_factory)
+
+    @router.message(Command("profile_update"))
+    async def profile_update(message: Message) -> None:
+        if not settings.is_allowed(message.from_user.id if message.from_user else None):
+            return
+        instruction = (message.text or "").removeprefix("/profile_update").strip()
+        await on_profile_update(message, settings, session_factory, provider, instruction)
+
     return router
+
+
+async def on_profile(message: Message, settings: Settings, session_factory) -> None:
+    if not settings.is_allowed(message.from_user.id if message.from_user else None):
+        return
+    from app.bot.formatting import format_profile
+    from app.domain.models import UserProfile
+    from app.storage.models import User as UserRow
+
+    async with session_factory() as session:
+        user = await session.scalar(
+            select(UserRow).where(UserRow.telegram_user_id == message.from_user.id)
+        )
+        profile = UserProfile()
+        if user is not None and user.profile_json:
+            profile = UserProfile.model_validate(user.profile_json)
+    await message.answer(format_profile(profile))
+
+
+async def on_profile_update(
+    message: Message,
+    settings: Settings,
+    session_factory,
+    provider: LlmProvider,
+    instruction: str,
+) -> None:
+    if not instruction:
+        await message.answer("Использование: /profile_update <что изменить>")
+        return
+    user_id = message.from_user.id if message.from_user else None
+    if not settings.is_allowed(user_id):
+        return
+    try:
+        profile, changed = await update_profile_from_text(
+            session_factory,
+            provider,
+            telegram_user_id=user_id,
+            instruction=instruction,
+        )
+    except LlmError as exc:
+        await message.answer(f"Не удалось обновить профиль ({exc.code}).")
+        return
+    log.info("profile updated via /profile_update user_id=%s changed=%s", user_id, changed)
+    await message.answer("Профиль обновлён: " + ", ".join(changed))

@@ -17,6 +17,7 @@ dependencies = [
     "aiosqlite>=0.20",
     "alembic>=1.13",
     "pydantic>=2.7",
+    "PyYAML>=6.0",
     "pydantic-settings>=2.3",
 ]
 

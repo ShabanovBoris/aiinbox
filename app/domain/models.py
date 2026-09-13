@@ -52,6 +52,21 @@ DEFAULT_PROFILE = UserProfile(
 )
 
 
+class ProfilePatch(BaseModel):
+    """Частичное обновление профиля: отсутствующие поля не меняются (Phase 8).
+    extra=forbid: незапрошенные LLM поля → INVALID_LLM_OUTPUT, а не молчаливое
+    отбрасывание."""
+
+    model_config = {"extra": "forbid"}
+
+    profession: str | None = None
+    domains: list[str] | None = None
+    goals: list[UserGoal] | None = None
+    interests: list[str] | None = None
+    constraints: dict | None = None
+    free_text: str | None = None
+
+
 class AnalysisResult(BaseModel):
     """Строгая схема ответа LLM; валидируется Pydantic до попадания в БД.
 
