@@ -1003,3 +1003,16 @@
 - Resolved in same branch/PR #14: `CHUNK_SUMMARY` rows are committed before
   subsequent provider calls and reused on retry, aggregate input is bounded,
   and chunk size/overlap are configured and tested.
+
+## 2026-09-14 — PR #14 — 2dbed2c — CHANGES REQUIRED (review 3)
+
+- Reviewer: Orchestrator; GitHub COMMENT review:
+  https://github.com/ShabanovBoris/aiinbox/pull/14#pullrequestreview-5192800837
+  (reviewed HEAD `2dbed2ce172a2cbbf0e983133cf5eee481f5b2fc`).
+- Findings: MAJOR — overlap splitting emitted a redundant tail chunk after
+  reaching EOF; MINOR — public chunk environment names differed from
+  PRODUCT_SPEC §79.
+- Resolved in same branch/PR #14: splitter stops once the current chunk reaches
+  EOF and has a regression for the redundant-tail case; settings accept the
+  required `CONTENT_CHUNK_MAX_CHARS` and `CONTENT_CHUNK_OVERLAP_CHARS` names,
+  which are now the documented `.env.example` surface.

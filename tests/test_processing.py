@@ -84,6 +84,11 @@ def test_split_text_rejects_invalid_overlap():
         split_text("text", 4, 4)
 
 
+def test_split_text_overlap_stops_at_eof_without_redundant_tail():
+    chunks = split_text("abcdefghijklmnopq", 10, 2)
+    assert chunks == ["abcdefghij", "ijklmnopq"]
+
+
 async def test_long_content_is_summarized_before_final_analysis(session_factory):
     await seed(session_factory, text="x" * 25)
     provider = FakeLlmProvider()

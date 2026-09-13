@@ -14,7 +14,13 @@ def split_text(text: str, chunk_size_chars: int, overlap_chars: int = 0) -> list
     if not text:
         return []
     step = chunk_size_chars - overlap_chars
-    return [text[start : start + chunk_size_chars] for start in range(0, len(text), step)]
+    chunks = []
+    for start in range(0, len(text), step):
+        chunk = text[start : start + chunk_size_chars]
+        chunks.append(chunk)
+        if start + len(chunk) >= len(text):
+            break
+    return chunks
 
 
 class Analyzer:
