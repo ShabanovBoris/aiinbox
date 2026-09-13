@@ -553,10 +553,11 @@ Completed:
   externally unverified
 
 Remaining:
-□ отправить re-review для текущего exact HEAD PR #14 и получить approval
+□ отправить re-review для exact HEAD `9521c0187afeb994d30f94c861d6355cb1bd5540`
+  после fixes review `5192800837` и получить approval
 
 Last verification:
-`uv run --no-sync pytest` — 195 passed; Ruff check/format и `git diff --check` — pass.
+`uv run --no-sync pytest` — 196 passed; Ruff check/format и `git diff --check` — pass.
 
 ### Шаблон фазы в работе
 
