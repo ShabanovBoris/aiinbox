@@ -330,10 +330,12 @@ Remaining:
   (rate-limits/geo); путь покрыт фейковым ydl_factory + MockTransport
 
 Last verification:
-ruff check . → pass; ruff format --check . → pass; pytest → 110 passed
-(+ subtitles VTT/SRT/dedup, subs→no STT, auto-captions, STT fallback, playlist
-reject, duration cap, pipeline TRANSCRIPT/DESCRIPTION persistence + resume,
-youtube URL классификация)
+ruff check . → pass; ruff format --check . → pass; pytest → 118 passed
+(+ subtitles VTT/SRT/dedup + Kind:/Language: case-фикс; fallback chain: human
+unusable → auto → STT; subtitle oversize/transient retry; playlist reject;
+duration cap; TRANSCRIPT/DESCRIPTION persistence + resume с полным equality
+NormalizedContent; youtube URL классификация + www.youtube-nocookie; production
+composition test)
 
 ### Шаблон фазы в работе
 
