@@ -4,7 +4,12 @@ import logging
 from openai import AsyncOpenAI
 from pydantic import ValidationError
 
-from app.domain.models import AnalysisResult, NormalizedContent, UserProfile
+from app.domain.models import (
+    AnalysisResult,
+    NormalizedContent,
+    ProfilePatch,
+    UserProfile,
+)
 from app.llm.base import LlmCapabilities, LlmError
 
 log = logging.getLogger(__name__)
@@ -58,7 +63,8 @@ def _strict_node(node):
                 cleaned[key] = {name: _strict_node(sub) for name, sub in value.items()}
             elif key in _STRICT_KEEP:
                 cleaned[key] = _strict_node(value)
-        if "properties" in cleaned:
+        if cleaned.get("type") == "object" or "properties" in cleaned:
+            cleaned.setdefault("properties", {})
             cleaned["additionalProperties"] = False
             cleaned["required"] = sorted(cleaned["properties"])
         return cleaned
@@ -145,6 +151,46 @@ class OpenAiProvider:
             raise LlmError("LLM_FAILED", f"provider call failed: {exc}") from exc
         raw = response.choices[0].message.content or ""
         return self.parse_analysis(raw)
+
+    async def profile_update(self, instruction: str, current: UserProfile) -> ProfilePatch:
+        """Natural language → ProfilePatch: strict Structured Outputs + валидация;
+        unrequested/extra fields → INVALID_LLM_OUTPUT."""
+        schema = strict_json_schema(ProfilePatch)
+        try:
+            response = await self._client.chat.completions.create(
+                model=self._model,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "You update a user profile from a natural language "
+                            "instruction. Return ONLY fields explicitly changed by "
+                            "the instruction; never delete or invent unrelated data. "
+                            "Respond with a single JSON object matching the schema."
+                        ),
+                    },
+                    {
+                        "role": "user",
+                        "content": (
+                            f"CURRENT PROFILE:\n{current.model_dump_json(exclude_none=True)}\n\n"
+                            f"INSTRUCTION:\n{instruction}"
+                        ),
+                    },
+                ],
+                response_format={
+                    "type": "json_schema",
+                    "json_schema": {"name": "profile_patch", "strict": True, "schema": schema},
+                },
+            )
+        except LlmError:
+            raise
+        except Exception as exc:
+            raise LlmError("LLM_FAILED", f"profile update failed: {exc}") from exc
+        raw = response.choices[0].message.content or ""
+        try:
+            return ProfilePatch.model_validate_json(raw)
+        except ValidationError as exc:
+            raise LlmError("INVALID_LLM_OUTPUT", f"invalid profile patch: {exc}") from exc
 
     @staticmethod
     def parse_analysis(raw: str) -> AnalysisResult:

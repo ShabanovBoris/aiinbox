@@ -577,6 +577,174 @@
   720p bound, 800-char output bound, docs sync) закрыты.
 - Финализация: Phase 7 → DONE в IMPLEMENTATION_STATE.
 
+## 2026-09-13 — PR #9 — 6a2e1e8 — CHANGES REQUIRED
+
+- Phase 08 — User profile. Reviewer: Orchestrator; вердикт также на GitHub:
+  https://github.com/ShabanovBoris/aiinbox/pull/9#pullrequestreview-5189236544 (commit 6a2e1e8).
+- Findings:
+  1. MAJOR: profile seed не подключён к production flow (helper без вызова,
+     без путей/настроек).
+  2. MAJOR: constraints (generic dict) несовместимы со strict Structured
+     Outputs — non-empty constraints невозможно передать через live OpenAI.
+  3. MAJOR: field-level merge теряет данные при конкурентных /profile_update
+     (read-modify-write гонка).
+  4. MAJOR: /profile_update выполняет LLM в handler (ТЗ: только быстрый ACK).
+  5. MINOR: /profile не показывает constraints; constraints-only профиль
+     отображался как пустой.
+  6. MINOR: нет прямой регрессии «profile passed to analyzer».
+- Resolved (коммиты после 6a2e1e8 в этом же PR):
+  1. → apply_profile_seed на старте (profile.yaml; пустые профили получают seed,
+     существующие не перезаписываются; missing → no-op); регрессии.
+  2. → ConstraintEntry(key, value): строгая форма для Structured Outputs;
+     регрессия на generated schema и merge непустых constraints.
+  3. → DB-side атомарный json_patch merge — конкурентные обновления разных
+     полей не затирают друг друга; регрессия concurrent update profession +
+     interests → оба сохранены.
+  4. → durable ProfileUpdateJob (PENDING/RUNNING/DONE/FAILED) + фоновый
+     ProfileUpdateWorker (atomic claim, LLM+merge, уведомление); handler
+     только enqueue + быстрый ACK. Регрессии: enqueue durable job, job flow.
+  5. → format_profile показывает constraints; constraints-only профиль не пустой.
+  6. → регрессия test_analyzer_receives_profile_from_db.
+
+## 2026-09-13 — PR #9 — 2d149b9 — CHANGES REQUIRED (re-review)
+
+- Phase 08 — User profile. Reviewer: Orchestrator; вердикт также на GitHub:
+  https://github.com/ShabanovBoris/aiinbox/pull/9#pullrequestreview-5189341550 (commit 2d149b9).
+- Findings:
+  1. MAJOR: constraints list[ConstraintEntry] персистился в profile_json как
+     массив, UserProfile ждёт dict → get_profile фолбэкался на default.
+  2. MAJOR: успешный ProfileUpdateJob не финализировался (RUNNING навсегда).
+  3. MAJOR/RESUMABILITY: RUNNING job не восстанавливался на restart/отмене.
+  4. MAJOR: уведомление использовало внутренний users.id как Telegram chat id.
+  5. MAJOR: YAML seed неэффективен на чистой БД / для пользователей, созданных
+     после старта.
+  6. MINOR: /profile не показывал constraints; constraints-only профиль — пустой.
+  7. MINOR: заявленные регрессии отсутствовали на HEAD (apply_profile_seed,
+     concurrent gather, worker lifecycle, analyzer-from-DB).
+  8. MINOR: docs опережали код; PR body не упоминал миграцию 76ed20f32fe7.
+- Resolved (коммиты после 2d149b9 в этом же PR):
+  1. → ConstraintEntry[] конвертируется в dict до json_patch merge; непустые
+     constraints персистятся объектом и читаются обратно (регрессия merge).
+  2. → успех завершает job: finish_profile_update(status=DONE).
+  3. → requeue_running_profile_jobs на старте: RUNNING → PENDING; регрессия:
+     claim → simulated death → recovery → job обработан.
+  4. → уведомление адресуется на users.telegram_chat_id; headless on_done None
+     обрабатывается; регрессия test_profile_update_notification_uses_telegram_chat.
+  5. → configure_profile_seed + ленивый seed в get_profile: пользователь,
+     созданный после старта, получает seed сразу; существующий не перезаписывается
+     (регрессия test_lazily_created_user_gets_seed_immediately).
+  6. → format_profile показывает constraints; constraints-only профиль не пустой.
+  7. → фактически добавлены: analyzer-from-DB, concurrent json_patch merge,
+     worker lifecycle (DONE/FAILED), seed regressions; pytest 132 → 140 passed.
+  8. → IMPLEMENTATION_STATE/PR body синхронизированы (76ed20f32fe7 указан).
+
+## 2026-09-13 — PR #9 — 4e8ff19 — CHANGES REQUIRED (re-review 2)
+
+- Reviewer: Orchestrator; вердикт также на GitHub:
+  https://github.com/ShabanovBoris/aiinbox/pull/9#pullrequestreview-5189398561 (commit 4e8ff19).
+- Findings:
+  1. MAJOR/RESUMABILITY: profile mutation и job DONE — две транзакции; крэш между
+     ними оставлял применённый update в RUNNING → recovery повторял update.
+  2. MAJOR/SEED: /profile читал user.profile_json напрямую, обходя lazy seed;
+     первый /profile не создавал/не сидировал пользователя.
+  3. MINOR: constraints regression не покрывал ConstraintEntry → dict → persisted.
+  4. MINOR: IMPLEMENTATION_STATE stale (140 passed, старый flow).
+  5. MINOR/§9.1: неверный review ID для 2d149b9 (5189252785 → 5189341550).
+  6. MINOR/metadata: PR body stale (140 passed, HEAD 2d149b9, без 76ed20f32fe7).
+- Resolved (коммиты после 4e8ff19):
+  1. → update_profile_from_patch: одна транзакция json_patch merge + job DONE
+     (атомарность); регрессия idempotent recovery после side effect boundary.
+  2. → /profile через get_or_create_user + get_profile (lazy seed для первого
+     /profile; созданный после старта пользователь получает seed).
+  3. → constraints regression: ConstraintEntry[] → dict → persisted (regression).
+  4. → review ID исправлен.
+  5. → IMPLEMENTATION_STATE: 149 → 151 passed, job flow описан.
+  6. → PR body обновлён как metadata.
+
+## 2026-09-13 — PR #9 — e32491c — CHANGES REQUIRED (re-review 3)
+
+- Reviewer: Orchestrator; вердикт также на GitHub:
+  https://github.com/ShabanovBoris/aiinbox/pull/9#pullrequestreview-5189435600 (commit e32491c).
+- Findings:
+  1. MAJOR: main.py вызывал make_router с устаревшим kwarg provider= —
+     TypeError при старте с Telegram token (headless smoke не ловил).
+  2. MINOR: composition regression на production-вызов make_router отсутствовал.
+- Resolved (коммит после e32491c):
+  1. → stale provider= убран из composition root (после перехода /profile_update
+     на durable job handler'у provider не нужен).
+  2. → regression test_production_router_composition_builds: make_router
+     production-вызовом, profile-команды зарегистрированы.
+- Дополнительно: IMPLEMENTATION_STATE/PR body синхронизированы (132 → 151 passed,
+  job flow, миграции 220d7ae6d4f1 + 76ed20f32fe7).
+
+## 2026-09-13 — PR #9 — 9e31499 — CHANGES REQUIRED (re-review 4)
+
+- Reviewer: Orchestrator; вердикт также на GitHub:
+  https://github.com/ShabanovBoris/aiinbox/pull/9#pullrequestreview-5189448726 (commit 9e31499).
+- Findings:
+  1. MINOR: IMPLEMENTATION_STATE/PR body отставали — 151 вместо 152 после
+     добавленного composition regression.
+  2. MINOR/metadata: PR body HEAD 9e31499 (docs-коммит сместил HEAD).
+- Resolved (коммиты после 9e31499):
+  1. → счётчики приведены к 152 passed.
+  2. → PR body обновлён как metadata (HEAD в RE-REVIEW REQUEST).
+- Product code не менялся.
+
+## 2026-09-13 — PR #9 — 70cff18 — CHANGES REQUIRED (re-review 5)
+
+- Reviewer: Orchestrator; вердикт также на GitHub:
+  https://github.com/ShabanovBoris/aiinbox/pull/9#pullrequestreview-5191596241 (commit 70cff18).
+- Findings:
+  1. MINOR/§9.1: durable запись для verdict 9e31499 (review 5189448726)
+     отсутствовала; формулировка 151 passed осталась.
+  2. MINOR/metadata: PR body HEAD stale после docs-коммита.
+- Resolved (коммит после 70cff18):
+  1. → запись 9e31499/5189448726 добавлена; счётчики приведены к 152.
+  2. → PR body переходит на фиксацию HEAD в RE-REVIEW REQUEST.
+- Product code не менялся.
+
+## 2026-09-13 — PR #9 — 24b75cd — CHANGES REQUIRED (re-review 6)
+
+- Reviewer: Orchestrator; вердикт также на GitHub:
+  https://github.com/ShabanovBoris/aiinbox/pull/9#pullrequestreview-5191608336 (commit 24b75cd).
+- Findings:
+  1. MINOR/§9.1: отсутствовала durable запись для verdict 70cff18/5191596241.
+- Resolved (коммит после 24b75cd): запись 70cff18/5191596241 добавлена в
+  docs/REVIEWS.md.
+- Product code не менялся.
+
+## 2026-09-13 — PR #9 — ec28ee2 — CHANGES REQUIRED (re-review 7)
+
+- Reviewer: Orchestrator; вердикт также на GitHub:
+  https://github.com/ShabanovBoris/aiinbox/pull/9#pullrequestreview-5191630114 (commit ec28ee2).
+- Findings:
+  1. MINOR/§9.1: отсутствовала durable запись для verdict 24b75cd/5191608336.
+- Resolved (коммит после ec28ee2): запись 24b75cd/5191608336 добавлена в
+  docs/REVIEWS.md.
+- Product code не менялся.
+
+## 2026-09-13 — PR #9 — 067215a — CHANGES REQUIRED (re-review 8)
+
+- Reviewer: Orchestrator; вердикт также на GitHub:
+  https://github.com/ShabanovBoris/aiinbox/pull/9#pullrequestreview-5192108080 (commit 067215a).
+- Findings:
+  1. MINOR/§9.1: записи 24b75cd/5191608336 и ec28ee2/5191630114 содержали
+     findings предыдущих вердиктов, а не фактические findings соответствующих
+     reviewed HEAD.
+- Resolved (следующий docs-only коммит): записи приведены к фактическим
+  findings своих вердиктов; product code не менялся.
+
+## 2026-09-13 — PR #9 — 118ebe5 — APPROVED
+
+- Phase 08 — User profile. Reviewer: Orchestrator; вердикт также на GitHub:
+  https://github.com/ShabanovBoris/aiinbox/pull/9#pullrequestreview-5192117648
+  (reviewed HEAD `118ebe58b0ae8b5bc3dc9d7c0e6267727131b0d9`).
+- Подтверждено: `067215a..118ebe5` — один docs-only commit, durable journal
+  корректен; product code не менялся. PR открыт, exact HEAD совпадает,
+  `mergeable=true`.
+- Финализация Phase 8 выполняется отдельным commit только для этого файла и
+  `docs/IMPLEMENTATION_STATE.md`; Phase 9 до merge не начинать.
+
 ## Шаблон записи
 
 ```text

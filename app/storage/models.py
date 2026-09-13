@@ -28,6 +28,8 @@ class User(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     telegram_user_id: Mapped[int] = mapped_column(BigInteger, unique=True, index=True)
     telegram_chat_id: Mapped[int | None] = mapped_column(BigInteger)
+    # Персональный профиль (Phase 8) — JSON в users; отдельные таблицы не нужны.
+    profile_json: Mapped[dict | None] = mapped_column(JSON)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), onupdate=func.now()
@@ -119,3 +121,21 @@ class Content(Base):
     text: Mapped[str] = mapped_column(Text)
     metadata_json: Mapped[dict | None] = mapped_column(JSON)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class ProfileUpdateJob(Base):
+    """Фоновое задание /profile_update: handler только ставит в очередь (быстрый
+    ACK), worker выполняет LLM + merge; статус durable и переживает restart."""
+
+    __tablename__ = "profile_update_jobs"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    instruction: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(16), default="PENDING", index=True)
+    error_code: Mapped[str | None] = mapped_column(String(64))
+    error_message: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now()
+    )

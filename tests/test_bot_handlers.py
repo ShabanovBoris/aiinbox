@@ -84,3 +84,16 @@ async def test_no_success_ack_when_persistence_fails(settings, session_factory, 
     with pytest.raises(RuntimeError):
         await on_text(make_message(42), settings, session_factory)
     assert sent == []
+
+
+def test_production_router_composition_builds(settings, session_factory):
+    # Регрессия: production-вызов make_router (как в app/main.py) собирается
+    # без TypeError — router включает profile-команды.
+    from aiogram import Router
+
+    from app.bot.handlers import make_router
+
+    router = make_router(settings, session_factory, settings.max_audio_bytes)
+    assert isinstance(router, Router)
+    names = [h.callback.__name__ for h in router.message.handlers]
+    assert "profile" in names and "profile_update" in names

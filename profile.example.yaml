@@ -1,0 +1,18 @@
+# Начальный персональный профиль (копируйте в profile.yaml при желании)
+profession: senior_android_developer
+domains:
+  - Android
+  - Kotlin
+  - mobile architecture
+goals:
+  - name: AI and AI agents
+    weight: 1.0
+  - name: software architecture
+    weight: 0.9
+interests:
+  - piano
+  - finance
+constraints:
+  weekday_free_minutes: 60
+  weekend_free_minutes: 180
+free_text: null

@@ -1,13 +1,14 @@
 import logging
 
 from aiogram import F, Router
-from aiogram.filters import CommandStart
+from aiogram.filters import Command, CommandStart
 from aiogram.types import Message
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.config import Settings
 from app.domain.enums import SourceType
 from app.services.ingestion import ingest_message, ingest_voice
+from app.services.profile import enqueue_profile_update
 
 log = logging.getLogger(__name__)
 
@@ -117,4 +118,56 @@ def make_router(
             message, settings, session_factory, message.audio, True, max_audio_bytes
         )
 
+    @router.message(Command("profile"))
+    async def profile(message: Message) -> None:
+        if not settings.is_allowed(message.from_user.id if message.from_user else None):
+            return
+        await on_profile(message, settings, session_factory)
+
+    @router.message(Command("profile_update"))
+    async def profile_update(message: Message) -> None:
+        if not settings.is_allowed(message.from_user.id if message.from_user else None):
+            return
+        instruction = (message.text or "").removeprefix("/profile_update").strip()
+        await on_profile_update(message, settings, session_factory, instruction)
+
     return router
+
+
+async def on_profile(message: Message, settings: Settings, session_factory) -> None:
+    if not settings.is_allowed(message.from_user.id if message.from_user else None):
+        return
+    from app.bot.formatting import format_profile
+    from app.services.ingestion import get_or_create_user
+    from app.services.profile import get_profile
+
+    async with session_factory() as session:
+        # get_or_create + get_profile: lazy seed работает и для первого /profile
+        user = await get_or_create_user(
+            session, telegram_user_id=message.from_user.id, chat_id=message.chat.id
+        )
+        profile = await get_profile(session, user.id)
+    await message.answer(format_profile(profile))
+
+
+async def on_profile_update(
+    message: Message,
+    settings: Settings,
+    session_factory,
+    instruction: str,
+) -> None:
+    if not instruction:
+        await message.answer("Использование: /profile_update <что изменить>")
+        return
+    user_id = message.from_user.id if message.from_user else None
+    if not settings.is_allowed(user_id):
+        return
+    # Durable job + быстрый ACK: LLM/merge выполняет фоновый worker (ТЗ §14/§68).
+    await enqueue_profile_update(
+        session_factory,
+        telegram_user_id=user_id,
+        chat_id=message.chat.id,
+        instruction=instruction,
+    )
+    log.info("profile update queued user_id=%s", user_id)
+    await message.answer("Принял. Обновляю профиль…")

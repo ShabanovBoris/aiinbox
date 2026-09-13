@@ -42,6 +42,8 @@ class FakeLlmProvider:
         describe_notes: str | None = None,
         describe_fail: bool = False,
         analyze_failures: int = 0,
+        profile_patch: dict | None = None,
+        profile_error: LlmError | None = None,
     ):
         from app.llm.base import LlmCapabilities
 
@@ -53,6 +55,9 @@ class FakeLlmProvider:
         self.describe_fail = describe_fail
         self.describe_calls = 0
         self.analyze_failures = analyze_failures
+        self.profile_patch = profile_patch
+        self.profile_error = profile_error
+        self.profile_calls = []
 
     async def analyze(
         self, content: NormalizedContent, profile: UserProfile, categories: list[str]
@@ -71,6 +76,16 @@ class FakeLlmProvider:
         if self.describe_fail:
             raise LlmError("VISUAL_FAILED", "vision down")
         return self.describe_notes
+
+    async def profile_update(self, instruction, current):
+        from app.domain.models import ProfilePatch
+
+        self.profile_calls = self.__dict__.setdefault("profile_calls", [])
+        self.profile_calls.append((instruction, current))
+        if self.profile_error is not None:
+            raise self.profile_error
+        patch = ProfilePatch(**self.profile_patch) if self.profile_patch else ProfilePatch()
+        return patch
 
 
 class FakePipeline:

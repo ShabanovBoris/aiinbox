@@ -9,7 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.enums import ContentKind, ProcessingStatus, SourceType
-from app.domain.models import DEFAULT_PROFILE, AnalysisResult, NormalizedContent
+from app.domain.models import AnalysisResult, NormalizedContent
 from app.domain.priority import PriorityEngine
 from app.errors import AppError
 from app.extractors.audio import AudioExtractor
@@ -18,6 +18,7 @@ from app.extractors.web import WebPageExtractor
 from app.extractors.youtube import YoutubeExtractor
 from app.services.analysis import Analyzer
 from app.services.frames import extract_representative_frames
+from app.services.profile import get_profile
 from app.storage.models import Content, Item
 
 log = logging.getLogger(__name__)
@@ -77,10 +78,9 @@ class ProcessingPipeline:
             visual_notes = await self._visual_analysis(session, item, content)
             if visual_notes:
                 content.metadata["visual_notes"] = visual_notes
-            # Phase 2 использует default-профиль; профиль пользователя — Phase 8.
-            analysis = await self.analyzer.analyze(
-                content, session, item.user_id, profile=DEFAULT_PROFILE
-            )
+            # Phase 8: персональный профиль пользователя из БД.
+            profile = await get_profile(session, item.user_id)
+            analysis = await self.analyzer.analyze(content, session, item.user_id, profile=profile)
             item.analysis_completeness = self._completeness(item, visual_notes)
 
             item.processing_stage = "PRIORITIZING"

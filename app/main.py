@@ -16,8 +16,15 @@ from app.llm.openai import OpenAiProvider
 from app.llm.transcription import OpenAiTranscriptionProvider
 from app.services.analysis import Analyzer
 from app.services.processing import ProcessingPipeline
+from app.services.profile import (
+    apply_profile_seed,
+    configure_profile_seed,
+    requeue_running_profile_jobs,
+)
 from app.storage.database import make_engine, make_session_factory
+from app.storage.models import User
 from app.workers.processing import ProcessingWorker, requeue_stale
+from app.workers.profile import ProfileUpdateWorker
 
 log = logging.getLogger(__name__)
 
@@ -85,12 +92,31 @@ def build_extractors(settings: Settings, bot) -> tuple:
     return web_extractor, audio_extractor, youtube_extractor
 
 
+def _profile_done_notifier(bot, session_factory):
+    """Уведомление о завершении /profile_update: адресат — users.telegram_chat_id
+    (job.user_id — внутренний PK). Возвращает coroutine или None (headless)."""
+
+    async def notify(job, profile, changed):
+        async with session_factory() as session:
+            user = await session.get(User, job.user_id)
+            chat_id = user.telegram_chat_id if user else None
+        if chat_id is None:
+            return
+        await bot.send_message(chat_id, "Профиль обновлён: " + ", ".join(changed))
+
+    return notify
+
+
 async def run(settings: Settings) -> None:
     engine = make_engine(settings)
     session_factory = make_session_factory(engine)
     try:
         await requeue_stale(session_factory)
+        await requeue_running_profile_jobs(session_factory)
+        await apply_profile_seed(session_factory, settings.profile_seed_file)
+        configure_profile_seed(settings.profile_seed_file)
 
+        analyzer = Analyzer(build_provider(settings))
         polling = None
         bot = None
         on_result = None
@@ -121,7 +147,7 @@ async def run(settings: Settings) -> None:
 
         web_extractor, audio_extractor, youtube_extractor = build_extractors(settings, bot)
         pipeline = ProcessingPipeline(
-            Analyzer(build_provider(settings)),
+            analyzer,
             PriorityEngine(),
             web_extractor,
             audio_extractor,
@@ -130,8 +156,21 @@ async def run(settings: Settings) -> None:
             visual_max_frames=settings.video_max_frames,
         )
 
+        on_profile_done = _profile_done_notifier(bot, session_factory) if bot is not None else None
+
         stop = asyncio.Event()
         loop = asyncio.get_running_loop()
+
+        profile_worker = ProfileUpdateWorker(
+            session_factory,
+            build_provider(settings),
+            poll_seconds=settings.processing_poll_seconds,
+            on_done=on_profile_done,
+        )
+        profile_tasks = [
+            asyncio.create_task(profile_worker.run_forever(stop), name=f"profile-worker-{i}")
+            for i in range(1)
+        ]
         for sig in (signal.SIGINT, signal.SIGTERM):
             loop.add_signal_handler(sig, stop.set)
 
@@ -153,9 +192,9 @@ async def run(settings: Settings) -> None:
             if bot is not None:
                 await bot.session.close()
         # Воркеры завершают текущий Item и выходят по stop; отмена только как страховка.
-        for task in worker_tasks:
+        for task in worker_tasks + profile_tasks:
             task.cancel()
-        await asyncio.gather(*worker_tasks, return_exceptions=True)
+        await asyncio.gather(*worker_tasks, *profile_tasks, return_exceptions=True)
     finally:
         await engine.dispose()
         log.info("shutdown complete")

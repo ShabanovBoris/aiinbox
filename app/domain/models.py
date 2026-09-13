@@ -52,6 +52,29 @@ DEFAULT_PROFILE = UserProfile(
 )
 
 
+class ConstraintEntry(BaseModel):
+    """Ключ-значение constraint: строгая форма для Structured Outputs
+    (произвольный dict несовместим с additionalProperties=false)."""
+
+    key: str = Field(min_length=1, max_length=100)
+    value: str | float | bool | None = None
+
+
+class ProfilePatch(BaseModel):
+    """Частичное обновление профиля: отсутствующие поля не меняются (Phase 8).
+    extra=forbid: незапрошенные LLM поля → INVALID_LLM_OUTPUT, а не молчаливое
+    отбрасывание."""
+
+    model_config = {"extra": "forbid"}
+
+    profession: str | None = None
+    domains: list[str] | None = None
+    goals: list[UserGoal] | None = None
+    interests: list[str] | None = None
+    constraints: list[ConstraintEntry] | None = None
+    free_text: str | None = None
+
+
 class AnalysisResult(BaseModel):
     """Строгая схема ответа LLM; валидируется Pydantic до попадания в БД.
 

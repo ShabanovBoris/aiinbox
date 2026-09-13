@@ -1,3 +1,4 @@
+from app.domain.models import UserProfile
 from app.storage.models import Item
 
 
@@ -17,4 +18,26 @@ def format_ready_item(item: Item) -> str:
     if item.priority_reason:
         lines.append("")
         lines.append(f"Почему: {item.priority_reason}")
+    return "\n".join(lines)
+
+
+def format_profile(profile: UserProfile) -> str:
+    """Компактный показ профиля для /profile."""
+    lines = ["👤 Профиль"]
+    if profile.profession:
+        lines.append(f"Профессия: {profile.profession}")
+    if profile.domains:
+        lines.append(f"Домены: {', '.join(profile.domains)}")
+    if profile.goals:
+        lines.append("Цели: " + "; ".join(f"{g.name} ({g.weight})" for g in profile.goals))
+    if profile.interests:
+        lines.append(f"Интересы: {', '.join(profile.interests)}")
+    if profile.constraints:
+        lines.append(
+            "Constraints: " + "; ".join(f"{k}: {v}" for k, v in profile.constraints.items())
+        )
+    if profile.free_text:
+        lines.append(f"Заметки: {profile.free_text}")
+    if len(lines) == 1:
+        lines.append("Профиль пуст — используйте /profile_update <описание>.")
     return "\n".join(lines)
