@@ -40,7 +40,7 @@ squash merge с ожидаемым HEAD B. Вердикты фиксируютс
 | 10 | Item actions | DONE |
 | 11 | Notifications | DONE |
 | 12 | Production hardening | DONE |
-| 13 | Final acceptance | NOT_STARTED |
+| 13 | Final acceptance | IN_PROGRESS |
 
 Post-MVP этапы (промпты 14–18: Ollama, LLM router, behaviour ranking, HTTP API,
 semantic search) здесь не отслеживаются, пока MVP не принят (Phase 13).
@@ -522,6 +522,21 @@ Remaining:
 
 Last verification:
 pytest — 190 passed; Ruff check/format и git diff --check — pass
+
+### Phase 13 — Final MVP acceptance — IN_PROGRESS
+
+Scope: adversarial acceptance of the complete MVP against PRODUCT_SPEC, with
+minimal bug fixes and regressions only; no new features or post-MVP work.
+
+Completed:
+
+Remaining:
+□ пройти scenarios 1–13, fresh database installation, README commands,
+  security/provider-boundary review и final quality gate; затем отправить PR
+  на внешний review Orchestrator'у
+
+Last verification:
+pytest — 190 passed; Phase 12 merge synchronized to `main`.
 
 ### Шаблон фазы в работе
 
