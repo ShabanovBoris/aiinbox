@@ -287,6 +287,111 @@
   фактическому состоянию. Урок о проверке заявлений перед REVIEW REQUEST
   зафиксирован в журнале (см. запись aaaa75a).
 
+## 2026-09-13 — PR #6 — 0b74e8b — CHANGES REQUIRED
+
+- Phase 05 — Voice/audio. Reviewer: Orchestrator; вердикт также на GitHub:
+  https://github.com/ShabanovBoris/aiinbox/pull/6#pullrequestreview-5188549994.
+- Findings:
+  1. MAJOR: temp cleanup нарушен на download failure/cancel — try/finally
+     начинался только после download; partial-файл оставался в TEMP_DIR;
+     post-factum stat не жёсткий cap (обязательное).
+  2. MAJOR: oversized audio терялся — handler отклонял до ingest_voice, не
+     создавая durable Item (PRODUCT_SPEC §66) (обязательное).
+  3. MAJOR: Telegram boundary без retry policy — transient ошибка сразу
+     DOWNLOAD_FAILED (обязательное, PRODUCT_SPEC §58).
+  4. MINOR: TIMEOUT не выходил из STT adapter (всё маппилось в
+     TRANSCRIPTION_FAILED), а docs заявляли TIMEOUT.
+  5. MINOR: duration терялся — не использовался first-class
+     NormalizedContent.duration_seconds; resume не восстанавливал.
+- Resolved (коммиты после 0b74e8b в этом же PR):
+  1. → TelegramFileDownloader: partial-файл удаляется при ошибке/отмене в каждом
+     раунде; byte-cap инкрементально при скачивании (streaming, работает без
+     file_size); тест oversized-streaming без file_size.
+  2. → oversized сохраняется как durable FAILED/TOO_LARGE Item с file_id/duration
+     (mark_oversized), пользователю сообщается реальный лимит из конфига.
+  3. → retry policy на Telegram boundary: transient 3 attempts с backoff;
+     permanent (TOO_LARGE/4xx/not found) — одна попытка; тесты: transient→success,
+     permanent→1 attempt, cleanup между попытками.
+  4. → APITimeoutError → TIMEOUT в транскрипции.
+  5. → NormalizedContent.duration_seconds заполняется из item; checkpoint
+     metadata хранит duration; resume восстанавливает (тест полного равенства).
+
+## 2026-09-13 — PR #6 — 52126ae — CHANGES REQUIRED (re-review)
+
+- Reviewer: Orchestrator; вердикт также на GitHub:
+  https://github.com/ShabanovBoris/aiinbox/pull/6#pullrequestreview-5188575434 (commit 52126ae).
+- Partial cleanup подтверждён (streaming byte-cap, partial cleanup). Findings:
+  1. MAJOR: oversized race — ingest_voice коммитил QUEUED, mark_oversized шёл
+     отдельной транзакцией; worker мог claim'нуть и начать download/STT.
+  2. MAJOR: TIMEOUT-фикс фактически отсутствовал (patch не применился из-за
+     reformat — заявлен без проверки).
+  3. MAJOR: retry-тесты не соответствовали заявлению (transient не создавался);
+     get_file generic exceptions ретраились, включая permanent 4xx.
+  4. MINOR: не было equality-теста resume NormalizedContent с duration.
+  5. MINOR: durable docs снова опережали код.
+- Resolved (коммиты после 52126ae):
+  1. → ingest_voice(too_large=(actual, limit)): атомарное создание
+     FAILED/TOO_LARGE без claimable промежуточного состояния; mark_oversized удалён.
+  2. → except APITimeoutError → TIMEOUT в transcription.py (применение проверено
+     grep + unit-тест с фейковым клиентом).
+  3. → downloader: TelegramNotFound → permanent; тесты: реальный transient
+     (503 → retry → success), not-found → ровно одна попытка.
+  4. → resume-тест проверяет pydantic equality initial/resumed (включая duration).
+  5. → IMPLEMENTATION_STATE/REVIEWS обновлены только после фактических правок.
+
+## 2026-09-13 — PR #6 — adb43fe — CHANGES REQUIRED (re-review 2)
+
+- Reviewer: Orchestrator; вердикт также на GitHub:
+  https://github.com/ShabanovBoris/aiinbox/pull/6#pullrequestreview-5188598631 (commit adb43fe).
+- Findings:
+  1. MAJOR: oversized race — ingest_voice коммитил QUEUED, mark_oversized шёл
+     отдельной транзакцией (worker мог claim'нуть между ними).
+  2. MAJOR: TIMEOUT-фикс отсутствовал на HEAD (патч не применился после reformat,
+     а заявление было отправлено без проверки).
+  3. MAJOR: retry-тесты фиктивны (transient не создавался) + get_file generic
+     exceptions ретраились, включая permanent 4xx.
+  4. MINOR: не было equality-теста resume с duration.
+  5. MINOR: docs опережали код.
+- Resolved (коммиты после adb43fe):
+  1. → ingest_voice(too_large=...): атомарное FAILED/TOO_LARGE при создании,
+     mark_oversized удалён; тест проверяет состояние после одного commit.
+  2. → except APITimeoutError → TIMEOUT (grep + unit-тест с фейковым клиентом).
+  3. → TelegramNotFound/BadRequest/Unauthorized/Forbidden/EntityTooLarge →
+     permanent; сетевые/5xx — transient. Тесты: реальный 503→retry→success;
+     not-found → 1 attempt; сетевой сбой → 3 attempts.
+  4. → resume-тест: pydantic equality initial/resumed, включая duration_seconds
+     (найдено расхождение user_note "" vs None — нормализовано в None).
+  5. → docs обновлены только после фактических правок (misplaced Phase-3 строка
+     перемещена в Phase 5).
+- Урок процесса: правки через must_replace с assert'ом на каждое применение.
+
+## 2026-09-13 — PR #6 — 1455f3e — CHANGES REQUIRED (re-review 3)
+
+- Reviewer: Orchestrator; вердикт также на GitHub:
+  https://github.com/ShabanovBoris/aiinbox/pull/6#pullrequestreview-5188627524 (commit 1455f3e).
+- Findings:
+  1. MAJOR/SECURITY: Telegram bot token попадает в URL скачивания и может утечь
+     через INFO-лог httpx (печатает полный request URL).
+  2. MINOR: permanent-классификация шире тестов (проверен только TelegramNotFound).
+  3. MINOR: PR body устарел.
+- Resolved (коммиты после 1455f3e):
+  1. → TokenRedactionFilter на логгерах httpx/httpcore (устанавливается
+     TelegramFileDownloader, идемпотентно): токен в записях заменяется на ***;
+     regression test_bot_token_never_leaks_into_logs — caplog INFO при download,
+     токен в логе отсутствует.
+  2. → test_downloader_bad_request_is_permanent: TelegramBadRequest → ровно одна
+     попытка get_file.
+  3. → PR body обновлён как metadata без commit.
+
+## 2026-09-13 — PR #6 — 05bb0ee — APPROVED
+
+- Phase 05 — Voice/audio. Reviewer: Orchestrator; вердикт также на GitHub:
+  https://github.com/ShabanovBoris/aiinbox/pull/6#pullrequestreview-5188651120 (commit 05bb0ee).
+- Reviewed HEAD: 05bb0ee1bbe2a8370a9d5e2df37b64bcc4c84ed7. mergeable/clean.
+- Все findings ревью Phase 5 закрыты (temp cleanup/byte-cap, durable oversized,
+  Telegram retry policy, STT TIMEOUT, duration/resume, token redaction).
+- Финализация: Phase 5 → DONE в IMPLEMENTATION_STATE.
+
 ## Шаблон записи
 
 ```text

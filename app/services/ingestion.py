@@ -98,6 +98,25 @@ async def ingest_message(
         return IngestResult(items, duplicates)
 
 
+def _make_media_item(
+    user_id: int,
+    message_id: int,
+    file_id: str,
+    duration_seconds: int | None,
+    source_type: SourceType,
+) -> Item:
+    return Item(
+        user_id=user_id,
+        telegram_message_id=message_id,
+        source_index=0,
+        processing_status=ProcessingStatus.QUEUED,
+        source_type=source_type,
+        source_file_id=file_id,
+        content_duration_seconds=duration_seconds,
+        user_note="",
+    )
+
+
 def _make_text_item(user_id: int, message_id: int, text: str) -> Item:
     return Item(
         user_id=user_id,
@@ -119,6 +138,57 @@ def _make_web_item(user_id: int, message_id: int, source_index: int, url: str, n
         source_url=url,
         user_note=note,
     )
+
+
+async def ingest_voice(
+    session_factory: async_sessionmaker,
+    *,
+    telegram_user_id: int,
+    chat_id: int,
+    message_id: int,
+    file_id: str,
+    duration_seconds: int | None,
+    source_type: SourceType,
+    too_large: tuple[int, int] | None = None,
+) -> IngestResult:
+    """Voice/audio → один Item с file_id; сам файл скачивается позже,
+    в extraction-этапе воркера (handler не делает тяжёлой работы).
+
+    too_large=(actual, limit): Item сразу персистится атомарно как FAILED/TOO_LARGE
+    с метаданными (PRODUCT_SPEC §66) — без промежуточного claimable QUEUED.
+    """
+    async with session_factory() as session:
+        user = await get_or_create_user(session, telegram_user_id=telegram_user_id, chat_id=chat_id)
+        # user.id до транзакции: rollback истекает объекты (см. ingest_message).
+        user_id = user.id
+        item = _make_media_item(user_id, message_id, file_id, duration_seconds, source_type)
+        if too_large is not None:
+            actual, limit = too_large
+            item.processing_status = ProcessingStatus.FAILED
+            item.error_code = "TOO_LARGE"
+            item.error_message = f"file too large: {actual} > {limit} bytes"
+        session.add(item)
+        try:
+            await session.commit()
+        except IntegrityError:
+            await session.rollback()
+            existing = await session.scalar(
+                select(Item).where(
+                    Item.user_id == user_id,
+                    Item.telegram_message_id == message_id,
+                    Item.source_index == 0,
+                )
+            )
+            if existing is None:
+                raise
+            return IngestResult([existing], [])
+        log.info(
+            "item queued id=%s user_id=%s source_type=%s",
+            item.id,
+            user.id,
+            item.source_type.value,
+        )
+        return IngestResult([item], [])
 
 
 async def _resolve_after_race(

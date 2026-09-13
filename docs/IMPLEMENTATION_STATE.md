@@ -32,7 +32,7 @@ squash merge с ожидаемым HEAD B. Вердикты фиксируютс
 | 2 | Text end-to-end | DONE |
 | 3 | Web ingestion | DONE |
 | 4 | Architecture checkpoint | DONE |
-| 5 | Voice/audio | NOT_STARTED |
+| 5 | Voice/audio | DONE |
 | 6 | YouTube | NOT_STARTED |
 | 7 | Video visual analysis | NOT_STARTED |
 | 8 | User profile | NOT_STARTED |
@@ -257,6 +257,50 @@ Last verification:
 ruff check . → pass; ruff format --check . → pass; pytest → 84 passed
 (+ Phase 4 регрессии фактически в suite: FAILED сохраняет checkpoint и retry
 без повторного download/LLM; конкурентная дедупликация пересекающихся URL)
+
+### Phase 5 — Voice/audio — DONE
+
+APPROVED @ 05bb0ee1bbe2a8370a9d5e2df37b64bcc4c84ed7 (Orchestrator, GitHub review
+pullrequestreview-5188651120). Ревью прошло три круга: temp cleanup/byte-cap,
+durable oversized Item (atomic), Telegram retry policy + permanent-классификация
+aiogram errors, STT TIMEOUT маппинг, token redaction в логах.
+
+Completed:
+✓ Voice/audio ingestion: ingest_voice → Item QUEUED с source_file_id
+  (идемпотентно по (user_id, message_id, source_index)); handler persist→ACK
+✓ Размер-лимит в handler (до очереди) и в downloader (после get_file/скачивания)
+✓ TranscriptionProvider (отдельный Protocol): whisper-эндпоинт OpenAI — другой
+  API/модель, отдельный adapter (OpenAiTranscriptionProvider)
+✓ AudioExtractor: downloader → temp файл → STT → NormalizedContent; partial/temp
+  файлы удаляются при ошибке/отмене в каждом раунде; byte-cap инкрементально
+  при скачивании (работает без file_size); TRANSCRIPT персистится атомарно с
+  checkpoint'ом ANALYZING — resume не повторяет download+STT (resume-тест с
+  полным равенством NormalizedContent, включая duration_seconds)
+✓ Ошибки: TOO_LARGE (permanent) / DOWNLOAD_FAILED / TRANSCRIPTION_FAILED / TIMEOUT
+  (APITimeoutError от STT SDK маппится отдельно)
+✓ Retry policy на Telegram boundary: transient 3 attempts с backoff, permanent
+  (TOO_LARGE/4xx/not-found/BadRequest) — одна попытка
+✓ TokenRedactionFilter: токен не попадает в httpx/httpcore INFO-логи
+  (regression: caplog INFO при media download без TESTTOKEN)
+✓ Oversized media: атомарный durable FAILED/TOO_LARGE Item с file_id/duration
+  (ТЗ §66), пользователю — реальный лимит из конфига; ingest_voice(too_large=...)
+  создаёт его сразу, без claimable QUEUED-состояния (race-fix по вердикту adb43fe)
+✓ Resume-тест: pydantic equality initial/resumed NormalizedContent, включая
+  duration_seconds; user_note пустая строка нормализуется в None
+✓ Миграция d1b5bdba99a3 (source_file_id, content_duration_seconds)
+
+Remaining:
+□ Blocked (external): live STT/Telegram download — нет токена/ключа; путь покрыт
+  fakes (FakeDownloader/FakeTranscriber)
+
+Last verification:
+ruff check . → pass; ruff format --check . → pass; pytest → 100 passed
+(+ downloader: transient 503→success (реальные 2 HTTP-попытки), not-found →
+1 attempt, TelegramBadRequest → 1 attempt, oversized streaming без file_size,
+partial cleanup; атомарный oversized Item; resume с полным equality
+NormalizedContent включая duration; STT TIMEOUT маппинг; token redaction —
+TESTTOKEN отсутствует в INFO-логах при media download)
+smoke: headless старт без токена — bot disabled, SIGINT graceful
 
 ### Шаблон фазы в работе
 

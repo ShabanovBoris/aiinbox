@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.config import Settings
 from app.domain.enums import SourceType
-from app.services.ingestion import ingest_message
+from app.services.ingestion import ingest_message, ingest_voice
 
 log = logging.getLogger(__name__)
 
@@ -50,17 +50,71 @@ async def on_text(
         await message.answer("\n".join(ack_lines))
 
 
-def make_router(settings: Settings, session_factory: async_sessionmaker) -> Router:
+async def on_voice_audio(
+    message: Message,
+    settings: Settings,
+    session_factory: async_sessionmaker,
+    media,  # MessageVoice | MessageAudio
+    is_audio: bool,
+    max_audio_bytes: int,
+) -> None:
+    user_id = message.from_user.id if message.from_user else None
+    if not settings.is_allowed(user_id):
+        log.warning("unauthorized telegram user ignored user_id=%s", user_id)
+        return
+    file_size = media.file_size or 0
+    source_type = SourceType.AUDIO if is_audio else SourceType.VOICE
+    # persist → ACK (порядок Phase 1). Oversized сохраняется атомарно при создании
+    # как FAILED/TOO_LARGE (PRODUCT_SPEC §66) — без claimable промежуточного
+    # состояния, чтобы воркер не начал скачивание.
+    oversized = (file_size, max_audio_bytes) if file_size > max_audio_bytes else None
+    result = await ingest_voice(
+        session_factory,
+        telegram_user_id=user_id,
+        chat_id=message.chat.id,
+        message_id=message.message_id,
+        file_id=media.file_id,
+        duration_seconds=media.duration,
+        source_type=source_type,
+        too_large=oversized,
+    )
+    item = result.items[0]
+    if item.error_code == "TOO_LARGE":
+        limit_mb = max_audio_bytes / 1_000_000
+        await message.answer(
+            f"Файл слишком большой ({file_size / 1_000_000:.1f} МБ > лимита "
+            f"{limit_mb:.0f} МБ). Метаданные сохранил — файл не скачан."
+        )
+        return
+    label = "аудио" if is_audio else "голосовое"
+    await message.answer(f"Принял {label}. Разбираю…")
+
+
+def make_router(
+    settings: Settings, session_factory: async_sessionmaker, max_audio_bytes: int = 20_000_000
+) -> Router:
     router = Router()
 
     @router.message(CommandStart())
     async def start(message: Message) -> None:
         await on_start(message, settings)
 
-    # Не-командный текст — единственный источник Phase 1; остальные источники
-    # добавляются в следующих фазах (URL — Phase 3, voice — Phase 5 и т.д.).
+    # Не-командный текст — источники TEXT/WEB; медиа-источники добавляются
+    # в своих фазах и идут через тот же pipeline.
     @router.message(F.text, ~F.text.startswith("/"))
     async def text(message: Message) -> None:
         await on_text(message, settings, session_factory)
+
+    @router.message(F.voice)
+    async def voice(message: Message) -> None:
+        await on_voice_audio(
+            message, settings, session_factory, message.voice, False, max_audio_bytes
+        )
+
+    @router.message(F.audio)
+    async def audio(message: Message) -> None:
+        await on_voice_audio(
+            message, settings, session_factory, message.audio, True, max_audio_bytes
+        )
 
     return router

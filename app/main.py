@@ -1,15 +1,18 @@
 import asyncio
 import logging
 import signal
+from pathlib import Path
 
 from alembic import command as alembic_command
 from alembic.config import Config as AlembicConfig
 
+from app.bot.files import TelegramFileDownloader
 from app.config import Settings
 from app.domain.priority import PriorityEngine
+from app.extractors.audio import AudioExtractor
 from app.extractors.web import WebPageExtractor
-from app.llm.base import LlmProvider
 from app.llm.openai import OpenAiProvider
+from app.llm.transcription import OpenAiTranscriptionProvider
 from app.services.analysis import Analyzer
 from app.services.processing import ProcessingPipeline
 from app.storage.database import make_engine, make_session_factory
@@ -24,7 +27,7 @@ def run_migrations(database_url: str) -> None:
     alembic_command.upgrade(cfg, "head")
 
 
-def build_provider(settings: Settings) -> LlmProvider:
+def build_provider(settings: Settings) -> OpenAiProvider:
     # Точка единственной сборки провайдера; Ollama добавляется post-MVP своей веткой.
     if settings.llm_provider != "openai":
         raise SystemExit(f"Unsupported LLM_PROVIDER={settings.llm_provider!r}")
@@ -35,11 +38,51 @@ def build_provider(settings: Settings) -> LlmProvider:
     )
 
 
+def build_transcriber(settings: Settings) -> OpenAiTranscriptionProvider:
+    # Whisper-эндпоинт — другой API/модель, поэтому отдельный adapter.
+    if not settings.openai_api_key or not settings.openai_transcription_model:
+        raise SystemExit("OPENAI_TRANSCRIPTION_MODEL must be configured for voice/audio")
+    return OpenAiTranscriptionProvider(
+        settings.openai_api_key,
+        settings.openai_transcription_model,
+        settings.transcription_timeout_seconds,
+    )
+
+
 async def run(settings: Settings) -> None:
     engine = make_engine(settings)
     session_factory = make_session_factory(engine)
     try:
         await requeue_stale(session_factory)
+
+        polling = None
+        bot = None
+        audio_extractor = None
+        if settings.telegram_bot_token:
+            # aiogram импортируется лениво: без токена приложение стартует чисто
+            # воркерами — локальный smoke test не требует Telegram network.
+            from aiogram import Bot, Dispatcher
+
+            from app.bot.handlers import make_router
+            from app.bot.notify import send_item_result
+
+            bot = Bot(settings.telegram_bot_token)
+            downloader = TelegramFileDownloader(bot, settings.max_audio_bytes)
+            audio_extractor = AudioExtractor(
+                build_transcriber(settings), downloader, Path(settings.temp_dir)
+            )
+            dispatcher = Dispatcher()
+            dispatcher.include_router(
+                make_router(settings, session_factory, settings.max_audio_bytes)
+            )
+            polling = asyncio.create_task(
+                dispatcher.start_polling(bot, handle_signals=False), name="telegram-polling"
+            )
+            on_result = lambda item: send_item_result(bot, session_factory, item)  # noqa: E731
+            log.info("telegram bot started")
+        else:
+            on_result = None
+            log.warning("TELEGRAM_BOT_TOKEN is empty — bot disabled, workers only")
 
         web_extractor = WebPageExtractor(
             min_text_length=settings.min_extracted_text_length,
@@ -50,35 +93,13 @@ async def run(settings: Settings) -> None:
             backoff_seconds=settings.web_backoff_seconds,
         )
         pipeline = ProcessingPipeline(
-            Analyzer(build_provider(settings)), PriorityEngine(), web_extractor
+            Analyzer(build_provider(settings)), PriorityEngine(), web_extractor, audio_extractor
         )
 
         stop = asyncio.Event()
         loop = asyncio.get_running_loop()
         for sig in (signal.SIGINT, signal.SIGTERM):
             loop.add_signal_handler(sig, stop.set)
-
-        polling = None
-        bot = None
-        on_result = None
-        if settings.telegram_bot_token:
-            # aiogram импортируется лениво: без токена приложение стартует чисто
-            # воркерами — локальный smoke test не требует Telegram network.
-            from aiogram import Bot, Dispatcher
-
-            from app.bot.handlers import make_router
-            from app.bot.notify import send_item_result
-
-            bot = Bot(settings.telegram_bot_token)
-            dispatcher = Dispatcher()
-            dispatcher.include_router(make_router(settings, session_factory))
-            polling = asyncio.create_task(
-                dispatcher.start_polling(bot, handle_signals=False), name="telegram-polling"
-            )
-            on_result = lambda item: send_item_result(bot, session_factory, item)  # noqa: E731
-            log.info("telegram bot started")
-        else:
-            log.warning("TELEGRAM_BOT_TOKEN is empty — bot disabled, workers only")
 
         worker_tasks = [
             asyncio.create_task(

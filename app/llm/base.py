@@ -1,3 +1,4 @@
+from pathlib import Path
 from typing import Protocol
 
 from app.domain.models import AnalysisResult, NormalizedContent, UserProfile
@@ -9,7 +10,7 @@ class LlmError(AppError):
 
 
 class LlmProvider(Protocol):
-    """Граница сменного LLM-провайдера. SDK (OpenAI/Ollama) живёт только в adapter.
+    """Граница сменного LLM-анализатора. SDK (OpenAI/Ollama) живёт только в adapter.
 
     Расширение контракта (summarize/transcribe/vision) — по мере фаз, не заранее.
     """
@@ -20,3 +21,12 @@ class LlmProvider(Protocol):
         profile: UserProfile,
         categories: list[str],
     ) -> AnalysisResult: ...
+
+
+class TranscriptionProvider(Protocol):
+    """Отдельная граница транскрипции: whisper-эндпоинт OpenAI — другой API и
+    другая модель, отдельный adapter уменьшает coupling анализа и STT."""
+
+    async def transcribe(self, audio_path: Path) -> str:
+        """Аудио-файл на диске → текст транскрипта."""
+        ...

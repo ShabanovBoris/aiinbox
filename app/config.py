@@ -23,10 +23,16 @@ class Settings(BaseSettings):
     # Playwright fallback жёстко отключён (нет SSRF-safe browser boundary);
     # вернётся отдельным изменением с pinned/proxied browser network boundary.
 
+    # Voice/audio (Phase 5)
+    temp_dir: str = "./temp"
+    max_audio_bytes: int = 20_000_000  # Telegram bot API отдаёт файлы до 20 MB
+    transcription_timeout_seconds: float = 120.0
+
     # Сменный LLM-провайдер: model ids только через конфиг (PRODUCT_SPEC §29).
     llm_provider: str = "openai"
     openai_api_key: str = ""
     openai_analysis_model: str = ""
+    openai_transcription_model: str = ""
     llm_timeout_seconds: int = 120
 
     @property
