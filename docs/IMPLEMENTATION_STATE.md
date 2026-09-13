@@ -410,7 +410,7 @@ Remaining:
 □ Blocked (external): live LLM profile_update — нет ключа; путь покрыт фейками
 
 Last verification:
-ruff check . → pass; ruff format --check . → pass; pytest → 151 passed
+ruff check . → pass; ruff format --check . → pass; pytest → 152 passed
 smoke: headless старт без токена — bot disabled, SIGINT graceful
 
 ### Шаблон фазы в работе
