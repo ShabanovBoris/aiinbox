@@ -315,7 +315,12 @@ Completed:
   пригодность субтитров ≥ 40 символов; при пригодных субтитрах STT не вызывается
 ✓ VTT/SRT парсер: теги/заголовки/дубликаты реплик, timestamps в metadata_json
 ✓ Лимиты: duration cap (TOO_LARGE permanent), max_filesize аудио (TOO_LARGE),
-  socket_timeout
+  max_subtitle_bytes (инкрементальный cap при streamed загрузке субтитров),
+  socket_timeout — всё через Settings/composition root
+✓ Fallback chain: перебор ВСЕХ кандидатов субтитров (human → auto, config langs →
+  любые) до первого пригодного; STT только после исчерпания кандидатов
+✓ Cues нормализуются к list[list] при extract — JSON round-trip сохраняет
+  равенство initial/resumed NormalizedContent
 ✓ TRANSCRIPT + DESCRIPTION персистятся атомарно с checkpoint'ом ANALYZING;
   resume из ANALYZING без повторного yt-dlp/STT (D-001)
 ✓ Temp audio удаляется после STT (успех/ошибка)

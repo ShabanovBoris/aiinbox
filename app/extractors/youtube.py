@@ -1,7 +1,8 @@
 """YouTube extractor: yt-dlp Python API (без shell), playlist запрещён.
 
 Стратегия транскрипта (ТЗ §22): human subtitles → automatic captions →
-скачивание аудио + STT fallback. Субтитры уже пригодные — STT не вызывается.
+скачивание аудио + STT fallback. Субтитры уже пригодные — STT не вызывается;
+перебираются ВСЕ кандидаты субтитров по порядку до первого пригодного.
 
 Resource invariants (ТЗ §66, AGENTS §25/§27): инкрементальный byte-cap на все
 загрузки, bounded retry transient-ошибок, собственная temp-поддиректория на
@@ -90,7 +91,7 @@ class YoutubeExtractor:
         try:
             info = await self._info(item.source_url)
             title = info.get("title")
-            description = (info.get("description") or "")[:2000]
+            description = (info.get("description") or "").strip()[:2000]
             duration = info.get("duration")
             if duration and duration > self.max_duration_seconds:
                 raise AppError(
@@ -126,9 +127,13 @@ class YoutubeExtractor:
                 user_note=item.user_note or None,
                 duration_seconds=duration,
                 metadata={
-                    "description_excerpt": description,
+                    # description_excerpt нормализуется в None при пустоте:
+                    # resume-restore должен давать эквивалентный NormalizedContent
+                    "description_excerpt": description or None,
                     "via_stt": via_stt,
-                    "cues": cues,
+                    # cues нормализуются к list[list] — JSON round-trip
+                    # сохраняет равенство initial/resumed content
+                    "cues": [list(cue) for cue in cues] if cues else None,
                 },
             )
         finally:
@@ -164,33 +169,51 @@ class YoutubeExtractor:
             )
         return info
 
-    def _pick_subtitles(self, info: dict) -> str | None:
-        """human subtitles → automatic captions; языки из конфига, затем любые."""
+    def _subtitle_candidates(self, info: dict) -> list[str]:
+        """Порядок (ТЗ §22): human subtitles → automatic captions; языки из
+        конфига, затем любые. URL дедуплицируются с сохранением порядка."""
+        candidates: list[str] = []
+        seen: set[str] = set()
         for source in ("subtitles", "automatic_captions"):
             tracks = info.get(source) or {}
             for lang in self.subtitle_langs:
                 for track in tracks.get(lang) or []:
                     if track.get("ext") in ("vtt", "srt") and track.get("url"):
-                        log.info("using %s subtitles lang=%s", source, lang)
-                        return track["url"]
-        return None
+                        if track["url"] not in seen:
+                            seen.add(track["url"])
+                            candidates.append(track["url"])
+        for source in ("subtitles", "automatic_captions"):
+            tracks = info.get(source) or {}
+            for lang, lang_tracks in tracks.items():
+                if lang in self.subtitle_langs:
+                    continue
+                for track in lang_tracks or []:
+                    if track.get("ext") in ("vtt", "srt") and track.get("url"):
+                        if track["url"] not in seen:
+                            seen.add(track["url"])
+                            candidates.append(track["url"])
+        return candidates
 
     async def _transcript_from_subtitles(self, info: dict) -> tuple[str | None, list]:
-        sub_url = self._pick_subtitles(info)
-        if sub_url is None:
-            return None, []
-        try:
-            raw = await self._fetch_capped(sub_url, self.max_subtitle_bytes)
-        except AppError as exc:
-            if exc.code == "TOO_LARGE":
-                raise  # oversized субтитры не пригодны
-            log.warning("subtitles fetch failed: %s", exc)
-            return None, []  # неудачные субтитры → fallback на STT
-        text, cues = parse_subtitles(raw)
-        if len(text.strip()) < 40:
-            return None, []  # пустые/служебные субтитры не считаются пригодными
-        log.info("subtitles parsed chars=%s cues=%s", len(text), len(cues))
-        return text, cues
+        """Перебирает ВСЕХ кандидатов субтитров по порядку (human → auto, языки из
+        конфига → любые): первый пригодный (>=40 символов) становится транскриптом.
+        STT включается только если ни один кандидат не пригоден."""
+        candidates = self._subtitle_candidates(info)
+        for sub_url in candidates:
+            try:
+                raw = await self._fetch_capped(sub_url, self.max_subtitle_bytes)
+            except AppError as exc:
+                if exc.code == "TOO_LARGE":
+                    raise  # oversized субтитры не пригодны
+                log.warning("subtitles fetch failed url=%s: %s", sub_url, exc)
+                continue
+            text, cues = parse_subtitles(raw)
+            if len(text.strip()) < 40:
+                continue  # пустые/служебные субтитры — пробуем следующего кандидата
+            log.info("subtitles parsed chars=%s cues=%s url=%s", len(text), len(cues), sub_url)
+            # cues нормализуются к list[list] — JSON round-trip сохраняет равенство
+            return text, [list(cue) for cue in cues]
+        return None, []
 
     async def _fetch_capped(self, url: str, max_bytes: int) -> str:
         """Streamed GET с инкрементальным byte-cap и bounded retry transient'ов."""

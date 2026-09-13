@@ -327,3 +327,83 @@ async def test_ytdlp_partial_files_cleaned_on_failure(tmp_path):
         await extractor.extract(make_youtube_item())
     # вся temp-поддиректория экстрактора удалена
     assert list((tmp_path / "yt").iterdir()) == []
+
+
+async def test_human_unusable_falls_back_to_auto_captions_not_stt(tmp_path):
+    # Регрессия порядка (ТЗ §22): human subs непригодны (короткие) → должны
+    # пробоваться automatic captions, и только потом STT. STT calls == 0.
+    info = make_info(
+        subtitles={"ru": [{"ext": "vtt", "url": "https://sub.example.com/tiny.vtt"}]},
+        automatic_captions={"en": [{"ext": "vtt", "url": "https://sub.example.com/auto.vtt"}]},
+    )
+    responses = {
+        "/tiny.vtt": httpx.Response(200, text="ok"),
+        "/auto.vtt": httpx.Response(200, text=SUBTITLE_VTT),
+    }
+
+    def handler(request):
+        return responses[request.url.path]
+
+    extractor, transcriber, _ = make_youtube(
+        tmp_path,
+        [info],
+        http_client_factory=lambda: httpx.AsyncClient(
+            transport=httpx.MockTransport(handler), follow_redirects=True, timeout=5
+        ),
+    )
+    content = await extractor.extract(make_youtube_item())
+    assert "оркестрация" in content.text
+    assert transcriber.calls == 0
+
+
+async def test_youtube_checkpoint_resume_full_equality(tmp_path, session_factory):
+    # Регрессия: checkpoint ANALYZING восстанавливает ЭКВИВАЛЕНТНЫЙ
+    # NormalizedContent (url canonical/description/via_stt/cues/duration) —
+    # LLM при retry получает тот же input, ydl не вызывается повторно.
+    ingested = await ingest_message(
+        session_factory,
+        telegram_user_id=42,
+        chat_id=42,
+        message_id=1,
+        text=f"Видео про агентов {URL}",
+    )
+    item = ingested.items[0]
+
+    factory_calls = {"count": 0}
+
+    def counting_ydl_factory(options):
+        factory_calls["count"] += 1
+        return FakeYoutubeDL([make_info()], None)
+
+    extractor = YoutubeExtractor(
+        transcriber=FakeTranscriber(),
+        temp_dir=tmp_path / "yt",
+        ydl_factory=counting_ydl_factory,
+        http_client_factory=lambda: httpx.AsyncClient(
+            transport=httpx.MockTransport(lambda request: httpx.Response(200, text=SUBTITLE_VTT)),
+            follow_redirects=True,
+            timeout=5,
+        ),
+    )
+    provider = FakeLlmProvider()
+    worker = ProcessingWorker(
+        session_factory,
+        ProcessingPipeline(Analyzer(provider), PriorityEngine(), youtube_extractor=extractor),
+        poll_seconds=0.01,
+    )
+    assert await worker.process_one() is True
+    first_content = provider.calls[0][0]
+    assert factory_calls["count"] == 1
+
+    # крэш после checkpoint → назад в ANALYZING → resume
+    async with session_factory() as session:
+        row = await session.get(Item, item.id)
+        row.processing_status = ProcessingStatus.PROCESSING
+        row.processing_stage = "ANALYZING"
+        await session.commit()
+    assert await requeue_stale(session_factory) == 1
+    assert await worker.process_one() is True
+
+    second_content = provider.calls[1][0]
+    assert second_content == first_content  # полное pydantic equality
+    assert factory_calls["count"] == 1  # ydl не вызывался повторно

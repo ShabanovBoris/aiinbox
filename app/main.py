@@ -66,6 +66,7 @@ def build_extractors(settings: Settings, bot) -> tuple:
         temp_dir=Path(settings.temp_dir) / "youtube",
         max_duration_seconds=settings.youtube_max_duration_seconds,
         max_audio_bytes=settings.youtube_max_audio_bytes,
+        max_subtitle_bytes=settings.youtube_max_subtitle_bytes,
         subtitle_langs=tuple(
             lang.strip() for lang in settings.subtitle_langs.split(",") if lang.strip()
         ),

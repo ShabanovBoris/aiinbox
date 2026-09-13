@@ -422,6 +422,28 @@
   5. → case-insensitive фильтрация заголовков; regression.
   6. → www.youtube-nocookie.com + .youtube-nocookie.com suffix; regression.
 
+## 2026-09-13 — PR #7 — 8a87a54 — CHANGES REQUIRED (re-review)
+
+- Reviewer: Orchestrator; вердикт также на GitHub:
+  https://github.com/ShabanovBoris/aiinbox/pull/7#pullrequestreview-5188821659 (commit 8a87a54).
+- Findings:
+  1. MAJOR: fallback order нарушен — human subs непригодны → сразу STT, automatic
+     captions не пробовались (_pick_subtitles выбирал один URL).
+  2. MAJOR: checkpoint equality не закрыта для YOUTUBE — заявленный equality-тест
+     отсутствовал; фактические различия initial/resumed: cues list[tuple] vs
+     list[list] после JSON round-trip, пустой description "" vs None.
+  3. MAJOR: subtitle byte cap не configurable (не в Settings/composition root).
+  4. MAJOR: docs опережали код (REVIEWS/IMPLEMENTATION_STATE/PR body).
+- Resolved (коммиты после 8a87a54):
+  1. → _subtitle_candidates: перебор ВСЕХ кандидатов (human → auto, config langs →
+     любые) до первого пригодного; STT только после исчерпания. Регрессия:
+     human unusable → auto valid → STT calls == 0.
+  2. → cues нормализуются к list[list] при extract; description_excerpt → None при
+     пустоте; youtube resume-тест проверяет полное pydantic equality.
+  3. → Settings.youtube_max_subtitle_bytes + .env.example + composition root
+     передаёт в extractor.
+  4. → docs синхронизированы с фактическим diff (проверено pytest/grep).
+
 ## Шаблон записи
 
 ```text
