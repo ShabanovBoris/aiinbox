@@ -19,6 +19,7 @@ from app.extractors.youtube import YoutubeExtractor
 from app.services.analysis import Analyzer
 from app.services.frames import extract_representative_frames
 from app.services.profile import get_profile
+from app.services.retrieval import sync_item_search
 from app.storage.models import Content, Item
 
 log = logging.getLogger(__name__)
@@ -92,6 +93,9 @@ class ProcessingPipeline:
         item.priority_score = self.priority.score(analysis)
         item.processing_stage = "READY"
         item.processing_status = ProcessingStatus.READY
+        # Индекс — производная проекция; обновляется в том же commit, что и READY,
+        # чтобы новый результат не появлялся в поиске без основного Item.
+        await sync_item_search(session, item.id)
         await session.commit()
         log.info(
             "item analyzed id=%s category=%s type=%s priority=%s",

@@ -36,7 +36,7 @@ squash merge с ожидаемым HEAD B. Вердикты фиксируютс
 | 6 | YouTube | DONE |
 | 7 | Video visual analysis | DONE |
 | 8 | User profile | IN_REVIEW |
-| 9 | Today/inbox/search | NOT_STARTED |
+| 9 | Today/inbox/search | IN_PROGRESS |
 | 10 | Item actions | NOT_STARTED |
 | 11 | Notifications | NOT_STARTED |
 | 12 | Production hardening | NOT_STARTED |
@@ -416,6 +416,31 @@ Remaining:
 Last verification:
 ruff check . → pass; ruff format --check . → pass; pytest → 152 passed
 smoke: headless старт без токена — bot disabled, SIGINT graceful
+
+### Phase 9 — Today/inbox/search — IN_PROGRESS
+
+Completed:
+✓ `TodayService`: READY + ACTIVE actionable Items (ACTION/LEARN/READ/WATCH),
+  sorted by priority descending and creation time ascending; default 3,
+  absolute maximum 5; DONE/SNOOZED/REFERENCE and other ineligible Items excluded
+✓ `/today`, `/inbox`, `/category`, `/search` handlers and compact formatting
+✓ SQLite FTS5 `item_search` migration with application-controlled indexing;
+  title, summary, user note, tags, and all `contents` text are searchable
+✓ search results are user-scoped, ranked by FTS relevance, and include
+  DONE/ARCHIVED Items; old Items are rebuilt into the user's index on search
+✓ category counts/items and inbox latest-items retrieval without a categories
+  table or pagination framework
+
+Remaining:
+□ quality/review cycle: run final manual smoke, commit, push, open PR, and send
+  REVIEW REQUEST to the Orchestrator
+
+Last verification:
+ruff check . → pass; ruff format --check . → pass;
+pytest → 157 passed; fresh migration creates `item_search` and retrieval tests
+cover Today filtering/sorting/limits, FTS title/transcript/web/archived search,
+inbox/category scoping, and READY-to-FTS projection synchronization; headless
+smoke with empty Telegram token → startup, migration, and graceful SIGINT pass.
 
 ### Шаблон фазы в работе
 

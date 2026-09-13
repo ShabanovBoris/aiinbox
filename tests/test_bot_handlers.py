@@ -97,3 +97,4 @@ def test_production_router_composition_builds(settings, session_factory):
     assert isinstance(router, Router)
     names = [h.callback.__name__ for h in router.message.handlers]
     assert "profile" in names and "profile_update" in names
+    assert {"today", "inbox", "category", "search"} <= set(names)

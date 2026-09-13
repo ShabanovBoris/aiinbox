@@ -41,3 +41,35 @@ def format_profile(profile: UserProfile) -> str:
     if len(lines) == 1:
         lines.append("Профиль пуст — используйте /profile_update <описание>.")
     return "\n".join(lines)
+
+
+def format_today(items: list[Item]) -> str:
+    """Показывает actionable-срез с полями, нужными для решения «что делать»."""
+    if not items:
+        return "Сегодня нет подходящих задач."
+    lines = ["Сегодня:"]
+    for index, item in enumerate(items, start=1):
+        lines.append(f"{index}. {item.title or 'Без названия'} — {item.priority_score or 0}/100")
+        if item.estimated_action_minutes is not None:
+            lines.append(f"   ~{item.estimated_action_minutes} мин")
+        if item.next_action:
+            lines.append(f"   {item.next_action}")
+    return "\n".join(lines)
+
+
+def format_item_list(items: list[Item], heading: str) -> str:
+    """Общий компактный список для inbox/category/search."""
+    if not items:
+        return f"{heading}\n\nНичего не найдено."
+    lines = [heading]
+    for index, item in enumerate(items, start=1):
+        score = f" — {item.priority_score}/100" if item.priority_score is not None else ""
+        lines.append(f"{index}. {item.title or 'Без названия'}{score}")
+    return "\n".join(lines)
+
+
+def format_categories(categories: list[tuple[str, int]]) -> str:
+    """Форматирует список категорий; выбор категории остаётся текстовой командой."""
+    if not categories:
+        return "Категории пока пусты."
+    return "Категории:\n" + "\n".join(f"{name} — {count}" for name, count in categories)
