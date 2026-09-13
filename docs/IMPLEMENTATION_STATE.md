@@ -318,7 +318,13 @@ Completed:
   max_subtitle_bytes (инкрементальный cap при streamed загрузке субтитров),
   socket_timeout — всё через Settings/composition root
 ✓ Fallback chain: перебор ВСЕХ кандидатов субтитров (human → auto, config langs →
-  любые) до первого пригодного; STT только после исчерпания кандидатов
+  любые) до первого пригодного; ЛЮБАЯ ошибка кандидата (включая TOO_LARGE и
+  malformed track без url) делает его непригодным и цепочка продолжается;
+  STT только после исчерпания кандидатов
+✓ Строгий порядок human → auto: валидные human на любом языке предпочтительнее
+  auto на preferred-языке (регрессия: human de + auto ru → выбран human de,
+  auto endpoint не запрашивался)
+✓ Malformed subtitle track (без url) не роняет fallback chain (регрессия)
 ✓ Cues нормализуются к list[list] при extract — JSON round-trip сохраняет
   равенство initial/resumed NormalizedContent
 ✓ TRANSCRIPT + DESCRIPTION персистятся атомарно с checkpoint'ом ANALYZING;
