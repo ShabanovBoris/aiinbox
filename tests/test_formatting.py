@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from app.bot.formatting import format_ready_item
+from app.bot.formatting import format_categories, format_item_list, format_ready_item
 from app.domain.enums import ItemType, SourceType
 from app.domain.models import AnalysisResult
 from app.llm.base import LlmError
@@ -37,6 +37,19 @@ def test_format_contains_key_fields():
     assert "Разбор подходов к оркестрации агентов." in text
     assert "Следующее действие: Посмотреть блок про tool orchestration" in text
     assert "Почему: Сильно связано с профессиональными целями" in text
+
+
+def test_item_list_format_stays_within_telegram_limit():
+    items = [make_ready_item() for _ in range(20)]
+    for item in items:
+        item.title = "x" * 300
+    text = format_item_list(items, "Входящие:")
+    assert len(text) <= 4096
+
+
+def test_category_format_stays_within_telegram_limit():
+    text = format_categories([(f"category-{index}-{'x' * 300}", index) for index in range(30)])
+    assert len(text) <= 4096
 
 
 def test_openai_parse_valid_json():

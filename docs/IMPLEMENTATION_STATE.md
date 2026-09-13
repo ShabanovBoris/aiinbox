@@ -35,8 +35,8 @@ squash merge с ожидаемым HEAD B. Вердикты фиксируютс
 | 5 | Voice/audio | DONE |
 | 6 | YouTube | DONE |
 | 7 | Video visual analysis | DONE |
-| 8 | User profile | IN_REVIEW |
-| 9 | Today/inbox/search | NOT_STARTED |
+| 8 | User profile | DONE |
+| 9 | Today/inbox/search | DONE |
 | 10 | Item actions | NOT_STARTED |
 | 11 | Notifications | NOT_STARTED |
 | 12 | Production hardening | NOT_STARTED |
@@ -416,6 +416,37 @@ Remaining:
 Last verification:
 ruff check . → pass; ruff format --check . → pass; pytest → 152 passed
 smoke: headless старт без токена — bot disabled, SIGINT graceful
+
+### Phase 9 — Today/inbox/search — DONE
+
+APPROVED @ 591cd2e8e7279b725977341caa56dd31fa43899f (Orchestrator, GitHub review
+5192209948). Status finalized after external approval; PR #10 is ready for
+merge with the protocol handshake.
+
+PR #10 открыт: `phase/09-today-inbox-search` → `main`.
+
+Completed:
+✓ `TodayService`: READY + ACTIVE actionable Items (ACTION/LEARN/READ/WATCH),
+  sorted by priority descending and creation time ascending; default 3,
+  absolute maximum 5; DONE/SNOOZED/REFERENCE and other ineligible Items excluded
+✓ `/today`, `/inbox`, `/category`, `/search` handlers and compact formatting
+✓ SQLite FTS5 `item_search` migration with application-controlled indexing;
+  title, summary, user note, tags, and all `contents` text are searchable
+✓ search results are user-scoped, ranked by FTS relevance, and include
+  DONE/ARCHIVED Items; old Items are rebuilt into the user's index on search
+✓ category counts/items and inbox latest-items retrieval without a categories
+  table or pagination framework
+
+Remaining:
+□ ждать вердикта Orchestrator'а; исправления при необходимости выполнять в
+  этой же ветке и PR
+
+Last verification:
+ruff check . → pass; ruff format --check . → pass;
+pytest → 159 passed; fresh migration creates `item_search` and retrieval tests
+cover Today filtering/sorting/limits, FTS title/transcript/web/archived search,
+inbox/category scoping, and READY-to-FTS projection synchronization; headless
+smoke with empty Telegram token → startup, migration, and graceful SIGINT pass.
 
 ### Шаблон фазы в работе
 

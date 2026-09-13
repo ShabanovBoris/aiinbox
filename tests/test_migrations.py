@@ -16,7 +16,11 @@ def test_fresh_database_migrates_to_latest_schema(tmp_path):
         tables = {
             row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
         }
-        assert {"users", "items", "alembic_version"} <= tables
+        assert {"users", "items", "item_search", "alembic_version"} <= tables
+        search_sql = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE name='item_search'"
+        ).fetchone()[0]
+        assert "fts5" in search_sql
 
         # Идемпотентность Telegram-источника enforced схемой, не логикой:
         # дубль (user_id, telegram_message_id, source_index) запрещён на уровне БД.

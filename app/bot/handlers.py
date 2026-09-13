@@ -9,6 +9,13 @@ from app.config import Settings
 from app.domain.enums import SourceType
 from app.services.ingestion import ingest_message, ingest_voice
 from app.services.profile import enqueue_profile_update
+from app.services.retrieval import (
+    TodayService,
+    list_categories,
+    list_category_items,
+    list_inbox,
+    search_items,
+)
 
 log = logging.getLogger(__name__)
 
@@ -131,6 +138,24 @@ def make_router(
         instruction = (message.text or "").removeprefix("/profile_update").strip()
         await on_profile_update(message, settings, session_factory, instruction)
 
+    @router.message(Command("today"))
+    async def today(message: Message) -> None:
+        await on_today(message, settings, session_factory)
+
+    @router.message(Command("inbox"))
+    async def inbox(message: Message) -> None:
+        await on_inbox(message, settings, session_factory)
+
+    @router.message(Command("category"))
+    async def category(message: Message) -> None:
+        value = (message.text or "").removeprefix("/category").strip()
+        await on_category(message, settings, session_factory, value)
+
+    @router.message(Command("search"))
+    async def search(message: Message) -> None:
+        value = (message.text or "").removeprefix("/search").strip()
+        await on_search(message, settings, session_factory, value)
+
     return router
 
 
@@ -171,3 +196,70 @@ async def on_profile_update(
     )
     log.info("profile update queued user_id=%s", user_id)
     await message.answer("Принял. Обновляю профиль…")
+
+
+async def _allowed(message: Message, settings: Settings) -> bool:
+    return settings.is_allowed(message.from_user.id if message.from_user else None)
+
+
+async def on_today(message: Message, settings: Settings, session_factory) -> None:
+    if not await _allowed(message, settings):
+        return
+    from app.bot.formatting import format_today
+    from app.services.ingestion import get_or_create_user
+
+    async with session_factory() as session:
+        user = await get_or_create_user(
+            session, telegram_user_id=message.from_user.id, chat_id=message.chat.id
+        )
+        items = await TodayService().list_items(session, user.id)
+    await message.answer(format_today(items))
+
+
+async def on_inbox(message: Message, settings: Settings, session_factory) -> None:
+    if not await _allowed(message, settings):
+        return
+    from app.bot.formatting import format_item_list
+    from app.services.ingestion import get_or_create_user
+
+    async with session_factory() as session:
+        user = await get_or_create_user(
+            session, telegram_user_id=message.from_user.id, chat_id=message.chat.id
+        )
+        items = await list_inbox(session, user.id)
+    await message.answer(format_item_list(items, "Входящие:"))
+
+
+async def on_category(message: Message, settings: Settings, session_factory, category: str) -> None:
+    if not await _allowed(message, settings):
+        return
+    from app.bot.formatting import format_categories, format_item_list
+    from app.services.ingestion import get_or_create_user
+
+    async with session_factory() as session:
+        user = await get_or_create_user(
+            session, telegram_user_id=message.from_user.id, chat_id=message.chat.id
+        )
+        if category:
+            items = await list_category_items(session, user.id, category)
+            response = format_item_list(items, f"Категория: {category}")
+        else:
+            response = format_categories(await list_categories(session, user.id))
+    await message.answer(response)
+
+
+async def on_search(message: Message, settings: Settings, session_factory, query: str) -> None:
+    if not await _allowed(message, settings):
+        return
+    from app.bot.formatting import format_item_list
+    from app.services.ingestion import get_or_create_user
+
+    if not query:
+        await message.answer("Использование: /search <запрос>")
+        return
+    async with session_factory() as session:
+        user = await get_or_create_user(
+            session, telegram_user_id=message.from_user.id, chat_id=message.chat.id
+        )
+        items = await search_items(session, user.id, query)
+    await message.answer(format_item_list(items, "Результаты поиска:"))

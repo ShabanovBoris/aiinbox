@@ -102,3 +102,22 @@ time-based stale detection не нужен при single-process инвариа�
 Consequences: воркеры не требуют координации в памяти; переход на multi-process
 потребует пересмотра (новая запись здесь). Внешние блокировки не вводятся до
 реального потребления.
+
+## D-005 — Application-controlled FTS5 index (этап 9)
+
+Context: `/search` должен находить title, summary, user note, tags и тексты из
+`contents`, включая DONE/ARCHIVED Items. SQLite triggers добавили бы скрытую
+магическую синхронизацию между несколькими таблицами.
+
+Decision: использовать отдельную SQLite FTS5 virtual table `item_search` с
+`item_id` и `user_id` как UNINDEXED columns. Приложение обновляет строку в том
+же commit, что и READY; перед пользовательским поиском пересобирает индекс
+конкретного пользователя.
+
+Reason: каноническими остаются `items` и `contents`, старые записи безопасно
+индексируются без отдельного backfill worker, а синхронизация остаётся явной и
+тестируемой.
+
+Consequences: поиск делает небольшой rebuild для одного пользователя; это
+приемлемо для личного MVP. Embeddings, vector search и recommendation ML не
+добавляются.
