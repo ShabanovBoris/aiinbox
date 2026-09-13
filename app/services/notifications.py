@@ -118,6 +118,10 @@ async def update_notification_settings(
         }
         settings_patch = {key: value for key, value in settings_patch.items() if value is not None}
         values = {}
+        if daily_digest_enabled is True and not settings_for(user)["daily_digest_enabled"]:
+            values["daily_digest_enabled_at"] = _utc_now()
+        elif daily_digest_enabled is False:
+            values["daily_digest_enabled_at"] = None
         if timezone is not None:
             values["timezone"] = timezone
         if settings_patch:
@@ -266,9 +270,10 @@ class ReminderWorker:
                     deferred_date = local_now.date() - timedelta(days=1)
                 if deferred_date is not None:
                     due_at = datetime.combine(deferred_date, digest_time, tzinfo=zone)
-                    activation_at = max(
-                        value for value in (user.created_at, user.updated_at) if value is not None
-                    )
+                    activation_at = user.daily_digest_enabled_at
+                    if activation_at is None:
+                        await session.commit()
+                        return 0
                     activation_utc = activation_at.replace(tzinfo=UTC)
                     if activation_utc <= due_at.astimezone(UTC):
                         await self._defer_digest(

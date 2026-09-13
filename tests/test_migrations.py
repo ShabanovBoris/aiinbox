@@ -87,7 +87,7 @@ def test_existing_phase1_db_upgrades_with_data_intact(tmp_path):
             "snoozed_until",
         } <= columns
         user_columns = {row[1] for row in conn.execute("PRAGMA table_info(users)")}
-        assert {"timezone", "settings_json"} <= user_columns
+        assert {"timezone", "settings_json", "daily_digest_enabled_at"} <= user_columns
         row = conn.execute(
             "SELECT u.telegram_user_id, i.user_note, i.processing_status FROM items i"
             " JOIN users u ON u.id = i.user_id"

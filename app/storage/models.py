@@ -40,6 +40,11 @@ class User(Base):
     settings_json: Mapped[dict] = mapped_column(
         JSON, default=dict, server_default="{}", nullable=False
     )
+    # Отдельная отметка включения digest отличает активацию от общего
+    # updated_at: изменение профиля не должно отменять legitimate recovery.
+    daily_digest_enabled_at: Mapped[datetime | None] = mapped_column(
+        DateTime, default=func.now(), server_default=func.now()
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), onupdate=func.now()

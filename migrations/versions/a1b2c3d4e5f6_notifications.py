@@ -25,8 +25,13 @@ def upgrade() -> None:
         "users",
         sa.Column("settings_json", sa.JSON(), server_default=sa.text("'{}'"), nullable=True),
     )
+    op.add_column(
+        "users",
+        sa.Column("daily_digest_enabled_at", sa.DateTime(), nullable=True),
+    )
     op.execute("UPDATE users SET timezone = 'UTC' WHERE timezone IS NULL")
     op.execute("UPDATE users SET settings_json = '{}' WHERE settings_json IS NULL")
+    op.execute("UPDATE users SET daily_digest_enabled_at = created_at")
     with op.batch_alter_table("users") as batch:
         batch.alter_column("timezone", nullable=False)
         batch.alter_column("settings_json", nullable=False)
@@ -75,3 +80,4 @@ def downgrade() -> None:
     with op.batch_alter_table("users") as batch:
         batch.drop_column("settings_json")
         batch.drop_column("timezone")
+        batch.drop_column("daily_digest_enabled_at")

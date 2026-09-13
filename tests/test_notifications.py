@@ -108,7 +108,14 @@ async def test_digest_due_before_overnight_quiet_is_deferred_without_losing_date
 
 
 async def test_digest_after_midnight_restart_is_deferred_from_previous_local_day(session_factory):
-    await make_ready_item(session_factory)
+    user_id, _ = await make_ready_item(session_factory)
+    async with session_factory() as session:
+        user = await session.get(User, user_id)
+        user.created_at = datetime(2026, 9, 14, 10, 0)
+        user.daily_digest_enabled_at = datetime(2026, 9, 14, 10, 0)
+        # A later unrelated update must not disable recovery.
+        user.updated_at = datetime(2026, 9, 14, 20, 0)
+        await session.commit()
     await update_notification_settings(
         session_factory,
         42,
@@ -135,6 +142,7 @@ async def test_new_user_after_midnight_has_no_stale_digest(session_factory):
         # previous day's 09:00 schedule had already passed.
         user.created_at = datetime(2026, 9, 14, 22, 0)
         user.updated_at = datetime(2026, 9, 14, 22, 0)
+        user.daily_digest_enabled_at = datetime(2026, 9, 14, 22, 0)
         await session.commit()
     bot = FakeBot()
     worker = ReminderWorker(session_factory, bot)

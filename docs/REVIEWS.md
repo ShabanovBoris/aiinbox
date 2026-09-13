@@ -872,7 +872,7 @@
 ## 2026-09-14 — PR #12 — ffc97a8 — CHANGES REQUIRED (review 4)
 
 - Reviewer: Orchestrator; GitHub COMMENT review:
-  https://github.com/ShabanovBoris/aiinbox/pull/12#pullrequestreview-5192510310
+  https://github.com/ShabanovBoris/aiinbox/pull/12#pullrequestreview-5192521430
   (reviewed HEAD `ffc97a8f30e315226bc63da30015949bec359736`).
 - Findings: MAJOR — the durable-evidence recovery did not materialize a
   previous local date when the first poll after downtime occurred after
