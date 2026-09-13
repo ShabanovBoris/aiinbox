@@ -18,10 +18,9 @@ squash merge с ожидаемым HEAD B. Вердикты фиксируютс
 
 ## Contract addendum — PR #1 — orchestration protocol adoption
 
-Статус: APPROVED @ 5611be6b52fc546cd4dd060b985d24af8619ed88
-(GitHub review: pullrequestreview-5187945174). Вердикты и история ревью —
-в `docs/REVIEWS.md`. Squash merge выполняет Orchestrator; Phase 1 начинается
-только после merge и sync main (протокол §9.2, §23).
+Статус: Phase 11 — Notifications — IN_PROGRESS в ветке
+`phase/11-notifications`. Вердикты и история ревью — в `docs/REVIEWS.md`;
+acceptance и squash merge выполняет Orchestrator по протоколу §9.2.
 
 ## Phases
 
@@ -477,9 +476,24 @@ Scope: persistent user notification settings, minimal `/settings` UI, a
 periodic reminder worker, once-per-local-day digest via `TodayService`,
 snooze resurfacing, quiet-hours deferral, and restart-safe reminder state.
 
+Completed:
+✓ `users.timezone`/`settings_json` и `reminders` через Alembic migration;
+  existing users получают UTC и пустые settings defaults
+✓ минимальный `/settings` с timezone/time/quiet командами и digest toggle;
+  значения валидируются до persistence
+✓ `ReminderWorker`: local-time digest once-per-day, durable claims,
+  snooze resurfacing → ACTIVE, quiet-hours deferral и delivery failure logging
+✓ snooze action создаёт durable reminder в той же транзакции; Done/Archive/
+  Cancel отменяют устаревшие snooze reminders
+✓ migrations, timezone/digest/restart/concurrency/snooze/quiet/failure и
+  Telegram settings regressions
+
 Remaining:
-□ implement and verify the Phase 11 vertical slice; then open PR for
-  Orchestrator review
+□ открыть PR и передать Phase 11 Orchestrator'у на review
+
+Last verification:
+ruff check . → pass; ruff format --check . → pass; pytest → 177 passed;
+git diff --check → pass.
 
 ### Шаблон фазы в работе
 

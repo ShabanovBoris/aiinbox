@@ -136,3 +136,21 @@ Reason: Item остаётся каноническим состоянием, а 
 
 Consequences: callback повторяем и безопасен для restart; отмена Later меняет
 только lifecycle state и не создаёт отдельного telemetry-события.
+
+## D-007 — SQLite как durable scheduler уведомлений (этап 11)
+
+Context: daily digest и snooze resurfacing должны переживать restart и не
+дублироваться, но MVP остаётся одним процессом на SQLite.
+
+Decision: хранить настройки в `users.timezone`/`users.settings_json`, а
+идемпотентные delivery claims — в `reminders`; запускать один periodic
+`ReminderWorker` на asyncio. Digest claim фиксируется в SQLite до Telegram
+отправки, а snooze claim и переход Item в ACTIVE фиксируются транзакционно.
+
+Reason: это удовлетворяет restart/idempotency требованиям без Celery,
+APScheduler, Redis или отдельной блокировки; partial unique index закрывает
+особенность SQLite, где `NULL item_id` не участвует в обычной UNIQUE-проверке.
+
+Consequences: авария после durable claim, но до фактической отправки, может
+потерять одно уведомление, зато не создаёт повторную доставку после restart;
+ошибка Telegram записывается как `FAILED` и не ломает worker.
