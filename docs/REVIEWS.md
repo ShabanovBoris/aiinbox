@@ -690,6 +690,19 @@
   2. → PR body обновлён как metadata (HEAD в RE-REVIEW REQUEST).
 - Product code не менялся.
 
+## 2026-09-13 — PR #9 — 70cff18 — CHANGES REQUIRED (re-review 5)
+
+- Reviewer: Orchestrator; вердикт также на GitHub:
+  https://github.com/ShabanovBoris/aiinbox/pull/9#pullrequestreview-5191596241 (commit 70cff18).
+- Findings:
+  1. MINOR/§9.1: durable запись для verdict 9e31499 (review 5189448726)
+     отсутствовала; формулировка 151 passed осталась.
+  2. MINOR/metadata: PR body HEAD stale после docs-коммита.
+- Resolved (коммит после 70cff18):
+  1. → запись 9e31499/5189448726 добавлена; счётчики приведены к 152.
+  2. → PR body переходит на фиксацию HEAD в RE-REVIEW REQUEST.
+- Product code не менялся.
+
 ## Шаблон записи
 
 ```text
