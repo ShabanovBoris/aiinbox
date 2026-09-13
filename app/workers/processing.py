@@ -53,6 +53,7 @@ class ProcessingWorker:
         pipeline: ProcessingPipeline,
         poll_seconds: float = 1.0,
         on_result=None,
+        on_failure=None,
     ):
         self.session_factory = session_factory
         self.pipeline = pipeline
@@ -60,6 +61,7 @@ class ProcessingWorker:
         # on_result — auxiliary-колбэк (доставка результата в Telegram);
         # его сбой не должен ломать уже готовый результат.
         self.on_result = on_result
+        self.on_failure = on_failure
 
     async def run_forever(self, stop: asyncio.Event) -> None:
         while not stop.is_set():
@@ -125,6 +127,14 @@ class ProcessingWorker:
             # и остаётся доступным для Retry (PRODUCT_SPEC §56, §59).
             log.exception("item processing failed id=%s error=%s", item_id, exc)
             await self.mark_failed(item_id, exc)
+            if self.on_failure is not None:
+                async with self.session_factory() as session:
+                    failed_item = await session.get(Item, item_id)
+                if failed_item is not None:
+                    try:
+                        await self.on_failure(failed_item)
+                    except Exception:
+                        log.exception("failure delivery failed item_id=%s", item_id)
             return True
         log.info(
             "item processed id=%s duration=%.3fs result=READY", item_id, time.monotonic() - started

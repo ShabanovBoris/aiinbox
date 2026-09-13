@@ -107,6 +107,17 @@ def _profile_done_notifier(bot, session_factory):
     return notify
 
 
+def _item_failure_notifier(bot, session_factory):
+    """Уведомляет о FAILED Item и оставляет пользователю кнопку Retry."""
+
+    async def notify(item):
+        from app.bot.notify import send_item_failure
+
+        await send_item_failure(bot, session_factory, item)
+
+    return notify
+
+
 async def run(settings: Settings) -> None:
     engine = make_engine(settings)
     session_factory = make_session_factory(engine)
@@ -157,6 +168,7 @@ async def run(settings: Settings) -> None:
         )
 
         on_profile_done = _profile_done_notifier(bot, session_factory) if bot is not None else None
+        on_failure = _item_failure_notifier(bot, session_factory) if bot is not None else None
 
         stop = asyncio.Event()
         loop = asyncio.get_running_loop()
@@ -177,7 +189,11 @@ async def run(settings: Settings) -> None:
         worker_tasks = [
             asyncio.create_task(
                 ProcessingWorker(
-                    session_factory, pipeline, settings.processing_poll_seconds, on_result
+                    session_factory,
+                    pipeline,
+                    settings.processing_poll_seconds,
+                    on_result,
+                    on_failure,
                 ).run_forever(stop),
                 name=f"processing-worker-{i}",
             )

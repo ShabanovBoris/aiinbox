@@ -5,9 +5,9 @@ from aiogram.types import Chat, Message
 from aiogram.types import User as TgUser
 from sqlalchemy import func, select
 
-from app.bot.handlers import on_start, on_text
-from app.domain.enums import ProcessingStatus
-from app.storage.models import Item, User
+from app.bot.handlers import on_start, on_text, on_today
+from app.domain.enums import ItemState, ItemType, ProcessingStatus, SourceType
+from app.storage.models import Event, Item, User
 
 
 def make_message(user_id: int, message_id: int = 1, text: str = "hello") -> Message:
@@ -86,6 +86,36 @@ async def test_no_success_ack_when_persistence_fails(settings, session_factory, 
     assert sent == []
 
 
+async def test_today_records_shown_event(settings, session_factory, monkeypatch):
+    sent = capture_answers(monkeypatch)
+    async with session_factory() as session:
+        user = User(telegram_user_id=42, telegram_chat_id=42)
+        session.add(user)
+        await session.flush()
+        session.add(
+            Item(
+                user_id=user.id,
+                processing_status=ProcessingStatus.READY,
+                state=ItemState.ACTIVE,
+                source_type=SourceType.TEXT,
+                processing_stage="READY",
+                user_note="today",
+                item_type=ItemType.ACTION,
+                title="Do it",
+                priority_score=80,
+            )
+        )
+        await session.commit()
+
+    await on_today(make_message(42), settings, session_factory)
+    assert sent == ["Сегодня:\n1. Do it — 80/100"]
+    async with session_factory() as session:
+        assert (
+            await session.scalar(select(Event.event_type).where(Event.event_type == "TODAY_SHOWN"))
+            == "TODAY_SHOWN"
+        )
+
+
 def test_production_router_composition_builds(settings, session_factory):
     # Регрессия: production-вызов make_router (как в app/main.py) собирается
     # без TypeError — router включает profile-команды.
@@ -98,3 +128,4 @@ def test_production_router_composition_builds(settings, session_factory):
     names = [h.callback.__name__ for h in router.message.handlers]
     assert "profile" in names and "profile_update" in names
     assert {"today", "inbox", "category", "search"} <= set(names)
+    assert "item_action" in [h.callback.__name__ for h in router.callback_query.handlers]

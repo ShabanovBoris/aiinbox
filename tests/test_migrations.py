@@ -16,7 +16,7 @@ def test_fresh_database_migrates_to_latest_schema(tmp_path):
         tables = {
             row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
         }
-        assert {"users", "items", "item_search", "alembic_version"} <= tables
+        assert {"users", "items", "item_search", "events", "alembic_version"} <= tables
         search_sql = conn.execute(
             "SELECT sql FROM sqlite_master WHERE name='item_search'"
         ).fetchone()[0]
@@ -82,6 +82,9 @@ def test_existing_phase1_db_upgrades_with_data_intact(tmp_path):
             "item_type",
             "priority_score",
             "confidence",
+            "completed_at",
+            "archived_at",
+            "snoozed_until",
         } <= columns
         row = conn.execute(
             "SELECT u.telegram_user_id, i.user_note, i.processing_status FROM items i"

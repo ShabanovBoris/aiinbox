@@ -1,12 +1,14 @@
 import logging
+from datetime import UTC, datetime, timedelta
 
 from aiogram import F, Router
 from aiogram.filters import Command, CommandStart
-from aiogram.types import Message
+from aiogram.types import CallbackQuery, Message
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.config import Settings
 from app.domain.enums import SourceType
+from app.services.actions import apply_item_action, record_item_events
 from app.services.ingestion import ingest_message, ingest_voice
 from app.services.profile import enqueue_profile_update
 from app.services.retrieval import (
@@ -156,7 +158,76 @@ def make_router(
         value = (message.text or "").removeprefix("/search").strip()
         await on_search(message, settings, session_factory, value)
 
+    @router.callback_query(F.data.startswith("item:"))
+    async def item_action(callback: CallbackQuery) -> None:
+        await on_item_callback(callback, settings, session_factory)
+
     return router
+
+
+async def on_item_callback(
+    callback: CallbackQuery, settings: Settings, session_factory: async_sessionmaker
+) -> None:
+    """Translate an inline callback into one scoped application action."""
+    user = callback.from_user
+    if not settings.is_allowed(user.id) or not callback.data:
+        await callback.answer()
+        return
+    parts = callback.data.split(":")
+    if len(parts) < 3 or parts[0] != "item":
+        await callback.answer("Неизвестное действие")
+        return
+    action, raw_item_id = parts[1], parts[2]
+    try:
+        item_id = int(raw_item_id)
+    except ValueError:
+        await callback.answer("Некорректный Item")
+        return
+    if action == "later":
+        from app.bot.keyboards import snooze_keyboard
+
+        if callback.message:
+            await callback.message.edit_text(
+                "Когда напомнить?", reply_markup=snooze_keyboard(item_id)
+            )
+        await callback.answer()
+        return
+    if action == "snooze" and len(parts) == 4:
+        durations = {
+            "tomorrow": timedelta(days=1),
+            "week": timedelta(days=7),
+            "month": timedelta(days=30),
+        }
+        duration = durations.get(parts[3])
+        if duration is None:
+            await callback.answer("Некорректный срок")
+            return
+        action_name = "snooze"
+        snoozed_until = datetime.now(UTC).replace(tzinfo=None) + duration
+    elif action == "cancel":
+        action_name, snoozed_until = "cancel_snooze", None
+    elif action in {"done", "archive", "retry"}:
+        action_name, snoozed_until = action, None
+    else:
+        await callback.answer("Неизвестное действие")
+        return
+
+    item = await apply_item_action(
+        session_factory, user.id, item_id, action_name, snoozed_until=snoozed_until
+    )
+    if item is None:
+        await callback.answer("Item не найден")
+        return
+    labels = {
+        "done": "Готово ✅",
+        "archive": "В архиве 🗄",
+        "snooze": "Отложено ⏰",
+        "cancel_snooze": "Отложенное действие отменено",
+        "retry": "Повторно поставил в обработку 🔁",
+    }
+    if callback.message:
+        await callback.message.edit_text(labels[action_name], reply_markup=None)
+    await callback.answer()
 
 
 async def on_profile(message: Message, settings: Settings, session_factory) -> None:
@@ -213,6 +284,8 @@ async def on_today(message: Message, settings: Settings, session_factory) -> Non
             session, telegram_user_id=message.from_user.id, chat_id=message.chat.id
         )
         items = await TodayService().list_items(session, user.id)
+        await record_item_events(session, user.id, [item.id for item in items], "TODAY_SHOWN")
+        await session.commit()
     await message.answer(format_today(items))
 
 

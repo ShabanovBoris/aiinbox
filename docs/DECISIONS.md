@@ -121,3 +121,18 @@ Reason: каноническими остаются `items` и `contents`, ст�
 Consequences: поиск делает небольшой rebuild для одного пользователя; это
 приемлемо для личного MVP. Embeddings, vector search и recommendation ML не
 добавляются.
+
+## D-006 — Actions и events в одной транзакции (этап 10)
+
+Context: Telegram callback может прийти повторно или после перезапуска; Item
+state и feedback event не должны расходиться.
+
+Decision: каждый Done/Snooze/Archive/Retry меняет scoped Item и добавляет event
+в одной SQLAlchemy-транзакции. Повтор уже выполненного действия становится
+no-op без дублирования события; Retry не сбрасывает `processing_stage`.
+
+Reason: Item остаётся каноническим состоянием, а events — durable auxiliary
+журналом для будущего обучения без распределённых блокировок или event sourcing.
+
+Consequences: callback повторяем и безопасен для restart; отмена Later меняет
+только lifecycle state и не создаёт отдельного telemetry-события.

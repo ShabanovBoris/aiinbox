@@ -100,6 +100,10 @@ class Item(Base):
     # анализа, если анализировался только транскрипт.
     analysis_completeness: Mapped[str | None] = mapped_column(String(32))
 
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime)
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime)
+    snoozed_until: Mapped[datetime | None] = mapped_column(DateTime)
+
     error_code: Mapped[str | None] = mapped_column(String(64))
     error_message: Mapped[str | None] = mapped_column(Text)
 
@@ -120,6 +124,19 @@ class Content(Base):
     kind: Mapped[ContentKind] = mapped_column(SaEnum(ContentKind, native_enum=False, length=16))
     text: Mapped[str] = mapped_column(Text)
     metadata_json: Mapped[dict | None] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class Event(Base):
+    """Durable feedback log; it is auxiliary to Item's canonical lifecycle state."""
+
+    __tablename__ = "events"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    item_id: Mapped[int] = mapped_column(ForeignKey("items.id"), index=True)
+    event_type: Mapped[str] = mapped_column(String(32), index=True)
+    payload_json: Mapped[dict | None] = mapped_column(JSON)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 
