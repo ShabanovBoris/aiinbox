@@ -384,7 +384,11 @@ frames off event loop, mkdir failure → READY TRANSCRIPT_ONLY, notes truncation
 malformed-track regression)
 smoke: headless старт без токена — bot disabled, SIGINT graceful
 
-### Phase 8 — User profile — IN_REVIEW
+### Phase 8 — User profile — DONE
+
+APPROVED @ 118ebe58b0ae8b5bc3dc9d7c0e6267727131b0d9 (Orchestrator, GitHub review
+pullrequestreview-5192117648). Finalization commit after approval; approved HEAD
+was product-code-clean and the preceding delta was docs-only.
 
 Completed:
 ✓ users.profile_json (миграция 220d7ae6d4f1); profile seed через YAML

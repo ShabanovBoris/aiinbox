@@ -734,6 +734,17 @@
 - Resolved (следующий docs-only коммит): записи приведены к фактическим
   findings своих вердиктов; product code не менялся.
 
+## 2026-09-13 — PR #9 — 118ebe5 — APPROVED
+
+- Phase 08 — User profile. Reviewer: Orchestrator; вердикт также на GitHub:
+  https://github.com/ShabanovBoris/aiinbox/pull/9#pullrequestreview-5192117648
+  (reviewed HEAD `118ebe58b0ae8b5bc3dc9d7c0e6267727131b0d9`).
+- Подтверждено: `067215a..118ebe5` — один docs-only commit, durable journal
+  корректен; product code не менялся. PR открыт, exact HEAD совпадает,
+  `mergeable=true`.
+- Финализация Phase 8 выполняется отдельным commit только для этого файла и
+  `docs/IMPLEMENTATION_STATE.md`; Phase 9 до merge не начинать.
+
 ## Шаблон записи
 
 ```text
