@@ -449,7 +449,7 @@ cover Today filtering/sorting/limits, FTS title/transcript/web/archived search,
 inbox/category scoping, and READY-to-FTS projection synchronization; headless
 smoke with empty Telegram token → startup, migration, and graceful SIGINT pass.
 
-### Phase 10 — Item actions and feedback events — IN_REVIEW
+### Phase 10 — Item actions and feedback events — DONE
 
 Completed:
 ✓ транзакционные Done, Archive, Later/Snooze, Cancel и Retry с user scoping;
@@ -464,12 +464,12 @@ Completed:
 ✓ action, migration и handler regressions
 
 Remaining:
-□ дождаться вердикта Orchestrator'а; исправления при необходимости выполнять
-  в этой же ветке и PR #11
+□ нет; Phase 10 approved Orchestrator'ом для PR #11
 
 Last verification:
 ruff check . → pass; ruff format --check . → pass; targeted Phase 10 tests → pass;
-PR #11 открыт и exact-head REVIEW REQUEST отправлен; full suite → 168 passed.
+PR #11 approved at HEAD `991b152079a4245c9e92346d16bbe64c67f6ef57`;
+full suite → 168 passed.
 
 ### Шаблон фазы в работе
 
