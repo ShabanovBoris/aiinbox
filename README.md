@@ -13,6 +13,19 @@ Personal AI Inbox — личный Telegram-бот, который приним�
 - OpenAI API key и model ids для анализа (и transcription для voice/audio)
 - `ffmpeg` для video visual analysis
 
+## Архитектура
+
+Это single-process modular monolith:
+
+```text
+Telegram → ingestion → SQLite queue → extraction/normalization
+         → structured LLM analysis → deterministic priority → Telegram
+```
+
+SQLite остаётся canonical source of truth для Items, checkpoints, профиля,
+очереди, actions и reminders. Внешние adapters изолируют Telegram, HTTP,
+yt-dlp, ffmpeg и OpenAI от domain/application logic.
+
 Playwright fallback намеренно отключён: текущий SSRF boundary не позволяет
 безопасно выпускать браузер в сеть. Страница с недостаточным текстом получает
 контролируемую ошибку, а не unrestricted browser access.
@@ -29,6 +42,14 @@ uv run python -m app.main
 
 Миграции применяются автоматически при старте. Без `TELEGRAM_BOT_TOKEN` процесс
 запускается в headless worker mode, что удобно для smoke-проверки.
+
+### Создание Telegram-бота
+
+1. Откройте `@BotFather` в Telegram и выполните `/newbot`.
+2. Сохраните выданный token только в `.env` как `TELEGRAM_BOT_TOKEN`.
+3. Узнайте numeric Telegram user id и укажите его в
+   `ALLOWED_TELEGRAM_USER_IDS`.
+4. Запустите приложение и отправьте боту `/start`.
 
 Профиль пользователя можно предварительно задать в `profile.yaml`; пример
 формата находится в `profile.example.yaml`. Путь настраивается через
@@ -54,6 +75,17 @@ docker run --rm --env-file .env \
 Не запускайте дополнительные инфраструктурные контейнеры: MVP рассчитан на
 один процесс и SQLite.
 
+Эквивалентный compose-запуск:
+
+```bash
+mkdir -p data temp
+docker compose up --build -d
+docker compose logs -f app
+docker compose down
+```
+
+Compose монтирует SQLite в `./data` и временные media files в `./temp`.
+
 ## Проверки
 
 ```bash
@@ -76,7 +108,11 @@ uv run pytest
 - `WEB_TIMEOUT_SECONDS`, `MAX_DOWNLOAD_BYTES`, `WEB_MAX_ATTEMPTS`;
 - `MAX_AUDIO_BYTES`, `TRANSCRIPTION_TIMEOUT_SECONDS`;
 - `YOUTUBE_MAX_*`, `VIDEO_FRAME_INTERVAL_SECONDS`, `VIDEO_MAX_FRAMES`;
-- `OPENAI_*`, `DEFAULT_TIMEZONE`, `PROFILE_SEED_FILE`.
+- `OPENAI_*`, `LLM_CHUNK_SIZE_CHARS`, `DEFAULT_TIMEZONE`, `PROFILE_SEED_FILE`.
+
+Чтобы сменить LLM, измените `LLM_PROVIDER` и соответствующие model IDs в `.env`
+после остановки приложения. В текущем MVP поддержан `LLM_PROVIDER=openai`;
+Ollama/router относятся к post-MVP и намеренно не добавлены.
 
 External content is data, not instructions: analysis prompts explicitly isolate
 prompt injection, and Telegram/OpenAI credentials are supplied only through

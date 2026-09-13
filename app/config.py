@@ -51,6 +51,7 @@ class Settings(BaseSettings):
     openai_transcription_model: str = ""
     openai_vision_model: str = ""
     llm_timeout_seconds: int = 120
+    llm_chunk_size_chars: int = 12_000
 
     @property
     def allowed_user_ids(self) -> frozenset[int]:

@@ -941,6 +941,19 @@
 - Notes: <bootstrap/scope, если есть>
 ```
 
+## 2026-09-14 — PR #14 — 7a2e609 — CHANGES REQUIRED (review 1)
+
+- Reviewer: Orchestrator; GitHub COMMENT review:
+  https://github.com/ShabanovBoris/aiinbox/pull/14#pullrequestreview-5192744658
+  (reviewed HEAD `7a2e609c783c335bf1ae2cd51c38803dcb9fbf3b`).
+- Findings: MAJOR — missing long-content chunking/summarization path and tests;
+  missing `/help`; missing required `docker-compose.yml`; MINOR — README did
+  not fully cover the §78 setup/architecture/model-change contract; MINOR —
+  Phase 13 state was not `IN_REVIEW` after REVIEW REQUEST.
+- Resolved in same branch/PR #14: implement bounded chunk summarization and
+  aggregation at the LLM boundary, add `/help` and compose documentation,
+  expand README, and synchronize Phase 13 state before re-review.
+
 ## 2026-09-14 — PR #13 — 2ac0d58 — CHANGES REQUIRED (review 1)
 
 - Reviewer: Orchestrator; GitHub COMMENT review:

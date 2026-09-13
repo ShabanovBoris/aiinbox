@@ -50,6 +50,7 @@ class FakeLlmProvider:
         self.result = result or make_analysis()
         self.error = error
         self.calls: list[tuple[NormalizedContent, UserProfile, list[str]]] = []
+        self.summarize_calls: list[str] = []
         self.capabilities = LlmCapabilities(structured_output=True, vision=vision)
         self.describe_notes = describe_notes or "На слайдах диаграмма оркестрации."
         self.describe_fail = describe_fail
@@ -70,6 +71,10 @@ class FakeLlmProvider:
         if self.error is not None:
             raise self.error
         return self.result
+
+    async def summarize_chunk(self, text: str) -> str:
+        self.summarize_calls.append(text)
+        return text
 
     async def describe_images(self, images, context):
         self.describe_calls += 1

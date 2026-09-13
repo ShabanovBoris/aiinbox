@@ -6,7 +6,7 @@ from app.domain.enums import ProcessingStatus
 from app.domain.models import DEFAULT_PROFILE
 from app.domain.priority import PriorityEngine
 from app.llm.base import LlmError
-from app.services.analysis import Analyzer
+from app.services.analysis import Analyzer, split_text
 from app.services.ingestion import ingest_message
 from app.services.processing import ProcessingPipeline
 from app.storage.models import Item
@@ -68,6 +68,28 @@ async def test_text_pipeline_end_to_end(session_factory):
     assert content.text == "Изучить AI agents"
     assert profile == DEFAULT_PROFILE
     assert categories == []
+    assert provider.summarize_calls == []
+
+
+def test_split_text_preserves_all_content():
+    text = "абв" * 11
+    chunks = split_text(text, 7)
+    assert "".join(chunks) == text
+    assert all(len(chunk) <= 7 for chunk in chunks)
+
+
+async def test_long_content_is_summarized_before_final_analysis(session_factory):
+    await seed(session_factory, text="x" * 25)
+    provider = FakeLlmProvider()
+    worker = ProcessingWorker(
+        session_factory,
+        ProcessingPipeline(Analyzer(provider, chunk_size_chars=10), PriorityEngine()),
+        poll_seconds=0.01,
+    )
+
+    assert await worker.process_one() is True
+    assert provider.summarize_calls == ["x" * 10, "x" * 10, "x" * 5]
+    assert provider.calls[0][0].text == "x" * 10 + "\n\n" + "x" * 10 + "\n\n" + "x" * 5
 
 
 async def test_existing_categories_passed_to_provider(session_factory):

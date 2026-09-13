@@ -40,7 +40,7 @@ squash merge с ожидаемым HEAD B. Вердикты фиксируютс
 | 10 | Item actions | DONE |
 | 11 | Notifications | DONE |
 | 12 | Production hardening | DONE |
-| 13 | Final acceptance | IN_PROGRESS |
+| 13 | Final acceptance | IN_REVIEW |
 
 Post-MVP этапы (промпты 14–18: Ollama, LLM router, behaviour ranking, HTTP API,
 semantic search) здесь не отслеживаются, пока MVP не принят (Phase 13).
@@ -523,7 +523,7 @@ Remaining:
 Last verification:
 pytest — 190 passed; Ruff check/format и git diff --check — pass
 
-### Phase 13 — Final MVP acceptance — IN_PROGRESS
+### Phase 13 — Final MVP acceptance — IN_REVIEW
 
 Scope: adversarial acceptance of the complete MVP against PRODUCT_SPEC, with
 minimal bug fixes and regressions only; no new features or post-MVP work.
@@ -544,13 +544,18 @@ Completed:
   headless app started and exited cleanly on SIGINT
 ✓ README verification — PASS via `uv run --no-sync`; Docker build remains
   externally unverified because Docker CLI is unavailable on this host
+✓ long-content safety — PASS: short content skips chunking; long content is
+  split without loss into bounded chunks, summarized, aggregated and analyzed
+✓ Telegram `/help` — PASS: authorized command exposes the complete MVP surface
+✓ `docker-compose.yml` — PASS by static YAML/config review: one app service,
+  absolute SQLite path and persistent `/data` volume; Docker runtime remains
+  externally unverified
 
 Remaining:
-□ дождаться verdict Orchestrator'а; исправления при необходимости выполнять
-  в этой же ветке и PR Phase 13
+□ исправить findings review `5192744658` в этом же PR #14 и получить approval
 
 Last verification:
-`uv run --no-sync pytest` — 190 passed; Ruff check/format и `git diff --check` — pass.
+`uv run --no-sync pytest` — 193 passed; Ruff check/format и `git diff --check` — pass.
 
 ### Шаблон фазы в работе
 
