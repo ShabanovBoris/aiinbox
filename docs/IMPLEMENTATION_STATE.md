@@ -274,7 +274,9 @@ Completed:
 ✓ Ошибки: TOO_LARGE (permanent) / DOWNLOAD_FAILED / TRANSCRIPTION_FAILED / TIMEOUT
   (APITimeoutError от STT SDK маппится отдельно)
 ✓ Retry policy на Telegram boundary: transient 3 attempts с backoff, permanent
-  (TOO_LARGE/4xx/not-found) — одна попытка
+  (TOO_LARGE/4xx/not-found/BadRequest) — одна попытка
+✓ TokenRedactionFilter: токен не попадает в httpx/httpcore INFO-логи
+  (regression: caplog INFO при media download без TESTTOKEN)
 ✓ Oversized media: атомарный durable FAILED/TOO_LARGE Item с file_id/duration
   (ТЗ §66), пользователю — реальный лимит из конфига; ingest_voice(too_large=...)
   создаёт его сразу, без claimable QUEUED-состояния (race-fix по вердикту adb43fe)
@@ -287,11 +289,12 @@ Remaining:
   fakes (FakeDownloader/FakeTranscriber)
 
 Last verification:
-ruff check . → pass; ruff format --check . → pass; pytest → 98 passed
+ruff check . → pass; ruff format --check . → pass; pytest → 100 passed
 (+ downloader: transient 503→success (реальные 2 HTTP-попытки), not-found →
-1 attempt, oversized streaming без file_size, partial cleanup; атомарный
-oversized Item; resume с полным equality NormalizedContent включая duration;
-STT TIMEOUT маппинг)
+1 attempt, TelegramBadRequest → 1 attempt, oversized streaming без file_size,
+partial cleanup; атомарный oversized Item; resume с полным equality
+NormalizedContent включая duration; STT TIMEOUT маппинг; token redaction —
+TESTTOKEN отсутствует в INFO-логах при media download)
 smoke: headless старт без токена — bot disabled, SIGINT graceful
 
 ### Шаблон фазы в работе
