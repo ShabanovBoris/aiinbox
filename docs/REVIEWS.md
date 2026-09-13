@@ -786,6 +786,28 @@
   deduplicated URL не создают дополнительное событие; wording сужен до
   гарантированных repeated Done/Retry.
 
+## 2026-09-14 — PR #11 — 08d19a5 — APPROVED (review 2)
+
+- Reviewer: Orchestrator; GitHub COMMENT review:
+  https://github.com/ShabanovBoris/aiinbox/pull/11#pullrequestreview-5192287650
+  (reviewed HEAD `08d19a59f58d67c419177206e78df0327cba6101`).
+- Подтверждено: оба предыдущих finding'а закрыты, product-code blocker'ов нет;
+  `pytest` — 166 passed, exact HEAD совпадал с PR.
+- Approval впоследствии инвалидирован для merge последующим product-code commit
+  `8417e9b`; поэтому потребовался новый re-review.
+
+## 2026-09-14 — PR #11 — 8417e9b — CHANGES REQUIRED (review 3)
+
+- Reviewer: Orchestrator; GitHub COMMENT review:
+  https://github.com/ShabanovBoris/aiinbox/pull/11#pullrequestreview-5192294422
+  (reviewed HEAD `8417e9b6d5f286f74c662814ae1a96d17f486f3d`).
+- Findings:
+  1. MAJOR: product fix для YouTube race-resolve был добавлен без focused
+     regression test на `SourceType.YOUTUBE` и exactly-once `CREATED`.
+  2. MINOR/§9.1: отсутствовала durable запись approval `08d19a5 / 5192287650`.
+- Resolved: focused concurrent YouTube regression добавлен в `tests/test_ingestion.py`;
+  durable approval и факт его invalidation записаны в этот журнал.
+
 ```text
 ## YYYY-MM-DD — PR #N — <reviewed HEAD sha> — OUTCOME
 
