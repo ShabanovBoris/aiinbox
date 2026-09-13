@@ -269,7 +269,7 @@ class YoutubeExtractor:
             "outtmpl": str(work_dir / "%(id)s.%(ext)s"),
             "socket_timeout": self.timeout_seconds,
         }
-        return await self._run_download(url, options)
+        return await self._run_download(url, options, self.max_video_bytes)
 
     async def _download_audio(self, url: str, work_dir: Path) -> Path:
         options = {
@@ -281,9 +281,9 @@ class YoutubeExtractor:
             "outtmpl": str(work_dir / "%(id)s.%(ext)s"),
             "socket_timeout": self.timeout_seconds,
         }
-        return await self._run_download(url, options)
+        return await self._run_download(url, options, self.max_audio_bytes)
 
-    async def _run_download(self, url: str, options: dict) -> Path:
+    async def _run_download(self, url: str, options: dict, byte_limit: int) -> Path:
         def _download() -> Path:
             with self._ydl_factory(options) as ydl:
                 info = ydl.extract_info(url, download=True)
@@ -295,10 +295,10 @@ class YoutubeExtractor:
                     if not candidates:
                         raise AppError("DOWNLOAD_FAILED", "audio file missing after download")
                     path = candidates[0]
-                if path.stat().st_size > self.max_audio_bytes:
+                if path.stat().st_size > byte_limit:
                     raise AppError(
                         "TOO_LARGE",
-                        f"audio exceeds {self.max_audio_bytes} bytes",
+                        f"download exceeds {byte_limit} bytes",
                         permanent=True,
                     )
                 return path

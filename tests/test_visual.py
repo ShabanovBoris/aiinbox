@@ -259,6 +259,8 @@ async def test_visual_persisted_before_analyzer_and_reused_on_retry(
             )
         ).all()
     assert len(notes) == 1
+    # retry-анализатор получил ТЕ ЖЕ visual notes (прямой assert)
+    assert working.calls[0][0].metadata["visual_notes"] == notes[0].text
     # retry-анализатор получил те же visual notes
     # visual notes восстановлены в content при resume: проверим через metadata
     # второго provider — сравнение уже покрыто равенством описаний выше

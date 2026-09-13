@@ -506,7 +506,7 @@
 ## 2026-09-13 — PR #8 — dd6e628 — CHANGES REQUIRED
 
 - Phase 07 — Video visual analysis. Reviewer: Orchestrator; вердикт также на GitHub:
-  https://github.com/ShabanovBoris/aiinbox/pull/8#pullrequestreview-5188734132 (commit dd6e628).
+  https://github.com/ShabanovBoris/aiinbox/pull/8#pullrequestreview-5188934101 (commit dd6e628).
 - Findings:
   1. MAJOR/RESUMABILITY: successful visual enrichment не персистился до Analyzer —
      сбой structured analysis после успешного vision откатывал VISUAL_NOTES, retry
@@ -530,6 +530,28 @@
   5. → детерминированная обрезка visual notes до 800 символов на границе
      приложения. Регрессия: 1000-символьные notes → 800.
   6. → Phase 7 в IMPLEMENTATION_STATE (IN_REVIEW + верификация).
+
+## 2026-09-13 — PR #8 — 3d72605 — CHANGES REQUIRED (re-review)
+
+- Reviewer: Orchestrator; вердикт также на GitHub:
+  https://github.com/ShabanovBoris/aiinbox/pull/8#pullrequestreview-5189002409 (commit 3d72605).
+- Findings:
+  1. MAJOR: youtube_max_video_bytes не enforced end-to-end — post-check в
+     _run_download использовал max_audio_bytes.
+  2. MINOR: retry-regression не доказывал равенство visual notes (прямой assert
+     отсутствовал).
+  3. MINOR: IMPLEMENTATION_STATE stale (127 вместо 131).
+  4. MINOR: REVIEWS содержал неверный review ID для dd6e628 (5188734132 вместо
+     реального 5188934101).
+  5. MINOR/metadata: PR body stale.
+- Resolved (коммиты после 3d72605):
+  1. → _run_download(url, options, byte_limit): download_video передаёт
+     max_video_bytes, audio — max_audio_bytes; regression test_video_byte_limit_
+     enforced_independently (max_video < actual < max_audio → TOO_LARGE).
+  2. → прямой assert working.calls[0][0].metadata["visual_notes"] == notes[0].text.
+  3. → IMPLEMENTATION_STATE 131 passed + новые регрессии перечислены.
+  4. → review ID исправлен.
+  5. → PR body обновлён как metadata.
 
 ## Шаблон записи
 

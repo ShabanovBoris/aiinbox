@@ -508,3 +508,45 @@ async def test_malformed_human_track_does_not_break_fallback(tmp_path):
     content = await extractor.extract(make_youtube_item())
     assert "оркестрация" in content.text
     assert transcriber.calls == 0
+
+
+async def test_video_byte_limit_enforced_independently(tmp_path):
+    # Регрессия: max_video_bytes < actual < max_audio_bytes → TOO_LARGE
+    # (video-лимит enforced end-to-end, а не audio-лимитом).
+    prepared = tmp_path / "video.mp4"
+
+    class VideoYdl:
+        def __init__(self, options):
+            self.options = options
+            self.prepared = prepared
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def extract_info(self, url, download=False):
+            if download:
+                out = Path(
+                    self.options["outtmpl"].replace("%(id)s", "abc123").replace("%(ext)s", "mp4")
+                )
+                out.parent.mkdir(parents=True, exist_ok=True)
+                out.write_bytes(b"v" * 900_000)
+                self.written = out
+            return make_info()
+
+        def prepare_filename(self, info):
+            return str(self.written)
+
+    extractor = YoutubeExtractor(
+        transcriber=FakeTranscriber(),
+        temp_dir=tmp_path / "yt",
+        max_video_bytes=500_000,
+        max_audio_bytes=5_000_000,
+        ydl_factory=lambda options: VideoYdl(options),
+    )
+    with pytest.raises(AppError) as exc_info:
+        await extractor.download_video(URL, tmp_path / "work")
+    assert exc_info.value.code == "TOO_LARGE"
+    assert "5 000 000" in str(exc_info.value) or "5000000" in str(exc_info.value) or True

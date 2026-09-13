@@ -372,7 +372,7 @@ Remaining:
   injectable frames runner)
 
 Last verification:
-ruff check . → pass; ruff format --check . → pass; pytest → 127 passed
+ruff check . → pass; ruff format --check . → pass; pytest → 131 passed
 (+ visual notes persistence/completeness, no-vision → TRANSCRIPT_ONLY,
 vision failure → READY TRANSCRIPT_ONLY, frames dedup, ffmpeg failure code)
 smoke: headless старт без токена — bot disabled, SIGINT graceful
