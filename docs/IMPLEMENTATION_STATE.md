@@ -40,7 +40,7 @@ squash merge с ожидаемым HEAD B. Вердикты фиксируютс
 | 10 | Item actions | DONE |
 | 11 | Notifications | DONE |
 | 12 | Production hardening | DONE |
-| 13 | Final acceptance | NOT_STARTED |
+| 13 | Final acceptance | DONE |
 
 Post-MVP этапы (промпты 14–18: Ollama, LLM router, behaviour ranking, HTTP API,
 semantic search) здесь не отслеживаются, пока MVP не принят (Phase 13).
@@ -522,6 +522,43 @@ Remaining:
 
 Last verification:
 pytest — 190 passed; Ruff check/format и git diff --check — pass
+
+### Phase 13 — Final MVP acceptance — DONE
+
+Scope: adversarial acceptance of the complete MVP against PRODUCT_SPEC, with
+minimal bug fixes and regressions only; no new features or post-MVP work.
+
+Completed:
+✓ acceptance matrix: TEXT — PASS (`test_text_pipeline_end_to_end`); WEB — PASS
+  (secure fetch, persisted text, resume); VOICE — PASS (download/transcript/
+  persistence); YouTube subtitles — PASS (STT skipped); YouTube without
+  subtitles — PASS (audio/STT); visual video — PASS (vision and transcript-only
+  degradation); TODAY — PASS (eligible filter/order/limit); actions — PASS
+  (Done/Later/Archive/Retry); SEARCH — PASS (text/web/transcript FTS)
+✓ restart — PASS (Items/profile/queue/checkpoints/snooze/reminders and stale
+  PROCESSING recovery); security — PASS (SSRF, redirects, shell-safe args,
+  allowlist, prompt-injection isolation); provider boundary — PASS (OpenAI SDK
+  confined to adapters, model IDs from config); FAILED Item — PASS (error,
+  persistence, retry and intermediate-result reuse)
+✓ fresh database startup — PASS: empty SQLite upgraded through latest migration;
+  headless app started and exited cleanly on SIGINT
+✓ README verification — PASS via `uv run --no-sync`; Docker build remains
+  externally unverified because Docker CLI is unavailable on this host
+✓ long-content safety — PASS: short content skips chunking; long content is
+  split without loss into bounded chunks, summarized, aggregated and analyzed
+  with durable `CHUNK_SUMMARY` checkpoints and bounded aggregate input
+✓ Telegram `/help` — PASS: authorized command exposes the complete MVP surface
+✓ `docker-compose.yml` — PASS by static YAML/config review: one app service,
+  absolute SQLite path and persistent `/data` volume; Docker runtime remains
+  externally unverified
+
+Remaining:
+✓ approval Orchestrator получен для exact HEAD
+  `8ed1e9c837398a28ab73e909ce349e79d29e7994` (reviews `5192817102`,
+  `5192820769`); Phase 13 scope завершён, MVP acceptance approved.
+
+Last verification:
+`uv run --no-sync pytest` — 196 passed; Ruff check/format и `git diff --check` — pass.
 
 ### Шаблон фазы в работе
 

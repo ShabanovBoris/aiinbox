@@ -148,7 +148,11 @@ async def run(settings: Settings) -> None:
         await apply_profile_seed(session_factory, settings.profile_seed_file)
         configure_profile_seed(settings.profile_seed_file)
 
-        analyzer = Analyzer(build_provider(settings))
+        analyzer = Analyzer(
+            build_provider(settings),
+            chunk_size_chars=settings.llm_chunk_size_chars,
+            overlap_chars=settings.llm_chunk_overlap_chars,
+        )
         polling = None
         bot = None
         on_result = None

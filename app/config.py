@@ -1,3 +1,4 @@
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -51,6 +52,8 @@ class Settings(BaseSettings):
     openai_transcription_model: str = ""
     openai_vision_model: str = ""
     llm_timeout_seconds: int = 120
+    llm_chunk_size_chars: int = Field(12_000, validation_alias="CONTENT_CHUNK_MAX_CHARS")
+    llm_chunk_overlap_chars: int = Field(0, validation_alias="CONTENT_CHUNK_OVERLAP_CHARS")
 
     @property
     def allowed_user_ids(self) -> frozenset[int]:

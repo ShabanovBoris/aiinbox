@@ -1,0 +1,10 @@
+services:
+  app:
+    build: .
+    env_file: .env
+    environment:
+      DATABASE_URL: sqlite+aiosqlite:////data/app.db
+    volumes:
+      - ./data:/data
+      - ./temp:/app/temp
+    restart: unless-stopped

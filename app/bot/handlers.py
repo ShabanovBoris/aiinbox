@@ -26,11 +26,31 @@ from app.services.retrieval import (
 
 log = logging.getLogger(__name__)
 
+HELP_TEXT = (
+    "Personal AI Inbox — отправь текст, URL, voice/audio, YouTube или видео.\n\n"
+    "Команды:\n"
+    "/today — приоритетные Items на сегодня\n"
+    "/inbox — активные Items\n"
+    "/search <текст> — поиск по сохранённому содержимому\n"
+    "/category [имя] — категории и Items категории\n"
+    "/profile — текущий профиль\n"
+    "/profile_update <инструкция> — обновить профиль\n"
+    "/settings — настройки digest и quiet hours\n"
+    "/help — эта справка"
+)
+
 
 async def on_start(message: Message, settings: Settings) -> None:
     if not settings.is_allowed(message.from_user.id if message.from_user else None):
         return
     await message.answer("Personal AI Inbox готов. Просто отправь текст или ссылку.")
+
+
+async def on_help(message: Message, settings: Settings) -> None:
+    """Expose the stable Telegram command surface without business logic."""
+    if not settings.is_allowed(message.from_user.id if message.from_user else None):
+        return
+    await message.answer(HELP_TEXT)
 
 
 async def on_settings(
@@ -170,6 +190,10 @@ def make_router(
     @router.message(CommandStart())
     async def start(message: Message) -> None:
         await on_start(message, settings)
+
+    @router.message(Command("help"))
+    async def help_command(message: Message) -> None:
+        await on_help(message, settings)
 
     # Не-командный текст — источники TEXT/WEB; медиа-источники добавляются
     # в своих фазах и идут через тот же pipeline.

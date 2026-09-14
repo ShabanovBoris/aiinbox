@@ -941,6 +941,19 @@
 - Notes: <bootstrap/scope, если есть>
 ```
 
+## 2026-09-14 — PR #14 — 7a2e609 — CHANGES REQUIRED (review 1)
+
+- Reviewer: Orchestrator; GitHub COMMENT review:
+  https://github.com/ShabanovBoris/aiinbox/pull/14#pullrequestreview-5192744658
+  (reviewed HEAD `7a2e609c783c335bf1ae2cd51c38803dcb9fbf3b`).
+- Findings: MAJOR — missing long-content chunking/summarization path and tests;
+  missing `/help`; missing required `docker-compose.yml`; MINOR — README did
+  not fully cover the §78 setup/architecture/model-change contract; MINOR —
+  Phase 13 state was not `IN_REVIEW` after REVIEW REQUEST.
+- Resolved in same branch/PR #14: implement bounded chunk summarization and
+  aggregation at the LLM boundary, add `/help` and compose documentation,
+  expand README, and synchronize Phase 13 state before re-review.
+
 ## 2026-09-14 — PR #13 — 2ac0d58 — CHANGES REQUIRED (review 1)
 
 - Reviewer: Orchestrator; GitHub COMMENT review:
@@ -978,3 +991,48 @@
   `pytest` 190 passed, `git diff --check` PASS.
 - Protocol next step: one status-finalization commit only, changing Phase 12
   `IN_REVIEW` → `DONE` and recording approved HEAD `f168117ddb…`.
+
+## 2026-09-14 — PR #14 — fa74b83 — CHANGES REQUIRED (review 2)
+
+- Reviewer: Orchestrator; GitHub COMMENT review:
+  https://github.com/ShabanovBoris/aiinbox/pull/14#pullrequestreview-5192770822
+  (reviewed HEAD `fa74b837b14db2f334fe141352f7ea2ad8ef0659`).
+- Findings: MAJOR — chunk aggregate was unbounded; MAJOR — completed chunk
+  summaries were not durable across restart; MINOR — chunk size/overlap config
+  was incomplete.
+- Resolved in same branch/PR #14: `CHUNK_SUMMARY` rows are committed before
+  subsequent provider calls and reused on retry, aggregate input is bounded,
+  and chunk size/overlap are configured and tested.
+
+## 2026-09-14 — PR #14 — 2dbed2c — CHANGES REQUIRED (review 3)
+
+- Reviewer: Orchestrator; GitHub COMMENT review:
+  https://github.com/ShabanovBoris/aiinbox/pull/14#pullrequestreview-5192800837
+  (reviewed HEAD `2dbed2ce172a2cbbf0e983133cf5eee481f5b2fc`).
+- Findings: MAJOR — overlap splitting emitted a redundant tail chunk after
+  reaching EOF; MINOR — public chunk environment names differed from
+  PRODUCT_SPEC §79.
+- Resolved in same branch/PR #14: splitter stops once the current chunk reaches
+  EOF and has a regression for the redundant-tail case; settings accept the
+  required `CONTENT_CHUNK_MAX_CHARS` and `CONTENT_CHUNK_OVERLAP_CHARS` names,
+  which are now the documented `.env.example` surface.
+
+## 2026-09-14 — PR #14 — d2e4e29 — APPROVED (review 4)
+
+- Reviewer: Orchestrator; GitHub COMMENT review:
+  https://github.com/ShabanovBoris/aiinbox/pull/14#pullrequestreview-5192817102
+  (approved product HEAD `d2e4e297cb99578f972582b1e8a7cf1ccc26c641`).
+- Confirmed: durable chunk summaries, bounded aggregate, overlap behavior and
+  public config contract are correct; recorded verification is 196 tests,
+  Ruff PASS and `git diff --check` PASS.
+- Follow-up: final docs-only correction synchronized the state HEAD reference.
+
+## 2026-09-14 — PR #14 — 8ed1e9c — APPROVED (review 5)
+
+- Reviewer: Orchestrator; GitHub COMMENT review:
+  https://github.com/ShabanovBoris/aiinbox/pull/14#pullrequestreview-5192820769
+  (approved exact HEAD `8ed1e9c837398a28ab73e909ce349e79d29e7994`).
+- Confirmed: delta from approved product HEAD `d2e4e29` is exactly one
+  docs-only commit changing one `IMPLEMENTATION_STATE.md` line; PR metadata and
+  exact HEAD are synchronized.
+- Protocol next step: merge-ready handshake; Orchestrator performs squash merge.

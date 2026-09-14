@@ -81,7 +81,9 @@ class ProcessingPipeline:
                 content.metadata["visual_notes"] = visual_notes
             # Phase 8: персональный профиль пользователя из БД.
             profile = await get_profile(session, item.user_id)
-            analysis = await self.analyzer.analyze(content, session, item.user_id, profile=profile)
+            analysis = await self.analyzer.analyze(
+                content, session, item.user_id, profile=profile, item_id=item.id
+            )
             item.analysis_completeness = self._completeness(item, visual_notes)
 
             item.processing_stage = "PRIORITIZING"

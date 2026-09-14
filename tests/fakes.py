@@ -42,6 +42,7 @@ class FakeLlmProvider:
         describe_notes: str | None = None,
         describe_fail: bool = False,
         analyze_failures: int = 0,
+        summarize_failures: int = 0,
         profile_patch: dict | None = None,
         profile_error: LlmError | None = None,
     ):
@@ -50,11 +51,13 @@ class FakeLlmProvider:
         self.result = result or make_analysis()
         self.error = error
         self.calls: list[tuple[NormalizedContent, UserProfile, list[str]]] = []
+        self.summarize_calls: list[str] = []
         self.capabilities = LlmCapabilities(structured_output=True, vision=vision)
         self.describe_notes = describe_notes or "На слайдах диаграмма оркестрации."
         self.describe_fail = describe_fail
         self.describe_calls = 0
         self.analyze_failures = analyze_failures
+        self.summarize_failures = summarize_failures
         self.profile_patch = profile_patch
         self.profile_error = profile_error
         self.profile_calls = []
@@ -70,6 +73,13 @@ class FakeLlmProvider:
         if self.error is not None:
             raise self.error
         return self.result
+
+    async def summarize_chunk(self, text: str) -> str:
+        self.summarize_calls.append(text)
+        if self.summarize_failures > 0:
+            self.summarize_failures -= 1
+            raise LlmError("LLM_FAILED", "summarize failed")
+        return text
 
     async def describe_images(self, images, context):
         self.describe_calls += 1

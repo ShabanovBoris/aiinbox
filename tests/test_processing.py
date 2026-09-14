@@ -1,15 +1,16 @@
 import asyncio
 
 import pytest
+from sqlalchemy import select
 
 from app.domain.enums import ProcessingStatus
-from app.domain.models import DEFAULT_PROFILE
+from app.domain.models import DEFAULT_PROFILE, NormalizedContent
 from app.domain.priority import PriorityEngine
 from app.llm.base import LlmError
-from app.services.analysis import Analyzer
+from app.services.analysis import Analyzer, split_text
 from app.services.ingestion import ingest_message
 from app.services.processing import ProcessingPipeline
-from app.storage.models import Item
+from app.storage.models import Content, Item
 from app.workers.processing import ProcessingWorker, requeue_stale
 from tests.fakes import FakeLlmProvider, make_analysis
 
@@ -68,6 +69,81 @@ async def test_text_pipeline_end_to_end(session_factory):
     assert content.text == "Изучить AI agents"
     assert profile == DEFAULT_PROFILE
     assert categories == []
+    assert provider.summarize_calls == []
+
+
+def test_split_text_preserves_all_content():
+    text = "абв" * 11
+    chunks = split_text(text, 7)
+    assert "".join(chunks) == text
+    assert all(len(chunk) <= 7 for chunk in chunks)
+
+
+def test_split_text_rejects_invalid_overlap():
+    with pytest.raises(ValueError):
+        split_text("text", 4, 4)
+
+
+def test_split_text_overlap_stops_at_eof_without_redundant_tail():
+    chunks = split_text("abcdefghijklmnopq", 10, 2)
+    assert chunks == ["abcdefghij", "ijklmnopq"]
+
+
+async def test_long_content_is_summarized_before_final_analysis(session_factory):
+    await seed(session_factory, text="x" * 25)
+    provider = FakeLlmProvider()
+    worker = ProcessingWorker(
+        session_factory,
+        ProcessingPipeline(Analyzer(provider, chunk_size_chars=10), PriorityEngine()),
+        poll_seconds=0.01,
+    )
+
+    assert await worker.process_one() is True
+    assert provider.summarize_calls == ["x" * 10, "x" * 10, "x" * 5]
+    assert len(provider.calls[0][0].text) <= 10
+    async with session_factory() as session:
+        summaries = (await session.scalars(select(Content))).all()
+        assert len(summaries) == 3
+
+
+async def test_chunk_summaries_resume_without_repeating_completed_work(session_factory):
+    await seed(session_factory, text="x" * 25)
+
+    class PartialFailureProvider(FakeLlmProvider):
+        fail_after_first = True
+
+        async def summarize_chunk(self, text):
+            if self.fail_after_first and len(self.summarize_calls) == 1:
+                self.summarize_calls.append(text)
+                self.fail_after_first = False
+                raise LlmError("LLM_FAILED", "summarize failed")
+            return await super().summarize_chunk(text)
+
+    provider = PartialFailureProvider()
+    analyzer = Analyzer(provider, chunk_size_chars=10)
+    async with session_factory() as session:
+        item = await session.get(Item, 1)
+        with pytest.raises(LlmError):
+            await analyzer.analyze(
+                NormalizedContent(source_type=item.source_type, text="x" * 25),
+                session,
+                item.user_id,
+                DEFAULT_PROFILE,
+                item.id,
+            )
+        stored = (await session.scalars(select(Content).where(Content.item_id == item.id))).all()
+        assert len(stored) == 1
+
+    async with session_factory() as session:
+        item = await session.get(Item, 1)
+        await analyzer.analyze(
+            NormalizedContent(source_type=item.source_type, text="x" * 25),
+            session,
+            item.user_id,
+            DEFAULT_PROFILE,
+            item.id,
+        )
+    assert provider.summarize_calls == ["x" * 10, "x" * 10, "x" * 10, "x" * 5]
 
 
 async def test_existing_categories_passed_to_provider(session_factory):

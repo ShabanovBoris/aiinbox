@@ -5,7 +5,7 @@ from aiogram.types import Chat, Message
 from aiogram.types import User as TgUser
 from sqlalchemy import func, select
 
-from app.bot.handlers import on_settings, on_start, on_text, on_today
+from app.bot.handlers import on_help, on_settings, on_start, on_text, on_today
 from app.domain.enums import ItemState, ItemType, ProcessingStatus, SourceType
 from app.storage.models import Event, Item, User
 
@@ -69,6 +69,14 @@ async def test_start_silent_for_unauthorized_user(settings, monkeypatch):
     sent = capture_answers(monkeypatch)
     await on_start(make_message(999), settings)
     assert sent == []
+
+
+async def test_help_lists_mvp_commands(settings, monkeypatch):
+    sent = capture_answers(monkeypatch)
+    await on_help(make_message(42), settings)
+    assert "/today" in sent[0]
+    assert "/settings" in sent[0]
+    assert "/help" in sent[0]
 
 
 async def test_two_allowed_users_ingest_separately(settings, session_factory, monkeypatch):
@@ -150,5 +158,5 @@ def test_production_router_composition_builds(settings, session_factory):
     assert isinstance(router, Router)
     names = [h.callback.__name__ for h in router.message.handlers]
     assert "profile" in names and "profile_update" in names and "settings_command" in names
-    assert {"today", "inbox", "category", "search"} <= set(names)
+    assert {"help_command", "today", "inbox", "category", "search"} <= set(names)
     assert "item_action" in [h.callback.__name__ for h in router.callback_query.handlers]
