@@ -40,7 +40,7 @@ squash merge с ожидаемым HEAD B. Вердикты фиксируютс
 | 10 | Item actions | DONE |
 | 11 | Notifications | DONE |
 | 12 | Production hardening | DONE |
-| 13 | Final acceptance | IN_REVIEW |
+| 13 | Final acceptance | DONE |
 
 Post-MVP этапы (промпты 14–18: Ollama, LLM router, behaviour ranking, HTTP API,
 semantic search) здесь не отслеживаются, пока MVP не принят (Phase 13).
@@ -523,7 +523,7 @@ Remaining:
 Last verification:
 pytest — 190 passed; Ruff check/format и git diff --check — pass
 
-### Phase 13 — Final MVP acceptance — IN_REVIEW
+### Phase 13 — Final MVP acceptance — DONE
 
 Scope: adversarial acceptance of the complete MVP against PRODUCT_SPEC, with
 minimal bug fixes and regressions only; no new features or post-MVP work.
@@ -553,8 +553,9 @@ Completed:
   externally unverified
 
 Remaining:
-□ отправить re-review для exact HEAD `d2e4e297cb99578f972582b1e8a7cf1ccc26c641`
-  после fixes review `5192800837` и получить approval
+✓ approval Orchestrator получен для exact HEAD
+  `8ed1e9c837398a28ab73e909ce349e79d29e7994` (reviews `5192817102`,
+  `5192820769`); Phase 13 scope завершён, MVP acceptance approved.
 
 Last verification:
 `uv run --no-sync pytest` — 196 passed; Ruff check/format и `git diff --check` — pass.
