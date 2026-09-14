@@ -553,7 +553,7 @@ Completed:
   externally unverified
 
 Remaining:
-□ отправить re-review для exact HEAD `9521c0187afeb994d30f94c861d6355cb1bd5540`
+□ отправить re-review для exact HEAD `d2e4e297cb99578f972582b1e8a7cf1ccc26c641`
   после fixes review `5192800837` и получить approval
 
 Last verification:
