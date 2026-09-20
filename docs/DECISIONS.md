@@ -127,15 +127,18 @@ Consequences: поиск делает небольшой rebuild для одно
 Context: Telegram callback может прийти повторно или после перезапуска; Item
 state и feedback event не должны расходиться.
 
-Decision: каждый Done/Snooze/Archive/Retry меняет scoped Item и добавляет event
-в одной SQLAlchemy-транзакции. Повтор уже выполненного действия становится
-no-op без дублирования события; Retry не сбрасывает `processing_stage`.
+Decision: каждый Done/Snooze/Archive/Retry выполняет scoped conditional
+`UPDATE ... RETURNING` и добавляет event в той же SQLAlchemy-транзакции только
+если UPDATE действительно выиграл переход. DONE и ARCHIVED — terminal states:
+конкурирующие terminal callbacks не перезаписывают друг друга. Повтор уже
+выполненного действия становится no-op; Retry не сбрасывает `processing_stage`.
 
 Reason: Item остаётся каноническим состоянием, а events — durable auxiliary
 журналом для будущего обучения без распределённых блокировок или event sourcing.
 
-Consequences: callback повторяем и безопасен для restart; отмена Later меняет
-только lifecycle state и не создаёт отдельного telemetry-события.
+Consequences: callback повторяем, безопасен для restart и concurrency; один
+lifecycle transition создаёт максимум одно соответствующее событие. Отмена
+Later меняет только lifecycle state и не создаёт отдельного telemetry-события.
 
 ## D-007 — SQLite как durable scheduler уведомлений (этап 11)
 
@@ -163,11 +166,16 @@ Context: один внешний provider или subprocess может зави�
 Decision: `ProcessingWorker` ограничивает полную обработку Item через
 `PROCESSING_TIMEOUT_SECONDS`; при штатном завершении сначала выставляется stop,
 воркерам даётся `SHUTDOWN_TIMEOUT_SECONDS`, и только затем оставшиеся задачи
-отменяются.
+отменяются. Неожиданное завершение любого processing/profile/reminder worker
+или Telegram polling считается process-level failure: после того же bounded
+cleanup исключение выходит из `run()`, а restart принадлежит внешнему runtime.
+DB/SQLAlchemy failure не маскируется как обычный FAILED Item.
 
-Reason: timeout оставляет Item в контролируемом FAILED/retryable состоянии, а
-bounded graceful window сохраняет уже записанные checkpoints без отдельного
-внешнего supervisor или distributed queue.
+Reason: timeout provider-а оставляет Item в контролируемом FAILED/retryable
+состоянии, но потеря критического worker-а означает, что процесс больше не
+гарантирует обработку. Fail-fast позволяет штатному внешнему supervisor-у
+перезапустить весь single-process runtime; distributed queue не требуется.
 
-Consequences: принудительная отмена после shutdown deadline может оставить
-PROCESSING Item, который будет безопасно requeue при следующем старте.
+Consequences: принудительная отмена после shutdown deadline или infrastructure
+failure может оставить PROCESSING Item, который будет безопасно requeue при
+следующем старте. Docker Compose использует `restart: unless-stopped`.
