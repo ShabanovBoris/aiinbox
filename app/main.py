@@ -108,6 +108,36 @@ async def _drain_worker_tasks(tasks: list[asyncio.Task], timeout: float) -> None
         await asyncio.gather(*tasks, return_exceptions=True)
 
 
+async def _wait_for_shutdown_or_critical_exit(
+    stop: asyncio.Event, tasks: list[asyncio.Task]
+) -> None:
+    """Fail the process when a critical runtime task exits before shutdown.
+
+    External process supervision owns recovery, so silently losing one worker
+    would leave a partially alive service that no longer guarantees processing.
+    """
+    shutdown_task = asyncio.create_task(stop.wait(), name="shutdown-signal")
+    try:
+        done, _ = await asyncio.wait(
+            [shutdown_task, *tasks],
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if shutdown_task in done:
+            return
+
+        completed = next(task for task in tasks if task in done)
+        if completed.cancelled():
+            raise RuntimeError(f"critical task {completed.get_name()} was cancelled unexpectedly")
+        error = completed.exception()
+        if error is not None:
+            raise error
+        raise RuntimeError(f"critical task {completed.get_name()} stopped unexpectedly")
+    finally:
+        if not shutdown_task.done():
+            shutdown_task.cancel()
+        await asyncio.gather(shutdown_task, return_exceptions=True)
+
+
 async def _start_polling(dispatcher, bot) -> None:
     """Keep Telegram transport owned by the outer shutdown coordinator."""
     await dispatcher.start_polling(bot, handle_signals=False, close_bot_session=False)
@@ -235,19 +265,26 @@ async def run(settings: Settings) -> None:
             for i in range(settings.processing_concurrency)
         ]
 
-        await stop.wait()
-        log.info("shutdown: stopping background tasks")
-        if polling is not None:
-            polling.cancel()
-            await asyncio.gather(polling, return_exceptions=True)
-        # Сначала даём воркерам завершить текущую атомарную операцию; cancel —
-        # только bounded fallback для зависшего внешнего provider call.
         all_worker_tasks = worker_tasks + profile_tasks + reminder_tasks
-        await _drain_worker_tasks(all_worker_tasks, settings.shutdown_timeout_seconds)
-        if bot is not None:
-            # Delivery callbacks must keep the Telegram session alive until
-            # all workers have drained or the bounded shutdown deadline ends.
-            await bot.session.close()
+        critical_tasks = all_worker_tasks + ([polling] if polling is not None else [])
+        # ❌ Удален пассивный await stop.wait(): завершившийся worker/polling
+        # оставлял процесс живым без гарантии дальнейшей обработки.
+        try:
+            await _wait_for_shutdown_or_critical_exit(stop, critical_tasks)
+        finally:
+            stop.set()
+            log.info("shutdown: stopping background tasks")
+            if polling is not None:
+                if not polling.done():
+                    polling.cancel()
+                await asyncio.gather(polling, return_exceptions=True)
+            # Сначала даём воркерам завершить текущую атомарную операцию; cancel —
+            # только bounded fallback для зависшего внешнего provider call.
+            await _drain_worker_tasks(all_worker_tasks, settings.shutdown_timeout_seconds)
+            if bot is not None:
+                # Delivery callbacks must keep the Telegram session alive until
+                # all workers have drained or the bounded shutdown deadline ends.
+                await bot.session.close()
     finally:
         await engine.dispose()
         log.info("shutdown complete")

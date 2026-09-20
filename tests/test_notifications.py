@@ -85,7 +85,11 @@ async def test_digest_due_during_quiet_hours_is_deferred_to_morning(session_fact
 
 
 async def test_digest_due_before_overnight_quiet_is_deferred_without_losing_date(session_factory):
-    await make_ready_item(session_factory)
+    user_id, _ = await make_ready_item(session_factory)
+    async with session_factory() as session:
+        user = await session.get(User, user_id)
+        user.daily_digest_enabled_at = datetime(2026, 9, 14, 10, 0)
+        await session.commit()
     await update_notification_settings(
         session_factory,
         42,

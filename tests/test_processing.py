@@ -89,6 +89,12 @@ def test_split_text_overlap_stops_at_eof_without_redundant_tail():
     assert chunks == ["abcdefghij", "ijklmnopq"]
 
 
+def test_split_text_prefers_paragraph_boundary():
+    text = "first paragraph\n\nsecond paragraph"
+    chunks = split_text(text, 20)
+    assert chunks == ["first paragraph\n\n", "second paragraph"]
+
+
 async def test_long_content_is_summarized_before_final_analysis(session_factory):
     await seed(session_factory, text="x" * 25)
     provider = FakeLlmProvider()
