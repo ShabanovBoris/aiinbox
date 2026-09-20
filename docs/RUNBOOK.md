@@ -37,7 +37,11 @@ scheduler.
 доступным для Retry; обычный restart дополнительно возвращает все
 `PROCESSING` Items в `QUEUED` через `requeue_stale`. При SIGTERM/SIGINT сначала
 подаётся stop-сигнал и воркерам даётся `SHUTDOWN_TIMEOUT_SECONDS` на завершение
-текущей операции, после чего зависшие задачи отменяются.
+текущей операции, после чего зависшие задачи отменяются. Неожиданное завершение
+processing/profile/reminder worker или Telegram polling валит весь процесс после
+того же cleanup; DB infrastructure error также выходит наружу вместо маскировки
+как обычный FAILED Item. В Docker Compose процесс поднимается снова через
+`restart: unless-stopped`, а незавершённый PROCESSING Item requeue-ится на старте.
 
 Для Docker см. корневой `README.md`: образ содержит Python 3.12 и ffmpeg,
 SQLite должен быть вынесен в volume `/data`. Playwright fallback отключён по
