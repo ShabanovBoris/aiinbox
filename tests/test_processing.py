@@ -101,6 +101,17 @@ def test_split_text_never_exceeds_max_chars_at_boundary():
     assert all(len(chunk) <= 5 for chunk in chunks)
 
 
+def test_split_text_short_intro_with_overlap_keeps_all_content():
+    text = "intro\n\n" + "x" * 40_000
+    overlap = 1_000
+    chunks = split_text(text, 30_000, overlap)
+
+    assert all(chunks)
+    assert all(len(chunk) <= 30_000 for chunk in chunks)
+    reconstructed = chunks[0] + "".join(chunk[overlap:] for chunk in chunks[1:])
+    assert reconstructed == text
+
+
 async def test_long_content_is_summarized_before_final_analysis(session_factory):
     await seed(session_factory, text="x" * 25)
     provider = FakeLlmProvider()

@@ -25,7 +25,7 @@ def split_text(text: str, chunk_size_chars: int, overlap_chars: int = 0) -> list
         if hard_end < len(text):
             # Do not cut inside the repeated overlap from the previous chunk;
             # the chosen boundary must add fresh content before advancing.
-            boundary_from = start + (overlap_chars if chunks else 0)
+            boundary_from = start + overlap_chars
             paragraph_end = text.rfind("\n\n", boundary_from + 1, hard_end)
             if paragraph_end >= 0:
                 end = paragraph_end + 2
