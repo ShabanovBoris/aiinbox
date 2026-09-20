@@ -5,7 +5,7 @@ from aiogram.types import Chat, Message
 from aiogram.types import User as TgUser
 from sqlalchemy import func, select
 
-from app.bot.handlers import on_help, on_settings, on_start, on_text, on_today
+from app.bot.handlers import _item_action_label, on_help, on_settings, on_start, on_text, on_today
 from app.domain.enums import ItemState, ItemType, ProcessingStatus, SourceType
 from app.storage.models import Event, Item, User
 
@@ -160,3 +160,15 @@ def test_production_router_composition_builds(settings, session_factory):
     assert "profile" in names and "profile_update" in names and "settings_command" in names
     assert {"help_command", "today", "inbox", "category", "search"} <= set(names)
     assert "item_action" in [h.callback.__name__ for h in router.callback_query.handlers]
+
+
+def test_item_action_label_reports_persisted_winner_not_requested_action():
+    item = Item(
+        user_id=1,
+        processing_status=ProcessingStatus.FAILED,
+        state=ItemState.DONE,
+        source_type=SourceType.TEXT,
+        processing_stage="READY",
+        user_note="x",
+    )
+    assert _item_action_label(item, "archive") == "Готово ✅"

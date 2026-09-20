@@ -1,3 +1,5 @@
+import hashlib
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -24,7 +26,7 @@ def split_text(text: str, chunk_size_chars: int, overlap_chars: int = 0) -> list
             # Do not cut inside the repeated overlap from the previous chunk;
             # the chosen boundary must add fresh content before advancing.
             boundary_from = start + (overlap_chars if chunks else 0)
-            paragraph_end = text.rfind("\n\n", boundary_from + 1, hard_end + 1)
+            paragraph_end = text.rfind("\n\n", boundary_from + 1, hard_end)
             if paragraph_end >= 0:
                 end = paragraph_end + 2
 
@@ -86,12 +88,14 @@ class Analyzer:
                 metadata.get("stage") == "chunk"
                 and metadata.get("chunk_size_chars") == self.chunk_size_chars
                 and metadata.get("overlap_chars") == self.overlap_chars
+                and metadata.get("chunk_sha256")
             ):
-                stored[metadata["chunk_index"]] = row.text
+                stored[(metadata["chunk_index"], metadata["chunk_sha256"])] = row.text
 
         summaries = []
         for index, chunk in enumerate(chunks):
-            summary = stored.get(index)
+            chunk_sha256 = hashlib.sha256(chunk.encode()).hexdigest()
+            summary = stored.get((index, chunk_sha256))
             if summary is None:
                 summary = (await self.provider.summarize_chunk(chunk)).strip()
                 if not summary:
@@ -107,6 +111,7 @@ class Analyzer:
                             "chunk_index": index,
                             "chunk_size_chars": self.chunk_size_chars,
                             "overlap_chars": self.overlap_chars,
+                            "chunk_sha256": chunk_sha256,
                         },
                     )
                 )

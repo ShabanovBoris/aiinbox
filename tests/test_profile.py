@@ -6,6 +6,7 @@ import pytest
 from aiogram.types import Chat, Message
 from aiogram.types import User as TgUser
 from sqlalchemy import select
+from sqlalchemy.exc import SQLAlchemyError
 
 from app.bot.formatting import format_profile
 from app.bot.handlers import on_profile, on_profile_update
@@ -324,6 +325,27 @@ async def test_profile_update_job_failure_lifecycle(tmp_path, session_factory):
     async with session_factory() as session:
         profile = await get_profile(session, 1)
     assert profile.profession is None
+
+
+async def test_profile_worker_propagates_database_failure_for_process_restart(
+    tmp_path, session_factory, monkeypatch
+):
+    job = await enqueue_profile_update(
+        session_factory, telegram_user_id=42, chat_id=42, instruction="i"
+    )
+
+    async def fail_with_database_error(*args, **kwargs):
+        raise SQLAlchemyError("database unavailable")
+
+    monkeypatch.setattr("app.workers.profile.update_profile_from_patch", fail_with_database_error)
+    worker = ProfileUpdateWorker(session_factory, FakeLlmProvider(), poll_seconds=0.01)
+
+    with pytest.raises(SQLAlchemyError, match="database unavailable"):
+        await worker.process_one()
+
+    async with session_factory() as session:
+        stored = await session.get(ProfileUpdateJob, job.id)
+        assert stored.status == "RUNNING"
 
 
 async def test_running_profile_job_recovered_on_startup(tmp_path, session_factory):
