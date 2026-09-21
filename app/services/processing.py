@@ -5,7 +5,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from pydantic import ValidationError
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.enums import ContentKind, ProcessingStatus, SourceType
@@ -144,6 +144,7 @@ class ProcessingPipeline:
                 interval_seconds=self.visual_frame_interval_seconds,
                 max_frames=self.visual_max_frames,
                 scene_threshold=self.visual_scene_threshold,
+                duration_seconds=content.duration_seconds or item.content_duration_seconds,
             )
             if not frames:
                 return None
@@ -217,6 +218,7 @@ class ProcessingPipeline:
                         text=content.metadata["description_excerpt"],
                     )
                 )
+            await self._delete_transcript_checkpoints(session, item.id)
             return content
         if item.source_type in (SourceType.VOICE, SourceType.AUDIO):
             if self.audio_extractor is None:
@@ -237,6 +239,7 @@ class ProcessingPipeline:
                     metadata_json={"duration_seconds": item.content_duration_seconds},
                 )
             )
+            await self._delete_transcript_checkpoints(session, item.id)
             content.duration_seconds = item.content_duration_seconds
             return content
         if item.source_type is SourceType.WEB:
@@ -260,6 +263,21 @@ class ProcessingPipeline:
             )
             return content
         return await TextExtractor().extract(item)
+
+    @staticmethod
+    async def _delete_transcript_checkpoints(session: AsyncSession, item_id: int) -> None:
+        """Remove STT work-in-progress rows only after a final transcript exists.
+
+        This runs in the caller's final-transcript transaction: rollback keeps
+        durable chunks for retry, while a successful commit leaves one canonical
+        transcript for retrieval/FTS instead of indexing both chunks and aggregate.
+        """
+        await session.execute(
+            delete(Content).where(
+                Content.item_id == item_id,
+                Content.kind == ContentKind.TRANSCRIPT_CHUNK,
+            )
+        )
 
     @staticmethod
     async def _transcript_checkpoints(session: AsyncSession, item: Item):

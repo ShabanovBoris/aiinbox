@@ -218,18 +218,24 @@ def test_frames_extraction_dedups_identical_frames(tmp_path):
 
 
 def test_frames_budget_preserves_late_timeline_coverage(tmp_path):
-    # Regression PR #18 review: many early scene/key candidates must not consume
-    # max_frames before periodic sampling reaches the end of a long video.
+    # Regression PR #18 re-review: both ffmpeg passes are bounded before JPEG
+    # materialization, while the periodic baseline still reaches the late timeline.
+    materialized: list[tuple[str, int]] = []
+
     def runner(argv):
         pattern = Path(argv[-1])
+        cap = int(argv[argv.index("-frames:v") + 1])
         if pattern.name.startswith("periodic_"):
-            for index in range(10):
+            periodic_filter = argv[argv.index("-vf") + 1]
+            interval = int(periodic_filter.split("fps=1/", 1)[1].split(",", 1)[0])
+            for index in range(cap):
                 (pattern.parent / f"periodic_{index:05d}.jpg").write_bytes(
-                    f"periodic-{index}".encode()
+                    f"t={index * interval}".encode()
                 )
         else:
-            for index in range(30):
+            for index in range(cap):
                 (pattern.parent / f"scene_{index:05d}.jpg").write_bytes(f"scene-{index}".encode())
+        materialized.append((pattern.name, cap))
         return 0
 
     frames = extract_representative_frames(
@@ -237,13 +243,16 @@ def test_frames_budget_preserves_late_timeline_coverage(tmp_path):
         tmp_path / "coverage",
         interval_seconds=20,
         max_frames=5,
+        duration_seconds=600,
         runner=runner,
     )
 
     assert len(frames) == 5
     assert frames[0].name == "periodic_00000.jpg"
-    assert any(frame.name == "periodic_00009.jpg" for frame in frames)
+    assert any(frame.read_bytes() == b"t=480" for frame in frames)
     assert any(frame.name.startswith("scene_") for frame in frames)
+    assert materialized == [("periodic_%05d.jpg", 5), ("scene_%05d.jpg", 5)]
+    assert len(list((tmp_path / "coverage").glob("*.jpg"))) <= 2 * 5
 
 
 def test_frames_extraction_ffmpeg_failure_raises(tmp_path):

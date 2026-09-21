@@ -1,6 +1,7 @@
 from sqlalchemy import select
 
 from app.domain.enums import ItemType, ProcessingStatus
+from app.services.actions import apply_item_action
 from app.services.delivery import (
     ITEM_FAILED,
     ITEM_READY,
@@ -99,6 +100,26 @@ async def test_delivery_worker_retries_telegram_failure_without_losing_intent(se
         delivery = await session.scalar(select(Delivery))
         assert delivery.status == "SENT"
         assert delivery.attempts == 2
+
+
+async def test_retry_cancels_pending_stale_failure_delivery(session_factory):
+    item = await make_item(session_factory, status=ProcessingStatus.FAILED)
+    async with session_factory() as session:
+        stored = await session.get(Item, item.id)
+        await enqueue_item_delivery(session, stored, ITEM_FAILED, reopen=True)
+        await session.commit()
+
+    retried = await apply_item_action(session_factory, 42, item.id, "retry")
+    assert retried is not None
+    assert retried.processing_status is ProcessingStatus.QUEUED
+
+    bot = FakeBot()
+    worker = DeliveryWorker(session_factory, bot, retry_backoff_seconds=0)
+    assert await worker.process_one() is False
+    assert bot.messages == []
+    async with session_factory() as session:
+        delivery = await session.scalar(select(Delivery).where(Delivery.type == ITEM_FAILED))
+        assert delivery.status == "CANCELLED"
 
 
 async def test_requeue_interrupted_sending_delivery_after_restart(session_factory):

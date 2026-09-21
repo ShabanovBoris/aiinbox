@@ -1102,3 +1102,25 @@
   exact SHA-256 input plus provider/model/segmentation identity; visual extraction
   separates full-timeline periodic baseline from scene candidates and prunes only
   after both passes; durable docs and RUNBOOK are synchronized.
+
+## 2026-09-21 — PR #18 — 437d26b — CHANGES REQUIRED (review 2)
+
+- Reviewer: Orchestrator; reviewed exact HEAD
+  `437d26b49cb7b005e079f81c574ab7cc5a309128`.
+- Accepted from review 1: STT checkpoint identity, required `quality` gate,
+  project-state/decision docs, durable outbox transaction boundary, startup
+  recovery, config validation, locked non-root Docker/tmpfs and transcript-only UX.
+- MAJOR: visual sampling restored late-timeline coverage but lost the resource
+  bound by materializing every periodic/scene JPEG before Python pruning.
+- MAJOR: pending `ITEM_FAILED` delivery could become stale after user Retry and
+  later announce an obsolete failure using mutable current Item state.
+- P2: successful STT retained `TRANSCRIPT_CHUNK` rows, so FTS indexed both chunks
+  and the final `TRANSCRIPT`.
+- Metadata drift: PR body still said 247 tests, while reviewed Actions had 250;
+  `IMPLEMENTATION_STATE` still described `quality` as an external pending setting.
+- Resolved in the same branch pending re-review: each visual ffmpeg pass is capped
+  before materialization and duration-aware sampling preserves late coverage;
+  Retry cancels stale failure intents and worker checks current FAILED state;
+  final transcript atomically deletes STT chunks; project docs now reflect the
+  already-required `quality` gate. Local verification: 251 tests, Ruff/format,
+  diff check and Alembic head all pass.

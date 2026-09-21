@@ -240,6 +240,10 @@ Reason: canonical business state не должен откатываться из
 Consequences: семантика доставки at-least-once. Crash после фактического Telegram
 send, но до SENT может дать дубль после restart; это предпочтительнее silent loss.
 Telegram failure ретраится bounded независимо от Item/ProfileUpdateJob state.
+Пользовательский Retry атомарно переводит ещё не завершённый `ITEM_FAILED`
+delivery в `CANCELLED`; если worker уже забрал delivery, перед send он проверяет,
+что Item всё ещё `FAILED`. Следующий реальный failure может reopen тот же durable
+delivery row, поэтому отмена stale intent не ломает повторные циклы Retry → FAILED.
 
 ## D-012 — Durable STT segment checkpoint identity (PR #18 review)
 

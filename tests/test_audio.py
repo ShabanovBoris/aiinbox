@@ -651,10 +651,7 @@ async def test_partial_stt_checkpoint_survives_failure_and_retry(
                 .order_by(Content.id)
             )
         ).all()
-        assert [(row.metadata_json["segment_index"], row.text) for row in chunks] == [
-            (0, "first"),
-            (1, "second"),
-        ]
+        assert chunks == []
 
 
 async def test_stt_infrastructure_error_escapes_worker(session_factory, tmp_path):

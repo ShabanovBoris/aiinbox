@@ -99,8 +99,8 @@ uv run pytest
 ```
 
 Тот же набор автоматически запускается GitHub Actions для каждого PR и push в
-`main` (`.github/workflows/quality.yml`). После первого успешного run job
-`quality` следует назначить required status check для защищённой ветки `main`.
+`main` (`.github/workflows/quality.yml`). Job `quality` назначен required status
+check для защищённой ветки `main`, поэтому merge требует успешного CI.
 
 Для диагностики SQLite, зависших Items и ручного retry см. [docs/RUNBOOK.md](docs/RUNBOOK.md).
 Полный продуктовый контракт находится в [docs/PRODUCT_SPEC.md](docs/PRODUCT_SPEC.md),

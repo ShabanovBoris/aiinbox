@@ -12,6 +12,7 @@ from sqlalchemy import func, select, update
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.bot.notify import send_item_failure, send_item_result
+from app.domain.enums import ProcessingStatus
 from app.storage.models import Delivery, Item, User
 
 log = logging.getLogger(__name__)
@@ -42,7 +43,7 @@ async def enqueue_item_delivery(
         )
     )
     if existing is not None:
-        if reopen and existing.status in {"SENT", "FAILED"}:
+        if reopen and existing.status in {"SENT", "FAILED", "CANCELLED"}:
             existing.status = "PENDING"
             existing.attempts = 0
             existing.last_error = None
@@ -202,6 +203,14 @@ class DeliveryWorker:
             await send_item_result(self.bot, self.session_factory, item)
             return
         if delivery_type == ITEM_FAILED and item is not None:
+            if item.processing_status is not ProcessingStatus.FAILED:
+                log.info(
+                    "stale failure delivery suppressed delivery_id=%s item_id=%s status=%s",
+                    delivery_id,
+                    item.id,
+                    item.processing_status.value,
+                )
+                return
             await send_item_failure(self.bot, self.session_factory, item)
             return
         if delivery_type == PROFILE_UPDATED:
@@ -222,7 +231,7 @@ class DeliveryWorker:
     async def _record_failure(self, delivery_id: int, exc: Exception) -> bool:
         async with self.session_factory() as session:
             delivery = await session.get(Delivery, delivery_id)
-            if delivery is None:
+            if delivery is None or delivery.status != "SENDING":
                 return False
             retry = delivery.attempts < self.max_attempts
             delivery.status = "PENDING" if retry else "FAILED"

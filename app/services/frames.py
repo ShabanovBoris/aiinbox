@@ -7,6 +7,7 @@ dedup. Periodic baseline и scene candidates извлекаются раздел
 """
 
 import hashlib
+import math
 import subprocess
 from collections.abc import Callable
 from pathlib import Path
@@ -46,21 +47,34 @@ def extract_representative_frames(
     interval_seconds: int = 20,
     max_frames: int = 120,
     scene_threshold: float = 0.35,
+    duration_seconds: int | None = None,
     timeout_seconds: float = 300.0,
     runner: Callable[[list[str]], int] | None = None,
 ) -> list[Path]:
-    """Extract full-timeline periodic baseline plus scene-change candidates.
+    """Extract bounded full-timeline baseline plus sparse scene candidates.
 
     runner — инъекция для тестов (по умолчанию subprocess.run, без shell).
-    max_frames применяется после extraction, поэтому baseline покрывает весь ролик.
+    Known duration widens sampling intervals before ffmpeg runs, so each pass
+    materializes at most ``max_frames`` JPEGs without spending the budget only
+    near the beginning of a long video.
     """
 
     def _default_runner(argv: list[str]) -> int:
         result = subprocess.run(argv, capture_output=True, timeout=timeout_seconds)
         return result.returncode
 
+    if max_frames <= 0:
+        return []
+
     run = runner or _default_runner
     work_dir.mkdir(parents=True, exist_ok=True)
+    periodic_interval = max(1, interval_seconds)
+    scene_min_gap: int | None = None
+    if duration_seconds and duration_seconds > 0:
+        bounded_interval = max(1, math.ceil(duration_seconds / max_frames))
+        periodic_interval = max(periodic_interval, bounded_interval)
+        scene_min_gap = bounded_interval
+
     periodic_pattern = work_dir / "periodic_%05d.jpg"
     periodic_argv = [
         "ffmpeg",
@@ -70,9 +84,11 @@ def extract_representative_frames(
         "-i",
         str(video),
         "-vf",
-        f"fps=1/{interval_seconds},mpdecimate",
+        f"fps=1/{periodic_interval},mpdecimate",
         "-vsync",
         "vfr",
+        "-frames:v",
+        str(max_frames),
         "-q:v",
         "2",
         str(periodic_pattern),
@@ -84,7 +100,12 @@ def extract_representative_frames(
         )
 
     scene_pattern = work_dir / "scene_%05d.jpg"
-    scene_filter = rf"select=gt(scene\,{scene_threshold}),mpdecimate"
+    scene_filter = rf"select=gt(scene\,{scene_threshold})"
+    if scene_min_gap is not None:
+        # Scene changes are optional enrichment. Spacing them across the known
+        # duration prevents frequent cuts/keyframes from front-loading this pass.
+        scene_filter += rf"*if(isnan(prev_selected_t)\,1\,gte(t-prev_selected_t\,{scene_min_gap}))"
+    scene_filter += ",mpdecimate"
     scene_argv = [
         "ffmpeg",
         "-hide_banner",
@@ -96,6 +117,8 @@ def extract_representative_frames(
         scene_filter,
         "-vsync",
         "vfr",
+        "-frames:v",
+        str(max_frames),
         "-q:v",
         "2",
         str(scene_pattern),

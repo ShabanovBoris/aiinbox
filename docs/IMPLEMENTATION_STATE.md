@@ -51,23 +51,30 @@ squash merge с ожидаемым HEAD B. Вердикты фиксируютс
 
 ### MVP reliability hardening — IN_REVIEW
 
-PR #18. Orchestrator review: `CHANGES REQUIRED @ 45ca289917e03498c7bd3850d7b966998ad2217d`.
+PR #18. Orchestrator re-review:
+`CHANGES REQUIRED @ 437d26b49cb7b005e079f81c574ab7cc5a309128`.
 
 Completed:
 ✓ durable immediate Telegram outbox для READY/FAILED/profile update и startup recovery
 ✓ OpenRouter long-STT checkpoints с identity по SHA-256 segment input + provider/model/
   segmentation contract; несовместимые/legacy checkpoints не переиспользуются
-✓ representative frames сохраняют temporal coverage: periodic baseline проходит
-  весь timeline, scene candidates добавляются после baseline, pruning bounded
+✓ representative frames bounded до materialization: каждый ffmpeg pass имеет
+  hard cap `VIDEO_MAX_FRAMES`, а известная duration увеличивает periodic interval
+  и разрежает scene candidates, сохраняя late-timeline coverage
+✓ Retry атомарно отменяет obsolete `ITEM_FAILED` outbox intent; DeliveryWorker
+  дополнительно suppress'ит failure delivery, если Item уже не FAILED
+✓ успешный final TRANSCRIPT удаляет `TRANSCRIPT_CHUNK` checkpoints в той же
+  транзакции; failure-path checkpoints остаются для retry и не дублируют FTS
 ✓ config validation, CI workflow, locked/non-root Docker + tmpfs hardening
-✓ regressions для changed STT bytes/model и late-timeline visual coverage
+✓ `quality` подтверждён Orchestrator'ом как required status check для `main`
+✓ regressions для changed STT bytes/model, bounded late-timeline visual coverage
+  и stale FAILED delivery после Retry
 
 Remaining:
 □ re-review Orchestrator после push нового HEAD
-□ external repository setting: сделать `quality` required status check для `main`
 
 Last verification:
-targeted audio/visual/youtube pytest → 54 passed; full pytest → 250 passed;
+targeted audio/visual/delivery pytest → 39 passed; full pytest → 251 passed;
 ruff check . → pass; ruff format --check . → pass; git diff --check → pass;
 alembic heads → `5d8e9a1b2c3d (head)`.
 
