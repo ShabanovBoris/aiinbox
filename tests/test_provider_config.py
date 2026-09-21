@@ -1,4 +1,5 @@
 from app.config import Settings
+from app.llm.transcription import OpenAiTranscriptionProvider, OpenRouterTranscriptionProvider
 from app.main import build_provider, build_transcriber
 
 
@@ -21,8 +22,8 @@ def test_openrouter_analysis_uses_provider_specific_config():
 
 
 def test_openrouter_transcription_uses_same_compatible_endpoint():
-    # STT остаётся отдельным application contract, но OpenRouter реализует тот же
-    # OpenAI-compatible /audio/transcriptions API, поэтому новый adapter не нужен.
+    # STT остаётся тем же application contract и совместимым endpoint; отдельный
+    # OpenRouter adapter добавляет только provider-specific segmentation limits.
     settings = Settings(
         _env_file=None,
         llm_provider="openrouter",
@@ -32,5 +33,26 @@ def test_openrouter_transcription_uses_same_compatible_endpoint():
 
     provider = build_transcriber(settings)
 
+    assert isinstance(provider, OpenRouterTranscriptionProvider)
     assert provider._model == "openai/whisper-large-v3"
     assert str(provider._client.base_url) == "https://openrouter.ai/api/v1/"
+
+
+def test_openai_composition_keeps_default_openai_endpoint():
+    # Регрессия PR #17: optional base_url в общих adapters не должен менять
+    # прежний OpenAI composition path.
+    settings = Settings(
+        _env_file=None,
+        llm_provider="openai",
+        openai_api_key="openai-key",
+        openai_analysis_model="gpt-test",
+        openai_transcription_model="whisper-test",
+        openai_vision_model="vision-test",
+    )
+
+    analysis = build_provider(settings)
+    transcription = build_transcriber(settings)
+
+    assert str(analysis._client.base_url) == "https://api.openai.com/v1/"
+    assert type(transcription) is OpenAiTranscriptionProvider
+    assert str(transcription._client.base_url) == "https://api.openai.com/v1/"

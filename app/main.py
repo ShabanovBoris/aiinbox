@@ -13,7 +13,7 @@ from app.extractors.audio import AudioExtractor
 from app.extractors.web import WebPageExtractor
 from app.extractors.youtube import YoutubeExtractor
 from app.llm.openai import OpenAiProvider
-from app.llm.transcription import OpenAiTranscriptionProvider
+from app.llm.transcription import OpenAiTranscriptionProvider, OpenRouterTranscriptionProvider
 from app.services.analysis import Analyzer
 from app.services.notifications import ReminderWorker
 from app.services.processing import ProcessingPipeline
@@ -65,7 +65,7 @@ def build_transcriber(settings: Settings) -> OpenAiTranscriptionProvider:
     if settings.llm_provider == "openrouter":
         if not settings.openrouter_api_key or not settings.openrouter_transcription_model:
             raise SystemExit("OPENROUTER_TRANSCRIPTION_MODEL must be configured for voice/audio")
-        return OpenAiTranscriptionProvider(
+        return OpenRouterTranscriptionProvider(
             settings.openrouter_api_key,
             settings.openrouter_transcription_model,
             settings.transcription_timeout_seconds,

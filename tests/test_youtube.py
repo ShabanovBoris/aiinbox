@@ -136,6 +136,7 @@ async def test_no_subtitles_falls_back_to_stt(tmp_path):
     extractor, transcriber, _ = make_youtube(tmp_path, [info], prepared_file=prepared)
     content = await extractor.extract(make_youtube_item())
     assert transcriber.calls == 1
+    assert transcriber.durations == [600]
     assert content.metadata["via_stt"] is True
     assert not prepared.exists()  # temp audio удалён
 
@@ -539,14 +540,21 @@ async def test_video_byte_limit_enforced_independently(tmp_path):
         def prepare_filename(self, info):
             return str(self.written)
 
+    captured_options = {}
+
+    def ydl_factory(options):
+        captured_options.update(options)
+        return VideoYdl(options)
+
     extractor = YoutubeExtractor(
         transcriber=FakeTranscriber(),
         temp_dir=tmp_path / "yt",
         max_video_bytes=500_000,
         max_audio_bytes=5_000_000,
-        ydl_factory=lambda options: VideoYdl(options),
+        ydl_factory=ydl_factory,
     )
     with pytest.raises(AppError) as exc_info:
         await extractor.download_video(URL, tmp_path / "work")
     assert exc_info.value.code == "TOO_LARGE"
+    assert captured_options["format"] == "bestvideo[height<=720]/best[height<=720]"
     assert "5 000 000" in str(exc_info.value) or "5000000" in str(exc_info.value) or True

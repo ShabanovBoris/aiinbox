@@ -206,12 +206,18 @@ Context: для дешёвых live/E2E проверок нужен второй
 OpenRouter предоставляет OpenAI-compatible chat, vision и transcription endpoints.
 
 Decision: `LLM_PROVIDER=openrouter` выбирает отдельные `OPENROUTER_*` credentials
-и model ids, но переиспользует существующие analysis/transcription adapters с
-конфигурируемым `base_url=https://openrouter.ai/api/v1`.
+и model ids. Analysis/vision переиспользуют OpenAI-compatible adapter с
+конфигурируемым `base_url=https://openrouter.ai/api/v1`. Transcription расширяет
+тот же transport отдельным OpenRouter adapter: файлы >25 MB или аудио >5 минут
+режутся ffmpeg на небольшие AAC-сегменты и отправляются последовательными
+multipart-запросами.
 
-Reason: transport contract совпадает с уже изолированной provider boundary;
-отдельные дублирующие классы не добавили бы новой семантики и увеличили бы код.
+Reason: chat/vision transport contract совпадает с уже изолированной provider
+boundary, но у OpenRouter STT есть отдельные operational limits: multipart до
+25 MB и upstream processing timeout около 60 секунд. Provider-specific
+segmentation держит эти ограничения внутри adapter boundary.
 
 Consequences: OpenAI path остаётся без изменений, а OpenRouter-модели можно
 менять конфигом. Конкретная analysis-модель обязана поддерживать structured JSON
 Schema, vision-модель — изображения, transcription-модель — STT endpoint.
+Long-audio OpenRouter STT требует доступный `ffmpeg`.

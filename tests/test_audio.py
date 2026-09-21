@@ -377,6 +377,58 @@ async def test_stt_timeout_maps_to_timeout_code(tmp_path):
     assert exc_info.value.code == "TIMEOUT"
 
 
+@pytest.mark.parametrize(
+    ("size_bytes", "duration_seconds"),
+    [
+        (1, 301),
+        (25_000_001, 10),
+    ],
+)
+async def test_openrouter_stt_segments_long_or_oversized_audio(
+    tmp_path, monkeypatch, size_bytes, duration_seconds
+):
+    # Регрессия PR #17: OpenRouter multipart ограничен 25 MB, а длинные записи
+    # должны дробиться, чтобы не упираться в upstream processing timeout.
+    from types import SimpleNamespace
+
+    from app.llm.transcription import OpenRouterTranscriptionProvider
+
+    provider = OpenRouterTranscriptionProvider(
+        api_key="k",
+        model="openai/whisper-large-v3",
+        base_url="https://openrouter.ai/api/v1",
+    )
+    uploaded: list[str] = []
+
+    class FakeTranscriptions:
+        @staticmethod
+        async def create(**kwargs):
+            uploaded.append(Path(kwargs["file"].name).name)
+            return SimpleNamespace(text=f"part-{len(uploaded)}")
+
+    class FakeClient:
+        audio = type("audio", (), {"transcriptions": FakeTranscriptions})()
+
+    def fake_split(audio_path, output_dir, segment_seconds):
+        assert segment_seconds == 300
+        first = output_dir / "segment_0000.aac"
+        second = output_dir / "segment_0001.aac"
+        first.write_bytes(b"one")
+        second.write_bytes(b"two")
+        return [first, second]
+
+    monkeypatch.setattr("app.llm.transcription._split_audio_for_openrouter", fake_split)
+    provider._client = FakeClient()
+    audio_file = tmp_path / "long.ogg"
+    with audio_file.open("wb") as handle:
+        handle.truncate(size_bytes)
+
+    transcript = await provider.transcribe(audio_file, duration_seconds=duration_seconds)
+
+    assert transcript == "part-1\npart-2"
+    assert uploaded == ["segment_0000.aac", "segment_0001.aac"]
+
+
 async def test_bot_token_never_leaks_into_logs(tmp_path, caplog):
     # Регрессия (SECURITY): URL скачивания содержит bot<token>; INFO-лог httpx
     # печатает URL целиком — redaction-фильтр обязан скрыть токен.

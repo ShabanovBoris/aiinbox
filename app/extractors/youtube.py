@@ -108,7 +108,9 @@ class YoutubeExtractor:
                 # fallback: скачиваем аудио и транскрибируем
                 audio_path = await self._download_audio(item.source_url, work_dir)
                 try:
-                    transcript = await self.transcriber.transcribe(audio_path)
+                    transcript = await self.transcriber.transcribe(
+                        audio_path, duration_seconds=duration
+                    )
                 except AppError:
                     raise
                 except Exception as exc:
@@ -263,8 +265,9 @@ class YoutubeExtractor:
             "quiet": True,
             "no_warnings": True,
             "noplaylist": True,
-            # без /best fallback: >720p-фоллбек нарушил бы заявленный bound
-            "format": "best[height<=720]",
+            # Для visual analysis аудиодорожка не нужна: DASH video-only должен
+            # быть допустим, иначе часть роликов не имеет combined <=720p format.
+            "format": "bestvideo[height<=720]/best[height<=720]",
             "max_filesize": self.max_video_bytes,
             "outtmpl": str(work_dir / "%(id)s.%(ext)s"),
             "socket_timeout": self.timeout_seconds,

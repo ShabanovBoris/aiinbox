@@ -1036,3 +1036,19 @@
   docs-only commit changing one `IMPLEMENTATION_STATE.md` line; PR metadata and
   exact HEAD are synchronized.
 - Protocol next step: merge-ready handshake; Orchestrator performs squash merge.
+
+## 2026-09-21 — PR #17 — 4d81f64 — CHANGES REQUIRED (review 1)
+
+- Reviewer: Orchestrator; reviewed exact HEAD `4d81f64`.
+- Findings: MAJOR — OpenRouter STT reused one OpenAI-style multipart request
+  while YouTube permits 50 MB/7200 s audio; OpenRouter multipart is limited to
+  25 MB and long recordings risk the upstream processing timeout. BLOCKER —
+  `docs/IMPLEMENTATION_STATE.md` did not track the post-MVP PR. MINOR — missing
+  regression for the unchanged OpenAI composition path and README still said
+  `Telegram/OpenAI credentials`.
+- Resolved in same branch/PR #17: OpenRouter gets provider-specific long-audio
+  segmentation while retaining the compatible SDK transport; YouTube passes
+  known duration into STT; durable implementation state is synchronized; OpenAI
+  composition and STT limits have regressions; README wording is provider-neutral.
+- Additional live-E2E fix: YouTube visual download now accepts video-only <=720p
+  formats, so DASH-only videos can reach frame extraction.

@@ -86,6 +86,11 @@ Telegram polling и processing workers. Без `TELEGRAM_BOT_TOKEN` прилож
 error_code=LLM_FAILED — happy path LLM проверяется FakeLlmProvider'ом в тестах,
 live-проверка требует ключа.
 
+OpenRouter STT использует OpenAI-compatible multipart только для коротких файлов.
+Файлы больше 25 MB или аудио длиннее 5 минут сначала режутся `ffmpeg` на
+5-минутные mono AAC 16 kHz/64 kbps сегменты и транскрибируются последовательно.
+Для long-audio/YouTube STT fallback `ffmpeg` должен быть доступен в `PATH`.
+
 ## Quality gate
 
 ```bash

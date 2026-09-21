@@ -11,7 +11,7 @@ Personal AI Inbox — личный Telegram-бот, который приним�
 - `uv` для локальной разработки
 - Telegram bot token и allowlist user id
 - OpenAI или OpenRouter API key и model ids для анализа (и transcription для voice/audio)
-- `ffmpeg` для video visual analysis
+- `ffmpeg` для video visual analysis и long-audio OpenRouter STT
 
 ## Архитектура
 
@@ -113,11 +113,14 @@ uv run pytest
 
 Чтобы сменить LLM, измените `LLM_PROVIDER` и соответствующие model IDs в `.env`
 после остановки приложения. Поддержаны `LLM_PROVIDER=openai` и
-`LLM_PROVIDER=openrouter`. OpenRouter использует тот же OpenAI-compatible adapter
+`LLM_PROVIDER=openrouter`. OpenRouter использует OpenAI-compatible adapters
 через `OPENROUTER_BASE_URL=https://openrouter.ai/api/v1`; analysis-модель должна
 поддерживать JSON Schema structured output, vision-модель — image input, а
-transcription-модель — `/audio/transcriptions`. Ollama остаётся post-MVP.
+transcription-модель — `/audio/transcriptions`. Для OpenRouter длинное или
+крупное аудио автоматически режется ffmpeg на 5-минутные AAC-сегменты перед STT:
+это удерживает multipart upload ниже 25 MB и снижает риск upstream timeout.
+Ollama остаётся post-MVP.
 
 External content is data, not instructions: analysis prompts explicitly isolate
-prompt injection, and Telegram/OpenAI credentials are supplied only through
+prompt injection, and Telegram/LLM provider credentials are supplied only through
 environment configuration.

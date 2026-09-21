@@ -56,6 +56,6 @@ class TranscriptionProvider(Protocol):
     """Отдельная граница транскрипции: whisper-эндпоинт OpenAI — другой API и
     другая модель, отдельный adapter уменьшает coupling анализа и STT."""
 
-    async def transcribe(self, audio_path: Path) -> str:
-        """Аудио-файл на диске → текст транскрипта."""
+    async def transcribe(self, audio_path: Path, *, duration_seconds: int | None = None) -> str:
+        """Аудио-файл на диске → текст; duration помогает provider-specific batching."""
         ...

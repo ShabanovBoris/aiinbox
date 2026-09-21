@@ -28,7 +28,9 @@ class AudioExtractor:
         self.temp_dir.mkdir(parents=True, exist_ok=True)
         audio_path = await self.downloader.download(item.source_file_id, self.temp_dir)
         try:
-            transcript = await self.transcriber.transcribe(audio_path)
+            transcript = await self.transcriber.transcribe(
+                audio_path, duration_seconds=item.content_duration_seconds
+            )
         except AppError:
             raise
         except Exception as exc:

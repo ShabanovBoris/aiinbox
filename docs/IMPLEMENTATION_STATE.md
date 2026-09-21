@@ -42,8 +42,29 @@ squash merge с ожидаемым HEAD B. Вердикты фиксируютс
 | 12 | Production hardening | DONE |
 | 13 | Final acceptance | DONE |
 
-Post-MVP этапы (промпты 14–18: Ollama, LLM router, behaviour ranking, HTTP API,
-semantic search) здесь не отслеживаются, пока MVP не принят (Phase 13).
+## Post-MVP changes
+
+| Изменение | Статус | PR |
+|---|---|---|
+| OpenRouter provider support | IN_REVIEW | #17 |
+
+### OpenRouter provider support — IN_REVIEW
+
+PR #17, reviewed HEAD `4d81f64`: `CHANGES REQUIRED`.
+
+Completed:
+✓ отдельные `OPENROUTER_*` credentials/model ids и configurable base URL
+✓ OpenAI-compatible analysis/vision path
+✓ OpenRouter STT adapter с segmentation для >25 MB и >5 min audio
+✓ YouTube visual download допускает video-only <=720p DASH stream
+✓ regressions для OpenRouter long/oversized STT и неизменного OpenAI composition path
+
+Remaining:
+□ повторный review нового HEAD после commit/push
+
+Last verification:
+ruff check . → pass; ruff format --check . → pass; pytest → 214 passed;
+git diff --check → pass
 
 ## Phase details
 
