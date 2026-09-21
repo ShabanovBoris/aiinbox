@@ -3,6 +3,7 @@ from pathlib import Path
 import httpx
 import pytest
 from sqlalchemy import func, select
+from sqlalchemy.exc import SQLAlchemyError
 
 from app.domain.enums import ContentKind, ProcessingStatus, SourceType
 from app.domain.priority import PriorityEngine
@@ -427,6 +428,151 @@ async def test_openrouter_stt_segments_long_or_oversized_audio(
 
     assert transcript == "part-1\npart-2"
     assert uploaded == ["segment_0000.wav", "segment_0001.wav"]
+
+
+async def test_openrouter_stt_reuses_completed_segment_checkpoint(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from app.llm.transcription import OpenRouterTranscriptionProvider
+
+    provider = OpenRouterTranscriptionProvider(
+        api_key="k",
+        model="openai/whisper-large-v3",
+        base_url="https://openrouter.ai/api/v1",
+    )
+    uploaded: list[str] = []
+    checkpoints: list[tuple[int, str]] = []
+
+    class FakeTranscriptions:
+        @staticmethod
+        async def create(**kwargs):
+            uploaded.append(Path(kwargs["file"].name).name)
+            return SimpleNamespace(text="fresh-second")
+
+    class FakeClient:
+        audio = type("audio", (), {"transcriptions": FakeTranscriptions})()
+
+    def fake_split(audio_path, output_dir, segment_seconds):
+        first = output_dir / "segment_0000.wav"
+        second = output_dir / "segment_0001.wav"
+        first.write_bytes(b"one")
+        second.write_bytes(b"two")
+        return [first, second]
+
+    async def on_segment(index: int, text: str) -> None:
+        checkpoints.append((index, text))
+
+    monkeypatch.setattr("app.llm.transcription._split_audio_for_openrouter", fake_split)
+    provider._client = FakeClient()
+    audio_file = tmp_path / "long.ogg"
+    audio_file.write_bytes(b"x")
+
+    transcript = await provider.transcribe(
+        audio_file,
+        duration_seconds=301,
+        completed_segments={0: "cached-first"},
+        on_segment=on_segment,
+    )
+
+    assert transcript == "cached-first\nfresh-second"
+    assert uploaded == ["segment_0001.wav"]
+    assert checkpoints == [(1, "fresh-second")]
+
+
+async def test_partial_stt_checkpoint_survives_failure_and_retry(
+    session_factory,
+    tmp_path,
+):
+    class CheckpointingTranscriber:
+        def __init__(self):
+            self.completed_seen: list[dict[int, str]] = []
+
+        async def transcribe(
+            self,
+            audio_path,
+            *,
+            duration_seconds=None,
+            completed_segments=None,
+            on_segment=None,
+        ):
+            completed = dict(completed_segments or {})
+            self.completed_seen.append(completed)
+            if 0 not in completed:
+                await on_segment(0, "first")
+                raise AppError("TRANSCRIPTION_FAILED", "segment 1 failed")
+            await on_segment(1, "second")
+            return completed[0] + "\nsecond"
+
+    transcriber = CheckpointingTranscriber()
+    worker = make_worker(session_factory, transcriber, FakeDownloader(), tmp_path)
+    item = await seed_voice(session_factory)
+
+    assert await worker.process_one() is True
+    async with session_factory() as session:
+        stored = await session.get(Item, item.id)
+        assert stored.processing_status is ProcessingStatus.FAILED
+        chunks = (
+            await session.scalars(
+                select(Content).where(
+                    Content.item_id == item.id,
+                    Content.kind == ContentKind.TRANSCRIPT_CHUNK,
+                )
+            )
+        ).all()
+        assert [(row.metadata_json["segment_index"], row.text) for row in chunks] == [(0, "first")]
+        stored.processing_status = ProcessingStatus.QUEUED
+        stored.error_code = None
+        stored.error_message = None
+        await session.commit()
+
+    assert await worker.process_one() is True
+    assert transcriber.completed_seen == [{}, {0: "first"}]
+    async with session_factory() as session:
+        stored = await session.get(Item, item.id)
+        assert stored.processing_status is ProcessingStatus.READY
+        transcript = await session.scalar(
+            select(Content).where(
+                Content.item_id == item.id,
+                Content.kind == ContentKind.TRANSCRIPT,
+            )
+        )
+        assert transcript.text == "first\nsecond"
+        chunks = (
+            await session.scalars(
+                select(Content)
+                .where(
+                    Content.item_id == item.id,
+                    Content.kind == ContentKind.TRANSCRIPT_CHUNK,
+                )
+                .order_by(Content.id)
+            )
+        ).all()
+        assert [(row.metadata_json["segment_index"], row.text) for row in chunks] == [
+            (0, "first"),
+            (1, "second"),
+        ]
+
+
+async def test_stt_infrastructure_error_escapes_worker(session_factory, tmp_path):
+    class InfrastructureFailingTranscriber:
+        async def transcribe(self, audio_path, **kwargs):
+            raise SQLAlchemyError("checkpoint database unavailable")
+
+    item = await seed_voice(session_factory)
+    worker = make_worker(
+        session_factory,
+        InfrastructureFailingTranscriber(),
+        FakeDownloader(),
+        tmp_path,
+    )
+
+    with pytest.raises(SQLAlchemyError, match="checkpoint database unavailable"):
+        await worker.process_one()
+
+    async with session_factory() as session:
+        stored = await session.get(Item, item.id)
+        assert stored.processing_status is ProcessingStatus.PROCESSING
+        assert stored.error_code is None
 
 
 def test_openrouter_real_splitter_uses_wav_pcm_segments(tmp_path):

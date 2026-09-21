@@ -1,3 +1,4 @@
+from app.domain.enums import SourceType
 from app.domain.models import UserProfile
 from app.storage.models import Item
 
@@ -31,6 +32,8 @@ def format_ready_item(item: Item) -> str:
     lines.append(f"Тип: {item.item_type.value if item.item_type else '—'}")
     if item.priority_score is not None:
         lines.append(f"Приоритет: {item.priority_score}/100")
+    if item.source_type is SourceType.YOUTUBE and item.analysis_completeness == "TRANSCRIPT_ONLY":
+        lines.append("Анализ: по транскрипту, без визуальной части")
     if item.summary:
         lines.append("")
         lines.append(item.summary)

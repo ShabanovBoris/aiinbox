@@ -1,7 +1,7 @@
 import asyncio
 import subprocess
 import tempfile
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable, Mapping
 from pathlib import Path
 
 from openai import APITimeoutError, AsyncOpenAI
@@ -24,9 +24,17 @@ class OpenAiTranscriptionProvider:
         self._client = AsyncOpenAI(api_key=api_key, timeout=timeout_seconds, base_url=base_url)
         self._model = model
 
-    async def transcribe(self, audio_path: Path, *, duration_seconds: int | None = None) -> str:
+    async def transcribe(
+        self,
+        audio_path: Path,
+        *,
+        duration_seconds: int | None = None,
+        completed_segments: Mapping[int, str] | None = None,
+        on_segment: Callable[[int, str], Awaitable[None]] | None = None,
+    ) -> str:
         # duration_seconds нужен provider-specific subclasses; OpenAI multipart
-        # сохраняет прежний single-request contract.
+        # сохраняет прежний single-request contract. Checkpoint args нужны
+        # segmented providers и намеренно игнорируются single-request transport.
         try:
             with audio_path.open("rb") as audio_file:
                 response = await self._client.audio.transcriptions.create(
@@ -49,8 +57,16 @@ class OpenRouterTranscriptionProvider(OpenAiTranscriptionProvider):
 
     _MAX_MULTIPART_BYTES = 25_000_000
     _SEGMENT_SECONDS = 300
+    _MAX_SEGMENT_CONCURRENCY = 4
 
-    async def transcribe(self, audio_path: Path, *, duration_seconds: int | None = None) -> str:
+    async def transcribe(
+        self,
+        audio_path: Path,
+        *,
+        duration_seconds: int | None = None,
+        completed_segments: Mapping[int, str] | None = None,
+        on_segment: Callable[[int, str], Awaitable[None]] | None = None,
+    ) -> str:
         if audio_path.stat().st_size <= self._MAX_MULTIPART_BYTES and (
             duration_seconds is None or duration_seconds <= self._SEGMENT_SECONDS
         ):
@@ -64,17 +80,37 @@ class OpenRouterTranscriptionProvider(OpenAiTranscriptionProvider):
                 segment_dir,
                 self._SEGMENT_SECONDS,
             )
-            texts: list[str] = []
             for segment in segments:
                 if segment.stat().st_size > self._MAX_MULTIPART_BYTES:
                     raise AppError(
                         "TRANSCRIPTION_FAILED",
                         "OpenRouter transcription segment exceeds multipart limit",
                     )
-                text = await super().transcribe(segment)
-                if text:
-                    texts.append(text)
-            return "\n".join(texts)
+
+            cached = dict(completed_segments or {})
+            semaphore = asyncio.Semaphore(self._MAX_SEGMENT_CONCURRENCY)
+
+            async def transcribe_segment(index: int, segment: Path) -> str:
+                if index in cached:
+                    return cached[index]
+                async with semaphore:
+                    text = await super(OpenRouterTranscriptionProvider, self).transcribe(segment)
+                # Callback is provider-agnostic: the application decides whether
+                # this checkpoint goes to SQLite, memory, or nowhere.
+                if on_segment is not None:
+                    await on_segment(index, text)
+                return text
+
+            # All segment results are awaited even when one fails, so successful
+            # siblings can become durable checkpoints before bounded retry.
+            results = await asyncio.gather(
+                *(transcribe_segment(index, segment) for index, segment in enumerate(segments)),
+                return_exceptions=True,
+            )
+            for result in results:
+                if isinstance(result, BaseException):
+                    raise result
+            return "\n".join(text for text in results if isinstance(text, str) and text)
 
 
 def _split_audio_for_openrouter(

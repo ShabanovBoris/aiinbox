@@ -1,3 +1,4 @@
+from collections.abc import Awaitable, Callable, Mapping
 from pathlib import Path
 
 from app.bot.files import FileDownloader
@@ -24,17 +25,22 @@ class AudioExtractor:
         self.downloader = downloader
         self.temp_dir = Path(temp_dir)
 
-    async def extract(self, item: Item) -> NormalizedContent:
+    async def extract(
+        self,
+        item: Item,
+        *,
+        completed_segments: Mapping[int, str] | None = None,
+        on_segment: Callable[[int, str], Awaitable[None]] | None = None,
+    ) -> NormalizedContent:
         self.temp_dir.mkdir(parents=True, exist_ok=True)
         audio_path = await self.downloader.download(item.source_file_id, self.temp_dir)
         try:
             transcript = await self.transcriber.transcribe(
-                audio_path, duration_seconds=item.content_duration_seconds
+                audio_path,
+                duration_seconds=item.content_duration_seconds,
+                completed_segments=completed_segments,
+                on_segment=on_segment,
             )
-        except AppError:
-            raise
-        except Exception as exc:
-            raise AppError("TRANSCRIPTION_FAILED", f"transcription failed: {exc}") from exc
         finally:
             audio_path.unlink(missing_ok=True)
 

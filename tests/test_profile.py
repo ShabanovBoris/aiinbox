@@ -14,17 +14,19 @@ from app.domain.models import UserProfile
 from app.domain.priority import PriorityEngine
 from app.llm.base import LlmError
 from app.services.analysis import Analyzer
+from app.services.delivery import PROFILE_UPDATED
 from app.services.ingestion import ingest_message
 from app.services.processing import ProcessingPipeline
 from app.services.profile import (
     apply_profile_seed,
+    configure_profile_seed,
     enqueue_profile_update,
     get_profile,
     load_profile_seed,
     requeue_running_profile_jobs,
     update_profile_from_patch,
 )
-from app.storage.models import ProfileUpdateJob, User
+from app.storage.models import Delivery, ProfileUpdateJob, User
 from app.workers.processing import ProcessingWorker
 from app.workers.profile import ProfileUpdateWorker
 from tests.fakes import FakeLlmProvider
@@ -170,6 +172,21 @@ async def test_on_profile_shows_saved_profile(settings, tmp_path, session_factor
     assert any("Профессия: dev" in s for s in sent)
 
 
+async def test_first_profile_without_seed_persists_user(
+    settings, tmp_path, session_factory, monkeypatch
+):
+    sent = capture_answers(monkeypatch)
+    configure_profile_seed(tmp_path / "missing-profile.yaml")
+
+    await on_profile(make_message(42), settings, session_factory)
+
+    assert sent
+    async with session_factory() as session:
+        user = await session.scalar(select(User).where(User.telegram_user_id == 42))
+        assert user is not None
+        assert user.telegram_chat_id == 42
+
+
 async def test_on_profile_update_enqueues_durable_job(
     settings, tmp_path, session_factory, monkeypatch
 ):
@@ -303,6 +320,15 @@ async def test_profile_update_job_lifecycle_done(tmp_path, session_factory):
     async with session_factory() as session:
         stored = await session.get(ProfileUpdateJob, job.id)
         assert stored.status == "DONE"
+        delivery = await session.scalar(
+            select(Delivery).where(
+                Delivery.profile_update_job_id == job.id,
+                Delivery.type == PROFILE_UPDATED,
+            )
+        )
+        assert delivery is not None
+        assert delivery.status == "PENDING"
+        assert delivery.payload_json == {"changed": ["profession"]}
     async with session_factory() as session:
         profile = await get_profile(session, 1)
     assert profile.profession == "x"
@@ -369,29 +395,8 @@ async def test_running_profile_job_recovered_on_startup(tmp_path, session_factor
         assert stored.status == "DONE"
 
 
-async def test_profile_update_notification_uses_telegram_chat(tmp_path, session_factory):
-    # Регрессия: уведомление адресуется на telegram_chat_id, а не на внутренний
-    # users.id.
-    import asyncio  # noqa: F401
-
-    from app.domain.models import UserProfile
-
-    await ingest_message(session_factory, telegram_user_id=42, chat_id=7777, message_id=1, text="x")
-    job = await enqueue_profile_update(
-        session_factory, telegram_user_id=42, chat_id=7777, instruction="i"
-    )
-    profile = UserProfile()
-    sent: list[tuple[int, str]] = []
-
-    class FakeBot:
-        async def send_message(self, chat_id, text):
-            sent.append((chat_id, text))
-
-    from app.main import _profile_done_notifier
-
-    callback = _profile_done_notifier(FakeBot(), session_factory)
-    await callback(job, profile, ["profession"])
-    assert sent == [(7777, "Профиль обновлён: " + ", ".join(["profession"]))]
+# ❌ Удален тест best-effort _profile_done_notifier: production больше не
+# отправляет callback после commit; адресат и payload проверяются DeliveryWorker.
 
 
 async def test_recovery_after_mutation_is_idempotent(tmp_path, session_factory):

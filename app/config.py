@@ -1,4 +1,7 @@
-from pydantic import Field
+from typing import Literal
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -10,19 +13,19 @@ class Settings(BaseSettings):
     telegram_bot_token: str = ""
     allowed_telegram_user_ids: str = ""
     database_url: str = "sqlite+aiosqlite:///data/app.db"
-    processing_concurrency: int = 2
-    processing_poll_seconds: float = 1.0
-    processing_timeout_seconds: float = 900.0
-    shutdown_timeout_seconds: float = 30.0
+    processing_concurrency: int = Field(2, ge=1)
+    processing_poll_seconds: float = Field(1.0, gt=0)
+    processing_timeout_seconds: float = Field(900.0, gt=0)
+    shutdown_timeout_seconds: float = Field(30.0, gt=0)
     default_timezone: str = "UTC"
 
     # Web extraction (Phase 3)
-    min_extracted_text_length: int = 300
-    web_timeout_seconds: float = 30.0
-    max_download_bytes: int = 5_000_000
-    max_redirects: int = 5
-    web_max_attempts: int = 3
-    web_backoff_seconds: float = 0.5
+    min_extracted_text_length: int = Field(300, ge=1)
+    web_timeout_seconds: float = Field(30.0, gt=0)
+    max_download_bytes: int = Field(5_000_000, ge=1)
+    max_redirects: int = Field(5, ge=1)
+    web_max_attempts: int = Field(3, ge=1)
+    web_backoff_seconds: float = Field(0.5, ge=0)
     # Playwright fallback жёстко отключён (нет SSRF-safe browser boundary);
     # вернётся отдельным изменением с pinned/proxied browser network boundary.
 
@@ -31,22 +34,23 @@ class Settings(BaseSettings):
 
     # Voice/audio (Phase 5)
     temp_dir: str = "./temp"
-    max_audio_bytes: int = 20_000_000  # Telegram bot API отдаёт файлы до 20 MB
-    transcription_timeout_seconds: float = 120.0
+    max_audio_bytes: int = Field(20_000_000, ge=1)  # Telegram bot API отдаёт файлы до 20 MB
+    transcription_timeout_seconds: float = Field(120.0, gt=0)
 
     # YouTube (Phase 6)
-    youtube_max_duration_seconds: int = 7200
-    youtube_max_audio_bytes: int = 50_000_000
-    youtube_max_video_bytes: int = 50_000_000
-    youtube_max_subtitle_bytes: int = 2_000_000
+    youtube_max_duration_seconds: int = Field(7200, ge=1)
+    youtube_max_audio_bytes: int = Field(50_000_000, ge=1)
+    youtube_max_video_bytes: int = Field(50_000_000, ge=1)
+    youtube_max_subtitle_bytes: int = Field(2_000_000, ge=1)
     subtitle_langs: str = "ru,en"
 
     # Video visual analysis (Phase 7)
-    video_frame_interval_seconds: int = 20
-    video_max_frames: int = 120
+    video_frame_interval_seconds: int = Field(20, ge=1)
+    video_max_frames: int = Field(120, ge=1)
+    video_scene_threshold: float = Field(0.35, ge=0.0, le=1.0)
 
     # Сменный LLM-провайдер: model ids только через конфиг (PRODUCT_SPEC §29).
-    llm_provider: str = "openai"
+    llm_provider: Literal["openai", "openrouter"] = "openai"
     openai_api_key: str = ""
     openai_analysis_model: str = ""
     openai_transcription_model: str = ""
@@ -58,9 +62,38 @@ class Settings(BaseSettings):
     openrouter_analysis_model: str = ""
     openrouter_transcription_model: str = ""
     openrouter_vision_model: str = ""
-    llm_timeout_seconds: int = 120
-    llm_chunk_size_chars: int = Field(12_000, validation_alias="CONTENT_CHUNK_MAX_CHARS")
-    llm_chunk_overlap_chars: int = Field(0, validation_alias="CONTENT_CHUNK_OVERLAP_CHARS")
+    llm_timeout_seconds: int = Field(120, gt=0)
+    llm_chunk_size_chars: int = Field(12_000, gt=0, validation_alias="CONTENT_CHUNK_MAX_CHARS")
+    llm_chunk_overlap_chars: int = Field(0, ge=0, validation_alias="CONTENT_CHUNK_OVERLAP_CHARS")
+
+    @field_validator("default_timezone")
+    @classmethod
+    def validate_default_timezone(cls, value: str) -> str:
+        try:
+            ZoneInfo(value)
+        except (ZoneInfoNotFoundError, ValueError) as exc:
+            raise ValueError(f"unknown DEFAULT_TIMEZONE: {value}") from exc
+        return value
+
+    @field_validator("allowed_telegram_user_ids")
+    @classmethod
+    def validate_allowed_user_ids(cls, value: str) -> str:
+        ids = value.replace(" ", "")
+        try:
+            parsed = [int(item) for item in ids.split(",") if item]
+        except ValueError as exc:
+            raise ValueError("ALLOWED_TELEGRAM_USER_IDS must be comma-separated integers") from exc
+        if any(user_id <= 0 for user_id in parsed):
+            raise ValueError("ALLOWED_TELEGRAM_USER_IDS must contain positive integers")
+        return value
+
+    @model_validator(mode="after")
+    def validate_chunk_bounds(self) -> "Settings":
+        if self.llm_chunk_overlap_chars >= self.llm_chunk_size_chars:
+            raise ValueError(
+                "CONTENT_CHUNK_OVERLAP_CHARS must be smaller than CONTENT_CHUNK_MAX_CHARS"
+            )
+        return self
 
     @property
     def allowed_user_ids(self) -> frozenset[int]:

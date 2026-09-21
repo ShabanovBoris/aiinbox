@@ -188,7 +188,10 @@ async def test_vision_failure_keeps_item_ready_transcript_only(
 
 def test_frames_extraction_dedups_identical_frames(tmp_path):
     # Дедупликация: идентичные кадры (статичный слайд) не дублируются.
+    captured: list[str] = []
+
     def runner(argv):
+        captured.extend(argv)
         pattern = Path(argv[-1]).parent
         (pattern / "frame_0001.jpg").write_bytes(b"same")
         (pattern / "frame_0002.jpg").write_bytes(b"same")
@@ -203,6 +206,11 @@ def test_frames_extraction_dedups_identical_frames(tmp_path):
         runner=runner,
     )
     assert [f.name for f in frames] == ["frame_0001.jpg", "frame_0003.jpg"]
+    filter_graph = captured[captured.index("-vf") + 1]
+    assert r"gte(t-prev_selected_t\,20)" in filter_graph
+    assert r"gt(scene\,0.35)" in filter_graph
+    assert r"eq(pict_type\,I)" in filter_graph
+    assert "mpdecimate" in filter_graph
 
 
 def test_frames_extraction_ffmpeg_failure_raises(tmp_path):

@@ -17,6 +17,7 @@ from app.extractors.text import TextExtractor
 from app.extractors.web import WebPageExtractor
 from app.extractors.youtube import YoutubeExtractor
 from app.services.analysis import Analyzer
+from app.services.delivery import ITEM_READY, enqueue_item_delivery
 from app.services.frames import extract_representative_frames
 from app.services.profile import get_profile
 from app.services.retrieval import sync_item_search
@@ -43,6 +44,7 @@ class ProcessingPipeline:
         youtube_extractor: YoutubeExtractor | None = None,
         visual_frame_interval_seconds: int = 20,
         visual_max_frames: int = 120,
+        visual_scene_threshold: float = 0.35,
     ):
         self.analyzer = analyzer
         self.priority = priority
@@ -51,6 +53,7 @@ class ProcessingPipeline:
         self.youtube_extractor = youtube_extractor
         self.visual_frame_interval_seconds = visual_frame_interval_seconds
         self.visual_max_frames = visual_max_frames
+        self.visual_scene_threshold = visual_scene_threshold
 
     async def run(self, session: AsyncSession, item: Item) -> None:
         analysis = None
@@ -98,6 +101,9 @@ class ProcessingPipeline:
         # Индекс — производная проекция; обновляется в том же commit, что и READY,
         # чтобы новый результат не появлялся в поиске без основного Item.
         await sync_item_search(session, item.id)
+        # Delivery intent входит в тот же commit, что READY: падение процесса
+        # после commit больше не создаёт окно безвозвратной потери уведомления.
+        await enqueue_item_delivery(session, item, ITEM_READY)
         await session.commit()
         log.info(
             "item analyzed id=%s category=%s type=%s priority=%s",
@@ -136,6 +142,7 @@ class ProcessingPipeline:
                 work_dir / "frames",
                 interval_seconds=self.visual_frame_interval_seconds,
                 max_frames=self.visual_max_frames,
+                scene_threshold=self.visual_scene_threshold,
             )
             if not frames:
                 return None
@@ -179,7 +186,12 @@ class ProcessingPipeline:
         if item.source_type is SourceType.YOUTUBE:
             if self.youtube_extractor is None:
                 raise AppError("UNSUPPORTED_SOURCE", "youtube extractor not wired")
-            content = await self.youtube_extractor.extract(item)
+            completed_segments, on_segment = await self._transcript_checkpoints(session, item)
+            content = await self.youtube_extractor.extract(
+                item,
+                completed_segments=completed_segments,
+                on_segment=on_segment,
+            )
             # TRANSCRIPT/DESCRIPTION персистятся атомарно с checkpoint'ом
             # ANALYZING: retry не перекачивает видео и не повторяет STT (ТЗ §59).
             session.add(
@@ -208,7 +220,12 @@ class ProcessingPipeline:
         if item.source_type in (SourceType.VOICE, SourceType.AUDIO):
             if self.audio_extractor is None:
                 raise AppError("UNSUPPORTED_SOURCE", "voice/audio extractor not wired")
-            content = await self.audio_extractor.extract(item)
+            completed_segments, on_segment = await self._transcript_checkpoints(session, item)
+            content = await self.audio_extractor.extract(
+                item,
+                completed_segments=completed_segments,
+                on_segment=on_segment,
+            )
             # TRANSCRIPT персистится атомарно с checkpoint'ом ANALYZING:
             # retry не повторяет скачивание и транскрипцию (ТЗ §59).
             session.add(
@@ -242,6 +259,49 @@ class ProcessingPipeline:
             )
             return content
         return await TextExtractor().extract(item)
+
+    @staticmethod
+    async def _transcript_checkpoints(session: AsyncSession, item: Item):
+        """Expose durable per-segment STT progress without leaking DB into providers.
+
+        OpenRouter may split long media into many requests. Each successful
+        segment is committed immediately, so a later timeout/restart resumes
+        from the missing indices instead of paying for completed STT again.
+        """
+        rows = (
+            await session.scalars(
+                select(Content)
+                .where(
+                    Content.item_id == item.id,
+                    Content.kind == ContentKind.TRANSCRIPT_CHUNK,
+                )
+                .order_by(Content.id)
+            )
+        ).all()
+        completed: dict[int, str] = {}
+        for row in rows:
+            index = (row.metadata_json or {}).get("segment_index")
+            if isinstance(index, int):
+                completed[index] = row.text
+
+        checkpoint_lock = asyncio.Lock()
+
+        async def persist(index: int, text: str) -> None:
+            async with checkpoint_lock:
+                if index in completed:
+                    return
+                session.add(
+                    Content(
+                        item_id=item.id,
+                        kind=ContentKind.TRANSCRIPT_CHUNK,
+                        text=text,
+                        metadata_json={"segment_index": index},
+                    )
+                )
+                await session.commit()
+                completed[index] = text
+
+        return completed, persist
 
     @staticmethod
     async def _restored_content(session: AsyncSession, item: Item) -> NormalizedContent | None:

@@ -1,3 +1,4 @@
+from collections.abc import Awaitable, Callable, Mapping
 from pathlib import Path
 from typing import Protocol
 
@@ -56,6 +57,13 @@ class TranscriptionProvider(Protocol):
     """Отдельная граница транскрипции: whisper-эндпоинт OpenAI — другой API и
     другая модель, отдельный adapter уменьшает coupling анализа и STT."""
 
-    async def transcribe(self, audio_path: Path, *, duration_seconds: int | None = None) -> str:
-        """Аудио-файл на диске → текст; duration помогает provider-specific batching."""
+    async def transcribe(
+        self,
+        audio_path: Path,
+        *,
+        duration_seconds: int | None = None,
+        completed_segments: Mapping[int, str] | None = None,
+        on_segment: Callable[[int, str], Awaitable[None]] | None = None,
+    ) -> str:
+        """Аудио → текст с optional durable checkpoints provider-specific batching."""
         ...

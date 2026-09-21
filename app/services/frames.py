@@ -1,7 +1,8 @@
 """Извлечение representative frames из видео через ffmpeg.
 
-Компактный механизм (ТЗ §23): периодическая выборка (fps=1/interval) + лимит
-количества + дедупликация идентичных кадров по хэшу. Никакого CV framework.
+PRODUCT_SPEC §23 требует периодическую выборку + scene/key frames + approximate
+dedup. ffmpeg закрывает CV-часть своими select/mpdecimate фильтрами; Python
+оставляет только exact hash safety-net и лимит результата.
 """
 
 import hashlib
@@ -31,13 +32,14 @@ def extract_representative_frames(
     *,
     interval_seconds: int = 20,
     max_frames: int = 120,
+    scene_threshold: float = 0.35,
     timeout_seconds: float = 300.0,
     runner: Callable[[list[str]], int] | None = None,
 ) -> list[Path]:
-    """ffmpeg извлекает кадры с периодом interval_seconds, максимум max_frames.
+    """ffmpeg выбирает periodic + scene/key frames и приблизительно дедуплицирует.
 
     runner — инъекция для тестов (по умолчанию subprocess.run, без shell).
-    Возвращает список путей к кадрам (дедуплицированный).
+    Возвращает максимум max_frames путей; порядок ffmpeg сохраняется.
     """
 
     def _default_runner(argv: list[str]) -> int:
@@ -47,6 +49,13 @@ def extract_representative_frames(
     run = runner or _default_runner
     work_dir.mkdir(parents=True, exist_ok=True)
     pattern = work_dir / "frame_%04d.jpg"
+    select = (
+        "select="
+        "isnan(prev_selected_t)"
+        rf"+gte(t-prev_selected_t\,{interval_seconds})"
+        rf"+gt(scene\,{scene_threshold})"
+        r"+eq(pict_type\,I)"
+    )
     argv = [
         "ffmpeg",
         "-hide_banner",
@@ -55,7 +64,9 @@ def extract_representative_frames(
         "-i",
         str(video),
         "-vf",
-        f"fps=1/{interval_seconds}",
+        f"{select},mpdecimate",
+        "-vsync",
+        "vfr",
         "-frames:v",
         str(max_frames),
         "-q:v",
