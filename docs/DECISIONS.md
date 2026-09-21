@@ -199,3 +199,19 @@ Reason: durable resume должен переиспользовать summary т�
 
 Consequences: первый retry после обновления может пересчитать старые summaries,
 зато не смешивает результаты разных chunk boundaries.
+
+## D-010 — OpenRouter через OpenAI-compatible adapters (post-MVP)
+
+Context: для дешёвых live/E2E проверок нужен второй LLM provider, при этом
+OpenRouter предоставляет OpenAI-compatible chat, vision и transcription endpoints.
+
+Decision: `LLM_PROVIDER=openrouter` выбирает отдельные `OPENROUTER_*` credentials
+и model ids, но переиспользует существующие analysis/transcription adapters с
+конфигурируемым `base_url=https://openrouter.ai/api/v1`.
+
+Reason: transport contract совпадает с уже изолированной provider boundary;
+отдельные дублирующие классы не добавили бы новой семантики и увеличили бы код.
+
+Consequences: OpenAI path остаётся без изменений, а OpenRouter-модели можно
+менять конфигом. Конкретная analysis-модель обязана поддерживать structured JSON
+Schema, vision-модель — изображения, transcription-модель — STT endpoint.

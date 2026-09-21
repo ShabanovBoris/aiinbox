@@ -10,7 +10,7 @@ Personal AI Inbox — личный Telegram-бот, который приним�
 - Python 3.12+
 - `uv` для локальной разработки
 - Telegram bot token и allowlist user id
-- OpenAI API key и model ids для анализа (и transcription для voice/audio)
+- OpenAI или OpenRouter API key и model ids для анализа (и transcription для voice/audio)
 - `ffmpeg` для video visual analysis
 
 ## Архитектура
@@ -35,7 +35,7 @@ Playwright fallback намеренно отключён: текущий SSRF bou
 ```bash
 cp .env.example .env
 # заполнить TELEGRAM_BOT_TOKEN, ALLOWED_TELEGRAM_USER_IDS,
-# OPENAI_API_KEY, OPENAI_ANALYSIS_MODEL и OPENAI_TRANSCRIPTION_MODEL
+# OPENAI_API_KEY/OPENROUTER_API_KEY и соответствующие model ids
 uv sync
 uv run python -m app.main
 ```
@@ -108,12 +108,15 @@ uv run pytest
 - `WEB_TIMEOUT_SECONDS`, `MAX_DOWNLOAD_BYTES`, `WEB_MAX_ATTEMPTS`;
 - `MAX_AUDIO_BYTES`, `TRANSCRIPTION_TIMEOUT_SECONDS`;
 - `YOUTUBE_MAX_*`, `VIDEO_FRAME_INTERVAL_SECONDS`, `VIDEO_MAX_FRAMES`;
-- `OPENAI_*`, `CONTENT_CHUNK_MAX_CHARS`, `CONTENT_CHUNK_OVERLAP_CHARS`,
+- `OPENAI_*`, `OPENROUTER_*`, `CONTENT_CHUNK_MAX_CHARS`, `CONTENT_CHUNK_OVERLAP_CHARS`,
   `DEFAULT_TIMEZONE`, `PROFILE_SEED_FILE`.
 
 Чтобы сменить LLM, измените `LLM_PROVIDER` и соответствующие model IDs в `.env`
-после остановки приложения. В текущем MVP поддержан `LLM_PROVIDER=openai`;
-Ollama/router относятся к post-MVP и намеренно не добавлены.
+после остановки приложения. Поддержаны `LLM_PROVIDER=openai` и
+`LLM_PROVIDER=openrouter`. OpenRouter использует тот же OpenAI-compatible adapter
+через `OPENROUTER_BASE_URL=https://openrouter.ai/api/v1`; analysis-модель должна
+поддерживать JSON Schema structured output, vision-модель — image input, а
+transcription-модель — `/audio/transcriptions`. Ollama остаётся post-MVP.
 
 External content is data, not instructions: analysis prompts explicitly isolate
 prompt injection, and Telegram/OpenAI credentials are supplied only through

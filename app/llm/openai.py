@@ -99,7 +99,7 @@ def build_user_message(
 
 
 class OpenAiProvider:
-    """Единственное место, где живёт OpenAI SDK; model ids — только из конфига."""
+    """OpenAI-compatible adapter; provider endpoint/model ids приходят из composition root."""
 
     def __init__(
         self,
@@ -107,10 +107,11 @@ class OpenAiProvider:
         model: str,
         timeout_seconds: int = 120,
         vision_model: str | None = None,
+        base_url: str | None = None,
     ):
         if not model:
             raise ValueError("OPENAI_ANALYSIS_MODEL is not configured")
-        self._client = AsyncOpenAI(api_key=api_key, timeout=timeout_seconds)
+        self._client = AsyncOpenAI(api_key=api_key, timeout=timeout_seconds, base_url=base_url)
         self._model = model
         self._vision_model = vision_model or None
         # vision доступен только если сконфигурирована vision-модель (ТЗ §24)
@@ -147,7 +148,7 @@ class OpenAiProvider:
         except LlmError:
             raise
         except Exception as exc:  # граница адаптера: SDK-ошибки → код приложения
-            log.warning("openai analyze failed: %s", exc)
+            log.warning("llm analyze failed: %s", exc)
             raise LlmError("LLM_FAILED", f"provider call failed: {exc}") from exc
         raw = response.choices[0].message.content or ""
         return self.parse_analysis(raw)
