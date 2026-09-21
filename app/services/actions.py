@@ -2,7 +2,7 @@
 
 from datetime import UTC, datetime
 
-from sqlalchemy import select
+from sqlalchemy import or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.domain.enums import ItemState, ProcessingStatus
@@ -28,54 +28,110 @@ async def apply_item_action(
     and render the result, so retries cannot bypass user scoping or transactions.
     """
     async with session_factory() as session:
-        user = await session.scalar(select(User).where(User.telegram_user_id == telegram_user_id))
-        if user is None:
-            return None
-        item = await session.scalar(select(Item).where(Item.id == item_id, Item.user_id == user.id))
-        if item is None:
+        user_id = await session.scalar(
+            select(User.id).where(User.telegram_user_id == telegram_user_id)
+        )
+        if user_id is None:
             return None
 
+        # ❌ Удален ORM read-modify-write lifecycle block: concurrent callbacks
+        # могли оба записать state и продублировать Event; transition теперь CAS.
+        transition = None
         event_type: str | None = None
         if action == "done":
-            if item.state is not ItemState.DONE:
-                item.state = ItemState.DONE
-                item.completed_at = _utc_now()
-                item.snoozed_until = None
-                await cancel_snooze_reminders(session, user.id, item.id)
-                event_type = "DONE"
+            transition = (
+                update(Item)
+                .where(
+                    Item.id == item_id,
+                    Item.user_id == user_id,
+                    Item.state.in_((ItemState.ACTIVE, ItemState.SNOOZED)),
+                )
+                .values(
+                    state=ItemState.DONE,
+                    completed_at=_utc_now(),
+                    snoozed_until=None,
+                )
+                .returning(Item.id)
+            )
+            event_type = "DONE"
         elif action == "archive":
-            if item.state is not ItemState.ARCHIVED:
-                item.state = ItemState.ARCHIVED
-                item.archived_at = _utc_now()
-                item.snoozed_until = None
-                await cancel_snooze_reminders(session, user.id, item.id)
-                event_type = "ARCHIVED"
+            transition = (
+                update(Item)
+                .where(
+                    Item.id == item_id,
+                    Item.user_id == user_id,
+                    Item.state.in_((ItemState.ACTIVE, ItemState.SNOOZED)),
+                )
+                .values(
+                    state=ItemState.ARCHIVED,
+                    archived_at=_utc_now(),
+                    snoozed_until=None,
+                )
+                .returning(Item.id)
+            )
+            event_type = "ARCHIVED"
         elif action == "snooze" and snoozed_until is not None:
-            if item.state is not ItemState.SNOOZED or item.snoozed_until != snoozed_until:
-                item.state = ItemState.SNOOZED
-                item.snoozed_until = snoozed_until
-                event_type = "SNOOZED"
-                await cancel_snooze_reminders(session, user.id, item.id)
-                await add_snooze_reminder(session, user.id, item.id, snoozed_until)
+            transition = (
+                update(Item)
+                .where(
+                    Item.id == item_id,
+                    Item.user_id == user_id,
+                    Item.state.in_((ItemState.ACTIVE, ItemState.SNOOZED)),
+                    or_(
+                        Item.state != ItemState.SNOOZED,
+                        Item.snoozed_until.is_distinct_from(snoozed_until),
+                    ),
+                )
+                .values(state=ItemState.SNOOZED, snoozed_until=snoozed_until)
+                .returning(Item.id)
+            )
+            event_type = "SNOOZED"
         elif action == "cancel_snooze":
-            if item.state is ItemState.SNOOZED:
-                item.state = ItemState.ACTIVE
-                item.snoozed_until = None
-                await cancel_snooze_reminders(session, user.id, item.id)
+            transition = (
+                update(Item)
+                .where(
+                    Item.id == item_id,
+                    Item.user_id == user_id,
+                    Item.state == ItemState.SNOOZED,
+                )
+                .values(state=ItemState.ACTIVE, snoozed_until=None)
+                .returning(Item.id)
+            )
         elif action == "retry":
-            if item.processing_status is ProcessingStatus.FAILED:
-                item.processing_status = ProcessingStatus.QUEUED
-                item.error_code = None
-                item.error_message = None
-                event_type = "RETRIED"
+            transition = (
+                update(Item)
+                .where(
+                    Item.id == item_id,
+                    Item.user_id == user_id,
+                    Item.processing_status == ProcessingStatus.FAILED,
+                )
+                .values(
+                    processing_status=ProcessingStatus.QUEUED,
+                    error_code=None,
+                    error_message=None,
+                )
+                .returning(Item.id)
+            )
+            event_type = "RETRIED"
         else:
-            return item
+            return await session.scalar(
+                select(Item).where(Item.id == item_id, Item.user_id == user_id)
+            )
 
-        if event_type is not None:
+        # The conditional UPDATE is the compare-and-set boundary. Only the
+        # request that actually wins the transition may create side effects.
+        transitioned_item_id = await session.scalar(transition)
+        if transitioned_item_id is not None:
+            if action in {"done", "archive", "cancel_snooze", "snooze"}:
+                await cancel_snooze_reminders(session, user_id, item_id)
+            if action == "snooze":
+                await add_snooze_reminder(session, user_id, item_id, snoozed_until)
+
+        if transitioned_item_id is not None and event_type is not None:
             session.add(
                 Event(
-                    user_id=user.id,
-                    item_id=item.id,
+                    user_id=user_id,
+                    item_id=item_id,
                     event_type=event_type,
                     payload_json={"snoozed_until": snoozed_until.isoformat()}
                     if snoozed_until is not None
@@ -83,7 +139,7 @@ async def apply_item_action(
                 )
             )
         await session.commit()
-        return item
+        return await session.scalar(select(Item).where(Item.id == item_id, Item.user_id == user_id))
 
 
 async def record_item_events(

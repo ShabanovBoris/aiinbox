@@ -1,3 +1,5 @@
+import hashlib
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -8,18 +10,30 @@ from app.storage.models import Content, Item
 
 
 def split_text(text: str, chunk_size_chars: int, overlap_chars: int = 0) -> list[str]:
-    """Split text into bounded chunks, optionally repeating a small context edge."""
+    """Split into bounded chunks while preferring complete paragraph boundaries."""
     if chunk_size_chars <= 0 or not 0 <= overlap_chars < chunk_size_chars:
         raise ValueError("chunk_size_chars must be positive and overlap smaller than chunk size")
     if not text:
         return []
-    step = chunk_size_chars - overlap_chars
+    # ❌ Удален fixed-step character slicing: он игнорировал требуемые PRODUCT_SPEC
+    # paragraph boundaries и разрывал абзац даже когда рядом был безопасный split.
     chunks = []
-    for start in range(0, len(text), step):
-        chunk = text[start : start + chunk_size_chars]
-        chunks.append(chunk)
-        if start + len(chunk) >= len(text):
+    start = 0
+    while start < len(text):
+        hard_end = min(start + chunk_size_chars, len(text))
+        end = hard_end
+        if hard_end < len(text):
+            # Do not cut inside the repeated overlap from the previous chunk;
+            # the chosen boundary must add fresh content before advancing.
+            boundary_from = start + overlap_chars
+            paragraph_end = text.rfind("\n\n", boundary_from + 1, hard_end)
+            if paragraph_end >= 0:
+                end = paragraph_end + 2
+
+        chunks.append(text[start:end])
+        if end >= len(text):
             break
+        start = end - overlap_chars
     return chunks
 
 
@@ -74,12 +88,14 @@ class Analyzer:
                 metadata.get("stage") == "chunk"
                 and metadata.get("chunk_size_chars") == self.chunk_size_chars
                 and metadata.get("overlap_chars") == self.overlap_chars
+                and metadata.get("chunk_sha256")
             ):
-                stored[metadata["chunk_index"]] = row.text
+                stored[(metadata["chunk_index"], metadata["chunk_sha256"])] = row.text
 
         summaries = []
         for index, chunk in enumerate(chunks):
-            summary = stored.get(index)
+            chunk_sha256 = hashlib.sha256(chunk.encode()).hexdigest()
+            summary = stored.get((index, chunk_sha256))
             if summary is None:
                 summary = (await self.provider.summarize_chunk(chunk)).strip()
                 if not summary:
@@ -95,6 +111,7 @@ class Analyzer:
                             "chunk_index": index,
                             "chunk_size_chars": self.chunk_size_chars,
                             "overlap_chars": self.overlap_chars,
+                            "chunk_sha256": chunk_sha256,
                         },
                     )
                 )

@@ -1,8 +1,11 @@
 import asyncio
 import logging
 
+import pytest
+from sqlalchemy.exc import SQLAlchemyError
+
 from app.domain.enums import ProcessingStatus
-from app.main import _drain_worker_tasks, _start_polling
+from app.main import _drain_worker_tasks, _start_polling, _wait_for_shutdown_or_critical_exit
 from app.services.ingestion import ingest_message
 from app.storage.models import Item
 from app.workers.processing import ProcessingWorker, requeue_stale
@@ -12,6 +15,11 @@ from tests.fakes import FakePipeline
 class HangingPipeline:
     async def run(self, session, item):
         await asyncio.Future()
+
+
+class DatabaseFailurePipeline:
+    async def run(self, session, item):
+        raise SQLAlchemyError("database unavailable")
 
 
 async def seed(session_factory, message_id: int = 1, text: str = "note"):
@@ -107,6 +115,37 @@ async def test_worker_applies_end_to_end_processing_timeout(session_factory):
     stored = await get_item(session_factory, item.id)
     assert stored.processing_status is ProcessingStatus.FAILED
     assert stored.error_code == "PROCESSING_TIMEOUT"
+
+
+async def test_database_failure_escapes_worker_for_process_restart(session_factory):
+    item = await seed(session_factory)
+    worker = make_worker(session_factory, pipeline=DatabaseFailurePipeline())
+
+    with pytest.raises(SQLAlchemyError, match="database unavailable"):
+        await worker.process_one()
+
+    stored = await get_item(session_factory, item.id)
+    assert stored.processing_status is ProcessingStatus.PROCESSING
+
+
+async def test_critical_task_failure_is_propagated_to_process_supervisor():
+    stop = asyncio.Event()
+
+    async def fail():
+        await asyncio.sleep(0)
+        raise RuntimeError("worker crashed")
+
+    task = asyncio.create_task(fail(), name="processing-worker-0")
+    with pytest.raises(RuntimeError, match="worker crashed"):
+        await _wait_for_shutdown_or_critical_exit(stop, [task])
+
+
+async def test_critical_task_normal_exit_is_treated_as_process_failure():
+    stop = asyncio.Event()
+    task = asyncio.create_task(asyncio.sleep(0), name="processing-worker-0")
+
+    with pytest.raises(RuntimeError, match="processing-worker-0 stopped unexpectedly"):
+        await _wait_for_shutdown_or_critical_exit(stop, [task])
 
 
 async def test_shutdown_drain_waits_for_inflight_worker_before_transport_close():

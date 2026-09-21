@@ -8,6 +8,7 @@ import asyncio
 import logging
 
 from sqlalchemy import update
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.errors import AppError
@@ -54,6 +55,11 @@ class ProfileUpdateWorker:
             profile, changed = await update_profile_from_patch(
                 self.session_factory, self.provider, job
             )
+        except SQLAlchemyError:
+            # DB/infrastructure failure must reach the critical-task supervisor;
+            # startup recovery will requeue the RUNNING durable job.
+            log.exception("profile worker infrastructure failure job=%s", job.id)
+            raise
         except Exception as exc:
             code = exc.code if isinstance(exc, AppError) else "LLM_FAILED"
             log.warning("profile update failed job=%s code=%s", job.id, code)

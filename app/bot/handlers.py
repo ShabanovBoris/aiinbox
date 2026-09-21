@@ -7,7 +7,7 @@ from aiogram.types import CallbackQuery, Message
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.config import Settings
-from app.domain.enums import SourceType
+from app.domain.enums import ItemState, ProcessingStatus, SourceType
 from app.services.actions import apply_item_action, record_item_events
 from app.services.ingestion import ingest_message, ingest_voice
 from app.services.notifications import (
@@ -23,6 +23,7 @@ from app.services.retrieval import (
     list_inbox,
     search_items,
 )
+from app.storage.models import Item
 
 log = logging.getLogger(__name__)
 
@@ -313,16 +314,42 @@ async def on_item_callback(
     if item is None:
         await callback.answer("Item не найден")
         return
-    labels = {
-        "done": "Готово ✅",
-        "archive": "В архиве 🗄",
-        "snooze": "Отложено ⏰",
-        "cancel_snooze": "Отложенное действие отменено",
-        "retry": "Повторно поставил в обработку 🔁",
-    }
+    # ❌ Удален label lookup только по requested action: при concurrent CAS он
+    # мог подтверждать проигравшее действие вместо persisted результата.
     if callback.message:
-        await callback.message.edit_text(labels[action_name], reply_markup=None)
+        await callback.message.edit_text(_item_action_label(item, action_name), reply_markup=None)
     await callback.answer()
+
+
+# Callback text is derived from canonical persisted state, not requested input:
+# a losing concurrent CAS must never acknowledge an action that did not happen.
+def _item_action_label(item: Item, action_name: str) -> str:
+    if action_name == "retry":
+        return {
+            ProcessingStatus.QUEUED: "Повторно поставил в обработку 🔁",
+            ProcessingStatus.PROCESSING: "Уже обрабатывается ⏳",
+            ProcessingStatus.READY: "Уже обработано ✅",
+            ProcessingStatus.FAILED: "Повтор не запущен",
+        }[item.processing_status]
+    expected_state = {
+        "done": ItemState.DONE,
+        "archive": ItemState.ARCHIVED,
+        "snooze": ItemState.SNOOZED,
+        "cancel_snooze": ItemState.ACTIVE,
+    }.get(action_name)
+    if item.state is expected_state:
+        return {
+            "done": "Готово ✅",
+            "archive": "В архиве 🗄",
+            "snooze": "Отложено ⏰",
+            "cancel_snooze": "Отложенное действие отменено",
+        }[action_name]
+    return {
+        ItemState.ACTIVE: "Активно",
+        ItemState.SNOOZED: "Отложено ⏰",
+        ItemState.DONE: "Готово ✅",
+        ItemState.ARCHIVED: "В архиве 🗄",
+    }[item.state]
 
 
 async def on_settings_callback(

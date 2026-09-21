@@ -3,7 +3,7 @@ import asyncio
 import pytest
 from sqlalchemy import select
 
-from app.domain.enums import ProcessingStatus
+from app.domain.enums import ContentKind, ProcessingStatus
 from app.domain.models import DEFAULT_PROFILE, NormalizedContent
 from app.domain.priority import PriorityEngine
 from app.llm.base import LlmError
@@ -89,6 +89,29 @@ def test_split_text_overlap_stops_at_eof_without_redundant_tail():
     assert chunks == ["abcdefghij", "ijklmnopq"]
 
 
+def test_split_text_prefers_paragraph_boundary():
+    text = "first paragraph\n\nsecond paragraph"
+    chunks = split_text(text, 20)
+    assert chunks == ["first paragraph\n\n", "second paragraph"]
+
+
+def test_split_text_never_exceeds_max_chars_at_boundary():
+    chunks = split_text("abcd\n\nrest", 5)
+    assert chunks == ["abcd\n", "\nrest"]
+    assert all(len(chunk) <= 5 for chunk in chunks)
+
+
+def test_split_text_short_intro_with_overlap_keeps_all_content():
+    text = "intro\n\n" + "x" * 40_000
+    overlap = 1_000
+    chunks = split_text(text, 30_000, overlap)
+
+    assert all(chunks)
+    assert all(len(chunk) <= 30_000 for chunk in chunks)
+    reconstructed = chunks[0] + "".join(chunk[overlap:] for chunk in chunks[1:])
+    assert reconstructed == text
+
+
 async def test_long_content_is_summarized_before_final_analysis(session_factory):
     await seed(session_factory, text="x" * 25)
     provider = FakeLlmProvider()
@@ -144,6 +167,38 @@ async def test_chunk_summaries_resume_without_repeating_completed_work(session_f
             item.id,
         )
     assert provider.summarize_calls == ["x" * 10, "x" * 10, "x" * 10, "x" * 5]
+
+
+async def test_legacy_chunk_summary_without_content_hash_is_not_reused(session_factory):
+    item = await seed(session_factory, text="x" * 15)
+    async with session_factory() as session:
+        session.add(
+            Content(
+                item_id=item.id,
+                kind=ContentKind.CHUNK_SUMMARY,
+                text="stale summary",
+                metadata_json={
+                    "stage": "chunk",
+                    "chunk_index": 0,
+                    "chunk_size_chars": 10,
+                    "overlap_chars": 0,
+                },
+            )
+        )
+        await session.commit()
+
+    provider = FakeLlmProvider()
+    analyzer = Analyzer(provider, chunk_size_chars=10)
+    async with session_factory() as session:
+        await analyzer.analyze(
+            NormalizedContent(source_type=item.source_type, text="x" * 15),
+            session,
+            item.user_id,
+            DEFAULT_PROFILE,
+            item.id,
+        )
+
+    assert provider.summarize_calls == ["x" * 10, "x" * 5]
 
 
 async def test_existing_categories_passed_to_provider(session_factory):

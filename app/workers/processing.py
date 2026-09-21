@@ -3,6 +3,7 @@ import logging
 import time
 
 from sqlalchemy import case, func, select, update
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.domain.enums import ProcessingStatus
@@ -119,6 +120,7 @@ class ProcessingWorker:
         if item_id is None:
             return False
         started = time.monotonic()
+        item = None
         failure: Exception | None = None
         try:
             async with self.session_factory() as session:
@@ -129,6 +131,17 @@ class ProcessingWorker:
                 await asyncio.wait_for(
                     self.pipeline.run(session, item), timeout=self.processing_timeout_seconds
                 )
+        except SQLAlchemyError:
+            # Database/infrastructure failure is not an Item-domain failure.
+            # Let the critical-task supervisor terminate the process so startup
+            # recovery can requeue the claimed Item against a healthy database.
+            log.exception(
+                "worker infrastructure failure item_id=%s user_id=%s stage=%s result=CRASH",
+                item_id,
+                getattr(item, "user_id", None),
+                getattr(item, "processing_stage", None),
+            )
+            raise
         except TimeoutError:
             failure = AppError(
                 "PROCESSING_TIMEOUT",
