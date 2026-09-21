@@ -1,6 +1,7 @@
 import asyncio
 import subprocess
 import tempfile
+from collections.abc import Callable
 from pathlib import Path
 
 from openai import APITimeoutError, AsyncOpenAI
@@ -80,10 +81,15 @@ def _split_audio_for_openrouter(
     audio_path: Path,
     output_dir: Path,
     segment_seconds: int,
+    runner: Callable[[list[str]], subprocess.CompletedProcess[bytes]] | None = None,
 ) -> list[Path]:
-    """Re-encode long audio into small AAC chunks for OpenRouter STT requests."""
+    """Re-encode long audio into broadly supported WAV chunks for OpenRouter STT.
+
+    runner оставляет subprocess boundary тестируемой без требования ffmpeg в
+    unit-test окружении; production path по умолчанию использует subprocess.run.
+    """
     output_dir.mkdir(parents=True, exist_ok=True)
-    pattern = output_dir / "segment_%04d.aac"
+    pattern = output_dir / "segment_%04d.wav"
     argv = [
         "ffmpeg",
         "-hide_banner",
@@ -99,9 +105,7 @@ def _split_audio_for_openrouter(
         "-ar",
         "16000",
         "-c:a",
-        "aac",
-        "-b:a",
-        "64k",
+        "pcm_s16le",
         "-f",
         "segment",
         "-segment_time",
@@ -111,7 +115,11 @@ def _split_audio_for_openrouter(
         str(pattern),
     ]
     try:
-        result = subprocess.run(argv, capture_output=True, timeout=300)
+        result = (
+            runner(argv)
+            if runner is not None
+            else subprocess.run(argv, capture_output=True, timeout=300)
+        )
     except FileNotFoundError as exc:
         raise AppError(
             "TRANSCRIPTION_FAILED", "ffmpeg is required for long OpenRouter STT"
@@ -123,7 +131,7 @@ def _split_audio_for_openrouter(
             "TRANSCRIPTION_FAILED",
             f"ffmpeg audio segmentation failed: {result.returncode}",
         )
-    segments = sorted(output_dir.glob("segment_*.aac"))
+    segments = sorted(output_dir.glob("segment_*.wav"))
     if not segments:
         raise AppError("TRANSCRIPTION_FAILED", "ffmpeg produced no transcription segments")
     return segments

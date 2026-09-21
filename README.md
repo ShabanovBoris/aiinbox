@@ -117,7 +117,8 @@ uv run pytest
 через `OPENROUTER_BASE_URL=https://openrouter.ai/api/v1`; analysis-модель должна
 поддерживать JSON Schema structured output, vision-модель — image input, а
 transcription-модель — `/audio/transcriptions`. Для OpenRouter длинное или
-крупное аудио автоматически режется ffmpeg на 5-минутные AAC-сегменты перед STT:
+крупное аудио автоматически режется ffmpeg на 5-минутные mono WAV PCM 16 kHz
+сегменты перед STT:
 это удерживает multipart upload ниже 25 MB и снижает риск upstream timeout.
 Ollama остаётся post-MVP.
 

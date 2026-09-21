@@ -411,8 +411,8 @@ async def test_openrouter_stt_segments_long_or_oversized_audio(
 
     def fake_split(audio_path, output_dir, segment_seconds):
         assert segment_seconds == 300
-        first = output_dir / "segment_0000.aac"
-        second = output_dir / "segment_0001.aac"
+        first = output_dir / "segment_0000.wav"
+        second = output_dir / "segment_0001.wav"
         first.write_bytes(b"one")
         second.write_bytes(b"two")
         return [first, second]
@@ -426,7 +426,47 @@ async def test_openrouter_stt_segments_long_or_oversized_audio(
     transcript = await provider.transcribe(audio_file, duration_seconds=duration_seconds)
 
     assert transcript == "part-1\npart-2"
-    assert uploaded == ["segment_0000.aac", "segment_0001.aac"]
+    assert uploaded == ["segment_0000.wav", "segment_0001.wav"]
+
+
+def test_openrouter_real_splitter_uses_wav_pcm_segments(tmp_path):
+    # Регрессия review 2: вызываем настоящий splitter, а runner подменяет только
+    # subprocess boundary и проверяет provider-compatible ffmpeg argv.
+    import subprocess
+    import wave
+
+    from app.llm.transcription import _split_audio_for_openrouter
+
+    source = tmp_path / "source.wav"
+    source.write_bytes(b"source")
+    captured: list[str] = []
+
+    def fake_runner(argv):
+        captured.extend(argv)
+        pattern = Path(argv[-1])
+        assert pattern.name == "segment_%04d.wav"
+        for index in range(2):
+            segment = pattern.parent / f"segment_{index:04d}.wav"
+            with wave.open(str(segment), "wb") as wav_file:
+                wav_file.setnchannels(1)
+                wav_file.setsampwidth(2)
+                wav_file.setframerate(16_000)
+                wav_file.writeframes(b"\x00\x00" * 16_000)
+        return subprocess.CompletedProcess(argv, 0)
+
+    segments = _split_audio_for_openrouter(source, tmp_path / "segments", 300, runner=fake_runner)
+
+    assert [segment.name for segment in segments] == ["segment_0000.wav", "segment_0001.wav"]
+    assert all(segment.suffix == ".wav" for segment in segments)
+    assert all(0 < segment.stat().st_size < 25_000_000 for segment in segments)
+    assert captured[captured.index("-c:a") + 1] == "pcm_s16le"
+    assert captured[captured.index("-ar") + 1] == "16000"
+    assert "-b:a" not in captured
+    assert captured[captured.index("-segment_time") + 1] == "300"
+    with wave.open(str(segments[0]), "rb") as wav_file:
+        assert wav_file.getnchannels() == 1
+        assert wav_file.getframerate() == 16_000
+        assert wav_file.getsampwidth() == 2
 
 
 async def test_bot_token_never_leaks_into_logs(tmp_path, caplog):

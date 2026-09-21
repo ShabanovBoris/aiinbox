@@ -209,7 +209,7 @@ Decision: `LLM_PROVIDER=openrouter` выбирает отдельные `OPENROU
 и model ids. Analysis/vision переиспользуют OpenAI-compatible adapter с
 конфигурируемым `base_url=https://openrouter.ai/api/v1`. Transcription расширяет
 тот же transport отдельным OpenRouter adapter: файлы >25 MB или аудио >5 минут
-режутся ffmpeg на небольшие AAC-сегменты и отправляются последовательными
+режутся ffmpeg на mono WAV PCM 16 kHz сегменты и отправляются последовательными
 multipart-запросами.
 
 Reason: chat/vision transport contract совпадает с уже изолированной provider

@@ -50,20 +50,25 @@ squash merge с ожидаемым HEAD B. Вердикты фиксируютс
 
 ### OpenRouter provider support — IN_REVIEW
 
-PR #17, reviewed HEAD `4d81f64`: `CHANGES REQUIRED`.
+PR #17, reviewed HEAD `d179f1d`: `CHANGES REQUIRED`.
 
 Completed:
 ✓ отдельные `OPENROUTER_*` credentials/model ids и configurable base URL
 ✓ OpenAI-compatible analysis/vision path
 ✓ OpenRouter STT adapter с segmentation для >25 MB и >5 min audio
+✓ сегменты OpenRouter STT переведены на provider-compatible mono WAV PCM 16 kHz
 ✓ YouTube visual download допускает video-only <=720p DASH stream
-✓ regressions для OpenRouter long/oversized STT и неизменного OpenAI composition path
+✓ regressions для реального splitter path/ffmpeg argv, OpenRouter long/oversized
+  STT и неизменного OpenAI composition path
 
 Remaining:
-□ повторный review нового HEAD после commit/push
+□ push текущих review fixes
+□ обновить verification record в PR body после финального test run
+□ повторный review нового HEAD
 
 Last verification:
-ruff check . → pass; ruff format --check . → pass; pytest → 214 passed;
+local review fixes after `d179f1d`: targeted pytest → 42 passed; full pytest →
+215 passed; ruff check . → pass; ruff format --check . → pass;
 git diff --check → pass
 
 ## Phase details

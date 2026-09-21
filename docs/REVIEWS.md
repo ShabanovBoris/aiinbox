@@ -1052,3 +1052,19 @@
   composition and STT limits have regressions; README wording is provider-neutral.
 - Additional live-E2E fix: YouTube visual download now accepts video-only <=720p
   formats, so DASH-only videos can reach frame extraction.
+
+## 2026-09-21 — PR #17 — d179f1d — CHANGES REQUIRED (review 2)
+
+- Reviewer: Orchestrator; reviewed exact HEAD
+  `d179f1dc3cb9efee03574cbe6ff7016dce6f7156`.
+- Previous blockers are closed; YouTube DASH visual format change is accepted.
+- Remaining MAJOR: AAC segments are provider-sensitive and are not listed among
+  the configured Whisper model's supported input formats; use WAV or MP3.
+- Remaining regression gap: the current long-audio test mocked
+  `_split_audio_for_openrouter`, so the actual ffmpeg codec/segment output was
+  not covered. Reviewer requested exercising the real splitter.
+- MINOR: PR body verification count is stale (`211 passed` versus the reviewed
+  local record `214 passed`, targeted `41 passed`).
+- Resolved in the same branch/PR: OpenRouter segmentation now uses mono WAV PCM
+  16 kHz and the regression executes the real splitter path with an injectable
+  runner that verifies the ffmpeg argv/output contract.
