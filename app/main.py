@@ -13,7 +13,7 @@ from app.extractors.audio import AudioExtractor
 from app.extractors.web import WebPageExtractor
 from app.extractors.youtube import YoutubeExtractor
 from app.llm.openai import OpenAiProvider
-from app.llm.transcription import OpenAiTranscriptionProvider
+from app.llm.transcription import OpenAiTranscriptionProvider, OpenRouterTranscriptionProvider
 from app.services.analysis import Analyzer
 from app.services.notifications import ReminderWorker
 from app.services.processing import ProcessingPipeline
@@ -38,6 +38,16 @@ def run_migrations(database_url: str) -> None:
 
 def build_provider(settings: Settings) -> OpenAiProvider:
     # Точка единственной сборки провайдера; Ollama добавляется post-MVP своей веткой.
+    if settings.llm_provider == "openrouter":
+        if not settings.openrouter_api_key or not settings.openrouter_analysis_model:
+            raise SystemExit("OPENROUTER_API_KEY and OPENROUTER_ANALYSIS_MODEL must be configured")
+        return OpenAiProvider(
+            settings.openrouter_api_key,
+            settings.openrouter_analysis_model,
+            settings.llm_timeout_seconds,
+            vision_model=settings.openrouter_vision_model or None,
+            base_url=settings.openrouter_base_url,
+        )
     if settings.llm_provider != "openai":
         raise SystemExit(f"Unsupported LLM_PROVIDER={settings.llm_provider!r}")
     if not settings.openai_api_key or not settings.openai_analysis_model:
@@ -52,6 +62,15 @@ def build_provider(settings: Settings) -> OpenAiProvider:
 
 def build_transcriber(settings: Settings) -> OpenAiTranscriptionProvider:
     # Whisper-эндпоинт — другой API/модель, поэтому отдельный adapter.
+    if settings.llm_provider == "openrouter":
+        if not settings.openrouter_api_key or not settings.openrouter_transcription_model:
+            raise SystemExit("OPENROUTER_TRANSCRIPTION_MODEL must be configured for voice/audio")
+        return OpenRouterTranscriptionProvider(
+            settings.openrouter_api_key,
+            settings.openrouter_transcription_model,
+            settings.transcription_timeout_seconds,
+            base_url=settings.openrouter_base_url,
+        )
     if not settings.openai_api_key or not settings.openai_transcription_model:
         raise SystemExit("OPENAI_TRANSCRIPTION_MODEL must be configured for voice/audio")
     return OpenAiTranscriptionProvider(

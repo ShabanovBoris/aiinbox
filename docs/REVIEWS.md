@@ -1036,3 +1036,48 @@
   docs-only commit changing one `IMPLEMENTATION_STATE.md` line; PR metadata and
   exact HEAD are synchronized.
 - Protocol next step: merge-ready handshake; Orchestrator performs squash merge.
+
+## 2026-09-21 — PR #17 — 4d81f64 — CHANGES REQUIRED (review 1)
+
+- Reviewer: Orchestrator; reviewed exact HEAD `4d81f64`.
+- Findings: MAJOR — OpenRouter STT reused one OpenAI-style multipart request
+  while YouTube permits 50 MB/7200 s audio; OpenRouter multipart is limited to
+  25 MB and long recordings risk the upstream processing timeout. BLOCKER —
+  `docs/IMPLEMENTATION_STATE.md` did not track the post-MVP PR. MINOR — missing
+  regression for the unchanged OpenAI composition path and README still said
+  `Telegram/OpenAI credentials`.
+- Resolved in same branch/PR #17: OpenRouter gets provider-specific long-audio
+  segmentation while retaining the compatible SDK transport; YouTube passes
+  known duration into STT; durable implementation state is synchronized; OpenAI
+  composition and STT limits have regressions; README wording is provider-neutral.
+- Additional live-E2E fix: YouTube visual download now accepts video-only <=720p
+  formats, so DASH-only videos can reach frame extraction.
+
+## 2026-09-21 — PR #17 — d179f1d — CHANGES REQUIRED (review 2)
+
+- Reviewer: Orchestrator; reviewed exact HEAD
+  `d179f1dc3cb9efee03574cbe6ff7016dce6f7156`.
+- Previous blockers are closed; YouTube DASH visual format change is accepted.
+- Remaining MAJOR: AAC segments are provider-sensitive and are not listed among
+  the configured Whisper model's supported input formats; use WAV or MP3.
+- Remaining regression gap: the current long-audio test mocked
+  `_split_audio_for_openrouter`, so the actual ffmpeg codec/segment output was
+  not covered. Reviewer requested exercising the real splitter.
+- MINOR: PR body verification count is stale (`211 passed` versus the reviewed
+  local record `214 passed`, targeted `41 passed`).
+- Resolved in the same branch/PR: OpenRouter segmentation now uses mono WAV PCM
+  16 kHz and the regression executes the real splitter path with an injectable
+  runner that verifies the ffmpeg argv/output contract.
+
+## 2026-09-21 — PR #17 — 096f423 — APPROVED (review 3)
+
+- Reviewer: Orchestrator; approved exact HEAD
+  `096f42319bf0d9205874bf7f1387badf27ea81fc`.
+- Confirmed: оба предыдущих review finding набора закрыты; OpenRouter long-audio
+  STT сегментирует в mono WAV PCM 16 kHz, реальный splitter contract покрыт,
+  OpenAI composition path сохранён, YouTube DASH visual change принят.
+- PR body синхронизирован с exact HEAD; recorded verification: targeted pytest
+  42 passed, full pytest 215 passed, `ruff check .` PASS,
+  `ruff format --check .` PASS, `git diff --check` PASS.
+- Этот verdict вместе с переходом OpenRouter support `IN_REVIEW → DONE`
+  составляет status-finalization commit; product code не меняется.

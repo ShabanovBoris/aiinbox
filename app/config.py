@@ -51,6 +51,13 @@ class Settings(BaseSettings):
     openai_analysis_model: str = ""
     openai_transcription_model: str = ""
     openai_vision_model: str = ""
+    # OpenRouter использует OpenAI-compatible API, но отдельные credentials/model ids
+    # не дают случайно отправить production OpenAI-трафик через другой provider.
+    openrouter_api_key: str = ""
+    openrouter_base_url: str = "https://openrouter.ai/api/v1"
+    openrouter_analysis_model: str = ""
+    openrouter_transcription_model: str = ""
+    openrouter_vision_model: str = ""
     llm_timeout_seconds: int = 120
     llm_chunk_size_chars: int = Field(12_000, validation_alias="CONTENT_CHUNK_MAX_CHARS")
     llm_chunk_overlap_chars: int = Field(0, validation_alias="CONTENT_CHUNK_OVERLAP_CHARS")
