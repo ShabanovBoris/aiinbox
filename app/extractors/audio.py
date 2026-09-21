@@ -4,7 +4,7 @@ from pathlib import Path
 from app.bot.files import FileDownloader
 from app.domain.models import NormalizedContent
 from app.errors import AppError
-from app.llm.base import TranscriptionProvider
+from app.llm.base import TranscriptionProvider, TranscriptionSegmentCheckpoint
 from app.storage.models import Item
 
 
@@ -29,8 +29,8 @@ class AudioExtractor:
         self,
         item: Item,
         *,
-        completed_segments: Mapping[int, str] | None = None,
-        on_segment: Callable[[int, str], Awaitable[None]] | None = None,
+        completed_segments: Mapping[int, TranscriptionSegmentCheckpoint] | None = None,
+        on_segment: Callable[[int, TranscriptionSegmentCheckpoint], Awaitable[None]] | None = None,
     ) -> NormalizedContent:
         self.temp_dir.mkdir(parents=True, exist_ok=True)
         audio_path = await self.downloader.download(item.source_file_id, self.temp_dir)

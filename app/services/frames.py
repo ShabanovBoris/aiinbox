@@ -1,8 +1,9 @@
 """Извлечение representative frames из видео через ffmpeg.
 
 PRODUCT_SPEC §23 требует периодическую выборку + scene/key frames + approximate
-dedup. ffmpeg закрывает CV-часть своими select/mpdecimate фильтрами; Python
-оставляет только exact hash safety-net и лимит результата.
+dedup. Periodic baseline и scene candidates извлекаются раздельно: лимит
+применяется только после полного прохода по timeline, поэтому частые GOP/I-frames
+не могут съесть весь budget в начале длинного видео.
 """
 
 import hashlib
@@ -26,6 +27,18 @@ def _dedup(frames: list[Path]) -> list[Path]:
     return unique
 
 
+def _evenly_spaced(frames: list[Path], limit: int) -> list[Path]:
+    """Bound a chronological list while retaining coverage through its tail."""
+    if limit <= 0:
+        return []
+    if len(frames) <= limit:
+        return frames
+    if limit == 1:
+        return [frames[0]]
+    last = len(frames) - 1
+    return [frames[round(index * last / (limit - 1))] for index in range(limit)]
+
+
 def extract_representative_frames(
     video: Path,
     work_dir: Path,
@@ -36,10 +49,10 @@ def extract_representative_frames(
     timeout_seconds: float = 300.0,
     runner: Callable[[list[str]], int] | None = None,
 ) -> list[Path]:
-    """ffmpeg выбирает periodic + scene/key frames и приблизительно дедуплицирует.
+    """Extract full-timeline periodic baseline plus scene-change candidates.
 
     runner — инъекция для тестов (по умолчанию subprocess.run, без shell).
-    Возвращает максимум max_frames путей; порядок ffmpeg сохраняется.
+    max_frames применяется после extraction, поэтому baseline покрывает весь ролик.
     """
 
     def _default_runner(argv: list[str]) -> int:
@@ -48,15 +61,8 @@ def extract_representative_frames(
 
     run = runner or _default_runner
     work_dir.mkdir(parents=True, exist_ok=True)
-    pattern = work_dir / "frame_%04d.jpg"
-    select = (
-        "select="
-        "isnan(prev_selected_t)"
-        rf"+gte(t-prev_selected_t\,{interval_seconds})"
-        rf"+gt(scene\,{scene_threshold})"
-        r"+eq(pict_type\,I)"
-    )
-    argv = [
+    periodic_pattern = work_dir / "periodic_%05d.jpg"
+    periodic_argv = [
         "ffmpeg",
         "-hide_banner",
         "-loglevel",
@@ -64,18 +70,55 @@ def extract_representative_frames(
         "-i",
         str(video),
         "-vf",
-        f"{select},mpdecimate",
+        f"fps=1/{interval_seconds},mpdecimate",
         "-vsync",
         "vfr",
-        "-frames:v",
-        str(max_frames),
         "-q:v",
         "2",
-        str(pattern),
+        str(periodic_pattern),
     ]
-    returncode = run(argv)
-    if returncode != 0:
-        raise AppError("VISUAL_FAILED", f"ffmpeg frame extraction failed: {returncode}")
-    frames = sorted(work_dir.glob("frame_*.jpg"))
-    unique = _dedup(frames)
-    return unique[:max_frames]
+    periodic_returncode = run(periodic_argv)
+    if periodic_returncode != 0:
+        raise AppError(
+            "VISUAL_FAILED", f"ffmpeg periodic frame extraction failed: {periodic_returncode}"
+        )
+
+    scene_pattern = work_dir / "scene_%05d.jpg"
+    scene_filter = rf"select=gt(scene\,{scene_threshold}),mpdecimate"
+    scene_argv = [
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-i",
+        str(video),
+        "-vf",
+        scene_filter,
+        "-vsync",
+        "vfr",
+        "-q:v",
+        "2",
+        str(scene_pattern),
+    ]
+    scene_returncode = run(scene_argv)
+    if scene_returncode != 0:
+        raise AppError("VISUAL_FAILED", f"ffmpeg scene extraction failed: {scene_returncode}")
+
+    periodic = _dedup(sorted(work_dir.glob("periodic_*.jpg")))
+    periodic_hashes = {hashlib.sha1(frame.read_bytes()).hexdigest() for frame in periodic}
+    scenes = [
+        frame
+        for frame in _dedup(sorted(work_dir.glob("scene_*.jpg")))
+        if hashlib.sha1(frame.read_bytes()).hexdigest() not in periodic_hashes
+    ]
+    if not periodic:
+        return _evenly_spaced(scenes, max_frames)
+    if not scenes or max_frames == 1:
+        return _evenly_spaced(periodic, max_frames)
+
+    # Keep periodic coverage dominant, but reserve up to one third of the vision
+    # budget for semantic scene changes even when a long video has >max baseline frames.
+    scene_quota = min(len(scenes), max(1, max_frames // 3))
+    periodic_quota = min(len(periodic), max_frames - scene_quota)
+    scene_quota = min(len(scenes), max_frames - periodic_quota)
+    return _evenly_spaced(periodic, periodic_quota) + _evenly_spaced(scenes, scene_quota)

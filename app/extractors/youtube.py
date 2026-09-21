@@ -13,7 +13,7 @@ extraction (уникальная — нет коллизий между пара
 import asyncio
 import logging
 import shutil
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable, Mapping
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -25,7 +25,7 @@ import yt_dlp
 from app.domain.enums import SourceType
 from app.domain.models import NormalizedContent
 from app.errors import AppError
-from app.llm.base import TranscriptionProvider
+from app.llm.base import TranscriptionProvider, TranscriptionSegmentCheckpoint
 from app.services.subtitles import parse_subtitles
 from app.storage.models import Item
 
@@ -89,8 +89,8 @@ class YoutubeExtractor:
         self,
         item: Item,
         *,
-        completed_segments=None,
-        on_segment=None,
+        completed_segments: Mapping[int, TranscriptionSegmentCheckpoint] | None = None,
+        on_segment: Callable[[int, TranscriptionSegmentCheckpoint], Awaitable[None]] | None = None,
     ) -> NormalizedContent:
         """Собственная temp-поддиректория на extraction: уникальна для параллельных
         обработок, полностью удаляется при успехе/ошибке/отмене (ТЗ §25, §27)."""

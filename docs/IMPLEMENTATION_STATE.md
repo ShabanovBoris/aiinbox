@@ -47,6 +47,29 @@ squash merge с ожидаемым HEAD B. Вердикты фиксируютс
 | Изменение | Статус | PR |
 |---|---|---|
 | OpenRouter provider support | DONE | #17 |
+| MVP reliability hardening | IN_REVIEW | #18 |
+
+### MVP reliability hardening — IN_REVIEW
+
+PR #18. Orchestrator review: `CHANGES REQUIRED @ 45ca289917e03498c7bd3850d7b966998ad2217d`.
+
+Completed:
+✓ durable immediate Telegram outbox для READY/FAILED/profile update и startup recovery
+✓ OpenRouter long-STT checkpoints с identity по SHA-256 segment input + provider/model/
+  segmentation contract; несовместимые/legacy checkpoints не переиспользуются
+✓ representative frames сохраняют temporal coverage: periodic baseline проходит
+  весь timeline, scene candidates добавляются после baseline, pruning bounded
+✓ config validation, CI workflow, locked/non-root Docker + tmpfs hardening
+✓ regressions для changed STT bytes/model и late-timeline visual coverage
+
+Remaining:
+□ re-review Orchestrator после push нового HEAD
+□ external repository setting: сделать `quality` required status check для `main`
+
+Last verification:
+targeted audio/visual/youtube pytest → 54 passed; full pytest → 250 passed;
+ruff check . → pass; ruff format --check . → pass; git diff --check → pass;
+alembic heads → `5d8e9a1b2c3d (head)`.
 
 ### OpenRouter provider support — DONE
 

@@ -209,8 +209,8 @@ Decision: `LLM_PROVIDER=openrouter` выбирает отдельные `OPENROU
 и model ids. Analysis/vision переиспользуют OpenAI-compatible adapter с
 конфигурируемым `base_url=https://openrouter.ai/api/v1`. Transcription расширяет
 тот же transport отдельным OpenRouter adapter: файлы >25 MB или аудио >5 минут
-режутся ffmpeg на mono WAV PCM 16 kHz сегменты и отправляются последовательными
-multipart-запросами.
+режутся ffmpeg на mono WAV PCM 16 kHz сегменты и отправляются bounded-concurrent
+multipart-запросами (до 4 одновременно).
 
 Reason: chat/vision transport contract совпадает с уже изолированной provider
 boundary, но у OpenRouter STT есть отдельные operational limits: multipart до
@@ -221,3 +221,40 @@ Consequences: OpenAI path остаётся без изменений, а OpenRou
 менять конфигом. Конкретная analysis-модель обязана поддерживать structured JSON
 Schema, vision-модель — изображения, transcription-модель — STT endpoint.
 Long-audio OpenRouter STT требует доступный `ffmpeg`.
+
+## D-011 — Durable immediate Telegram outbox (post-MVP hardening)
+
+Context: READY/FAILED Item и завершённый `/profile_update` раньше коммитились до
+best-effort Telegram callback. Crash между business commit и send безвозвратно
+терял пользовательское уведомление.
+
+Decision: immediate delivery intent хранится в отдельной `deliveries` outbox и
+создаётся в той же транзакции, что READY/FAILED/profile DONE. `DeliveryWorker`
+атомарно claim'ит PENDING → SENDING, отправляет Telegram и фиксирует SENT;
+startup recovery возвращает прерванные SENDING → PENDING. Старые callback paths
+удалены, чтобы side effect имел один канонический владелец.
+
+Reason: canonical business state не должен откатываться из-за transport failure,
+а требование restart recovery должно переживать crash после commit.
+
+Consequences: семантика доставки at-least-once. Crash после фактического Telegram
+send, но до SENT может дать дубль после restart; это предпочтительнее silent loss.
+Telegram failure ретраится bounded независимо от Item/ProfileUpdateJob state.
+
+## D-012 — Durable STT segment checkpoint identity (PR #18 review)
+
+Context: позиционный `segment_index` не доказывает, что retry видит тот же media
+segment или ту же transcription model. YouTube media stream и provider config
+могут измениться при неизменном Item/URL.
+
+Decision: каждый `TRANSCRIPT_CHUNK` хранит SHA-256 точных segment bytes, provider,
+model, segment duration и versioned ffmpeg output contract. Resume переиспользует
+текст только при полном совпадении identity. Legacy index-only rows и mismatch
+пересчитываются; новый результат становится последним checkpoint для index.
+
+Reason: resumable STT может экономить уже выполненную работу только если вход и
+семантика транскрипции эквивалентны, аналогично D-009 для `CHUNK_SUMMARY`.
+
+Consequences: после изменения model/segmentation или media bytes первый retry
+перетранскрибирует затронутые сегменты, но никогда не смешивает stale transcript
+с новым источником.

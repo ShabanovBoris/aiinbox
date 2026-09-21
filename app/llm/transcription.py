@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import subprocess
 import tempfile
 from collections.abc import Awaitable, Callable, Mapping
@@ -7,6 +8,7 @@ from pathlib import Path
 from openai import APITimeoutError, AsyncOpenAI
 
 from app.errors import AppError
+from app.llm.base import TranscriptionSegmentCheckpoint
 
 
 class OpenAiTranscriptionProvider:
@@ -29,8 +31,8 @@ class OpenAiTranscriptionProvider:
         audio_path: Path,
         *,
         duration_seconds: int | None = None,
-        completed_segments: Mapping[int, str] | None = None,
-        on_segment: Callable[[int, str], Awaitable[None]] | None = None,
+        completed_segments: Mapping[int, TranscriptionSegmentCheckpoint] | None = None,
+        on_segment: Callable[[int, TranscriptionSegmentCheckpoint], Awaitable[None]] | None = None,
     ) -> str:
         # duration_seconds нужен provider-specific subclasses; OpenAI multipart
         # сохраняет прежний single-request contract. Checkpoint args нужны
@@ -58,14 +60,16 @@ class OpenRouterTranscriptionProvider(OpenAiTranscriptionProvider):
     _MAX_MULTIPART_BYTES = 25_000_000
     _SEGMENT_SECONDS = 300
     _MAX_SEGMENT_CONCURRENCY = 4
+    _CHECKPOINT_PROVIDER = "openrouter"
+    _SEGMENT_FORMAT_VERSION = "wav-pcm_s16le-mono-16khz-v1"
 
     async def transcribe(
         self,
         audio_path: Path,
         *,
         duration_seconds: int | None = None,
-        completed_segments: Mapping[int, str] | None = None,
-        on_segment: Callable[[int, str], Awaitable[None]] | None = None,
+        completed_segments: Mapping[int, TranscriptionSegmentCheckpoint] | None = None,
+        on_segment: Callable[[int, TranscriptionSegmentCheckpoint], Awaitable[None]] | None = None,
     ) -> str:
         if audio_path.stat().st_size <= self._MAX_MULTIPART_BYTES and (
             duration_seconds is None or duration_seconds <= self._SEGMENT_SECONDS
@@ -91,14 +95,30 @@ class OpenRouterTranscriptionProvider(OpenAiTranscriptionProvider):
             semaphore = asyncio.Semaphore(self._MAX_SEGMENT_CONCURRENCY)
 
             async def transcribe_segment(index: int, segment: Path) -> str:
-                if index in cached:
-                    return cached[index]
+                input_sha256 = await asyncio.to_thread(_sha256_file, segment)
+                checkpoint = cached.get(index)
+                if checkpoint is not None and checkpoint.matches_input(
+                    input_sha256=input_sha256,
+                    provider=self._CHECKPOINT_PROVIDER,
+                    model=self._model,
+                    segment_seconds=self._SEGMENT_SECONDS,
+                    format_version=self._SEGMENT_FORMAT_VERSION,
+                ):
+                    return checkpoint.text
                 async with semaphore:
                     text = await super(OpenRouterTranscriptionProvider, self).transcribe(segment)
+                checkpoint = TranscriptionSegmentCheckpoint(
+                    text=text,
+                    input_sha256=input_sha256,
+                    provider=self._CHECKPOINT_PROVIDER,
+                    model=self._model,
+                    segment_seconds=self._SEGMENT_SECONDS,
+                    format_version=self._SEGMENT_FORMAT_VERSION,
+                )
                 # Callback is provider-agnostic: the application decides whether
                 # this checkpoint goes to SQLite, memory, or nowhere.
                 if on_segment is not None:
-                    await on_segment(index, text)
+                    await on_segment(index, checkpoint)
                 return text
 
             # All segment results are awaited even when one fails, so successful
@@ -111,6 +131,14 @@ class OpenRouterTranscriptionProvider(OpenAiTranscriptionProvider):
                 if isinstance(result, BaseException):
                     raise result
             return "\n".join(text for text in results if isinstance(text, str) and text)
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _split_audio_for_openrouter(

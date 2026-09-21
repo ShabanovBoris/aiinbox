@@ -188,14 +188,17 @@ async def test_vision_failure_keeps_item_ready_transcript_only(
 
 def test_frames_extraction_dedups_identical_frames(tmp_path):
     # Дедупликация: идентичные кадры (статичный слайд) не дублируются.
-    captured: list[str] = []
+    captured: list[list[str]] = []
 
     def runner(argv):
-        captured.extend(argv)
-        pattern = Path(argv[-1]).parent
-        (pattern / "frame_0001.jpg").write_bytes(b"same")
-        (pattern / "frame_0002.jpg").write_bytes(b"same")
-        (pattern / "frame_0003.jpg").write_bytes(b"other")
+        captured.append(argv)
+        pattern = Path(argv[-1])
+        if pattern.name.startswith("periodic_"):
+            (pattern.parent / "periodic_00001.jpg").write_bytes(b"same")
+            (pattern.parent / "periodic_00002.jpg").write_bytes(b"same")
+        else:
+            (pattern.parent / "scene_00001.jpg").write_bytes(b"same")
+            (pattern.parent / "scene_00002.jpg").write_bytes(b"other")
         return 0
 
     frames = extract_representative_frames(
@@ -205,12 +208,42 @@ def test_frames_extraction_dedups_identical_frames(tmp_path):
         max_frames=120,
         runner=runner,
     )
-    assert [f.name for f in frames] == ["frame_0001.jpg", "frame_0003.jpg"]
-    filter_graph = captured[captured.index("-vf") + 1]
-    assert r"gte(t-prev_selected_t\,20)" in filter_graph
-    assert r"gt(scene\,0.35)" in filter_graph
-    assert r"eq(pict_type\,I)" in filter_graph
-    assert "mpdecimate" in filter_graph
+    assert [f.name for f in frames] == ["periodic_00001.jpg", "scene_00002.jpg"]
+    assert len(captured) == 2
+    periodic_filter = captured[0][captured[0].index("-vf") + 1]
+    scene_filter = captured[1][captured[1].index("-vf") + 1]
+    assert periodic_filter == "fps=1/20,mpdecimate"
+    assert r"gt(scene\,0.35)" in scene_filter
+    assert "pict_type" not in scene_filter
+
+
+def test_frames_budget_preserves_late_timeline_coverage(tmp_path):
+    # Regression PR #18 review: many early scene/key candidates must not consume
+    # max_frames before periodic sampling reaches the end of a long video.
+    def runner(argv):
+        pattern = Path(argv[-1])
+        if pattern.name.startswith("periodic_"):
+            for index in range(10):
+                (pattern.parent / f"periodic_{index:05d}.jpg").write_bytes(
+                    f"periodic-{index}".encode()
+                )
+        else:
+            for index in range(30):
+                (pattern.parent / f"scene_{index:05d}.jpg").write_bytes(f"scene-{index}".encode())
+        return 0
+
+    frames = extract_representative_frames(
+        tmp_path / "video.mp4",
+        tmp_path / "coverage",
+        interval_seconds=20,
+        max_frames=5,
+        runner=runner,
+    )
+
+    assert len(frames) == 5
+    assert frames[0].name == "periodic_00000.jpg"
+    assert any(frame.name == "periodic_00009.jpg" for frame in frames)
+    assert any(frame.name.startswith("scene_") for frame in frames)
 
 
 def test_frames_extraction_ffmpeg_failure_raises(tmp_path):

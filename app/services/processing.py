@@ -16,6 +16,7 @@ from app.extractors.audio import AudioExtractor
 from app.extractors.text import TextExtractor
 from app.extractors.web import WebPageExtractor
 from app.extractors.youtube import YoutubeExtractor
+from app.llm.base import TranscriptionSegmentCheckpoint
 from app.services.analysis import Analyzer
 from app.services.delivery import ITEM_READY, enqueue_item_delivery
 from app.services.frames import extract_representative_frames
@@ -278,28 +279,48 @@ class ProcessingPipeline:
                 .order_by(Content.id)
             )
         ).all()
-        completed: dict[int, str] = {}
+        completed: dict[int, TranscriptionSegmentCheckpoint] = {}
         for row in rows:
-            index = (row.metadata_json or {}).get("segment_index")
-            if isinstance(index, int):
-                completed[index] = row.text
+            meta = row.metadata_json or {}
+            index = meta.get("segment_index")
+            if not isinstance(index, int):
+                continue
+            try:
+                completed[index] = TranscriptionSegmentCheckpoint(
+                    text=row.text,
+                    input_sha256=meta["input_sha256"],
+                    provider=meta["provider"],
+                    model=meta["model"],
+                    segment_seconds=meta["segment_seconds"],
+                    format_version=meta["format_version"],
+                )
+            except (KeyError, TypeError):
+                # Legacy index-only checkpoints are deliberately not reusable.
+                continue
 
         checkpoint_lock = asyncio.Lock()
 
-        async def persist(index: int, text: str) -> None:
+        async def persist(index: int, checkpoint: TranscriptionSegmentCheckpoint) -> None:
             async with checkpoint_lock:
-                if index in completed:
+                if completed.get(index) == checkpoint:
                     return
                 session.add(
                     Content(
                         item_id=item.id,
                         kind=ContentKind.TRANSCRIPT_CHUNK,
-                        text=text,
-                        metadata_json={"segment_index": index},
+                        text=checkpoint.text,
+                        metadata_json={
+                            "segment_index": index,
+                            "input_sha256": checkpoint.input_sha256,
+                            "provider": checkpoint.provider,
+                            "model": checkpoint.model,
+                            "segment_seconds": checkpoint.segment_seconds,
+                            "format_version": checkpoint.format_version,
+                        },
                     )
                 )
                 await session.commit()
-                completed[index] = text
+                completed[index] = checkpoint
 
         return completed, persist
 

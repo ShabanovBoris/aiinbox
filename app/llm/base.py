@@ -1,4 +1,5 @@
 from collections.abc import Awaitable, Callable, Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
@@ -23,6 +24,35 @@ class LlmCapabilities(BaseModel):
 
 class LlmError(AppError):
     """Ошибка на границе LLM-адаптера (LLM_FAILED / INVALID_LLM_OUTPUT)."""
+
+
+@dataclass(frozen=True)
+class TranscriptionSegmentCheckpoint:
+    """Durable identity for one provider-specific STT segment result."""
+
+    text: str
+    input_sha256: str
+    provider: str
+    model: str
+    segment_seconds: int
+    format_version: str
+
+    def matches_input(
+        self,
+        *,
+        input_sha256: str,
+        provider: str,
+        model: str,
+        segment_seconds: int,
+        format_version: str,
+    ) -> bool:
+        return (
+            self.input_sha256 == input_sha256
+            and self.provider == provider
+            and self.model == model
+            and self.segment_seconds == segment_seconds
+            and self.format_version == format_version
+        )
 
 
 class LlmProvider(Protocol):
@@ -62,8 +92,8 @@ class TranscriptionProvider(Protocol):
         audio_path: Path,
         *,
         duration_seconds: int | None = None,
-        completed_segments: Mapping[int, str] | None = None,
-        on_segment: Callable[[int, str], Awaitable[None]] | None = None,
+        completed_segments: Mapping[int, TranscriptionSegmentCheckpoint] | None = None,
+        on_segment: Callable[[int, TranscriptionSegmentCheckpoint], Awaitable[None]] | None = None,
     ) -> str:
         """Аудио → текст с optional durable checkpoints provider-specific batching."""
         ...

@@ -86,7 +86,9 @@ live-проверка требует ключа.
 
 OpenRouter STT использует OpenAI-compatible multipart только для коротких файлов.
 Файлы больше 25 MB или аудио длиннее 5 минут сначала режутся `ffmpeg` на
-5-минутные mono WAV PCM 16 kHz сегменты и транскрибируются последовательно.
+5-минутные mono WAV PCM 16 kHz сегменты и транскрибируются с bounded concurrency
+до 4 запросов. Готовые сегменты checkpoint'ятся с SHA-256 input + provider/model
+identity и переиспользуются только при полном совпадении на retry.
 Для long-audio/YouTube STT fallback `ffmpeg` должен быть доступен в `PATH`.
 
 ## Quality gate

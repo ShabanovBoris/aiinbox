@@ -1081,3 +1081,24 @@
   `ruff format --check .` PASS, `git diff --check` PASS.
 - Этот verdict вместе с переходом OpenRouter support `IN_REVIEW → DONE`
   составляет status-finalization commit; product code не меняется.
+
+## 2026-09-21 — PR #18 — 45ca289 — CHANGES REQUIRED (review 1)
+
+- Reviewer: Orchestrator; reviewed exact HEAD
+  `45ca289917e03498c7bd3850d7b966998ad2217d`.
+- Accepted: durable delivery outbox/recovery, config fail-fast, locked non-root
+  Docker/tmpfs, user persistence fixes, transcript-only UI and working `quality` CI.
+- MAJOR: `TRANSCRIPT_CHUNK` reuse was keyed only by `item_id + segment_index`, so
+  changed media bytes, segmentation or transcription model could reuse stale text.
+- MAJOR: visual candidate filter admitted every I-frame before `-frames:v`, so
+  frequent GOP keyframes could exhaust `VIDEO_MAX_FRAMES` near the video start.
+- PROTOCOL: PR #18 was absent from `IMPLEMENTATION_STATE`/`REVIEWS`; durable
+  immediate delivery outbox also needed an explicit architecture decision.
+- Repository setting: successful `quality` workflow existed but was not required
+  by `main` branch protection. This is an external GitHub repository setting.
+- MINOR: RUNBOOK still described OpenRouter STT segments as sequential although
+  the adapter uses bounded concurrency.
+- Resolved in same branch/PR pending re-review: STT segment checkpoints now bind
+  exact SHA-256 input plus provider/model/segmentation identity; visual extraction
+  separates full-timeline periodic baseline from scene candidates and prunes only
+  after both passes; durable docs and RUNBOOK are synchronized.
