@@ -46,11 +46,11 @@ squash merge с ожидаемым HEAD B. Вердикты фиксируютс
 
 | Изменение | Статус | PR |
 |---|---|---|
-| OpenRouter provider support | IN_REVIEW | #17 |
+| OpenRouter provider support | DONE | #17 |
 
-### OpenRouter provider support — IN_REVIEW
+### OpenRouter provider support — DONE
 
-PR #17, reviewed HEAD `d179f1d`: `CHANGES REQUIRED`.
+PR #17: `APPROVED @ 096f42319bf0d9205874bf7f1387badf27ea81fc`.
 
 Completed:
 ✓ отдельные `OPENROUTER_*` credentials/model ids и configurable base URL
@@ -62,9 +62,7 @@ Completed:
   STT и неизменного OpenAI composition path
 
 Remaining:
-□ push текущих review fixes
-□ обновить verification record в PR body после финального test run
-□ повторный review нового HEAD
+□ — нет
 
 Last verification:
 local review fixes after `d179f1d`: targeted pytest → 42 passed; full pytest →

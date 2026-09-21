@@ -1068,3 +1068,16 @@
 - Resolved in the same branch/PR: OpenRouter segmentation now uses mono WAV PCM
   16 kHz and the regression executes the real splitter path with an injectable
   runner that verifies the ffmpeg argv/output contract.
+
+## 2026-09-21 — PR #17 — 096f423 — APPROVED (review 3)
+
+- Reviewer: Orchestrator; approved exact HEAD
+  `096f42319bf0d9205874bf7f1387badf27ea81fc`.
+- Confirmed: оба предыдущих review finding набора закрыты; OpenRouter long-audio
+  STT сегментирует в mono WAV PCM 16 kHz, реальный splitter contract покрыт,
+  OpenAI composition path сохранён, YouTube DASH visual change принят.
+- PR body синхронизирован с exact HEAD; recorded verification: targeted pytest
+  42 passed, full pytest 215 passed, `ruff check .` PASS,
+  `ruff format --check .` PASS, `git diff --check` PASS.
+- Этот verdict вместе с переходом OpenRouter support `IN_REVIEW → DONE`
+  составляет status-finalization commit; product code не меняется.
