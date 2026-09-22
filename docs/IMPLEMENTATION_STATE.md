@@ -41,14 +41,15 @@ squash merge с ожидаемым HEAD B. Вердикты фиксируютс
 |---|---|---|
 | OpenRouter provider support | DONE | #17 |
 | MVP reliability hardening | DONE | #18 |
-| Telegram bot usage guide | IN_REVIEW | #20 |
+| Telegram bot usage guide | DONE | #20 |
 
-### Telegram bot usage guide — IN_REVIEW
+### Telegram bot usage guide — DONE
 
-PR #20. Initial Orchestrator review of `167d180ad58f41bf120f8631a2cfe05c7edd1ff1`
-found the Markdown guide broadly accurate, but the branch was behind current
-`main` and built-in `/help` still advertised unsupported direct video and
-misdescribed `/inbox` as active-only.
+PR #20: `APPROVED @ e09490000b1f5654521ed72cc9454c18c9dfc7b6`.
+Initial review of `167d180ad58f41bf120f8631a2cfe05c7edd1ff1` found the
+Markdown guide broadly accurate, but the branch was behind current `main` and
+built-in `/help` still advertised unsupported direct video and misdescribed
+`/inbox` as active-only; both findings were resolved before approval.
 
 Completed:
 ✓ full user guide for supported Telegram inputs, commands, actions and notifications
@@ -58,8 +59,7 @@ Completed:
 ✓ branch synchronized with current `main` before final verification
 
 Remaining:
-□ required `quality` on synchronized HEAD
-□ Orchestrator final review
+□ — нет
 
 ### MVP reliability hardening — DONE
 

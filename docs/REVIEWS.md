@@ -1153,3 +1153,15 @@
   active-only although retrieval intentionally returns recent Items across states.
 - Resolution in the same PR: merge current `main`, synchronize `/help`, add
   a regression, and re-run required `quality` on the combined tree.
+
+## 2026-09-22 — PR #20 — e094900 — APPROVED (review 2)
+
+- Reviewer: Orchestrator; approved exact HEAD
+  `e09490000b1f5654521ed72cc9454c18c9dfc7b6`.
+- Confirmed: branch synchronized with current `main`; `BOT_USAGE.md` matches the
+  supported Telegram input/command/action/notification surface; README and
+  built-in `/help` no longer imply unsupported direct video or active-only inbox.
+- Regression added for the user-facing `/help` contract.
+- Required GitHub Actions job `quality` passed on the approved HEAD:
+  Ruff check PASS, Ruff format PASS, pytest 251 passed.
+- This verdict authorizes only this status-finalization commit before squash merge.
