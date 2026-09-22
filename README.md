@@ -90,9 +90,25 @@ docker compose down
 ```
 
 Compose хранит SQLite в named volume `aiinbox_data`, а временные media files —
-в tmpfs `/tmp/aiinbox`. Контейнер работает не от root; `TEMP_DIR` в Compose
+в tmpfs `/tmp/aiinbox`. Проверенные backup snapshots хранятся отдельно в
+`aiinbox_backups`. Контейнер работает не от root; `TEMP_DIR` в Compose
 зафиксирован явно, чтобы значение `./temp` из локального `.env` не переопределило
 контейнерный безопасный путь.
+
+После deployment доступны operational checks:
+
+```bash
+docker compose exec -T app python -m app.ops status
+docker compose exec -T app python -m app.ops smoke
+docker compose exec -T app python -m app.ops backup
+```
+
+`status` показывает DB/queue/FAILED/provider configuration без секретов.
+`smoke` делает реальные вызовы configured LLM provider и Telegram `getMe`;
+команда опциональная и может потреблять небольшое число provider tokens.
+`backup` использует SQLite Online Backup API, проверяет snapshot через
+`integrity_check` + `foreign_key_check` и оставляет ограниченное число
+поколений.
 
 ## Проверки
 
@@ -121,6 +137,7 @@ check для защищённой ветки `main`, поэтому merge тре
 попадать в Git. Важные параметры:
 
 - `DATABASE_URL`, `PROCESSING_CONCURRENCY`, `PROCESSING_POLL_SECONDS`;
+- `BACKUP_DIR`, `BACKUP_KEEP`;
 - `PROCESSING_TIMEOUT_SECONDS`, `SHUTDOWN_TIMEOUT_SECONDS`;
 - `WEB_TIMEOUT_SECONDS`, `MAX_DOWNLOAD_BYTES`, `WEB_MAX_ATTEMPTS`;
 - `MAX_AUDIO_BYTES`, `TRANSCRIPTION_TIMEOUT_SECONDS`;

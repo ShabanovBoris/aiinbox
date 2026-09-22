@@ -72,3 +72,12 @@ Retry отменяет obsolete pending/sending failure intent; перед failu
 `TRANSCRIPT_CHUNK` reuse требует SHA-256 exact segment bytes + provider/model +
 segmentation contract. Legacy/index-only or mismatched checkpoints пересчитываются.
 После успешного final transcript segment checkpoints удаляются.
+
+## D-013 — Online SQLite backup + verified restore
+
+Backup создаётся через SQLite Online Backup API, а не копированием live `.db`
+файла. Snapshot проходит `PRAGMA integrity_check` и
+`PRAGMA foreign_key_check`, хранится в отдельном volume и ротируется bounded
+числом поколений. Restore всегда создаёт новый файл. При canonical swap
+остановленного приложения старые `.db`, `-wal` и `-shm` архивируются как
+единый recovery set, чтобы sidecars старой БД не применились к restored DB.

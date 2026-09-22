@@ -11,6 +11,7 @@ from app.config import Settings
         ("processing_poll_seconds", 0),
         ("processing_timeout_seconds", 0),
         ("shutdown_timeout_seconds", 0),
+        ("backup_keep", 0),
         ("web_timeout_seconds", 0),
         ("max_download_bytes", 0),
         ("max_redirects", 0),

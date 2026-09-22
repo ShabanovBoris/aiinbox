@@ -13,6 +13,9 @@ class Settings(BaseSettings):
     telegram_bot_token: str = ""
     allowed_telegram_user_ids: str = ""
     database_url: str = "sqlite+aiosqlite:///data/app.db"
+    # Backups live outside the canonical DB path and rotation is bounded.
+    backup_dir: str = "./backups"
+    backup_keep: int = Field(14, ge=1)
     processing_concurrency: int = Field(2, ge=1)
     processing_poll_seconds: float = Field(1.0, gt=0)
     processing_timeout_seconds: float = Field(900.0, gt=0)
