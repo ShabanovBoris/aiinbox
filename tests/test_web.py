@@ -2,16 +2,18 @@ import httpx
 import pytest
 from sqlalchemy import select
 
+from app.bot.keyboards import item_keyboard
 from app.domain.enums import ContentKind, ProcessingStatus, SourceType
 from app.domain.priority import PriorityEngine
 from app.errors import AppError
 from app.extractors.web import PinningTransport, WebPageExtractor
 from app.llm.base import LlmError
+from app.services.actions import apply_item_action
 from app.services.analysis import Analyzer
 from app.services.ingestion import ingest_message
 from app.services.processing import ProcessingPipeline
 from app.services.url_security import validate_url_security
-from app.storage.models import Content, Item
+from app.storage.models import Content, Item, ItemSource
 from app.workers.processing import ProcessingWorker, requeue_stale
 from tests.fakes import FakeLlmProvider, make_analysis
 from tests.fixtures_html import ARTICLE_HTML, TINY_HTML
@@ -87,6 +89,7 @@ async def test_private_and_non_http_targets_rejected(url):
     with pytest.raises(AppError) as exc_info:
         await validate_url_security(url)
     assert exc_info.value.code == "SECURITY_REJECTED"
+    assert exc_info.value.permanent is True
 
 
 async def test_public_https_accepted():
@@ -97,6 +100,7 @@ async def test_dns_to_private_ip_rejected():
     with pytest.raises(AppError) as exc_info:
         await validate_url_security("https://internal.example.com/", resolver=fake_resolver)
     assert exc_info.value.code == "SECURITY_REJECTED"
+    assert exc_info.value.permanent is True
 
 
 async def test_dns_failure_is_download_failed():
@@ -144,6 +148,7 @@ async def test_oversized_response_is_too_large():
     with pytest.raises(AppError) as exc_info:
         await extractor.extract(make_web_item())
     assert exc_info.value.code == "TOO_LARGE"
+    assert exc_info.value.permanent is True
 
 
 async def test_timeout_maps_to_timeout_code():
@@ -274,7 +279,7 @@ async def test_permanent_4xx_not_retried():
 
 async def test_security_rejection_not_retried():
     async def rejecting_resolver(host):
-        raise AppError("SECURITY_REJECTED", "forbidden")
+        raise AppError("SECURITY_REJECTED", "forbidden", permanent=True)
 
     extractor = make_extractor(
         lambda request: httpx.Response(200, text=ARTICLE_HTML),
@@ -283,6 +288,7 @@ async def test_security_rejection_not_retried():
     with pytest.raises(AppError) as exc_info:
         await extractor.extract(make_web_item())
     assert exc_info.value.code == "SECURITY_REJECTED"
+    assert exc_info.value.permanent is True
 
 
 async def test_oversized_streaming_without_content_length_is_too_large():
@@ -298,6 +304,74 @@ async def test_oversized_streaming_without_content_length_is_too_large():
     with pytest.raises(AppError) as exc_info:
         await extractor.extract(make_web_item())
     assert exc_info.value.code == "TOO_LARGE"
+    assert exc_info.value.permanent is True
+
+
+@pytest.mark.parametrize(
+    ("failure_code", "source_url"),
+    [
+        ("TOO_LARGE", "https://example.com/oversized"),
+        ("SECURITY_REJECTED", "https://example.com/private"),
+    ],
+)
+async def test_permanent_web_failures_persist_and_disable_item_retry(
+    session_factory, failure_code, source_url
+):
+    """Exercise the real WEB boundary through durable child failure and Retry projection."""
+    if failure_code == "TOO_LARGE":
+
+        def handler(request):
+            return httpx.Response(200, headers={"content-length": "10"}, text="oversize")
+
+        extractor = make_extractor(handler, max_download_bytes=4)
+    else:
+
+        async def private_resolver(host):
+            return ["10.1.2.3"]
+
+        extractor = make_extractor(
+            lambda request: httpx.Response(200, text=ARTICLE_HTML),
+            resolver=private_resolver,
+        )
+
+    item = (
+        await ingest_message(
+            session_factory,
+            telegram_user_id=42,
+            chat_id=42,
+            message_id=901,
+            text=f"Сохрани мой комментарий {source_url}",
+        )
+    ).items[0]
+    provider = FakeLlmProvider()
+    worker = ProcessingWorker(
+        session_factory,
+        ProcessingPipeline(Analyzer(provider), PriorityEngine(), extractor),
+        poll_seconds=0.01,
+    )
+
+    assert await worker.process_one() is True
+
+    async with session_factory() as session:
+        stored = await session.get(Item, item.id)
+        source = await session.scalar(select(ItemSource).where(ItemSource.item_id == item.id))
+        assert stored.processing_status is ProcessingStatus.READY
+        assert stored.analysis_completeness == "PARTIAL"
+        assert source.extraction_status == "FAILED"
+        assert source.error_code == failure_code
+        assert source.failure_is_permanent is True
+        callbacks = [
+            button.callback_data
+            for row in item_keyboard(stored, [source]).inline_keyboard
+            for button in row
+            if button.callback_data
+        ]
+        assert f"item:retry:{item.id}" not in callbacks
+
+    # The action service enforces the same retry policy as the presentation.
+    retried = await apply_item_action(session_factory, 42, item.id, "retry")
+    assert retried is not None
+    assert retried.processing_status is ProcessingStatus.READY
 
 
 def test_custom_timeout_applied_to_default_client():

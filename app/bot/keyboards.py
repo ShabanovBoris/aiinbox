@@ -1,13 +1,15 @@
 """Small Telegram keyboard projections for the Item action surface."""
 
+from collections.abc import Sequence
+
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from app.bot.provenance import forward_original_url
 from app.domain.enums import ProcessingStatus
-from app.storage.models import Item
+from app.storage.models import Item, ItemSource
 
 
-def item_keyboard(item: Item) -> InlineKeyboardMarkup:
+def item_keyboard(item: Item, sources: Sequence[ItemSource] | None = None) -> InlineKeyboardMarkup:
     """Keep action intent in callback data; lifecycle state stays in SQLite."""
     # ❌ Удалена фиксированная rows-разметка без interest controls: READY-клавиатура
     # теперь должна проецировать canonical interest_level перед lifecycle actions.
@@ -33,13 +35,36 @@ def item_keyboard(item: Item) -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="🗄 Archive", callback_data=f"item:archive:{item.id}")],
         ]
     )
-    if item.source_url:
-        rows.append([InlineKeyboardButton(text="🔗 Открыть", url=item.source_url)])
+    source_urls = []
+    if sources is not None:
+        source_urls = list(
+            dict.fromkeys(source.source_url for source in sources if source.source_url)
+        )
+    # ❌ Удалена проекция ссылки только из parent Item.source_url: canonical URL
+    # composite Item принадлежат child ItemSource и должны оставаться открываемыми.
+    if item.source_url and item.source_url not in source_urls:
+        source_urls.insert(0, item.source_url)
+    for index, source_url in enumerate(source_urls, start=1):
+        label = "🔗 Открыть" if len(source_urls) == 1 else f"🔗 Открыть {index}"
+        rows.append([InlineKeyboardButton(text=label, url=source_url)])
     original_url = forward_original_url(item.source_metadata_json)
     if original_url:
         rows.append([InlineKeyboardButton(text="↗ Открыть оригинал", url=original_url)])
-    if item.processing_status is ProcessingStatus.FAILED or (
-        item.processing_status is ProcessingStatus.READY and item.analysis_completeness == "PARTIAL"
+    failed_sources = [source for source in sources or () if source.extraction_status == "FAILED"]
+    has_retryable_source_failure = any(not source.failure_is_permanent for source in failed_sources)
+    # ❌ Удалено безусловное Retry для PARTIAL/FAILED: permanent extraction failure
+    # нельзя исправить повтором, но более поздний LLM/priority failure retryable.
+    failed_item_retryable = (
+        sources is None
+        or item.processing_stage != "EXTRACTING"
+        or not failed_sources
+        or has_retryable_source_failure
+    )
+    partial_item_retryable = sources is None or has_retryable_source_failure
+    if (item.processing_status is ProcessingStatus.FAILED and failed_item_retryable) or (
+        item.processing_status is ProcessingStatus.READY
+        and item.analysis_completeness == "PARTIAL"
+        and partial_item_retryable
     ):
         rows.append([InlineKeyboardButton(text="🔁 Retry", callback_data=f"item:retry:{item.id}")])
     return InlineKeyboardMarkup(inline_keyboard=rows)

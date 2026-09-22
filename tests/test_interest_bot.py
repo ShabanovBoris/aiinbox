@@ -5,7 +5,7 @@ from sqlalchemy import func, select
 from app.bot.handlers import on_item_callback
 from app.bot.keyboards import item_keyboard
 from app.domain.enums import ItemState, ItemType, ProcessingStatus, SourceType
-from app.storage.models import Event, Item, User
+from app.storage.models import Event, Item, ItemSource, User
 
 
 class FakeCallbackMessage:
@@ -76,7 +76,16 @@ def test_ready_keyboard_defaults_to_interest_two():
 
 
 def test_partial_ready_keyboard_exposes_retry():
-    markup = item_keyboard(_ready_item(analysis_completeness="PARTIAL"))
+    source = ItemSource(
+        id=11,
+        item_id=7,
+        source_index=0,
+        source_type=SourceType.WEB,
+        source_url="https://example.com/retry",
+        extraction_status="FAILED",
+        metadata_json={"failure_permanent": False},
+    )
+    markup = item_keyboard(_ready_item(analysis_completeness="PARTIAL"), [source])
     callbacks = [
         button.callback_data
         for row in markup.inline_keyboard
@@ -85,6 +94,55 @@ def test_partial_ready_keyboard_exposes_retry():
     ]
 
     assert "item:retry:7" in callbacks
+
+
+def test_partial_ready_keyboard_hides_retry_for_permanent_source_failure():
+    source = ItemSource(
+        id=12,
+        item_id=7,
+        source_index=0,
+        source_type=SourceType.VIDEO,
+        extraction_status="FAILED",
+        error_code="TOO_LARGE",
+        metadata_json={"failure_permanent": True},
+    )
+    markup = item_keyboard(_ready_item(analysis_completeness="PARTIAL"), [source])
+    callbacks = [
+        button.callback_data
+        for row in markup.inline_keyboard
+        for button in row
+        if button.callback_data
+    ]
+
+    assert "item:retry:7" not in callbacks
+
+
+def test_multi_url_keyboard_exposes_each_child_source():
+    sources = [
+        ItemSource(
+            id=21,
+            item_id=7,
+            source_index=0,
+            source_type=SourceType.WEB,
+            source_url="https://example.com/first",
+            extraction_status="READY",
+        ),
+        ItemSource(
+            id=22,
+            item_id=7,
+            source_index=1,
+            source_type=SourceType.WEB,
+            source_url="https://example.com/second",
+            extraction_status="READY",
+        ),
+    ]
+    markup = item_keyboard(_ready_item(source_url=None), sources)
+    links = [
+        (button.text, button.url) for row in markup.inline_keyboard for button in row if button.url
+    ]
+
+    assert ("🔗 Открыть 1", "https://example.com/first") in links
+    assert ("🔗 Открыть 2", "https://example.com/second") in links
 
 
 async def test_interest_callback_updates_persisted_state_and_existing_message(

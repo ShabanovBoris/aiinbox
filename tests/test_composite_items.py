@@ -118,7 +118,7 @@ async def test_failed_embedded_url_degrades_to_text_and_successful_source(sessio
         assert statuses == ["READY", "FAILED"]
 
 
-async def test_retry_partial_item_reuses_ready_source_and_regenerates_analysis(session_factory):
+async def test_retry_partial_item_survives_restart_and_reuses_ready_source(session_factory):
     failed_url = "https://example.com/retry-me"
     item = (
         await ingest_message(
@@ -161,6 +161,9 @@ async def test_retry_partial_item_reuses_ready_source_and_regenerates_analysis(s
         )
         assert statuses == ["READY", "PENDING"]
 
+    # Crash/restart boundary: Retry уже durable QUEUED, но reanalysis ещё не
+    # начался. Новый worker должен восстановиться из child checkpoints.
+    worker = _worker(session_factory, provider, extractor)
     assert await worker.process_one() is True
     assert extractor.calls.count("https://example.com/stable") == 1
     assert extractor.calls.count(failed_url) == 2
@@ -175,6 +178,86 @@ async def test_retry_partial_item_reuses_ready_source_and_regenerates_analysis(s
         assert stored.processing_status is ProcessingStatus.READY
         assert stored.analysis_completeness == "FULL_TEXT"
         assert delivery.status == "PENDING"
+
+
+async def test_permanent_partial_source_failure_is_not_retryable(session_factory):
+    item = (
+        await ingest_voice(
+            session_factory,
+            telegram_user_id=42,
+            chat_id=42,
+            message_id=3,
+            file_id="oversized-video",
+            duration_seconds=30,
+            source_type=SourceType.VIDEO,
+            too_large=(200, 100),
+            source_text="Сохрани описание даже без видео",
+        )
+    ).items[0]
+    worker = _worker(session_factory, FakeLlmProvider(), CompositeWebExtractor())
+
+    assert await worker.process_one() is True
+    retried = await apply_item_action(session_factory, 42, item.id, "retry")
+
+    assert retried is not None
+    assert retried.processing_status is ProcessingStatus.READY
+    async with session_factory() as session:
+        source = await session.scalar(select(ItemSource).where(ItemSource.item_id == item.id))
+        assert source.extraction_status == "FAILED"
+        assert source.error_code == "TOO_LARGE"
+        assert source.failure_is_permanent is True
+
+        stored = await session.get(Item, item.id)
+        stored.processing_status = ProcessingStatus.FAILED
+        stored.processing_stage = "ANALYZING"
+        stored.error_code = "LLM_FAILED"
+        await session.commit()
+
+    late_stage_retry = await apply_item_action(session_factory, 42, item.id, "retry")
+    assert late_stage_retry is not None
+    assert late_stage_retry.processing_status is ProcessingStatus.QUEUED
+    assert late_stage_retry.processing_stage == "ANALYZING"
+    async with session_factory() as session:
+        source = await session.scalar(select(ItemSource).where(ItemSource.item_id == item.id))
+        assert source.extraction_status == "FAILED"
+        assert source.failure_is_permanent is True
+
+
+def test_completeness_uses_child_source_types_for_mixed_item():
+    item = Item(
+        id=7,
+        user_id=1,
+        processing_status=ProcessingStatus.QUEUED,
+        source_type=SourceType.TEXT,
+        processing_stage="EXTRACTING",
+        user_note="",
+    )
+    sources = [
+        ItemSource(
+            item_id=7,
+            source_index=0,
+            source_type=SourceType.WEB,
+            source_url="https://example.com/article",
+        ),
+        ItemSource(
+            item_id=7,
+            source_index=1,
+            source_type=SourceType.YOUTUBE,
+            source_url="https://youtube.com/watch?v=abc",
+        ),
+    ]
+    content = ProcessingPipeline._compose_item_content(
+        item,
+        None,
+        sources,
+        [
+            NormalizedContent(source_type=SourceType.WEB, text="article"),
+            NormalizedContent(source_type=SourceType.YOUTUBE, text="transcript"),
+        ],
+        [],
+    )
+
+    assert ProcessingPipeline._completeness(content, None) == "TRANSCRIPT_ONLY"
 
 
 async def test_failed_only_url_with_message_text_still_analyzes_text(session_factory):

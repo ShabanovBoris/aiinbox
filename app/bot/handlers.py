@@ -4,6 +4,7 @@ from datetime import UTC, datetime, timedelta
 from aiogram import F, Router
 from aiogram.filters import Command, CommandStart
 from aiogram.types import CallbackQuery, Message
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.bot.formatting import format_ready_item
@@ -26,7 +27,7 @@ from app.services.retrieval import (
     list_inbox,
     search_items,
 )
-from app.storage.models import Item
+from app.storage.models import Item, ItemSource
 
 log = logging.getLogger(__name__)
 
@@ -433,8 +434,18 @@ async def on_item_callback(
             return
         item, changed = result
         if changed and callback.message:
+            async with session_factory() as session:
+                sources = list(
+                    (
+                        await session.scalars(
+                            select(ItemSource)
+                            .where(ItemSource.item_id == item.id)
+                            .order_by(ItemSource.source_index, ItemSource.id)
+                        )
+                    ).all()
+                )
             await callback.message.edit_text(
-                format_ready_item(item), reply_markup=item_keyboard(item)
+                format_ready_item(item), reply_markup=item_keyboard(item, sources)
             )
         await callback.answer()
         return
