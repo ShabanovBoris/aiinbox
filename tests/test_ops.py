@@ -66,6 +66,26 @@ def test_restore_refuses_to_overwrite_existing_database(tmp_path):
     assert target.read_bytes() == b"existing"
 
 
+def test_verify_database_rejects_foreign_key_orphans(tmp_path):
+    """Verified backup must include referential integrity, not only page integrity."""
+    database = tmp_path / "orphan.db"
+    connection = sqlite3.connect(database)
+    try:
+        connection.execute("CREATE TABLE parent(id INTEGER PRIMARY KEY)")
+        connection.execute(
+            "CREATE TABLE child("
+            "id INTEGER PRIMARY KEY, "
+            "parent_id INTEGER NOT NULL REFERENCES parent(id))"
+        )
+        connection.execute("INSERT INTO child(parent_id) VALUES (999)")
+        connection.commit()
+    finally:
+        connection.close()
+
+    with pytest.raises(RuntimeError, match="foreign_key_check"):
+        verify_database(database)
+
+
 def test_backup_rotation_removes_only_old_aiinbox_generations(tmp_path):
     """Rotation must keep unrelated files and only bound generated backup history."""
     backups = []

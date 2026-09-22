@@ -99,8 +99,8 @@ Compose healthcheck каждые 30 секунд выполняет:
 python -m app.ops health
 ```
 
-Это дешёвая DB/status-проверка. Полный SQLite integrity check запускается
-отдельно, чтобы не сканировать всю БД на каждом health interval:
+Это дешёвая DB/status-проверка. Полная SQLite-проверка структуры и foreign keys
+запускается отдельно, чтобы не сканировать всю БД на каждом health interval:
 
 ```bash
 uv run python -m app.ops verify
@@ -121,7 +121,8 @@ docker compose exec -T app python -m app.ops backup
 
 Defaults: `BACKUP_DIR=./backups`, `BACKUP_KEEP=14`; в Compose
 `BACKUP_DIR=/backups`. Каждый snapshot сначала проходит
-`PRAGMA integrity_check`, и только после этого выполняется rotation.
+`PRAGMA integrity_check` и `PRAGMA foreign_key_check`, и только после этого
+выполняется rotation.
 
 Пример ежедневного cron на VPS:
 
@@ -130,6 +131,12 @@ Defaults: `BACKUP_DIR=./backups`, `BACKUP_KEEP=14`; в Compose
 ```
 
 Cron должен запускаться от пользователя, у которого есть доступ к Docker.
+
+Отдельный volume `aiinbox_backups` защищает от логических ошибок и неудачного
+upgrade, но обычно остаётся на том же VPS/disk. Это **не disaster-recovery
+copy**. До `v1.0-mvp` минимум одно актуальное поколение backup должно регулярно
+реплицироваться off-host (другой host или S3-compatible storage). Конкретный
+механизм sync можно внедрить отдельно, без изменения backup format.
 
 ## Restore drill / recovery
 
@@ -149,18 +156,32 @@ docker compose run --rm --no-deps app \
   --backup /backups/aiinbox-YYYYMMDDTHHMMSSffffffZ.db \
   --target /data/app-restored.db
 
-# Сохранить предыдущую БД и атомарно выбрать восстановленную.
+# Архивировать весь старый SQLite recovery set и только потом выбрать restored DB.
+# Это гарантирует, что старые WAL/SHM sidecars не переживут canonical swap.
 docker compose run --rm --no-deps app sh -c \
-  'mv /data/app.db /data/app.db.pre-restore && mv /data/app-restored.db /data/app.db'
+  'set -eu
+   stamp=$(date -u +%Y%m%dT%H%M%SZ)
+   mv /data/app.db /data/app.db.pre-restore.$stamp
+   if [ -e /data/app.db-wal ]; then
+     mv /data/app.db-wal /data/app.db-wal.pre-restore.$stamp
+   fi
+   if [ -e /data/app.db-shm ]; then
+     mv /data/app.db-shm /data/app.db-shm.pre-restore.$stamp
+   fi
+   test ! -e /data/app.db-wal
+   test ! -e /data/app.db-shm
+   mv /data/app-restored.db /data/app.db'
 
 docker compose up -d app
 docker compose exec -T app python -m app.ops status
 docker compose exec -T app python -m app.ops smoke
 ```
 
-Если используется SQLite WAL, после остановки app не копируйте `.db` вручную
-как backup-процедуру: штатный `app.ops backup` делает консистентный snapshot
-через SQLite API.
+Если используется SQLite WAL, после остановки app не копируйте только `.db`
+вручную как backup-процедуру: штатный `app.ops backup` делает консистентный
+snapshot через SQLite API. Старый canonical recovery set
+`app.db` + `app.db-wal` + `app.db-shm` храните вместе до завершения
+проверки restored deployment.
 
 ## FTS maintenance
 

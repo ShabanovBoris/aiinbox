@@ -547,9 +547,10 @@ DB/config boundary; unexpected critical worker exit завершает осно�
 ## 83. SQLite backup / restore
 
 Live SQLite backup создаётся через Online Backup API и после создания проходит
-`PRAGMA integrity_check`. Backup generations хранятся отдельно от live DB и
-ротируются bounded числом. Restore создаёт новый DB-файл и тоже проверяет его;
-замена canonical database выполняется только после остановки приложения.
+`PRAGMA integrity_check` + `PRAGMA foreign_key_check`. Backup generations
+хранятся отдельно от live DB и ротируются bounded числом. Restore создаёт новый
+DB-файл и тоже проверяет его; замена canonical database выполняется только после
+остановки приложения.
 
 ## 84. Deployment smoke
 

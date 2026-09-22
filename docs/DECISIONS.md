@@ -76,6 +76,8 @@ segmentation contract. Legacy/index-only or mismatched checkpoints пересч�
 ## D-013 — Online SQLite backup + verified restore
 
 Backup создаётся через SQLite Online Backup API, а не копированием live `.db`
-файла. Snapshot проходит `PRAGMA integrity_check`, хранится в отдельном volume
-и ротируется bounded числом поколений. Restore всегда создаёт новый файл:
-подмена canonical DB выполняется оператором только после отдельной проверки.
+файла. Snapshot проходит `PRAGMA integrity_check` и
+`PRAGMA foreign_key_check`, хранится в отдельном volume и ротируется bounded
+числом поколений. Restore всегда создаёт новый файл. При canonical swap
+остановленного приложения старые `.db`, `-wal` и `-shm` архивируются как
+единый recovery set, чтобы sidecars старой БД не применились к restored DB.

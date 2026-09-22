@@ -37,10 +37,15 @@ def verify_database(path: Path) -> None:
     connection = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
     try:
         result = connection.execute("PRAGMA integrity_check").fetchone()
+        if result != ("ok",):
+            raise RuntimeError(f"SQLite integrity_check failed for {path}: {result!r}")
+        foreign_key_errors = connection.execute("PRAGMA foreign_key_check").fetchall()
     finally:
         connection.close()
-    if result != ("ok",):
-        raise RuntimeError(f"SQLite integrity_check failed for {path}: {result!r}")
+    if foreign_key_errors:
+        raise RuntimeError(
+            f"SQLite foreign_key_check failed for {path}: {foreign_key_errors[:10]!r}"
+        )
 
 
 def backup_database(source: Path, destination: Path) -> None:

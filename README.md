@@ -107,7 +107,8 @@ docker compose exec -T app python -m app.ops backup
 `smoke` делает реальные вызовы configured LLM provider и Telegram `getMe`;
 команда опциональная и может потреблять небольшое число provider tokens.
 `backup` использует SQLite Online Backup API, проверяет snapshot через
-`integrity_check` и оставляет ограниченное число поколений.
+`integrity_check` + `foreign_key_check` и оставляет ограниченное число
+поколений.
 
 ## Проверки
 
