@@ -5,7 +5,7 @@
 
 ## Быстрый старт
 
-Требования: Python 3.12+, `uv`, `ffmpeg`.
+Требования: Python 3.12+, `uv`, `ffmpeg`/`ffprobe`.
 Для production off-host backup дополнительно нужны Docker Compose, `rsync` и
 SSH; `rsync` должен быть установлен и на backup host.
 
@@ -300,18 +300,31 @@ sqlite3 data/app.db \
    FROM items WHERE processing_status='FAILED' ORDER BY id DESC"
 ```
 
+Source-local extraction state одного composite Item:
+
+```bash
+sqlite3 data/app.db \
+  "SELECT id, item_id, source_index, source_type, extraction_status, error_code, source_url
+   FROM item_sources WHERE item_id=<id> ORDER BY source_index"
+```
+
 На restart все stale `PROCESSING` автоматически возвращаются в `QUEUED`.
 Обычный пользовательский retry делается кнопкой `🔁 Retry`.
 
 Ручной fallback только для диагностики:
 
 ```sql
+UPDATE item_sources
+SET extraction_status='PENDING', error_code=NULL, error_message=NULL
+WHERE item_id=<id> AND extraction_status='FAILED';
+
 UPDATE items
 SET processing_status='QUEUED', error_code=NULL, error_message=NULL
 WHERE id=<id> AND processing_status='FAILED';
 ```
 
-Не очищать `processing_stage`/contents: это resume checkpoints.
+Не очищать `processing_stage`/contents и не переводить `READY` ItemSource обратно
+в `PENDING`: это resume checkpoints уже успешно извлечённых частей сообщения.
 
 ## Immediate deliveries
 

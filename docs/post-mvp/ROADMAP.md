@@ -164,27 +164,33 @@ Forwarding is source provenance, not a new content type.
 Examples:
 
 - forwarded text → TEXT;
-- forwarded link → WEB/YOUTUBE/INSTAGRAM according to URL routing;
+- forwarded single link → WEB/YOUTUBE according to current URL routing;
 - forwarded voice → VOICE;
 - forwarded audio → AUDIO;
-- forwarded video → VIDEO after PM-03;
+- forwarded video → VIDEO;
 - forwarded document → DOCUMENT after PM-03.
 
-Preserve available forward origin metadata without confusing original caption/text with the user's own `user_note`.
+One forwarded Telegram message remains one Item. URLs/media are child ItemSources,
+all successful sources plus original text/caption are synthesized once, and a
+failed child source may degrade the Item to PARTIAL instead of discarding usable
+siblings. Preserve available forward origin metadata without confusing original
+caption/text with the user's own `user_note`.
 
 Detailed specification: [PM-02_FORWARDED_MESSAGES.md](PM-02_FORWARDED_MESSAGES.md).
 
 ## 7. PM-03 — Telegram Video & Documents
 
-Add native Telegram capture for:
+Current state: Telegram video is already implemented through the shared composite
+Item pipeline, including compatible video transported by Telegram as `Document`.
+Remaining PM-03 work is native document extraction for:
 
-- video;
 - PDF;
 - TXT;
 - Markdown;
 - DOCX.
 
-Video should reuse existing STT + representative frames + vision concepts.
+Video uses existing STT + representative frames + optional vision with transcript-only
+fallback and source-local retry checkpoints.
 
 Documents should normalize into text and reuse the existing long-content/chunking/analyzer path.
 

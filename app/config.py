@@ -48,6 +48,8 @@ class Settings(BaseSettings):
     subtitle_langs: str = "ru,en"
 
     # Video visual analysis (Phase 7)
+    max_video_bytes: int = Field(20_000_000, ge=1)
+    max_video_duration_seconds: int = Field(7200, ge=1)
     video_frame_interval_seconds: int = Field(20, ge=1)
     video_max_frames: int = Field(120, ge=1)
     video_scene_threshold: float = Field(0.35, ge=0.0, le=1.0)

@@ -22,6 +22,9 @@ class NormalizedContent(BaseModel):
     author: str | None = None
     language: str | None = None
     duration_seconds: int | None = None
+    # Source-provided text/caption accompanying a primary URL/media source.
+    # It is distinct from user_note so forwarded author text never becomes user intent.
+    source_context: str | None = None
     metadata: dict[str, Any] = {}
 
 

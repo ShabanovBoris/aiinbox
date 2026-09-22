@@ -91,3 +91,35 @@ OpenSSH key/config, не добавляя cloud SDK или storage credentials �
 Успешная replication включает download-back того же generation,
 checksum + SQLite/FK verification и restore drill во временную DB. Canonical
 `/data/app.db` при таком drill не изменяется.
+
+## D-015 — Forwarding как provenance, а не source type
+
+Telegram forwarding нормализуется на bot boundary в `items.source_metadata_json`.
+Исходный `SourceType` остаётся `TEXT`/`WEB`/`YOUTUBE`/`VOICE`/`AUDIO`/`VIDEO`. Текст или
+caption автора forwarded-сообщения сохраняется в существующем `USER_TEXT`
+content и передаётся анализатору как source context, отдельно от `user_note`.
+Это сохраняет единый processing pipeline и не смешивает чужой текст с сигналом
+намерения пользователя.
+
+## D-016 — Telegram message является границей Item
+
+Context: одно Telegram message/post может одновременно содержать text/caption,
+несколько URL и media. Разбиение такого сообщения на несколько Items теряет общий
+смысл и заставляет пользователя разбирать результаты по частям.
+
+Decision: одно входящее Telegram message создаёт один `Item`. Independently
+extractable URL/media хранятся в `item_sources`; `contents.source_id` привязывает
+durable checkpoints к конкретному source. После extraction все успешные части
+собираются в один `NormalizedContent` и проходят один Analyzer/PriorityEngine.
+Контракт финального synthesis требует учитывать каждый содержательный source и
+message-level text/caption; порядок sources не должен приводить к молчаливой
+потере более поздних частей.
+
+Reason: Item соответствует пользовательской единице информации, а source остаётся
+технической единицей extraction/retry.
+
+Consequences: replay дедуплицируется по Telegram message identity; одинаковый URL
+в разных сообщениях не склеивает Items. Ошибка одного source даёт `PARTIAL`, если
+остаётся meaningful text/другой source; Item падает только когда анализировать
+нечего или падает общий analysis. Для длинного multi-source content промежуточное
+chunk summarization также должно сохранять существенную тему каждого source.

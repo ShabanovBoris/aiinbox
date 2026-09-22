@@ -2,7 +2,7 @@ import httpx
 import pytest
 from sqlalchemy import select
 
-from app.domain.enums import ProcessingStatus, SourceType
+from app.domain.enums import ContentKind, ProcessingStatus, SourceType
 from app.domain.priority import PriorityEngine
 from app.errors import AppError
 from app.extractors.web import PinningTransport, WebPageExtractor
@@ -216,7 +216,11 @@ async def test_web_pipeline_persists_content_and_resumes_without_redownload(sess
     assert provider.calls[0][0].text != ""
     assert provider.calls[0][0].user_note == "Полезная статья"
     contents = await _select_contents(session_factory, item.id)
-    assert len(contents) == 1 and contents[0].text != ""
+    assert {content.kind for content in contents} == {
+        ContentKind.USER_TEXT,
+        ContentKind.WEB_TEXT,
+    }
+    assert next(content for content in contents if content.kind is ContentKind.WEB_TEXT).text != ""
 
     # Restart-семантика: WEB_TEXT персистен — resume из ANALYZING не перекачивает
     async with session_factory() as session:

@@ -1,7 +1,7 @@
 # PM-02 — Forwarded Telegram Messages
 
 Type: Post-MVP Epic + Detailed Technical Specification  
-Status: NOT_STARTED  
+Status: IN_PROGRESS
 Prerequisite: stabilized Telegram ingestion
 
 ## 1. Epic
@@ -32,7 +32,7 @@ A forwarded message still resolves to its real content source:
 - forwarded URL → WEB/YOUTUBE/INSTAGRAM;
 - forwarded voice → VOICE;
 - forwarded audio → AUDIO;
-- forwarded video → VIDEO after PM-03;
+- forwarded video → VIDEO;
 - forwarded document → DOCUMENT after PM-03.
 
 ## 3. In scope
@@ -41,11 +41,13 @@ A forwarded message still resolves to its real content source:
 - persist normalized provenance metadata;
 - forwarded text;
 - forwarded text/caption containing URLs;
-- forwarded voice/audio using existing media paths;
+- forwarded photo-post captions containing visible or hidden `text_link` URLs;
+- forwarded voice/audio/video using existing media paths;
 - origin-aware formatting where useful;
 - tests for origin variants and idempotency.
 
-PM-03 will extend the same behavior to video/documents.
+PM-03 extends the same behavior to native media; video is now wired through the
+shared ItemSource contract, while document extraction remains pending.
 
 ## 4. Out of scope
 
@@ -116,7 +118,8 @@ For simple forwarded text, `user_note` may be empty and the Item text content is
 
 ## 8. URL routing
 
-Forwarded messages containing URLs must use the same canonical URL parsing/routing as ordinary messages.
+Forwarded messages use the same canonical URL parser, but the Telegram message
+boundary remains authoritative: one forwarded post creates one Item.
 
 Examples:
 
@@ -129,9 +132,19 @@ forwarded Instagram Reel URL
 
 forwarded article URL
 → WEB
+
+forwarded post with multiple URLs
+→ one TEXT Item containing the complete post text and all URLs
 ~~~
 
-Do not duplicate URL-normalization or dedup logic.
+Do not duplicate URL-normalization logic. URL identity is local to the Telegram
+message: the same URL in two different posts may carry different source context
+and therefore belongs to two different Items.
+
+After extraction, one final analysis synthesizes the whole Item. For multiple
+successful sources, title/summary must represent every substantive source and the
+original post text/caption; later sources must not disappear merely because an
+earlier source is longer or more prominent.
 
 ## 9. Media routing
 
@@ -150,12 +163,12 @@ Forward metadata accompanies the Item.
 
 ### Video/document
 
-Until PM-03 is implemented:
+Forwarded video uses the same `VIDEO` ItemSource/extractor as direct video, including
+video that Telegram transports as a `Document` with video MIME/extension. Caption
+and URLs remain siblings in the same Item, and a failed video source may degrade
+to a partial analysis when useful caption/URL content remains.
 
-- unsupported forwarded media must fail gracefully;
-- do not create half-implemented source types.
-
-After PM-03, these should work through the same handlers/extractors as non-forwarded media.
+Non-video document extraction is still pending; unsupported document messages fail gracefully.
 
 ## 10. Source link
 
@@ -186,10 +199,12 @@ Avoid showing internal Telegram ids to the user.
 Existing dedup semantics remain canonical:
 
 - Telegram source identity prevents duplicate update ingestion;
-- URL dedup remains per-user;
-- forward metadata must not defeat URL dedup.
+- repeated URL inside one message is represented once as an ItemSource;
+- the same URL in different messages does not merge Items;
+- forward metadata does not alter message identity.
 
-If the same URL is forwarded twice from different channels, current product policy for URL dedup remains in force unless deliberately changed in a separate product decision.
+The Item boundary is the Telegram message/post, because surrounding text and the
+set of attached sources are part of its meaning.
 
 ## 13. Privacy
 
@@ -215,13 +230,17 @@ Requirements:
 
 - forwarded article uses WEB;
 - forwarded YouTube uses YOUTUBE;
-- duplicate URL behavior unchanged;
+- multi-URL forwarded post creates exactly one TEXT Item;
+- complete forwarded text, including URLs, survives persistence and analysis;
+- replay of the same Telegram update creates no second Item;
 - origin metadata persists.
 
 ### Forward media
 
 - voice uses VOICE path;
 - audio uses AUDIO path;
+- video uses VIDEO transcript + optional vision path;
+- media failure with usable caption/source siblings yields partial analysis;
 - processing result does not differ merely because message was forwarded.
 
 ### Idempotency
@@ -242,15 +261,15 @@ Requirements:
 4. Original forwarded text is not mislabeled as `user_note`.
 5. No `FORWARDED` source type exists.
 6. Replay/idempotency guarantees remain intact.
-7. Existing non-forwarded ingestion behaves unchanged.
+7. Direct and forwarded messages share the same one-message-one-Item aggregation semantics.
 8. Full quality gate passes.
 
 ## 16. Definition of Done
 
 - migration for `source_metadata_json` if not already present;
 - transport normalization implemented;
-- text/URL/voice/audio paths covered;
+- text/URL/voice/audio/video paths covered;
 - user-visible provenance formatting kept compact;
 - tests added;
-- PM-03 extension points documented but not preimplemented;
+- document extension remains in PM-03 without a parallel processing pipeline;
 - implementation/review docs updated according to repository workflow.

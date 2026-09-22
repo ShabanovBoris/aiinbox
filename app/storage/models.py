@@ -58,9 +58,9 @@ class Item(Base):
     __tablename__ = "items"
     __table_args__ = (
         UniqueConstraint("user_id", "telegram_message_id", "source_index", name="uq_items_source"),
-        # Дедупликация URL per-user на уровне БД; для TEXT-Item source_url NULL
-        # (SQLite уникальность не действует на NULL-пары).
-        UniqueConstraint("user_id", "source_url", name="uq_items_user_url"),
+        # ❌ Удалена уникальность Item по URL: Item теперь идентифицирует входящее
+        # сообщение, а URL — дочерний ItemSource. Один URL в разных постах может
+        # иметь разный контекст и поэтому не должен склеивать два Item.
         CheckConstraint("interest_level BETWEEN 1 AND 3", name="ck_items_interest_level"),
     )
 
@@ -81,12 +81,16 @@ class Item(Base):
     source_type: Mapped[SourceType] = mapped_column(
         SaEnum(SourceType, native_enum=False, length=16)
     )
-    # Нормализованный URL для WEB-источников (дедупликация, Открыть, retry).
+    # Совместимая presentation-проекция одиночного URL; canonical набор источников
+    # нового Item хранится в item_sources.
     source_url: Mapped[str | None] = mapped_column(String(700))
     # file_id Telegram-файла для VOICE/AUDIO (скачивание на этапе extraction).
     source_file_id: Mapped[str | None] = mapped_column(String(200))
     # Длительность медиа-контента (voice/audio/video), секунд.
     content_duration_seconds: Mapped[int | None] = mapped_column()
+    # Provenance остаётся свойством исходного envelope, а не новым SourceType:
+    # Telegram-forward metadata хранится отдельно от бизнес-классификации Item.
+    source_metadata_json: Mapped[dict | None] = mapped_column(JSON)
 
     # Текущий этап конвейера — позволяет понять, где обработка остановилась
     # при сбое (PRODUCT_SPEC §60, D-001 resumable).
@@ -143,10 +147,56 @@ class Content(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     item_id: Mapped[int] = mapped_column(ForeignKey("items.id"), index=True)
+    # Extracted content may belong to one concrete source inside a composite Item.
+    # NULL means Item-level content such as Telegram message text or LLM chunk summaries.
+    source_id: Mapped[int | None] = mapped_column(ForeignKey("item_sources.id"), index=True)
     kind: Mapped[ContentKind] = mapped_column(SaEnum(ContentKind, native_enum=False, length=16))
     text: Mapped[str] = mapped_column(Text)
     metadata_json: Mapped[dict | None] = mapped_column(JSON)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class ItemSource(Base):
+    """Durable independently extractable source inside one user-visible Item.
+
+    Item owns lifecycle/analysis; ItemSource owns only extraction identity and
+    outcome. This keeps one Telegram message as one Item while allowing each URL
+    or media attachment to resume/fail independently before the common analysis.
+    """
+
+    __tablename__ = "item_sources"
+    __table_args__ = (
+        UniqueConstraint("item_id", "source_index", name="uq_item_sources_index"),
+        CheckConstraint(
+            "extraction_status IN ('PENDING', 'READY', 'FAILED')",
+            name="ck_item_sources_extraction_status",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    item_id: Mapped[int] = mapped_column(ForeignKey("items.id"), index=True)
+    source_index: Mapped[int] = mapped_column(Integer)
+    source_type: Mapped[SourceType] = mapped_column(
+        SaEnum(SourceType, native_enum=False, length=16)
+    )
+    source_url: Mapped[str | None] = mapped_column(String(700))
+    source_file_id: Mapped[str | None] = mapped_column(String(200))
+    content_duration_seconds: Mapped[int | None] = mapped_column(Integer)
+    extraction_status: Mapped[str] = mapped_column(
+        String(16), default="PENDING", server_default="PENDING", index=True
+    )
+    error_code: Mapped[str | None] = mapped_column(String(64))
+    error_message: Mapped[str | None] = mapped_column(Text)
+    metadata_json: Mapped[dict | None] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now()
+    )
+
+    @property
+    def user_note(self) -> str:
+        """Extractor compatibility: intent belongs to Item, never to one child source."""
+        return ""
 
 
 class Event(Base):

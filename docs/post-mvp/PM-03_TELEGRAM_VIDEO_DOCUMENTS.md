@@ -1,14 +1,15 @@
 # PM-03 — Telegram Video & Documents
 
 Type: Post-MVP Epic + Detailed Technical Specification  
-Status: NOT_STARTED  
+Status: IN_PROGRESS
 Prerequisites: stabilized MVP; PM-02 recommended for forwarded variants
 
 ## 1. Epic
 
 ### Problem
 
-The current bot can capture text, links, voice/audio and URL-based video sources, but direct Telegram video and common documents are still a gap.
+The current bot captures direct Telegram video through the shared composite Item
+pipeline. Common documents are still a gap.
 
 Users should not need to upload a file elsewhere and send a URL just to make AIInbox understand it.
 
@@ -22,13 +23,14 @@ Support native Telegram capture for:
 - Markdown;
 - DOCX.
 
-All new sources must converge into the existing:
+All new sources converge into the existing message aggregate:
 
 ~~~text
 ingestion
-→ durable Item
-→ extractor
-→ NormalizedContent
+→ one durable Item
+→ one or more durable ItemSource rows
+→ independent extraction/checkpoints
+→ combined NormalizedContent
 → Analyzer
 → PriorityEngine
 → persisted result
@@ -40,7 +42,7 @@ No second media-analysis subsystem.
 
 ### Video
 
-- Telegram `video`;
+- Telegram `video` — implemented;
 - optionally compatible video sent as Telegram document when MIME/extension is recognized safely;
 - audio extraction;
 - transcription;
@@ -109,13 +111,15 @@ Telegram handler responsibilities remain thin:
 1. allowlist check;
 2. read Telegram metadata;
 3. perform cheap pre-queue size validation when Telegram provides size;
-4. create durable Item;
+4. create one durable Item plus its child ItemSources;
 5. ACK quickly;
 6. worker handles download/extraction.
 
 For an oversized known file:
 
-- persist a durable FAILED Item with `TOO_LARGE` if that is consistent with current media policy;
+- mark the video source `FAILED/TOO_LARGE`;
+- fail the whole Item only when no useful caption/URL sibling remains;
+- otherwise continue to a `PARTIAL` combined analysis;
 - do not enqueue a download that cannot succeed;
 - show configured limit, not a magic hardcoded number.
 
@@ -171,6 +175,9 @@ Use explicit completeness:
 A vision failure with a valid transcript should normally remain a successful Item with honest completeness.
 
 A transcription failure with no other meaningful content is a failed Item.
+
+A transcription/download failure with meaningful caption text or another successful
+ItemSource is a successful `PARTIAL` Item; the source-local failure remains durable.
 
 ## 8. Video temp/resource policy
 
@@ -287,7 +294,7 @@ This follows existing D-001 resumable architecture.
 
 When PM-02 metadata is present:
 
-- forwarded video uses VIDEO path;
+- forwarded video uses the implemented VIDEO path;
 - forwarded document uses DOCUMENT path;
 - forward origin remains source metadata;
 - it must not alter extraction semantics.

@@ -134,7 +134,9 @@ async def test_long_content_is_summarized_before_final_analysis(session_factory)
     assert provider.summarize_calls == ["x" * 10, "x" * 10, "x" * 5]
     assert len(provider.calls[0][0].text) <= 10
     async with session_factory() as session:
-        summaries = (await session.scalars(select(Content))).all()
+        summaries = (
+            await session.scalars(select(Content).where(Content.kind == ContentKind.CHUNK_SUMMARY))
+        ).all()
         assert len(summaries) == 3
 
 
@@ -163,7 +165,14 @@ async def test_chunk_summaries_resume_without_repeating_completed_work(session_f
                 DEFAULT_PROFILE,
                 item.id,
             )
-        stored = (await session.scalars(select(Content).where(Content.item_id == item.id))).all()
+        stored = (
+            await session.scalars(
+                select(Content).where(
+                    Content.item_id == item.id,
+                    Content.kind == ContentKind.CHUNK_SUMMARY,
+                )
+            )
+        ).all()
         assert len(stored) == 1
 
     async with session_factory() as session:

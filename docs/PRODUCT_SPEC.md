@@ -86,13 +86,22 @@ notifications — durable `DeliveryWorker`.
 - YouTube URL;
 - Telegram voice;
 - Telegram audio;
+- Telegram video: transcript + optional representative-frame vision;
+- forwarded Telegram text/URL/voice/audio/video с сохранением доступного provenance;
+- forwarded photo-post с URL в caption/text_link: caption и ссылки сохраняются как
+  единый source content, само изображение не анализируется;
 - `/today`, `/inbox`, `/category`, `/search`;
 - `/profile`, `/profile_update`;
 - `/settings`;
 - Done / Later / Archive / Retry;
 - daily digest и snooze resurfacing.
 
-Direct Telegram video, video note, image и document handlers отсутствуют.
+Direct Telegram video поддержан. Видео, которое Telegram прислал как `Document`,
+тоже нормализуется в VIDEO по MIME/расширению. Video note, direct image и обычные
+document formats пока не поддерживаются. Forwarded non-video document получает
+явный ответ о неподдерживаемом формате.
+Forwarded photo с caption сохраняет и анализирует caption/ссылки; само изображение
+пока не анализируется. Photo без caption остаётся неподдерживаемым.
 
 ## 7. Текущие non-goals
 
@@ -106,7 +115,8 @@ Direct Telegram video, video note, image и document handlers отсутству
 - Calendar/Notion integrations;
 - browser fallback для сложных страниц;
 - playlists, DRM/paywall/CAPTCHA bypass;
-- direct Telegram image/video/document ingestion.
+- direct Telegram image/non-video-document ingestion;
+- Telegram video note.
 
 ## 8. Структура проекта
 
@@ -115,9 +125,10 @@ storage и domain. Business logic не должна зависеть от Telegr
 
 ## 9. Модель Item
 
-`Item` хранит source identity, processing status/stage, lifecycle state,
-analysis fields, priority, error state и timestamps. Длинное содержимое хранится
-отдельно в `contents`.
+`Item` — пользовательская единица входа: одно Telegram message/post. Он хранит
+processing/lifecycle/analysis state и provenance. Вложенные URL/media хранятся как
+`item_sources`; extracted text/transcripts — в `contents` и могут ссылаться на
+конкретный `source_id`.
 
 ## 10. Processing status и lifecycle state
 
@@ -142,11 +153,30 @@ Retry меняет processing status; Done/Later/Archive — lifecycle state.
 
 ## 13. Обработка Telegram сообщения
 
-- plain text без URL → один TEXT Item;
-- одно или несколько URL → отдельный Item на каждый нормализованный URL;
-- окружающий URL текст сохраняется как `user_note`;
-- URL дедуплицируются per user;
-- YouTube URL определяется отдельно от WEB.
+- одно входящее Telegram message/post → ровно один `Item`;
+- исходный text/caption сохраняется целиком как `USER_TEXT`;
+- окружающий URL текст direct-message сохраняется также как `user_note`;
+- каждый distinct URL внутри сообщения становится дочерним `ItemSource` типа
+  `WEB`/`YOUTUBE`; повтор одного URL внутри того же сообщения схлопывается;
+- voice/audio/video становятся media `ItemSource`; caption и URL рядом с media
+  принадлежат тому же Item;
+- каждый ItemSource извлекается и checkpoint'ится независимо, после чего все
+  успешные source contents объединяются в один `NormalizedContent` и один analysis;
+- для multi-source Item Analyzer обязан учитывать каждый содержательный успешный
+  source и исходный text/caption: итоговые title/summary описывают Item целиком,
+  а не только первый или наиболее длинный source; если темы различаются, каждая
+  тема должна быть кратко отражена в общем результате;
+- ошибка одного вложенного source не роняет Item, если остаётся meaningful text
+  или другой успешно извлечённый source: Item завершается `READY` с
+  `analysis_completeness=PARTIAL`;
+- если ни один source не извлечён и meaningful text отсутствует, Item становится `FAILED`;
+- один и тот же URL в разных Telegram messages не склеивает Items: контекст сообщения
+  является частью пользовательской единицы;
+- forwarding не является отдельным source type: provenance хранится отдельно;
+- доступный forward origin сохраняется в `items.source_metadata_json`;
+- исходный forwarded текст/подпись хранится целиком как source content, включая
+  видимые и восстановленные из Telegram entities ссылки, и не становится
+  `user_note` пользователя AIInbox.
 
 ## 14. Работа Telegram handler
 
@@ -339,12 +369,22 @@ Canonical SQLite tables:
 
 - `users`;
 - `items`;
+- `item_sources`;
 - `contents`;
 - `events`;
 - `reminders`;
 - `profile_update_jobs`;
 - `deliveries`;
 - FTS5 virtual table `item_search`.
+
+`items.source_metadata_json` хранит необязательный source-envelope provenance,
+например нормализованный Telegram forward origin. Отсутствующие origin-поля не
+восстанавливаются догадками.
+
+`item_sources` хранит independently extractable части Item и их локальный
+`PENDING/READY/FAILED` extraction result. `contents.source_id` связывает durable
+WEB text/transcript/visual checkpoint с конкретным source; `NULL` означает
+Item-level content.
 
 Schema changes — только Alembic migrations.
 
@@ -388,8 +428,11 @@ Archived Item остаётся searchable.
 
 ## 55. Retry
 
-Только FAILED → QUEUED. Error fields очищаются, processing checkpoints сохраняются.
-Pending stale `ITEM_FAILED` delivery отменяется атомарно.
+FAILED → QUEUED. `READY/PARTIAL` с failed child source также можно вернуть в QUEUED:
+повторно извлекаются только failed sources, READY checkpoints переиспользуются, после
+чего общий analysis пересобирается. Error fields очищаются, processing checkpoints
+сохраняются. Pending stale `ITEM_FAILED` delivery отменяется атомарно; новый READY
+результат после partial-retry переоткрывает durable READY delivery.
 
 ## 56. Error handling
 
@@ -420,12 +463,14 @@ Resume обязан использовать persisted content/analysis вмес
 
 ## 61. Content deduplication
 
-URL dedup — per user + normalized URL. Semantic duplicate detection отсутствует.
+Telegram update replay dedup — по identity сообщения. URL нормализуются и
+схлопываются внутри одного сообщения, но одинаковый URL в разных messages не
+объединяет Items. Semantic duplicate detection отсутствует.
 
 ## 62. URL normalization
 
 Удалять fragment и tracking-параметры, сохранять meaningful query.
-Нормализованный URL участвует в dedup.
+Нормализованный URL участвует в message-local source identity.
 
 ## 63. Security Telegram
 
@@ -468,7 +513,9 @@ Ingestion отвечает быстро. Длинная работа идёт в
 
 ## 70. Open button
 
-URL Item получает Telegram `🔗 Открыть`, ведущую на source URL.
+Item с URL-источником получает Telegram `🔗 Открыть`, ведущую на source URL.
+Forwarded public channel message получает отдельную кнопку `↗ Открыть оригинал`
+только если Telegram дал public username канала и original message id.
 
 ## 71. Персонализация
 

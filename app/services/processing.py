@@ -14,6 +14,7 @@ from app.domain.priority import PriorityEngine
 from app.errors import AppError
 from app.extractors.audio import AudioExtractor
 from app.extractors.text import TextExtractor
+from app.extractors.video import VideoExtractor
 from app.extractors.web import WebPageExtractor
 from app.extractors.youtube import YoutubeExtractor
 from app.llm.base import TranscriptionSegmentCheckpoint
@@ -22,7 +23,8 @@ from app.services.delivery import ITEM_READY, enqueue_item_delivery
 from app.services.frames import extract_representative_frames
 from app.services.profile import get_profile
 from app.services.retrieval import sync_item_search
-from app.storage.models import Content, Item
+from app.services.url_parsing import parse_message
+from app.storage.models import Content, Item, ItemSource
 
 log = logging.getLogger(__name__)
 
@@ -43,6 +45,7 @@ class ProcessingPipeline:
         web_extractor: WebPageExtractor | None = None,
         audio_extractor: AudioExtractor | None = None,
         youtube_extractor: YoutubeExtractor | None = None,
+        video_extractor: VideoExtractor | None = None,
         visual_frame_interval_seconds: int = 20,
         visual_max_frames: int = 120,
         visual_scene_threshold: float = 0.35,
@@ -52,6 +55,7 @@ class ProcessingPipeline:
         self.web_extractor = web_extractor or WebPageExtractor()
         self.audio_extractor = audio_extractor
         self.youtube_extractor = youtube_extractor
+        self.video_extractor = video_extractor
         self.visual_frame_interval_seconds = visual_frame_interval_seconds
         self.visual_max_frames = visual_max_frames
         self.visual_scene_threshold = visual_scene_threshold
@@ -76,6 +80,7 @@ class ProcessingPipeline:
                 item.processing_stage = "EXTRACTING"
                 await session.commit()
                 content = await self._extract(session, item)
+            content = await self._attach_source_context(session, item, content)
 
             item.processing_stage = "ANALYZING"
             await session.commit()
@@ -88,7 +93,7 @@ class ProcessingPipeline:
             analysis = await self.analyzer.analyze(
                 content, session, item.user_id, profile=profile, item_id=item.id
             )
-            item.analysis_completeness = self._completeness(item, visual_notes)
+            item.analysis_completeness = self._completeness(item, content, visual_notes)
 
             item.processing_stage = "PRIORITIZING"
             # Дорогой результат пишется ДО checkpoint-commit: падение после
@@ -104,7 +109,10 @@ class ProcessingPipeline:
         await sync_item_search(session, item.id)
         # Delivery intent входит в тот же commit, что READY: падение процесса
         # после commit больше не создаёт окно безвозвратной потери уведомления.
-        await enqueue_item_delivery(session, item, ITEM_READY)
+        # Reopen is needed when a READY/PARTIAL Item is explicitly retried after
+        # a child source recovers; the same durable delivery key then publishes
+        # the newly synthesized result once instead of suppressing it as a replay.
+        await enqueue_item_delivery(session, item, ITEM_READY, reopen=True)
         await session.commit()
         log.info(
             "item analyzed id=%s category=%s type=%s priority=%s",
@@ -126,6 +134,13 @@ class ProcessingPipeline:
             # visual notes уже персистены и восстановлены при resume —
             # повторный download/ffmpeg/vision не нужен (AGENTS §18)
             return existing
+        persisted = await session.scalar(
+            select(Content.text)
+            .where(Content.item_id == item.id, Content.kind == ContentKind.VISUAL_NOTES)
+            .order_by(Content.id.desc())
+        )
+        if persisted:
+            return persisted
         capabilities = getattr(self.analyzer.provider, "capabilities", None)
         if not capabilities or not capabilities.vision:
             return None
@@ -177,20 +192,95 @@ class ProcessingPipeline:
             shutil.rmtree(work_dir, ignore_errors=True)
 
     @staticmethod
-    def _completeness(item: Item, visual_notes: str | None) -> str:
+    def _completeness(item: Item, content: NormalizedContent, visual_notes: str | None) -> str:
+        if content.metadata.get("source_failures"):
+            return "PARTIAL"
         if item.source_type in (SourceType.VOICE, SourceType.AUDIO):
             return "TRANSCRIPT_ONLY"
-        if item.source_type is SourceType.YOUTUBE:
-            return "TRANSCRIPT_AND_VISUAL" if visual_notes else "TRANSCRIPT_ONLY"
+        if item.source_type in (SourceType.YOUTUBE, SourceType.VIDEO):
+            has_visual = bool(visual_notes or content.metadata.get("has_visual"))
+            return "TRANSCRIPT_AND_VISUAL" if has_visual else "TRANSCRIPT_ONLY"
         return "FULL_TEXT"
 
     async def _extract(self, session: AsyncSession, item: Item) -> NormalizedContent:
-        if item.source_type is SourceType.YOUTUBE:
+        sources = await self._item_sources(session, item.id)
+        if sources:
+            return await self._extract_item_sources(session, item, sources)
+        return await self._extract_legacy_source(session, item)
+
+    async def _extract_item_sources(
+        self, session: AsyncSession, item: Item, sources: list[ItemSource]
+    ) -> NormalizedContent:
+        """Extract child sources independently and keep usable siblings on source failure."""
+        message_text = await self._stored_source_text(session, item.id)
+        extracted: list[NormalizedContent] = []
+        failures: list[dict[str, str | int]] = []
+
+        for source in sources:
+            if source.extraction_status == "FAILED":
+                failures.append(self._source_failure(source))
+                continue
+            content = await self._restored_source_content(session, item, source)
+            if content is None:
+                try:
+                    content = await self._extract_source(session, item, source, source.id)
+                except AppError as exc:
+                    source.extraction_status = "FAILED"
+                    source.error_code = exc.code
+                    source.error_message = str(exc)[:500]
+                    await session.commit()
+                    failures.append(self._source_failure(source))
+                    log.warning(
+                        "item source extraction failed item_id=%s source_id=%s "
+                        "source_type=%s error_code=%s",
+                        item.id,
+                        source.id,
+                        source.source_type.value,
+                        exc.code,
+                    )
+                    continue
+                source.extraction_status = "READY"
+                source.error_code = None
+                source.error_message = None
+                # Each successful extraction is a durable checkpoint before the
+                # next independent source starts, so later failures/restart do not
+                # repeat already completed network/STT work.
+                await session.commit()
+            extracted.append(content)
+
+        fallback_text = self._meaningful_message_text(item, message_text)
+        if not extracted and fallback_text is None:
+            if failures:
+                first = failures[0]
+                raise AppError(
+                    str(first.get("error_code") or "EXTRACTION_FAILED"),
+                    str(first.get("error_message") or "all item sources failed"),
+                )
+            raise AppError("EXTRACTION_FAILED", "item contains no analyzable content")
+        return self._compose_item_content(item, message_text, sources, extracted, failures)
+
+    async def _extract_legacy_source(self, session: AsyncSession, item: Item) -> NormalizedContent:
+        """Keep pre-ItemSource rows and focused extractor tests compatible during migration."""
+        if item.source_type is SourceType.TEXT:
+            return await self._text_content(session, item)
+        return await self._extract_source(session, item, item, None)
+
+    async def _extract_source(
+        self,
+        session: AsyncSession,
+        item: Item,
+        source: Item | ItemSource,
+        source_id: int | None,
+    ) -> NormalizedContent:
+        """Run one source adapter; parent Item owns the eventual combined analysis."""
+        if source.source_type is SourceType.YOUTUBE:
             if self.youtube_extractor is None:
                 raise AppError("UNSUPPORTED_SOURCE", "youtube extractor not wired")
-            completed_segments, on_segment = await self._transcript_checkpoints(session, item)
+            completed_segments, on_segment = await self._transcript_checkpoints(
+                session, item, source_id
+            )
             content = await self.youtube_extractor.extract(
-                item,
+                source,
                 completed_segments=completed_segments,
                 on_segment=on_segment,
             )
@@ -199,6 +289,7 @@ class ProcessingPipeline:
             session.add(
                 Content(
                     item_id=item.id,
+                    source_id=source_id,
                     kind=ContentKind.TRANSCRIPT,
                     text=content.text,
                     metadata_json={
@@ -214,18 +305,45 @@ class ProcessingPipeline:
                 session.add(
                     Content(
                         item_id=item.id,
+                        source_id=source_id,
                         kind=ContentKind.DESCRIPTION,
                         text=content.metadata["description_excerpt"],
                     )
                 )
-            await self._delete_transcript_checkpoints(session, item.id)
+            await self._delete_transcript_checkpoints(session, item.id, source_id)
+            await self._enrich_source_visual(session, item, source, content, source_id)
             return content
-        if item.source_type in (SourceType.VOICE, SourceType.AUDIO):
+        if source.source_type is SourceType.VIDEO:
+            if self.video_extractor is None:
+                raise AppError("UNSUPPORTED_SOURCE", "video extractor not wired")
+            completed_segments, on_segment = await self._transcript_checkpoints(
+                session, item, source_id
+            )
+            content = await self.video_extractor.extract(
+                source,
+                completed_segments=completed_segments,
+                on_segment=on_segment,
+            )
+            session.add(
+                Content(
+                    item_id=item.id,
+                    source_id=source_id,
+                    kind=ContentKind.TRANSCRIPT,
+                    text=content.text,
+                    metadata_json={"duration_seconds": source.content_duration_seconds},
+                )
+            )
+            await self._delete_transcript_checkpoints(session, item.id, source_id)
+            await self._enrich_source_visual(session, item, source, content, source_id)
+            return content
+        if source.source_type in (SourceType.VOICE, SourceType.AUDIO):
             if self.audio_extractor is None:
                 raise AppError("UNSUPPORTED_SOURCE", "voice/audio extractor not wired")
-            completed_segments, on_segment = await self._transcript_checkpoints(session, item)
+            completed_segments, on_segment = await self._transcript_checkpoints(
+                session, item, source_id
+            )
             content = await self.audio_extractor.extract(
-                item,
+                source,
                 completed_segments=completed_segments,
                 on_segment=on_segment,
             )
@@ -234,16 +352,17 @@ class ProcessingPipeline:
             session.add(
                 Content(
                     item_id=item.id,
+                    source_id=source_id,
                     kind=ContentKind.TRANSCRIPT,
                     text=content.text,
-                    metadata_json={"duration_seconds": item.content_duration_seconds},
+                    metadata_json={"duration_seconds": source.content_duration_seconds},
                 )
             )
-            await self._delete_transcript_checkpoints(session, item.id)
-            content.duration_seconds = item.content_duration_seconds
+            await self._delete_transcript_checkpoints(session, item.id, source_id)
+            content.duration_seconds = source.content_duration_seconds
             return content
-        if item.source_type is SourceType.WEB:
-            content = await self.web_extractor.extract(item)
+        if source.source_type is SourceType.WEB:
+            content = await self.web_extractor.extract(source)
             # WEB_TEXT персистится атомарно с checkpoint'ом ANALYZING:
             # переживает restart, retry не перекачивает страницу (ТЗ §46, §59).
             # metadata_json хранит заголовок/автора/язык/заметку — resume
@@ -251,52 +370,232 @@ class ProcessingPipeline:
             session.add(
                 Content(
                     item_id=item.id,
+                    source_id=source_id,
                     kind=ContentKind.WEB_TEXT,
                     text=content.text,
                     metadata_json={
                         "title": content.title,
                         "author": content.author,
                         "language": content.language,
-                        "user_note": item.user_note or None,
+                        "user_note": None,
                     },
                 )
             )
             return content
-        return await TextExtractor().extract(item)
+        raise AppError("UNSUPPORTED_SOURCE", f"unsupported source type: {source.source_type.value}")
+
+    async def _enrich_source_visual(
+        self,
+        session: AsyncSession,
+        item: Item,
+        source: ItemSource,
+        content: NormalizedContent,
+        source_id: int | None,
+    ) -> None:
+        """Attach optional visual facts to one video-like source without owning Item failure."""
+        capabilities = getattr(self.analyzer.provider, "capabilities", None)
+        if not capabilities or not capabilities.vision or source_id is None:
+            return
+        existing = await session.scalar(
+            select(Content.text).where(
+                Content.item_id == item.id,
+                Content.source_id == source_id,
+                Content.kind == ContentKind.VISUAL_NOTES,
+            )
+        )
+        if existing:
+            content.metadata["visual_notes"] = existing
+            return
+
+        temp_root = None
+        if source.source_type is SourceType.YOUTUBE and self.youtube_extractor is not None:
+            temp_root = Path(self.youtube_extractor.temp_dir)
+        elif source.source_type is SourceType.VIDEO and self.video_extractor is not None:
+            temp_root = Path(self.video_extractor.temp_dir)
+        if temp_root is None:
+            return
+
+        work_dir = temp_root / f"vis-source-{source_id}-{uuid4().hex}"
+        try:
+            work_dir.mkdir(parents=True, exist_ok=True)
+            if source.source_type is SourceType.YOUTUBE:
+                video = await self.youtube_extractor.download_video(source.source_url, work_dir)
+            else:
+                video = await self.video_extractor.download_video(source, work_dir)
+            frames = await asyncio.to_thread(
+                extract_representative_frames,
+                video,
+                work_dir / "frames",
+                interval_seconds=self.visual_frame_interval_seconds,
+                max_frames=self.visual_max_frames,
+                scene_threshold=self.visual_scene_threshold,
+                duration_seconds=content.duration_seconds or source.content_duration_seconds,
+            )
+            if not frames:
+                return
+            notes = await self.analyzer.provider.describe_images(
+                frames, context=content.text[:1500]
+            )
+            notes = notes[:800]
+            if notes:
+                content.metadata["visual_notes"] = notes
+                session.add(
+                    Content(
+                        item_id=item.id,
+                        source_id=source_id,
+                        kind=ContentKind.VISUAL_NOTES,
+                        text=notes,
+                        metadata_json={"frames": len(frames)},
+                    )
+                )
+                await session.commit()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            # Visual enrichment is auxiliary: transcript remains valid source content.
+            log.warning(
+                "source visual analysis skipped item_id=%s source_id=%s: %s",
+                item.id,
+                source_id,
+                exc,
+            )
+        finally:
+            shutil.rmtree(work_dir, ignore_errors=True)
 
     @staticmethod
-    async def _delete_transcript_checkpoints(session: AsyncSession, item_id: int) -> None:
+    async def _item_sources(session: AsyncSession, item_id: int) -> list[ItemSource]:
+        """Load child sources in deterministic message-local order."""
+        return list(
+            (
+                await session.scalars(
+                    select(ItemSource)
+                    .where(ItemSource.item_id == item_id)
+                    .order_by(ItemSource.source_index, ItemSource.id)
+                )
+            ).all()
+        )
+
+    @staticmethod
+    def _source_failure(source: ItemSource) -> dict[str, str | int]:
+        """Expose bounded failure facts to completeness/analysis without provider exceptions."""
+        return {
+            "source_index": source.source_index,
+            "source_type": source.source_type.value,
+            "error_code": source.error_code or "EXTRACTION_FAILED",
+            "error_message": (source.error_message or "source extraction failed")[:500],
+        }
+
+    @staticmethod
+    def _meaningful_message_text(item: Item, message_text: str | None) -> str | None:
+        """Return text that can honestly carry a partial analysis when sources fail."""
+        if not message_text or not message_text.strip():
+            return None
+        if item.user_note and item.user_note.strip():
+            return message_text
+        if (item.source_metadata_json or {}).get("forwarded") is True:
+            note, _ = parse_message(message_text)
+            return message_text if note.strip() else None
+        return None
+
+    @staticmethod
+    def _compose_item_content(
+        item: Item,
+        message_text: str | None,
+        sources: list[ItemSource],
+        extracted: list[NormalizedContent],
+        failures: list[dict[str, str | int]],
+    ) -> NormalizedContent:
+        """Combine all successful source payloads into one Analyzer input for the Item."""
+        if not extracted:
+            return NormalizedContent(
+                source_type=SourceType.TEXT,
+                text=message_text or item.user_note,
+                metadata={
+                    "source_count": len(sources),
+                    "successful_source_count": 0,
+                    "source_failures": failures,
+                    "has_visual": False,
+                },
+            )
+
+        single = extracted[0] if len(extracted) == 1 else None
+        if single is not None:
+            combined_text = single.text
+        else:
+            sections: list[str] = []
+            for index, content in enumerate(extracted, start=1):
+                header = f"SOURCE {index} [{content.source_type.value}]"
+                if content.url:
+                    header += f" {content.url}"
+                lines = [header]
+                if content.title:
+                    lines.append(f"Title: {content.title}")
+                if content.author:
+                    lines.append(f"Author: {content.author}")
+                description = content.metadata.get("description_excerpt")
+                if description:
+                    lines.append(f"Description: {description}")
+                visual_notes = content.metadata.get("visual_notes")
+                if visual_notes:
+                    lines.append(f"Visual notes: {visual_notes}")
+                lines.append(content.text)
+                sections.append("\n".join(lines))
+            combined_text = "\n\n".join(sections)
+
+        forwarded = (item.source_metadata_json or {}).get("forwarded") is True
+        combined_metadata = dict(single.metadata) if single is not None else {}
+        combined_metadata.update(
+            {
+                "source_count": len(sources),
+                "successful_source_count": len(extracted),
+                "source_failures": failures,
+                "has_visual": any(content.metadata.get("visual_notes") for content in extracted),
+            }
+        )
+        return NormalizedContent(
+            source_type=single.source_type if single else item.source_type,
+            title=single.title if single else None,
+            text=combined_text,
+            url=single.url if single else None,
+            user_note=(item.user_note or None) if not forwarded else None,
+            source_context=message_text if forwarded and message_text else None,
+            author=single.author if single else None,
+            language=single.language if single else None,
+            duration_seconds=single.duration_seconds if single else None,
+            metadata=combined_metadata,
+        )
+
+    @staticmethod
+    async def _delete_transcript_checkpoints(
+        session: AsyncSession, item_id: int, source_id: int | None = None
+    ) -> None:
         """Remove STT work-in-progress rows only after a final transcript exists.
 
         This runs in the caller's final-transcript transaction: rollback keeps
         durable chunks for retry, while a successful commit leaves one canonical
         transcript for retrieval/FTS instead of indexing both chunks and aggregate.
         """
-        await session.execute(
-            delete(Content).where(
-                Content.item_id == item_id,
-                Content.kind == ContentKind.TRANSCRIPT_CHUNK,
-            )
+        where = [Content.item_id == item_id, Content.kind == ContentKind.TRANSCRIPT_CHUNK]
+        where.append(
+            Content.source_id == source_id if source_id is not None else Content.source_id.is_(None)
         )
+        await session.execute(delete(Content).where(*where))
 
     @staticmethod
-    async def _transcript_checkpoints(session: AsyncSession, item: Item):
+    async def _transcript_checkpoints(
+        session: AsyncSession, item: Item, source_id: int | None = None
+    ):
         """Expose durable per-segment STT progress without leaking DB into providers.
 
         OpenRouter may split long media into many requests. Each successful
         segment is committed immediately, so a later timeout/restart resumes
         from the missing indices instead of paying for completed STT again.
         """
-        rows = (
-            await session.scalars(
-                select(Content)
-                .where(
-                    Content.item_id == item.id,
-                    Content.kind == ContentKind.TRANSCRIPT_CHUNK,
-                )
-                .order_by(Content.id)
-            )
-        ).all()
+        where = [Content.item_id == item.id, Content.kind == ContentKind.TRANSCRIPT_CHUNK]
+        where.append(
+            Content.source_id == source_id if source_id is not None else Content.source_id.is_(None)
+        )
+        rows = (await session.scalars(select(Content).where(*where).order_by(Content.id))).all()
         completed: dict[int, TranscriptionSegmentCheckpoint] = {}
         for row in rows:
             meta = row.metadata_json or {}
@@ -325,6 +624,7 @@ class ProcessingPipeline:
                 session.add(
                     Content(
                         item_id=item.id,
+                        source_id=source_id,
                         kind=ContentKind.TRANSCRIPT_CHUNK,
                         text=checkpoint.text,
                         metadata_json={
@@ -343,13 +643,139 @@ class ProcessingPipeline:
         return completed, persist
 
     @staticmethod
+    async def _stored_source_text(session: AsyncSession, item_id: int) -> str | None:
+        """Read source-authored Telegram text from the existing durable content store."""
+        return await session.scalar(
+            select(Content.text)
+            .where(Content.item_id == item_id, Content.kind == ContentKind.USER_TEXT)
+            .order_by(Content.id)
+        )
+
+    @staticmethod
+    async def _text_content(session: AsyncSession, item: Item) -> NormalizedContent:
+        """Use persisted forwarded text as TEXT content while preserving legacy TEXT behavior."""
+        source_text = await ProcessingPipeline._stored_source_text(session, item.id)
+        if source_text is not None:
+            return NormalizedContent(source_type=SourceType.TEXT, text=source_text)
+        return await TextExtractor().extract(item)
+
+    @staticmethod
+    async def _attach_source_context(
+        session: AsyncSession, item: Item, content: NormalizedContent
+    ) -> NormalizedContent:
+        """Attach forwarded source text to URL/media without turning it into user intent."""
+        metadata = item.source_metadata_json or {}
+        if item.source_type is SourceType.TEXT or metadata.get("forwarded") is not True:
+            return content
+        source_text = await ProcessingPipeline._stored_source_text(session, item.id)
+        if source_text:
+            content.source_context = source_text
+        return content
+
+    @staticmethod
     async def _restored_content(session: AsyncSession, item: Item) -> NormalizedContent | None:
+        sources = await ProcessingPipeline._item_sources(session, item.id)
+        if sources:
+            return await ProcessingPipeline._restored_item_sources(session, item, sources)
+        return await ProcessingPipeline._restored_legacy_content(session, item)
+
+    @staticmethod
+    async def _restored_item_sources(
+        session: AsyncSession, item: Item, sources: list[ItemSource]
+    ) -> NormalizedContent | None:
+        """Restore a fully extracted composite Item without repeating external work."""
+        if any(source.extraction_status == "PENDING" for source in sources):
+            return None
+        extracted: list[NormalizedContent] = []
+        failures: list[dict[str, str | int]] = []
+        for source in sources:
+            if source.extraction_status == "FAILED":
+                failures.append(ProcessingPipeline._source_failure(source))
+                continue
+            content = await ProcessingPipeline._restored_source_content(session, item, source)
+            if content is None:
+                return None
+            extracted.append(content)
+        message_text = await ProcessingPipeline._stored_source_text(session, item.id)
+        if (
+            not extracted
+            and ProcessingPipeline._meaningful_message_text(item, message_text) is None
+        ):
+            return None
+        return ProcessingPipeline._compose_item_content(
+            item, message_text, sources, extracted, failures
+        )
+
+    @staticmethod
+    async def _restored_source_content(
+        session: AsyncSession, item: Item, source: ItemSource
+    ) -> NormalizedContent | None:
+        """Restore one source checkpoint by durable source id."""
+        kind = ContentKind.WEB_TEXT
+        if source.source_type in (
+            SourceType.VOICE,
+            SourceType.AUDIO,
+            SourceType.YOUTUBE,
+            SourceType.VIDEO,
+        ):
+            kind = ContentKind.TRANSCRIPT
+        elif source.source_type is not SourceType.WEB:
+            return None
+        row = await session.scalar(
+            select(Content).where(
+                Content.item_id == item.id,
+                Content.source_id == source.id,
+                Content.kind == kind,
+            )
+        )
+        if row is None:
+            return None
+        meta = row.metadata_json or {}
+        content = NormalizedContent(
+            source_type=source.source_type,
+            title=meta.get("title"),
+            text=row.text,
+            url=source.source_url if source.source_type is SourceType.WEB else None,
+            duration_seconds=meta.get("duration_seconds"),
+            author=meta.get("author"),
+            language=meta.get("language"),
+        )
+        if source.source_type is SourceType.YOUTUBE:
+            description_row = await session.scalar(
+                select(Content).where(
+                    Content.item_id == item.id,
+                    Content.source_id == source.id,
+                    Content.kind == ContentKind.DESCRIPTION,
+                )
+            )
+            content.url = meta.get("canonical_url") or source.source_url
+            content.metadata = {
+                "description_excerpt": description_row.text if description_row else None,
+                "via_stt": meta.get("via_stt"),
+                "cues": meta.get("cues"),
+            }
+        if source.source_type in (SourceType.YOUTUBE, SourceType.VIDEO):
+            visual_row = await session.scalar(
+                select(Content).where(
+                    Content.item_id == item.id,
+                    Content.source_id == source.id,
+                    Content.kind == ContentKind.VISUAL_NOTES,
+                )
+            )
+            if visual_row is not None:
+                content.metadata["visual_notes"] = visual_row.text
+        return content
+
+    @staticmethod
+    async def _restored_legacy_content(
+        session: AsyncSession, item: Item
+    ) -> NormalizedContent | None:
         kind, url = ContentKind.WEB_TEXT, item.source_url
         if item.source_type in (SourceType.VOICE, SourceType.AUDIO, SourceType.YOUTUBE):
             kind, url = ContentKind.TRANSCRIPT, None
         elif item.source_type is not SourceType.WEB:
-            # TEXT: извлечение тривиально, content всегда восстанавливается из заметки.
-            return await TextExtractor().extract(item)
+            # Forwarded TEXT lives in contents; ordinary TEXT keeps legacy user_note storage.
+            return await ProcessingPipeline._text_content(session, item)
         row = await session.scalar(
             select(Content).where(Content.item_id == item.id, Content.kind == kind)
         )

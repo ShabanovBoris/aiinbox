@@ -10,6 +10,7 @@ from app.bot.files import TelegramFileDownloader
 from app.config import Settings
 from app.domain.priority import PriorityEngine
 from app.extractors.audio import AudioExtractor
+from app.extractors.video import VideoExtractor
 from app.extractors.web import WebPageExtractor
 from app.extractors.youtube import YoutubeExtractor
 from app.llm.openai import OpenAiProvider
@@ -81,8 +82,7 @@ def build_transcriber(settings: Settings) -> OpenAiTranscriptionProvider:
 
 
 def build_extractors(settings: Settings, bot) -> tuple:
-    """Сборка экстракторов (composition root). audio требует живого Telegram bot;
-    youtube STT-fallback использует transcriber, но сам extractor не требует bot."""
+    """Compose source adapters; Telegram media extractors require a live bot."""
     web_extractor = WebPageExtractor(
         min_text_length=settings.min_extracted_text_length,
         timeout_seconds=settings.web_timeout_seconds,
@@ -104,12 +104,19 @@ def build_extractors(settings: Settings, bot) -> tuple:
         timeout_seconds=settings.web_timeout_seconds,
     )
     audio_extractor = None
+    video_extractor = None
     if bot is not None:
         downloader = TelegramFileDownloader(bot, settings.max_audio_bytes)
         audio_extractor = AudioExtractor(
             build_transcriber(settings), downloader, Path(settings.temp_dir)
         )
-    return web_extractor, audio_extractor, youtube_extractor
+        video_extractor = VideoExtractor(
+            build_transcriber(settings),
+            TelegramFileDownloader(bot, settings.max_video_bytes),
+            Path(settings.temp_dir) / "video",
+            max_duration_seconds=settings.max_video_duration_seconds,
+        )
+    return web_extractor, audio_extractor, youtube_extractor, video_extractor
 
 
 async def _drain_worker_tasks(tasks: list[asyncio.Task], timeout: float) -> None:
@@ -205,13 +212,16 @@ async def run(settings: Settings) -> None:
         else:
             log.warning("TELEGRAM_BOT_TOKEN is empty — bot disabled, workers only")
 
-        web_extractor, audio_extractor, youtube_extractor = build_extractors(settings, bot)
+        web_extractor, audio_extractor, youtube_extractor, video_extractor = build_extractors(
+            settings, bot
+        )
         pipeline = ProcessingPipeline(
             analyzer,
             PriorityEngine(),
             web_extractor,
             audio_extractor,
             youtube_extractor,
+            video_extractor,
             visual_frame_interval_seconds=settings.video_frame_interval_seconds,
             visual_max_frames=settings.video_max_frames,
             visual_scene_threshold=settings.video_scene_threshold,
