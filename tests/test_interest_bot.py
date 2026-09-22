@@ -1,11 +1,11 @@
 from types import SimpleNamespace
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app.bot.handlers import on_item_callback
 from app.bot.keyboards import item_keyboard
 from app.domain.enums import ItemState, ItemType, ProcessingStatus, SourceType
-from app.storage.models import Item, User
+from app.storage.models import Event, Item, User
 
 
 class FakeCallbackMessage:
@@ -92,6 +92,27 @@ async def test_interest_callback_updates_persisted_state_and_existing_message(
         "2",
         "3 ✓",
     ]
+    assert callback.answers == [None]
+
+
+async def test_interest_callback_current_level_is_transport_noop(settings, session_factory):
+    item_id = await _persist_ready_item(session_factory)
+    callback = FakeCallback(42, f"item:interest:{item_id}:2")
+
+    await on_item_callback(callback, settings, session_factory)
+
+    async with session_factory() as session:
+        stored = await session.get(Item, item_id)
+        assert stored.interest_level == 2
+        event_count = await session.scalar(
+            select(func.count(Event.id)).where(
+                Event.item_id == item_id,
+                Event.event_type == "INTEREST_CHANGED",
+            )
+        )
+        assert event_count == 0
+    assert callback.message.text is None
+    assert callback.message.reply_markup is None
     assert callback.answers == [None]
 
 

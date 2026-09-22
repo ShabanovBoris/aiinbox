@@ -293,11 +293,12 @@ async def on_item_callback(
         if level not in {1, 2, 3}:
             await callback.answer("Некорректный уровень интереса")
             return
-        item = await set_item_interest(session_factory, user.id, item_id, level)
-        if item is None:
+        result = await set_item_interest(session_factory, user.id, item_id, level)
+        if result is None:
             await callback.answer("Item не найден")
             return
-        if callback.message:
+        item, changed = result
+        if changed and callback.message:
             await callback.message.edit_text(
                 format_ready_item(item), reply_markup=item_keyboard(item)
             )

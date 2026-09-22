@@ -111,8 +111,10 @@ async def test_interest_defaults_to_two_and_accepts_all_valid_levels(session_fac
         assert stored.interest_level == 2
 
     for level in (1, 2, 3):
-        updated = await set_item_interest(session_factory, 42, item_id, level)
-        assert updated is not None and updated.interest_level == level
+        result = await set_item_interest(session_factory, 42, item_id, level)
+        assert result is not None
+        updated, _changed = result
+        assert updated.interest_level == level
 
 
 @pytest.mark.parametrize("level", [0, 4])
@@ -133,9 +135,12 @@ async def test_interest_change_is_idempotent_and_records_exact_feedback(session_
         item.priority_score = 77
         await session.commit()
 
-    await set_item_interest(session_factory, 42, item_id, 3)
-    await set_item_interest(session_factory, 42, item_id, 3)
-    await set_item_interest(session_factory, 42, item_id, 1)
+    first = await set_item_interest(session_factory, 42, item_id, 3)
+    duplicate = await set_item_interest(session_factory, 42, item_id, 3)
+    last = await set_item_interest(session_factory, 42, item_id, 1)
+    assert first is not None and first[1] is True
+    assert duplicate is not None and duplicate[1] is False
+    assert last is not None and last[1] is True
 
     async with session_factory() as session:
         stored = await session.get(Item, item_id)

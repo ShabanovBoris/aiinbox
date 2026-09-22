@@ -162,11 +162,12 @@ async def set_item_interest(
     telegram_user_id: int,
     item_id: int,
     level: int,
-) -> Item | None:
+) -> tuple[Item, bool] | None:
     """Own the canonical interest mutation and its durable feedback event.
 
     This application boundary keeps Telegram free of persistence logic and
     deliberately leaves PriorityEngine/model-derived ``interest_fit`` untouched.
+    The boolean tells the delivery layer whether its message projection changed.
     """
     if level not in {1, 2, 3}:
         raise ValueError("interest level must be between 1 and 3")
@@ -186,7 +187,7 @@ async def set_item_interest(
             return None
         if item.interest_level == level:
             await session.commit()
-            return item
+            return item, False
 
         previous = item.interest_level
         changed_item_id = await session.scalar(
@@ -211,7 +212,7 @@ async def set_item_interest(
             )
         )
         await session.commit()
-        return item
+        return item, True
 
 
 async def record_item_events(
