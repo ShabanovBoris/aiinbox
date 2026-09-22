@@ -10,24 +10,24 @@ Item processing хранит durable stage/content/checkpoints в SQLite. Retry/
 
 ## D-002 — Стабильное ядро, заменяемые adapters
 
-Telegram, HTTP/YouTube и LLM — края. \`NormalizedContent\`, analysis, priority,
+Telegram, HTTP/YouTube и LLM — края. `NormalizedContent`, analysis, priority,
 lifecycle и persistence не должны зависеть от конкретного provider/client.
 
 ## D-003 — GitHub PR как acceptance boundary
 
-\`main\` защищён. Изменение идёт через scoped branch + PR + required \`quality\`.
+`main` защищён. Изменение идёт через scoped branch + PR + required `quality`.
 Orchestrator review привязан к exact HEAD SHA. После APPROVED этот HEAD либо
 squash-merge'ится с expected SHA, либо любое новое изменение требует re-review.
 
 ## D-004 — Atomic queue claim + startup recovery
 
-Processing claim — conditional \`UPDATE ... RETURNING\` для oldest QUEUED.
+Processing claim — conditional `UPDATE ... RETURNING` для oldest QUEUED.
 Single-process runtime позволяет на startup безопасно вернуть оставшиеся
 PROCESSING в QUEUED.
 
 ## D-005 — Application-controlled SQLite FTS5
 
-\`item_search\` — производная проекция из Item/contents, не canonical state.
+`item_search` — производная проекция из Item/contents, не canonical state.
 Приложение синхронизирует/rebuild'ит индекс явно; отдельный search service не нужен.
 
 ## D-006 — Lifecycle action и event атомарны
@@ -37,7 +37,7 @@ Done/Snooze/Archive/Retry выполняются conditional update'ом. Event 
 
 ## D-007 — SQLite scheduler для digest/snooze
 
-\`reminders\` хранит durable schedule/idempotency. Для этих scheduled notifications
+`reminders` хранит durable schedule/idempotency. Для этих scheduled notifications
 предпочтено избежать duplicate после restart даже ценой узкого окна silent loss
 между durable claim и Telegram send.
 
@@ -49,7 +49,7 @@ drain. Неожиданная смерть critical worker/polling или DB inf
 
 ## D-009 — Chunk summary identity
 
-\`CHUNK_SUMMARY\` reuse разрешён только при совпадении chunk index/settings и
+`CHUNK_SUMMARY` reuse разрешён только при совпадении chunk index/settings и
 SHA-256 exact chunk text. Position-only checkpoint недостаточен.
 
 ## D-010 — OpenRouter через OpenAI-compatible boundary
@@ -61,7 +61,7 @@ WAV PCM 16 kHz segments.
 ## D-011 — Durable immediate Telegram outbox
 
 READY/FAILED/profile DONE создают delivery intent в той же business transaction.
-\`DeliveryWorker\` обрабатывает PENDING→SENDING→SENT; interrupted SENDING
+`DeliveryWorker` обрабатывает PENDING→SENDING→SENT; interrupted SENDING
 requeue'ится на startup. Семантика — at-least-once.
 
 Retry отменяет obsolete pending/sending failure intent; перед failure send worker
@@ -69,6 +69,6 @@ Retry отменяет obsolete pending/sending failure intent; перед failu
 
 ## D-012 — STT segment identity
 
-\`TRANSCRIPT_CHUNK\` reuse требует SHA-256 exact segment bytes + provider/model +
+`TRANSCRIPT_CHUNK` reuse требует SHA-256 exact segment bytes + provider/model +
 segmentation contract. Legacy/index-only or mismatched checkpoints пересчитываются.
 После успешного final transcript segment checkpoints удаляются.

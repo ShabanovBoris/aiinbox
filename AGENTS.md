@@ -1044,10 +1044,10 @@ Do not maintain fictional documentation describing features that do not exist.
 
 Repository docs describe current behavior, not project history.
 
-- \`docs/PRODUCT_SPEC.md\` — current product contract;
-- \`docs/DECISIONS.md\` — non-obvious current architecture decisions;
-- \`docs/RUNBOOK.md\` — operational commands and recovery;
-- \`docs/BOT_USAGE.md\` — user-facing Telegram behavior.
+- `docs/PRODUCT_SPEC.md` — current product contract;
+- `docs/DECISIONS.md` — non-obvious current architecture decisions;
+- `docs/RUNBOOK.md` — operational commands and recovery;
+- `docs/BOT_USAGE.md` — user-facing Telegram behavior.
 
 Do not maintain phase trackers or duplicate review journals in the repository.
 GitHub PRs, commits and Actions are the durable history of implementation/review.
@@ -1308,12 +1308,12 @@ to the external Orchestrator.
 
 Review flow:
 
-1. create a scoped branch and PR to protected \`main\`;
+1. create a scoped branch and PR to protected `main`;
 2. PR body states scope and verification;
-3. send \`REVIEW REQUEST\` with repository, PR number and exact HEAD SHA;
-4. Orchestrator returns \`APPROVED\`, \`CHANGES REQUIRED\` or \`BLOCKED\`;
+3. send `REVIEW REQUEST` with repository, PR number and exact HEAD SHA;
+4. Orchestrator returns `APPROVED`, `CHANGES REQUIRED` or `BLOCKED`;
 5. fixes stay in the same PR and require re-review of the new exact HEAD;
-6. after \`APPROVED @ HEAD A\`, make **no further commits**;
+6. after `APPROVED @ HEAD A`, make **no further commits**;
 7. Orchestrator squash-merges only with expected HEAD A.
 
 Any commit after approval invalidates that approval and requires re-review.

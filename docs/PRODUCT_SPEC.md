@@ -1,9 +1,9 @@
 # Personal AI Inbox — Product Contract
 
 > Этот файл описывает **текущее поддерживаемое поведение**, а не историю реализации.
-> Пользовательская справка: \`docs/BOT_USAGE.md\`.
-> Операционная эксплуатация: \`docs/RUNBOOK.md\`.
-> Архитектурные инварианты: \`docs/DECISIONS.md\`.
+> Пользовательская справка: `docs/BOT_USAGE.md`.
+> Операционная эксплуатация: `docs/RUNBOOK.md`.
+> Архитектурные инварианты: `docs/DECISIONS.md`.
 
 ## 1. Цель проекта
 
@@ -12,12 +12,12 @@ Personal AI Inbox принимает входящий материал, извл
 
 Основной сценарий:
 
-\`\`\`text
+```text
 увидел полезное → отправил боту → забыл
                          ↓
              система сама организует,
              оценивает и возвращает позже
-\`\`\`
+```
 
 ## 2. Главный продуктовый принцип
 
@@ -42,7 +42,7 @@ Personal AI Inbox принимает входящий материал, извл
 
 Текущий стек:
 
-\`\`\`text
+```text
 Python 3.12
 aiogram
 SQLAlchemy 2 + aiosqlite
@@ -54,13 +54,13 @@ ffmpeg / ffprobe
 OpenAI SDK-compatible providers
 pytest / pytest-asyncio
 ruff
-\`\`\`
+```
 
 Playwright runtime отключён: безопасной browser network boundary в проекте нет.
 
 ## 5. Архитектура верхнего уровня
 
-\`\`\`text
+```text
 Telegram → ingestion → SQLite queue → ProcessingWorker
                                  ↓
                          extraction/normalization
@@ -72,10 +72,10 @@ Telegram → ingestion → SQLite queue → ProcessingWorker
                          READY + outbox
                                  ↓
                              Telegram
-\`\`\`
+```
 
-Напоминания обслуживает \`ReminderWorker\`, immediate READY/FAILED/profile
-notifications — durable \`DeliveryWorker\`.
+Напоминания обслуживает `ReminderWorker`, immediate READY/FAILED/profile
+notifications — durable `DeliveryWorker`.
 
 ## 6. Текущая поддерживаемая поверхность
 
@@ -86,9 +86,9 @@ notifications — durable \`DeliveryWorker\`.
 - YouTube URL;
 - Telegram voice;
 - Telegram audio;
-- \`/today\`, \`/inbox\`, \`/category\`, \`/search\`;
-- \`/profile\`, \`/profile_update\`;
-- \`/settings\`;
+- `/today`, `/inbox`, `/category`, `/search`;
+- `/profile`, `/profile_update`;
+- `/settings`;
 - Done / Later / Archive / Retry;
 - daily digest и snooze resurfacing.
 
@@ -110,23 +110,23 @@ Direct Telegram video, video note, image и document handlers отсутству
 
 ## 8. Структура проекта
 
-\`app/\` разделён на bot adapters, extractors, LLM adapters, services, workers,
+`app/` разделён на bot adapters, extractors, LLM adapters, services, workers,
 storage и domain. Business logic не должна зависеть от Telegram/OpenAI SDK напрямую.
 
 ## 9. Модель Item
 
-\`Item\` хранит source identity, processing status/stage, lifecycle state,
+`Item` хранит source identity, processing status/stage, lifecycle state,
 analysis fields, priority, error state и timestamps. Длинное содержимое хранится
-отдельно в \`contents\`.
+отдельно в `contents`.
 
 ## 10. Processing status и lifecycle state
 
 Разделять:
 
-\`\`\`text
+```text
 ProcessingStatus: QUEUED / PROCESSING / READY / FAILED
 ItemState:        ACTIVE / SNOOZED / DONE / ARCHIVED
-\`\`\`
+```
 
 Retry меняет processing status; Done/Later/Archive — lifecycle state.
 
@@ -134,7 +134,7 @@ Retry меняет processing status; Done/Later/Archive — lifecycle state.
 
 Поддерживаются:
 
-\`ACTION\`, \`LEARN\`, \`READ\`, \`WATCH\`, \`IDEA\`, \`REFERENCE\`, \`SOMEDAY\`.
+`ACTION`, `LEARN`, `READ`, `WATCH`, `IDEA`, `REFERENCE`, `SOMEDAY`.
 
 ## 12. Категории
 
@@ -144,7 +144,7 @@ Retry меняет processing status; Done/Later/Archive — lifecycle state.
 
 - plain text без URL → один TEXT Item;
 - одно или несколько URL → отдельный Item на каждый нормализованный URL;
-- окружающий URL текст сохраняется как \`user_note\`;
+- окружающий URL текст сохраняется как `user_note`;
 - URL дедуплицируются per user;
 - YouTube URL определяется отдельно от WEB.
 
@@ -162,12 +162,12 @@ Extraction/LLM/ffmpeg в handler запрещены.
 
 ## 15. Фоновая обработка
 
-\`ProcessingWorker\` атомарно claim'ит QUEUED Item, запускает pipeline и доводит
+`ProcessingWorker` атомарно claim'ит QUEUED Item, запускает pipeline и доводит
 его до READY или FAILED. DB infrastructure failures выходят к process supervisor.
 
 ## 16. ContentExtractor API
 
-Extractors переводят внешний source в единый \`NormalizedContent\`. Source-specific
+Extractors переводят внешний source в единый `NormalizedContent`. Source-specific
 детали не должны протекать в Analyzer/PriorityEngine.
 
 ## 17. NormalizedContent
@@ -183,7 +183,7 @@ Playwright fallback отключён.
 ## 19. Критерий успешного extraction
 
 Результат должен содержать содержательный текст. Слишком короткая/неизвлекаемая
-страница завершается контролируемым \`EXTRACTION_FAILED\`.
+страница завершается контролируемым `EXTRACTION_FAILED`.
 
 ## 20. Защита web extractor от SSRF
 
@@ -208,7 +208,7 @@ Frame extraction bounded до materialization и сохраняет temporal cov
 
 ## 24. Vision должен быть capability
 
-Vision выполняется только если provider declares \`capabilities.vision\`.
+Vision выполняется только если provider declares `capabilities.vision`.
 Ошибка vision не должна ломать валидный transcript-only результат.
 
 ## 25. Временные файлы
@@ -218,7 +218,7 @@ Media/frames живут только в configured temp directory и удаля�
 
 ## 26. Audio / Voice
 
-Telegram voice/audio сохраняются как durable Item по \`file_id\`, скачиваются worker-ом,
+Telegram voice/audio сохраняются как durable Item по `file_id`, скачиваются worker-ом,
 транскрибируются provider adapter-ом и дальше проходят общий pipeline.
 
 ## 27. LLM abstraction
@@ -230,8 +230,8 @@ base URLs принадлежат composition/config layer.
 
 Поддерживаются:
 
-- \`LLM_PROVIDER=openai\`;
-- \`LLM_PROVIDER=openrouter\`.
+- `LLM_PROVIDER=openai`;
+- `LLM_PROVIDER=openrouter`.
 
 OpenRouter использует OpenAI-compatible analysis/vision/STT adapters с отдельными
 credentials/model IDs. Ollama не реализован.
@@ -243,7 +243,7 @@ Business code не содержит hardcoded model IDs.
 
 ## 30. Structured output
 
-Analyzer обязан возвращать schema-validated \`AnalysisResult\`. Парсинг
+Analyzer обязан возвращать schema-validated `AnalysisResult`. Парсинг
 произвольного prose регулярками запрещён.
 
 ## 31. Ограничения AnalysisResult
@@ -259,7 +259,7 @@ shape/types.
 
 ## 33. Chunking
 
-Chunk boundaries paragraph-aware. Durable \`CHUNK_SUMMARY\` reuse разрешён только
+Chunk boundaries paragraph-aware. Durable `CHUNK_SUMMARY` reuse разрешён только
 при совпадении index, settings и SHA-256 exact chunk text.
 
 ## 34. Пользовательский профиль
@@ -273,32 +273,32 @@ constraints и free text.
 
 ## 36. /profile
 
-\`/profile\` показывает текущий профиль.
-\`/profile_update <instruction>\` создаёт durable background job.
+`/profile` показывает текущий профиль.
+`/profile_update <instruction>` создаёт durable background job.
 Старые Items автоматически не re-analyze-ятся.
 
 ## 37. Priority Engine
 
-Финальный \`priority_score\` считает deterministic code, а не LLM.
+Финальный `priority_score` считает deterministic code, а не LLM.
 
 ## 38. Базовая формула priority
 
 Текущие веса:
 
-\`\`\`text
+```text
 goal_fit        0.30
 importance      0.20
 urgency         0.15
 long_term_value 0.15
 interest_fit    0.10
 quick_win       0.10
-\`\`\`
+```
 
 Результат clamp'ится в 0..100.
 
 ## 39. Quick win
 
-\`quick_win = max(0, 1 - estimated_action_minutes / 60)\`.
+`quick_win = max(0, 1 - estimated_action_minutes / 60)`.
 Если duration неизвестна — нейтральное значение 0.5.
 
 ## 40. Приоритет ≠ тип
@@ -308,7 +308,7 @@ ItemType описывает характер материала; priority — п
 
 ## 41. Today selection
 
-\`TodayService\` выбирает только READY + ACTIVE Items типов ACTION/LEARN/READ/WATCH,
+`TodayService` выбирает только READY + ACTIVE Items типов ACTION/LEARN/READ/WATCH,
 сортирует по priority desc и ограничивает результат.
 
 ## 42. /today
@@ -337,14 +337,14 @@ DONE/ARCHIVED остаются searchable. Default limit — 10.
 
 Canonical SQLite tables:
 
-- \`users\`;
-- \`items\`;
-- \`contents\`;
-- \`events\`;
-- \`reminders\`;
-- \`profile_update_jobs\`;
-- \`deliveries\`;
-- FTS5 virtual table \`item_search\`.
+- `users`;
+- `items`;
+- `contents`;
+- `events`;
+- `reminders`;
+- `profile_update_jobs`;
+- `deliveries`;
+- FTS5 virtual table `item_search`.
 
 Schema changes — только Alembic migrations.
 
@@ -352,10 +352,10 @@ Schema changes — только Alembic migrations.
 
 Поддерживаемые kinds:
 
-\`USER_TEXT\`, \`WEB_TEXT\`, \`TRANSCRIPT\`, \`TRANSCRIPT_CHUNK\`,
-\`VISUAL_NOTES\`, \`DESCRIPTION\`, \`CHUNK_SUMMARY\`.
+`USER_TEXT`, `WEB_TEXT`, `TRANSCRIPT`, `TRANSCRIPT_CHUNK`,
+`VISUAL_NOTES`, `DESCRIPTION`, `CHUNK_SUMMARY`.
 
-\`TRANSCRIPT_CHUNK\` — retry checkpoint и удаляется после успешной сборки final transcript.
+`TRANSCRIPT_CHUNK` — retry checkpoint и удаляется после успешной сборки final transcript.
 
 ## 49. events
 
@@ -364,8 +364,8 @@ transition. Повторный callback не должен создавать в�
 
 ## 50. reminders
 
-\`reminders\` хранит daily digest/snooze scheduling.
-\`deliveries\` — отдельный durable outbox для READY/FAILED/profile notifications.
+`reminders` хранит daily digest/snooze scheduling.
+`deliveries` — отдельный durable outbox для READY/FAILED/profile notifications.
 
 ## 51. Daily digest
 
@@ -379,17 +379,17 @@ Later предлагает tomorrow/week/month. Item становится SNOOZE
 
 ## 53. Done
 
-Atomic transition → \`DONE\` + \`completed_at\` + event.
+Atomic transition → `DONE` + `completed_at` + event.
 
 ## 54. Archive
 
-Atomic transition → \`ARCHIVED\` + \`archived_at\` + event.
+Atomic transition → `ARCHIVED` + `archived_at` + event.
 Archived Item остаётся searchable.
 
 ## 55. Retry
 
 Только FAILED → QUEUED. Error fields очищаются, processing checkpoints сохраняются.
-Pending stale \`ITEM_FAILED\` delivery отменяется атомарно.
+Pending stale `ITEM_FAILED` delivery отменяется атомарно.
 
 ## 56. Error handling
 
@@ -398,10 +398,10 @@ Pending stale \`ITEM_FAILED\` delivery отменяется атомарно.
 
 ## 57. Error codes
 
-Основные коды: \`UNSUPPORTED_SOURCE\`, \`DOWNLOAD_FAILED\`, \`TOO_LARGE\`,
-\`EXTRACTION_FAILED\`, \`TRANSCRIPTION_FAILED\`, \`LLM_FAILED\`,
-\`INVALID_LLM_OUTPUT\`, \`TIMEOUT\`, \`PROCESSING_TIMEOUT\`,
-\`SECURITY_REJECTED\`, \`UNKNOWN\`.
+Основные коды: `UNSUPPORTED_SOURCE`, `DOWNLOAD_FAILED`, `TOO_LARGE`,
+`EXTRACTION_FAILED`, `TRANSCRIPTION_FAILED`, `LLM_FAILED`,
+`INVALID_LLM_OUTPUT`, `TIMEOUT`, `PROCESSING_TIMEOUT`,
+`SECURITY_REJECTED`, `UNKNOWN`.
 
 ## 58. Retry policy
 
@@ -415,7 +415,7 @@ Retry продолжает с максимально глубокого compatib
 
 ## 60. Processing stages
 
-\`processing_stage\` отражает глубину прогресса отдельно от status.
+`processing_stage` отражает глубину прогресса отдельно от status.
 Resume обязан использовать persisted content/analysis вместо повторения дорогих calls.
 
 ## 61. Content deduplication
@@ -429,11 +429,11 @@ URL dedup — per user + normalized URL. Semantic duplicate detection отсут
 
 ## 63. Security Telegram
 
-Только IDs из \`ALLOWED_TELEGRAM_USER_IDS\`. Неавторизованные updates молча игнорируются.
+Только IDs из `ALLOWED_TELEGRAM_USER_IDS`. Неавторизованные updates молча игнорируются.
 
 ## 64. Secrets
 
-Tokens/API keys только environment/.env; \`.env\` не коммитится и не логируется.
+Tokens/API keys только environment/.env; `.env` не коммитится и не логируется.
 
 ## 65. Subprocess security
 
@@ -468,7 +468,7 @@ Ingestion отвечает быстро. Длинная работа идёт в
 
 ## 70. Open button
 
-URL Item получает Telegram \`🔗 Открыть\`, ведущую на source URL.
+URL Item получает Telegram `🔗 Открыть`, ведущую на source URL.
 
 ## 71. Персонализация
 
@@ -496,13 +496,13 @@ Concurrency, restart, security и persistence paths покрываются regre
 
 Перед merge required:
 
-\`\`\`bash
+```bash
 uv run ruff check .
 uv run ruff format --check .
 uv run pytest
-\`\`\`
+```
 
-GitHub Actions job \`quality\` — required status check для \`main\`.
+GitHub Actions job `quality` — required status check для `main`.
 
 ## 77. Code style
 
@@ -522,11 +522,11 @@ README содержит setup/run/Docker/config/quality обзор и ссылк
 Production image:
 
 - pinned Python 3.12 base;
-- dependencies из \`uv.lock\` через frozen install;
-- \`ffmpeg\`;
+- dependencies из `uv.lock` через frozen install;
+- `ffmpeg`;
 - non-root user;
-- SQLite volume \`/data\`;
-- temp media в \`/tmp/aiinbox\` tmpfs;
+- SQLite volume `/data`;
+- temp media в `/tmp/aiinbox` tmpfs;
 - без Chromium/Playwright dependencies.
 
 ## 81. Graceful shutdown
@@ -538,7 +538,7 @@ Infrastructure failure критического task приводит к process
 
 ## 99. Основной критерий успеха продукта
 
-После нескольких недель бессистемного сохранения материалов \`/today\` должен
+После нескольких недель бессистемного сохранения материалов `/today` должен
 выдавать небольшой, адекватный и персонально полезный список того, чем стоит
 заняться сейчас.
 
