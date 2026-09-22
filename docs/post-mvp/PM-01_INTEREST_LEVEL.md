@@ -1,7 +1,7 @@
 # PM-01 — User Interest Level 1–3
 
 Type: Post-MVP Epic + Detailed Technical Specification  
-Status: NOT_STARTED  
+Status: IN_PROGRESS
 Prerequisite: stabilized MVP / PM-00
 
 ## 1. Epic

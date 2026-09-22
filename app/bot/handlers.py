@@ -6,9 +6,11 @@ from aiogram.filters import Command, CommandStart
 from aiogram.types import CallbackQuery, Message
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
+from app.bot.formatting import format_ready_item
+from app.bot.keyboards import item_keyboard
 from app.config import Settings
 from app.domain.enums import ItemState, ProcessingStatus, SourceType
-from app.services.actions import apply_item_action, record_item_events
+from app.services.actions import apply_item_action, record_item_events, set_item_interest
 from app.services.ingestion import ingest_message, ingest_voice
 from app.services.notifications import (
     format_settings,
@@ -278,6 +280,28 @@ async def on_item_callback(
         item_id = int(raw_item_id)
     except ValueError:
         await callback.answer("Некорректный Item")
+        return
+    if action == "interest":
+        if len(parts) != 4:
+            await callback.answer("Некорректный уровень интереса")
+            return
+        try:
+            level = int(parts[3])
+        except ValueError:
+            await callback.answer("Некорректный уровень интереса")
+            return
+        if level not in {1, 2, 3}:
+            await callback.answer("Некорректный уровень интереса")
+            return
+        item = await set_item_interest(session_factory, user.id, item_id, level)
+        if item is None:
+            await callback.answer("Item не найден")
+            return
+        if callback.message:
+            await callback.message.edit_text(
+                format_ready_item(item), reply_markup=item_keyboard(item)
+            )
+        await callback.answer()
         return
     if action == "later":
         from app.bot.keyboards import snooze_keyboard

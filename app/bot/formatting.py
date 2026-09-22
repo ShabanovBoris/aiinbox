@@ -32,6 +32,7 @@ def format_ready_item(item: Item) -> str:
     lines.append(f"Тип: {item.item_type.value if item.item_type else '—'}")
     if item.priority_score is not None:
         lines.append(f"Приоритет: {item.priority_score}/100")
+    lines.append(f"Интерес: {item.interest_level}/3")
     if item.source_type is SourceType.YOUTUBE and item.analysis_completeness == "TRANSCRIPT_ONLY":
         lines.append("Анализ: по транскрипту, без визуальной части")
     if item.summary:

@@ -23,6 +23,7 @@ def make_ready_item() -> Item:
         item_type=analysis.item_type,
         tags_json=analysis.tags,
         priority_score=82,
+        interest_level=2,
         next_action=analysis.next_action,
         priority_reason=analysis.priority_reason,
     )
@@ -34,6 +35,7 @@ def test_format_contains_key_fields():
     assert "Категория: AI" in text
     assert f"Тип: {ItemType.LEARN.value}" in text
     assert "Приоритет: 82/100" in text
+    assert "Интерес: 2/3" in text
     assert "Разбор подходов к оркестрации агентов." in text
     assert "Следующее действие: Посмотреть блок про tool orchestration" in text
     assert "Почему: Сильно связано с профессиональными целями" in text
