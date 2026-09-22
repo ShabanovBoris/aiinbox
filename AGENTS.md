@@ -33,10 +33,9 @@ Primary sources of truth, in order:
 2. `AGENTS.md`;
 3. `docs/PRODUCT_SPEC.md`;
 4. `docs/DECISIONS.md`;
-5. `docs/IMPLEMENTATION_STATE.md`;
-6. existing tests;
-7. existing implementation;
-8. `docs/RUNBOOK.md`.
+5. existing tests;
+6. existing implementation;
+7. `docs/RUNBOOK.md`.
 
 If documents disagree with working code, investigate the discrepancy instead of silently choosing one.
 
@@ -1041,27 +1040,17 @@ Do not maintain fictional documentation describing features that do not exist.
 
 ---
 
-# 45. IMPLEMENTATION_STATE.md
+# 45. Project documentation
 
-`docs/IMPLEMENTATION_STATE.md` tracks project execution.
+Repository docs describe current behavior, not project history.
 
-At the beginning of a phase:
+- \`docs/PRODUCT_SPEC.md\` — current product contract;
+- \`docs/DECISIONS.md\` — non-obvious current architecture decisions;
+- \`docs/RUNBOOK.md\` — operational commands and recovery;
+- \`docs/BOT_USAGE.md\` — user-facing Telegram behavior.
 
-mark it `IN_PROGRESS`.
-
-After implementation and verification:
-
-mark it `DONE`.
-
-Do not mark work `DONE` before tests/acceptance checks pass.
-
-Record briefly:
-
-* completed scope;
-* remaining known limitation;
-* verification performed.
-
-This file must allow another agent to continue without asking the user what happened previously.
+Do not maintain phase trackers or duplicate review journals in the repository.
+GitHub PRs, commits and Actions are the durable history of implementation/review.
 
 ---
 
@@ -1201,7 +1190,6 @@ A task is DONE only when all applicable conditions hold:
 * restart/retry behavior works where relevant;
 * temporary resources are cleaned;
 * docs reflect material changes;
-* implementation state is updated;
 * final diff has been reviewed;
 * no known required work is hidden behind TODOs;
 * no unrelated user changes were damaged.
@@ -1315,25 +1303,24 @@ without requiring hidden conversation history or manual reconstruction from the 
 
 # 57. External review via ChatGPT (Orchestrator, Browser Use)
 
-Development uses an external Orchestrator. The implementation agent never self-approves a change: the only permitted claims are `implementation complete` and `ready for external review`; acceptance and merge belong to the Orchestrator.
+The implementation agent never self-approves a change. Acceptance and merge belong
+to the external Orchestrator.
 
-* Orchestrator: ChatGPT, fixed conversation (opened via Browser Use; the main agent performs browser work itself, review sessions are not delegated to subagents):
+Review flow:
 
-  https://chatgpt.com/g/g-p-6aa5a9bad2ec819181757f71917ef6c0-aiinbox/c/6aa15a98-8e28-83ed-b71d-e1142ccccffc
+1. create a scoped branch and PR to protected \`main\`;
+2. PR body states scope and verification;
+3. send \`REVIEW REQUEST\` with repository, PR number and exact HEAD SHA;
+4. Orchestrator returns \`APPROVED\`, \`CHANGES REQUIRED\` or \`BLOCKED\`;
+5. fixes stay in the same PR and require re-review of the new exact HEAD;
+6. after \`APPROVED @ HEAD A\`, make **no further commits**;
+7. Orchestrator squash-merges only with expected HEAD A.
 
-Review mechanism:
+Any commit after approval invalidates that approval and requires re-review.
 
-1. A dedicated change branch is pushed and a PR to `main` is opened with scope and verification in the PR body.
-2. A `REVIEW REQUEST` with repository, PR number and exact HEAD SHA is sent to the fixed conversation.
-3. Phase state in `docs/IMPLEMENTATION_STATE.md` moves to `IN_REVIEW`.
-4. Outcomes: `APPROVED` / `CHANGES REQUIRED` (fix in the same branch and PR, then `RE-REVIEW REQUEST`) / `BLOCKED` (continue everything not affected by the blocker).
+Durable review evidence is GitHub itself: PR conversation/body, commit SHAs,
+required Actions runs and merge metadata. Do not duplicate it into repository
+journal files.
 
-Durable record of verdicts: the chat conversation is not a reliable store of decisions. Every Orchestrator verdict must be recorded by the agent in `docs/REVIEWS.md` immediately after receipt, with the PR number and reviewed HEAD SHA; a `RE-REVIEW REQUEST` references that record. A formal GitHub PR review is preferred when the connected identity permits it (known constraint: the PR author cannot post `REQUEST_CHANGES` on their own PR).
-
-Approval → merge handshake (no TOCTOU): after `APPROVED @ HEAD A` the agent makes ONLY a status-finalization commit (`IMPLEMENTATION_STATE` `IN_REVIEW` → `DONE`, recording approved HEAD A), producing HEAD B whose delta A..B is docs-status-only, then declares `MERGE READY` (`Previous approved HEAD: A`, `New HEAD: B`). The Orchestrator verifies the delta and squash-merges with expected HEAD B. No other changes between APPROVED and merge. `main` is additionally protected server-side (branch protection: PR-only changes, no force push, linear history).
-
-The Orchestrator verifies GitHub directly (PR metadata, diff, SHAs, runs). As companion material, a submission may also include the main diff (`git diff <base>..HEAD`) and a project archive built from git-tracked files only (`git archive --format=zip -o temp/project.zip HEAD`), so ignored paths (`.env`, `data/`, `temp/`, virtualenvs) never leave the machine — send them when the Orchestrator asks or cannot access GitHub.
-
-No scope expansion while a `REVIEW REQUEST` is open: no unrelated architecture changes or bonus functionality.
-
-If the Orchestrator is unavailable, record the pending external verification in `docs/IMPLEMENTATION_STATE.md` and continue all work that does not depend on it.
+No scope expansion while review is open. If the Orchestrator is temporarily
+unavailable, continue only work that does not depend on acceptance/merge.
