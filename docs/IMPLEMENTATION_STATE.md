@@ -6,7 +6,7 @@
 
 Статусы: `NOT_STARTED` / `IN_PROGRESS` / `IN_REVIEW` / `DONE` / `BLOCKED`.
 
-Правило статусов (оркестрационный протокол §25): `IN_REVIEW` = реализация завершена, PR открыт и отправлен `REVIEW REQUEST` Orchestrator'у; `DONE` ставится только после явного `APPROVED` Orchestrator'а; `BLOCKED` — только реальный внешний блокер. Фаза в `IN_REVIEW` не расширяется по scope: исправления идут в ту же branch и PR.
+Правило статусов: `IN_REVIEW` = реализация завершена, PR открыт и отправлен `REVIEW REQUEST` Orchestrator'у; `DONE` ставится только после явного `APPROVED` Orchestrator'а; `BLOCKED` — только реальный внешний блокер. Фаза в `IN_REVIEW` не расширяется по scope: исправления идут в ту же branch и PR.
 
 Handshake APPROVED → DONE → merge: после `APPROVED @ HEAD A` агент делает
 единственный status-finalization commit (`IN_REVIEW` → `DONE`, с записью approved
@@ -15,13 +15,6 @@ HEAD A), delta A..B — только статусная документация
 squash merge с ожидаемым HEAD B. Вердикты фиксируются в `docs/REVIEWS.md`.
 
 Архитектурные решения фиксируются отдельно — в `docs/DECISIONS.md`.
-
-## Contract addendum — PR #1 — orchestration protocol adoption
-
-Статус: APPROVED @ 5611be6b52fc546cd4dd060b985d24af8619ed88
-(GitHub review: pullrequestreview-5187945174). Вердикты и история ревью —
-в `docs/REVIEWS.md`. Squash merge выполняет Orchestrator; Phase 1 начинается
-только после merge и sync main (протокол §9.2, §23).
 
 ## Phases
 
@@ -105,13 +98,13 @@ git diff --check → pass
 
 ### Phase 0 — Project contract — DONE
 
-Статус присвоен до введения оркестрационного протокола: контрактные документы
-приняты тем, что работа перешла к следующим шагам. Дальнейшие фазы проходят
-через `IN_REVIEW` и `DONE` только по `APPROVED` Orchestrator'а.
+Статус присвоен на bootstrap-этапе после фиксации канонического продуктового
+контракта и repository workflow. Дальнейшие изменения проходят через
+`IN_REVIEW` и `DONE` только по `APPROVED` Orchestrator'а.
 
 Completed:
-✓ repository изучен: пустой greenfield, только два планировочных документа
-✓ docs/PRODUCT_SPEC.md — ТЗ перенесено без изменений
+✓ repository изучен и исходные требования сведены в канонические repo-документы
+✓ docs/PRODUCT_SPEC.md — канонический продуктовый контракт
 ✓ AGENTS.md — правила, архитектурные инварианты, resumable processing,
   правило продвижения без внешних зависимостей
 ✓ docs/DECISIONS.md — D-001 (resumable), D-002 (ядро/края)
@@ -126,7 +119,7 @@ Remaining:
 □ — нет
 
 Last verification:
-diff «ТЗ ↔ docs/PRODUCT_SPEC.md» — различие только в служебной шапке
+docs/PRODUCT_SPEC.md принят как канонический product source of truth
 branch protection: gh api .../branches/main/protection → PR required, force push
 и deletions запрещены, linear history включена
 (pytest/ruff неприменимы: кода ещё нет)
