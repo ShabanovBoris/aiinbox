@@ -194,6 +194,11 @@ class ItemSource(Base):
     )
 
     @property
+    def failure_is_permanent(self) -> bool:
+        """Keep retry policy durable with the source outcome across process restarts."""
+        return bool((self.metadata_json or {}).get("failure_permanent"))
+
+    @property
     def user_note(self) -> str:
         """Extractor compatibility: intent belongs to Item, never to one child source."""
         return ""

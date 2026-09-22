@@ -93,7 +93,7 @@ class ProcessingPipeline:
             analysis = await self.analyzer.analyze(
                 content, session, item.user_id, profile=profile, item_id=item.id
             )
-            item.analysis_completeness = self._completeness(item, content, visual_notes)
+            item.analysis_completeness = self._completeness(content, visual_notes)
 
             item.processing_stage = "PRIORITIZING"
             # Дорогой результат пишется ДО checkpoint-commit: падение после
@@ -192,14 +192,33 @@ class ProcessingPipeline:
             shutil.rmtree(work_dir, ignore_errors=True)
 
     @staticmethod
-    def _completeness(item: Item, content: NormalizedContent, visual_notes: str | None) -> str:
+    def _completeness(content: NormalizedContent, visual_notes: str | None) -> str:
         if content.metadata.get("source_failures"):
             return "PARTIAL"
-        if item.source_type in (SourceType.VOICE, SourceType.AUDIO):
+
+        # ❌ Удалена зависимость completeness от parent Item.source_type: composite
+        # Item может быть TEXT при реальных child sources WEB + YOUTUBE/VIDEO.
+        source_types = set(content.metadata.get("successful_source_types") or [])
+        if not source_types:
+            source_types = {content.source_type.value}
+        transcript_types = {
+            SourceType.VOICE.value,
+            SourceType.AUDIO.value,
+            SourceType.YOUTUBE.value,
+            SourceType.VIDEO.value,
+        }
+        if source_types & transcript_types:
+            visual_source_count = int(content.metadata.get("visual_source_count") or 0)
+            visual_with_notes = int(content.metadata.get("visual_source_count_with_notes") or 0)
+            if not content.metadata.get("successful_source_types") and content.source_type in (
+                SourceType.YOUTUBE,
+                SourceType.VIDEO,
+            ):
+                visual_source_count = 1
+                visual_with_notes = int(bool(visual_notes or content.metadata.get("visual_notes")))
+            if visual_source_count and visual_with_notes == visual_source_count:
+                return "TRANSCRIPT_AND_VISUAL"
             return "TRANSCRIPT_ONLY"
-        if item.source_type in (SourceType.YOUTUBE, SourceType.VIDEO):
-            has_visual = bool(visual_notes or content.metadata.get("has_visual"))
-            return "TRANSCRIPT_AND_VISUAL" if has_visual else "TRANSCRIPT_ONLY"
         return "FULL_TEXT"
 
     async def _extract(self, session: AsyncSession, item: Item) -> NormalizedContent:
@@ -228,6 +247,10 @@ class ProcessingPipeline:
                     source.extraction_status = "FAILED"
                     source.error_code = exc.code
                     source.error_message = str(exc)[:500]
+                    source.metadata_json = {
+                        **(source.metadata_json or {}),
+                        "failure_permanent": exc.permanent,
+                    }
                     await session.commit()
                     failures.append(self._source_failure(source))
                     log.warning(
@@ -513,8 +536,10 @@ class ProcessingPipeline:
                 metadata={
                     "source_count": len(sources),
                     "successful_source_count": 0,
+                    "successful_source_types": [],
                     "source_failures": failures,
-                    "has_visual": False,
+                    "visual_source_count": 0,
+                    "visual_source_count_with_notes": 0,
                 },
             )
 
@@ -543,13 +568,22 @@ class ProcessingPipeline:
             combined_text = "\n\n".join(sections)
 
         forwarded = (item.source_metadata_json or {}).get("forwarded") is True
+        visual_sources = [
+            content
+            for content in extracted
+            if content.source_type in (SourceType.YOUTUBE, SourceType.VIDEO)
+        ]
         combined_metadata = dict(single.metadata) if single is not None else {}
         combined_metadata.update(
             {
                 "source_count": len(sources),
                 "successful_source_count": len(extracted),
+                "successful_source_types": [content.source_type.value for content in extracted],
                 "source_failures": failures,
-                "has_visual": any(content.metadata.get("visual_notes") for content in extracted),
+                "visual_source_count": len(visual_sources),
+                "visual_source_count_with_notes": sum(
+                    bool(content.metadata.get("visual_notes")) for content in visual_sources
+                ),
             }
         )
         return NormalizedContent(

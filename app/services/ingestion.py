@@ -253,6 +253,7 @@ async def ingest_voice(
                     extraction_status=media_status,
                     error_code=media_error_code,
                     error_message=media_error_message,
+                    metadata_json={"failure_permanent": True} if too_large is not None else None,
                 )
             )
             for offset, (url_type, url) in enumerate(urls, start=1):

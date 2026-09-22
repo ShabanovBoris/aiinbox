@@ -133,6 +133,23 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    # Старый schema contract не может представить одинаковый URL в нескольких
+    # сообщениях одного пользователя. Downgrade поэтому сохраняет первый Item,
+    # а конфликтующие legacy source_url явно обнуляет вместо падения на UNIQUE.
+    op.execute(
+        """
+        UPDATE items
+        SET source_url = NULL
+        WHERE source_url IS NOT NULL
+          AND EXISTS (
+              SELECT 1
+              FROM items AS earlier
+              WHERE earlier.user_id = items.user_id
+                AND earlier.source_url = items.source_url
+                AND earlier.id < items.id
+          )
+        """
+    )
     with op.batch_alter_table("items") as batch_op:
         batch_op.create_unique_constraint("uq_items_user_url", ["user_id", "source_url"])
 

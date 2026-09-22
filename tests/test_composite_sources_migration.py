@@ -51,3 +51,26 @@ def test_composite_source_migration_backfills_legacy_web_checkpoint(tmp_path):
             "SELECT source_id FROM contents WHERE item_id = ? AND kind = 'WEB_TEXT'",
             (item_id,),
         ).fetchone() == (source_id,)
+
+
+def test_composite_source_downgrade_handles_duplicate_message_urls(tmp_path):
+    db = tmp_path / "composite-downgrade.db"
+    cfg = _config(db)
+    command.upgrade(cfg, "c2d4e6f8a0b1")
+    with sqlite3.connect(db) as conn:
+        conn.execute("INSERT INTO users (telegram_user_id, telegram_chat_id) VALUES (42, 42)")
+        user_id = conn.execute("SELECT id FROM users").fetchone()[0]
+        for message_id in (1, 2):
+            conn.execute(
+                "INSERT INTO items (user_id, telegram_message_id, source_index, processing_status, "
+                "state, source_type, source_url, processing_stage, user_note) "
+                "VALUES (?, ?, 0, 'READY', 'ACTIVE', 'WEB', ?, 'READY', '')",
+                (user_id, message_id, "https://example.com/shared"),
+            )
+        conn.commit()
+
+    command.downgrade(cfg, "7a6f2d1c9b84")
+
+    with sqlite3.connect(db) as conn:
+        urls = conn.execute("SELECT source_url FROM items ORDER BY id").fetchall()
+        assert urls == [("https://example.com/shared",), (None,)]

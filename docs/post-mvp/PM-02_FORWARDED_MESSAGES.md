@@ -1,7 +1,7 @@
 # PM-02 — Forwarded Telegram Messages
 
 Type: Post-MVP Epic + Detailed Technical Specification  
-Status: IN_PROGRESS
+Status: DONE
 Prerequisite: stabilized Telegram ingestion
 
 ## 1. Epic

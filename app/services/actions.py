@@ -2,7 +2,7 @@
 
 from datetime import UTC, datetime
 
-from sqlalchemy import and_, case, or_, select, update
+from sqlalchemy import and_, case, false, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.sql import text
 
@@ -100,11 +100,36 @@ async def apply_item_action(
                 .returning(Item.id)
             )
         elif action == "retry":
-            retryable_partial = and_(
-                Item.processing_status == ProcessingStatus.READY,
-                Item.analysis_completeness == "PARTIAL",
-                Item.id.in_(
-                    select(ItemSource.item_id).where(ItemSource.extraction_status == "FAILED")
+            failed_sources = list(
+                (
+                    await session.scalars(
+                        select(ItemSource).where(
+                            ItemSource.item_id == item_id,
+                            ItemSource.extraction_status == "FAILED",
+                        )
+                    )
+                ).all()
+            )
+            retryable_source_ids = [
+                source.id for source in failed_sources if not source.failure_is_permanent
+            ]
+            # ❌ Удалено правило «любой FAILED child можно retry»: permanent source
+            # failures должны оставаться durable FAILED и не запускать заведомо
+            # бесполезную повторную extraction после restart.
+            retryable_partial = (
+                and_(
+                    Item.processing_status == ProcessingStatus.READY,
+                    Item.analysis_completeness == "PARTIAL",
+                )
+                if retryable_source_ids
+                else false()
+            )
+            failed_item_retryable_at_extraction = not failed_sources or bool(retryable_source_ids)
+            retryable_failed = and_(
+                Item.processing_status == ProcessingStatus.FAILED,
+                or_(
+                    Item.processing_stage != "EXTRACTING",
+                    failed_item_retryable_at_extraction,
                 ),
             )
             transition = (
@@ -112,7 +137,7 @@ async def apply_item_action(
                 .where(
                     Item.id == item_id,
                     Item.user_id == user_id,
-                    or_(Item.processing_status == ProcessingStatus.FAILED, retryable_partial),
+                    or_(retryable_failed, retryable_partial),
                 )
                 .values(
                     processing_status=ProcessingStatus.QUEUED,
@@ -146,18 +171,16 @@ async def apply_item_action(
                 # Failure delivery belongs to the FAILED state being left. Marking
                 # it terminal in the same transaction prevents the outbox from
                 # announcing an obsolete failure after the user has already retried.
-                await session.execute(
-                    update(ItemSource)
-                    .where(
-                        ItemSource.item_id == item_id,
-                        ItemSource.extraction_status == "FAILED",
+                if retryable_source_ids:
+                    await session.execute(
+                        update(ItemSource)
+                        .where(ItemSource.id.in_(retryable_source_ids))
+                        .values(
+                            extraction_status="PENDING",
+                            error_code=None,
+                            error_message=None,
+                        )
                     )
-                    .values(
-                        extraction_status="PENDING",
-                        error_code=None,
-                        error_message=None,
-                    )
-                )
                 await session.execute(
                     update(Delivery)
                     .where(
