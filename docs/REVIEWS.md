@@ -1124,3 +1124,19 @@
   final transcript atomically deletes STT chunks; project docs now reflect the
   already-required `quality` gate. Local verification: 251 tests, Ruff/format,
   diff check and Alembic head all pass.
+
+## 2026-09-22 — PR #18 — 77126ad — APPROVED (review 3)
+
+- Reviewer: Orchestrator; approved exact HEAD
+  `77126ad3baf4d482411c9f3a89913187aea9daf6`.
+- Confirmed closed: bounded visual sampling with late-timeline coverage,
+  stale `ITEM_FAILED` suppression across Retry, transactional cleanup of
+  successful `TRANSCRIPT_CHUNK` checkpoints, and durable STT identity.
+- Confirmed repository state: `quality` is a required status check for protected
+  `main`; PR remains mergeable; GitHub Actions on the approved HEAD passed
+  Ruff check/format and `pytest` with 251 tests.
+- Non-blocking residual: an unavoidable narrow race remains between the final
+  database check of `FAILED` and the external Telegram network send. Under D-011
+  at-least-once delivery semantics this was explicitly accepted as non-blocking.
+- This verdict authorizes only the protocol status-finalization commit; no
+  product-code changes are allowed before the merge handshake.

@@ -47,12 +47,11 @@ squash merge с ожидаемым HEAD B. Вердикты фиксируютс
 | Изменение | Статус | PR |
 |---|---|---|
 | OpenRouter provider support | DONE | #17 |
-| MVP reliability hardening | IN_REVIEW | #18 |
+| MVP reliability hardening | DONE | #18 |
 
-### MVP reliability hardening — IN_REVIEW
+### MVP reliability hardening — DONE
 
-PR #18. Orchestrator re-review:
-`CHANGES REQUIRED @ 437d26b49cb7b005e079f81c574ab7cc5a309128`.
+PR #18: `APPROVED @ 77126ad3baf4d482411c9f3a89913187aea9daf6`.
 
 Completed:
 ✓ durable immediate Telegram outbox для READY/FAILED/profile update и startup recovery
@@ -71,7 +70,7 @@ Completed:
   и stale FAILED delivery после Retry
 
 Remaining:
-□ re-review Orchestrator после push нового HEAD
+□ — нет
 
 Last verification:
 targeted audio/visual/delivery pytest → 39 passed; full pytest → 251 passed;
