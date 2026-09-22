@@ -13,7 +13,7 @@ extraction (уникальная — нет коллизий между пара
 import asyncio
 import logging
 import shutil
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable, Mapping
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -25,7 +25,7 @@ import yt_dlp
 from app.domain.enums import SourceType
 from app.domain.models import NormalizedContent
 from app.errors import AppError
-from app.llm.base import TranscriptionProvider
+from app.llm.base import TranscriptionProvider, TranscriptionSegmentCheckpoint
 from app.services.subtitles import parse_subtitles
 from app.storage.models import Item
 
@@ -85,7 +85,13 @@ class YoutubeExtractor:
         self.max_attempts = max_attempts
         self.backoff_seconds = backoff_seconds
 
-    async def extract(self, item: Item) -> NormalizedContent:
+    async def extract(
+        self,
+        item: Item,
+        *,
+        completed_segments: Mapping[int, TranscriptionSegmentCheckpoint] | None = None,
+        on_segment: Callable[[int, TranscriptionSegmentCheckpoint], Awaitable[None]] | None = None,
+    ) -> NormalizedContent:
         """Собственная temp-поддиректория на extraction: уникальна для параллельных
         обработок, полностью удаляется при успехе/ошибке/отмене (ТЗ §25, §27)."""
         work_dir = self.temp_dir / f"yt-{uuid4().hex}"
@@ -109,12 +115,11 @@ class YoutubeExtractor:
                 audio_path = await self._download_audio(item.source_url, work_dir)
                 try:
                     transcript = await self.transcriber.transcribe(
-                        audio_path, duration_seconds=duration
+                        audio_path,
+                        duration_seconds=duration,
+                        completed_segments=completed_segments,
+                        on_segment=on_segment,
                     )
-                except AppError:
-                    raise
-                except Exception as exc:
-                    raise AppError("TRANSCRIPTION_FAILED", f"stt failed: {exc}") from exc
                 finally:
                     # guard: пустой prepare_filename даёт Path(".") — не удаляем его
                     if str(audio_path) not in ("", "."):

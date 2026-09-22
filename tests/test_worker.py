@@ -2,12 +2,14 @@ import asyncio
 import logging
 
 import pytest
+from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.domain.enums import ProcessingStatus
 from app.main import _drain_worker_tasks, _start_polling, _wait_for_shutdown_or_critical_exit
+from app.services.delivery import ITEM_FAILED
 from app.services.ingestion import ingest_message
-from app.storage.models import Item
+from app.storage.models import Delivery, Item
 from app.workers.processing import ProcessingWorker, requeue_stale
 from tests.fakes import FakePipeline
 
@@ -101,6 +103,15 @@ async def test_worker_marks_failed_on_exception(session_factory):
     assert stored.processing_stage == "INGESTED"
     assert stored.error_code == "UNKNOWN"
     assert "boom" in stored.error_message
+    async with session_factory() as session:
+        delivery = await session.scalar(
+            select(Delivery).where(
+                Delivery.item_id == item.id,
+                Delivery.type == ITEM_FAILED,
+            )
+        )
+    assert delivery is not None
+    assert delivery.status == "PENDING"
 
 
 async def test_worker_applies_end_to_end_processing_timeout(session_factory):

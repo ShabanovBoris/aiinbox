@@ -3,12 +3,8 @@
 Как запускать, проверять и диагностировать Personal AI Inbox.
 Заполняется по мере появления реальных команд и проблем; не выдумывать команды заранее.
 
-Статус: Phase 11 — Notifications завершена; Phase 12 — Production hardening
-реализована в ветке `phase/12-production-hardening` и ожидает external review.
-
-После squash merge PR #12 Phase 11 завершена. Текущая разработка Phase 12
-идёт в `phase/12-production-hardening`; запуск и проверка ниже описывают
-актуальный `main`/phase-код.
+Статус: MVP Phase 0–13 завершён. PR #17 с поддержкой OpenRouter squash-merged;
+текущий post-MVP проход посвящён hardening найденных review gaps.
 
 FTS5 индекс `item_search` контролируется приложением: после обработки Item он
 синхронизируется вместе с READY, а перед поиском индекс пользователя
@@ -38,13 +34,15 @@ scheduler.
 `PROCESSING` Items в `QUEUED` через `requeue_stale`. При SIGTERM/SIGINT сначала
 подаётся stop-сигнал и воркерам даётся `SHUTDOWN_TIMEOUT_SECONDS` на завершение
 текущей операции, после чего зависшие задачи отменяются. Неожиданное завершение
-processing/profile/reminder worker или Telegram polling валит весь процесс после
+processing/profile/delivery/reminder worker или Telegram polling валит весь процесс после
 того же cleanup; DB infrastructure error также выходит наружу вместо маскировки
 как обычный FAILED Item. В Docker Compose процесс поднимается снова через
 `restart: unless-stopped`, а незавершённый PROCESSING Item requeue-ится на старте.
 
-Для Docker см. корневой `README.md`: образ содержит Python 3.12 и ffmpeg,
-SQLite должен быть вынесен в volume `/data`. Playwright fallback отключён по
+Для Docker см. корневой `README.md`: образ содержит закреплённый Python 3.12,
+ffmpeg и устанавливает production-зависимости строго из `uv.lock`. SQLite должен
+быть вынесен в volume `/data`; временные media files — в `/tmp/aiinbox`/tmpfs.
+Контейнер запускается non-root пользователем. Playwright fallback отключён по
 решению безопасности, поэтому Chromium-зависимости в образ не устанавливаются.
 В контейнере обязательно используйте абсолютный URL
 `sqlite+aiosqlite:////data/app.db`, иначе relative SQLite path окажется под
@@ -88,7 +86,9 @@ live-проверка требует ключа.
 
 OpenRouter STT использует OpenAI-compatible multipart только для коротких файлов.
 Файлы больше 25 MB или аудио длиннее 5 минут сначала режутся `ffmpeg` на
-5-минутные mono WAV PCM 16 kHz сегменты и транскрибируются последовательно.
+5-минутные mono WAV PCM 16 kHz сегменты и транскрибируются с bounded concurrency
+до 4 запросов. Готовые сегменты checkpoint'ятся с SHA-256 input + provider/model
+identity и переиспользуются только при полном совпадении на retry.
 Для long-audio/YouTube STT fallback `ffmpeg` должен быть доступен в `PATH`.
 
 ## Quality gate
@@ -98,6 +98,10 @@ uv run ruff check .
 uv run ruff format --check .
 uv run pytest
 ```
+
+GitHub Actions workflow `.github/workflows/quality.yml` выполняет тот же gate на
+PR и push в `main`. После первого зелёного run job `quality` должен быть добавлен
+в required status checks branch protection для `main`.
 
 ## Git workflow (оркестрационный протокол §2–4, §22–23)
 

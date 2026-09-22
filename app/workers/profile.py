@@ -1,4 +1,4 @@
-"""Фоновый worker /profile_update: LLM patch → DB-side merge → уведомление.
+"""Фоновый worker /profile_update: LLM patch → DB-side merge → delivery intent.
 
 Durable job (ТЗ §16): постановка в handler, исполнение здесь; статус PENDING/
 RUNNING/DONE/FAILED переживает restart. Атомарный claim oldest PENDING.
@@ -28,13 +28,10 @@ class ProfileUpdateWorker:
         session_factory: async_sessionmaker,
         provider: LlmProvider,
         poll_seconds: float = 1.0,
-        on_done=None,
     ):
         self.session_factory = session_factory
         self.provider = provider
         self.poll_seconds = poll_seconds
-        # on_done(job, profile, changed) — auxiliary-колбэк (уведомление в Telegram)
-        self.on_done = on_done
 
     async def run_forever(self, stop: asyncio.Event) -> None:
         while not stop.is_set():
@@ -52,9 +49,7 @@ class ProfileUpdateWorker:
         try:
             # update_profile_from_patch атомарно применяет merge И переводит
             # job в DONE одной транзакцией (protocol §9.2-подобная семантика)
-            profile, changed = await update_profile_from_patch(
-                self.session_factory, self.provider, job
-            )
+            _, changed = await update_profile_from_patch(self.session_factory, self.provider, job)
         except SQLAlchemyError:
             # DB/infrastructure failure must reach the critical-task supervisor;
             # startup recovery will requeue the RUNNING durable job.
@@ -66,13 +61,6 @@ class ProfileUpdateWorker:
             await finish_with_error(self.session_factory, job.id, code, str(exc)[:500])
             return True
         log.info("profile updated job=%s user_id=%s changed=%s", job.id, job.user_id, changed)
-        if self.on_done is not None:
-            result = self.on_done(job, profile, changed)
-            if result is not None:  # headless-режим: callback без бота вернёт None
-                try:
-                    await result
-                except Exception:
-                    log.exception("profile update notify failed job=%s", job.id)
         return True
 
 

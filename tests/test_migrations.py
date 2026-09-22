@@ -16,7 +16,15 @@ def test_fresh_database_migrates_to_latest_schema(tmp_path):
         tables = {
             row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
         }
-        assert {"users", "items", "item_search", "events", "reminders", "alembic_version"} <= tables
+        assert {
+            "users",
+            "items",
+            "item_search",
+            "events",
+            "reminders",
+            "deliveries",
+            "alembic_version",
+        } <= tables
         search_sql = conn.execute(
             "SELECT sql FROM sqlite_master WHERE name='item_search'"
         ).fetchone()[0]
@@ -32,6 +40,17 @@ def test_fresh_database_migrates_to_latest_schema(tmp_path):
             " VALUES (?, 1, 0, 'QUEUED', 'ACTIVE', 'TEXT', 'INGESTED', 'a')",
             (user_id,),
         )
+        item_id = conn.execute("SELECT id FROM items").fetchone()[0]
+        # Новый resumable STT checkpoint должен быть совместим именно с
+        # production Alembic schema, а не только с Base.metadata.create_all.
+        conn.execute(
+            "INSERT INTO contents (item_id, kind, text) VALUES (?, 'TRANSCRIPT_CHUNK', 'part')",
+            (item_id,),
+        )
+        assert conn.execute(
+            "SELECT kind, text FROM contents WHERE item_id = ?",
+            (item_id,),
+        ).fetchone() == ("TRANSCRIPT_CHUNK", "part")
         try:
             conn.execute(
                 "INSERT INTO items (user_id, telegram_message_id, source_index,"

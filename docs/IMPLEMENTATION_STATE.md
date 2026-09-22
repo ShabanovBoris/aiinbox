@@ -47,6 +47,35 @@ squash merge с ожидаемым HEAD B. Вердикты фиксируютс
 | Изменение | Статус | PR |
 |---|---|---|
 | OpenRouter provider support | DONE | #17 |
+| MVP reliability hardening | DONE | #18 |
+
+### MVP reliability hardening — DONE
+
+PR #18: `APPROVED @ 77126ad3baf4d482411c9f3a89913187aea9daf6`.
+
+Completed:
+✓ durable immediate Telegram outbox для READY/FAILED/profile update и startup recovery
+✓ OpenRouter long-STT checkpoints с identity по SHA-256 segment input + provider/model/
+  segmentation contract; несовместимые/legacy checkpoints не переиспользуются
+✓ representative frames bounded до materialization: каждый ffmpeg pass имеет
+  hard cap `VIDEO_MAX_FRAMES`, а известная duration увеличивает periodic interval
+  и разрежает scene candidates, сохраняя late-timeline coverage
+✓ Retry атомарно отменяет obsolete `ITEM_FAILED` outbox intent; DeliveryWorker
+  дополнительно suppress'ит failure delivery, если Item уже не FAILED
+✓ успешный final TRANSCRIPT удаляет `TRANSCRIPT_CHUNK` checkpoints в той же
+  транзакции; failure-path checkpoints остаются для retry и не дублируют FTS
+✓ config validation, CI workflow, locked/non-root Docker + tmpfs hardening
+✓ `quality` подтверждён Orchestrator'ом как required status check для `main`
+✓ regressions для changed STT bytes/model, bounded late-timeline visual coverage
+  и stale FAILED delivery после Retry
+
+Remaining:
+□ — нет
+
+Last verification:
+targeted audio/visual/delivery pytest → 39 passed; full pytest → 251 passed;
+ruff check . → pass; ruff format --check . → pass; git diff --check → pass;
+alembic heads → `5d8e9a1b2c3d (head)`.
 
 ### OpenRouter provider support — DONE
 

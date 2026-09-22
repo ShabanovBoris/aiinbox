@@ -1081,3 +1081,62 @@
   `ruff format --check .` PASS, `git diff --check` PASS.
 - Этот verdict вместе с переходом OpenRouter support `IN_REVIEW → DONE`
   составляет status-finalization commit; product code не меняется.
+
+## 2026-09-21 — PR #18 — 45ca289 — CHANGES REQUIRED (review 1)
+
+- Reviewer: Orchestrator; reviewed exact HEAD
+  `45ca289917e03498c7bd3850d7b966998ad2217d`.
+- Accepted: durable delivery outbox/recovery, config fail-fast, locked non-root
+  Docker/tmpfs, user persistence fixes, transcript-only UI and working `quality` CI.
+- MAJOR: `TRANSCRIPT_CHUNK` reuse was keyed only by `item_id + segment_index`, so
+  changed media bytes, segmentation or transcription model could reuse stale text.
+- MAJOR: visual candidate filter admitted every I-frame before `-frames:v`, so
+  frequent GOP keyframes could exhaust `VIDEO_MAX_FRAMES` near the video start.
+- PROTOCOL: PR #18 was absent from `IMPLEMENTATION_STATE`/`REVIEWS`; durable
+  immediate delivery outbox also needed an explicit architecture decision.
+- Repository setting: successful `quality` workflow existed but was not required
+  by `main` branch protection. This is an external GitHub repository setting.
+- MINOR: RUNBOOK still described OpenRouter STT segments as sequential although
+  the adapter uses bounded concurrency.
+- Resolved in same branch/PR pending re-review: STT segment checkpoints now bind
+  exact SHA-256 input plus provider/model/segmentation identity; visual extraction
+  separates full-timeline periodic baseline from scene candidates and prunes only
+  after both passes; durable docs and RUNBOOK are synchronized.
+
+## 2026-09-21 — PR #18 — 437d26b — CHANGES REQUIRED (review 2)
+
+- Reviewer: Orchestrator; reviewed exact HEAD
+  `437d26b49cb7b005e079f81c574ab7cc5a309128`.
+- Accepted from review 1: STT checkpoint identity, required `quality` gate,
+  project-state/decision docs, durable outbox transaction boundary, startup
+  recovery, config validation, locked non-root Docker/tmpfs and transcript-only UX.
+- MAJOR: visual sampling restored late-timeline coverage but lost the resource
+  bound by materializing every periodic/scene JPEG before Python pruning.
+- MAJOR: pending `ITEM_FAILED` delivery could become stale after user Retry and
+  later announce an obsolete failure using mutable current Item state.
+- P2: successful STT retained `TRANSCRIPT_CHUNK` rows, so FTS indexed both chunks
+  and the final `TRANSCRIPT`.
+- Metadata drift: PR body still said 247 tests, while reviewed Actions had 250;
+  `IMPLEMENTATION_STATE` still described `quality` as an external pending setting.
+- Resolved in the same branch pending re-review: each visual ffmpeg pass is capped
+  before materialization and duration-aware sampling preserves late coverage;
+  Retry cancels stale failure intents and worker checks current FAILED state;
+  final transcript atomically deletes STT chunks; project docs now reflect the
+  already-required `quality` gate. Local verification: 251 tests, Ruff/format,
+  diff check and Alembic head all pass.
+
+## 2026-09-22 — PR #18 — 77126ad — APPROVED (review 3)
+
+- Reviewer: Orchestrator; approved exact HEAD
+  `77126ad3baf4d482411c9f3a89913187aea9daf6`.
+- Confirmed closed: bounded visual sampling with late-timeline coverage,
+  stale `ITEM_FAILED` suppression across Retry, transactional cleanup of
+  successful `TRANSCRIPT_CHUNK` checkpoints, and durable STT identity.
+- Confirmed repository state: `quality` is a required status check for protected
+  `main`; PR remains mergeable; GitHub Actions on the approved HEAD passed
+  Ruff check/format and `pytest` with 251 tests.
+- Non-blocking residual: an unavoidable narrow race remains between the final
+  database check of `FAILED` and the external Telegram network send. Under D-011
+  at-least-once delivery semantics this was explicitly accepted as non-blocking.
+- This verdict authorizes only the protocol status-finalization commit; no
+  product-code changes are allowed before the merge handshake.

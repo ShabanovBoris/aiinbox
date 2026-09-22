@@ -8,21 +8,20 @@ from app.domain.models import DEFAULT_PROFILE, NormalizedContent
 from app.domain.priority import PriorityEngine
 from app.llm.base import LlmError
 from app.services.analysis import Analyzer, split_text
+from app.services.delivery import ITEM_FAILED, ITEM_READY
 from app.services.ingestion import ingest_message
 from app.services.processing import ProcessingPipeline
-from app.storage.models import Content, Item
+from app.storage.models import Content, Delivery, Item
 from app.workers.processing import ProcessingWorker, requeue_stale
 from tests.fakes import FakeLlmProvider, make_analysis
 
 
-def make_worker(session_factory, provider, on_result=None, on_failure=None):
+def make_worker(session_factory, provider):
     pipeline = ProcessingPipeline(Analyzer(provider), PriorityEngine())
     return ProcessingWorker(
         session_factory,
         pipeline,
         poll_seconds=0.01,
-        on_result=on_result,
-        on_failure=on_failure,
     )
 
 
@@ -70,6 +69,16 @@ async def test_text_pipeline_end_to_end(session_factory):
     assert profile == DEFAULT_PROFILE
     assert categories == []
     assert provider.summarize_calls == []
+
+    async with session_factory() as session:
+        delivery = await session.scalar(
+            select(Delivery).where(
+                Delivery.item_id == item.id,
+                Delivery.type == ITEM_READY,
+            )
+        )
+    assert delivery is not None
+    assert delivery.status == "PENDING"
 
 
 def test_split_text_preserves_all_content():
@@ -240,42 +249,20 @@ async def test_provider_failure_fails_item_with_llm_code(session_factory):
     assert stored.user_note == "Изучить AI agents"
 
 
-async def test_provider_failure_notifies_retry_surface(session_factory):
+async def test_provider_failure_persists_retry_delivery(session_factory):
     item = await seed(session_factory)
-    notified = []
-
-    async def on_failure(failed_item):
-        notified.append(failed_item)
-
     provider = FakeLlmProvider(error=LlmError("LLM_FAILED", "provider unreachable"))
-    worker = make_worker(session_factory, provider, on_failure=on_failure)
+    worker = make_worker(session_factory, provider)
     assert await worker.process_one() is True
-    assert [failed.id for failed in notified] == [item.id]
-    assert notified[0].processing_status is ProcessingStatus.FAILED
-
-
-async def test_result_delivery_failure_keeps_item_ready(session_factory):
-    # Auxiliary-операция (доставка) не должна ломать готовый результат
-    item = await seed(session_factory)
-    provider = FakeLlmProvider()
-
-    async def broken_delivery(delivered):
-        raise RuntimeError("telegram down")
-
-    worker = make_worker(session_factory, provider, on_result=broken_delivery)
-    assert await worker.process_one() is True
-    stored = await get_item(session_factory, item.id)
-    assert stored.title == make_analysis().title
-
-
-async def test_result_delivered_to_callback(session_factory):
-    await seed(session_factory)
-    provider = FakeLlmProvider()
-    delivered: list[Item] = []
-    worker = make_worker(session_factory, provider, on_result=delivered.append)
-    await worker.process_one()
-    assert len(delivered) == 1
-    assert delivered[0].title == make_analysis().title
+    async with session_factory() as session:
+        delivery = await session.scalar(
+            select(Delivery).where(
+                Delivery.item_id == item.id,
+                Delivery.type == ITEM_FAILED,
+            )
+        )
+    assert delivery is not None
+    assert delivery.status == "PENDING"
 
 
 class BlockingProvider:

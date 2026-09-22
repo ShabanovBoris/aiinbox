@@ -3,6 +3,7 @@ from datetime import datetime
 from sqlalchemy import (
     JSON,
     BigInteger,
+    CheckConstraint,
     DateTime,
     Float,
     ForeignKey,
@@ -205,3 +206,42 @@ class ProfileUpdateJob(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), onupdate=func.now()
     )
+
+
+class Delivery(Base):
+    """Durable outbox for immediate Telegram delivery after business commits.
+
+    READY/FAILED Item transitions and completed profile updates create this row
+    in the same transaction as canonical state. Telegram delivery is therefore
+    retryable after restart without changing Item/ProfileUpdateJob state back.
+    """
+
+    __tablename__ = "deliveries"
+    __table_args__ = (
+        CheckConstraint(
+            "(item_id IS NOT NULL AND profile_update_job_id IS NULL) OR "
+            "(item_id IS NULL AND profile_update_job_id IS NOT NULL)",
+            name="ck_deliveries_single_source",
+        ),
+        UniqueConstraint("item_id", "type", name="uq_deliveries_item_type"),
+        UniqueConstraint("profile_update_job_id", "type", name="uq_deliveries_profile_job_type"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    item_id: Mapped[int | None] = mapped_column(ForeignKey("items.id"), index=True)
+    profile_update_job_id: Mapped[int | None] = mapped_column(
+        ForeignKey("profile_update_jobs.id"), index=True
+    )
+    type: Mapped[str] = mapped_column(String(32), index=True)
+    status: Mapped[str] = mapped_column(
+        String(16), default="PENDING", server_default="PENDING", index=True
+    )
+    attempts: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    payload_json: Mapped[dict | None] = mapped_column(JSON)
+    last_error: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now()
+    )
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime)
