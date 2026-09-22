@@ -50,17 +50,11 @@ ffmpeg и устанавливает production-зависимости стро�
 
 ## Контракты репозитория
 
-Проверить, что PRODUCT_SPEC не разошёлся с исходным ТЗ (ожидаемое различие —
-только служебная шапка в начале файла):
-
-```bash
-diff "ТЗ_ Personal AI Inbox - интеллектуальный Telegram TODO.md" docs/PRODUCT_SPEC.md
-```
-
-- Состояние этапов: `docs/IMPLEMENTATION_STATE.md`
+- Канонические продуктовые требования: `docs/PRODUCT_SPEC.md`
+- Состояние этапов и post-MVP изменений: `docs/IMPLEMENTATION_STATE.md`
 - Архитектурные решения и инварианты: `docs/DECISIONS.md`
 - Журнал вердиктов ревью: `docs/REVIEWS.md`
-- Правила реализации: `AGENTS.md`
+- Правила реализации и review workflow: `AGENTS.md`
 
 ## Быстрый старт
 
@@ -100,10 +94,10 @@ uv run pytest
 ```
 
 GitHub Actions workflow `.github/workflows/quality.yml` выполняет тот же gate на
-PR и push в `main`. После первого зелёного run job `quality` должен быть добавлен
-в required status checks branch protection для `main`.
+PR и push в `main`. Job `quality` является required status check для защищённой
+ветки `main`.
 
-## Git workflow (оркестрационный протокол §2–4, §22–23)
+## Git workflow
 
 `main` — защищённая integration branch. Реализация фаз в `main` запрещена.
 
@@ -117,7 +111,7 @@ git checkout -b phase/NN-short-description
 # commits на ветке (формат feat:/test:/fix:/docs:), затем
 git push -u origin phase/NN-short-description
 # PR phase/NN-... → main, title "Phase NN: <short description>"
-# REVIEW REQUEST Orchestrator'у (формат протокола §7)
+# REVIEW REQUEST Orchestrator'у с repository, PR и exact HEAD SHA
 ```
 
 - Merge — только Orchestrator, squash, заголовок `Phase NN: <description>`.
@@ -131,8 +125,8 @@ git push -u origin phase/NN-short-description
 
 ## Внешняя ревью-проверка (Orchestrator: ChatGPT через Browser Use)
 
-Механизм — протокол §5–9: PR + `REVIEW REQUEST` в фиксированную беседу ChatGPT
-(правило: `AGENTS.md` §57). Orchestrator проверяет GitHub напрямую (PR, diff, SHA).
+Механизм review определён в `AGENTS.md` §57: PR + `REVIEW REQUEST` в фиксированную
+беседу ChatGPT. Orchestrator проверяет GitHub напрямую (PR, diff, SHA, CI).
 
 - Каждый вердикт (`APPROVED` / `CHANGES REQUIRED` / `BLOCKED`) агент немедленно
   фиксирует в `docs/REVIEWS.md` (PR + reviewed HEAD SHA) — durable record,

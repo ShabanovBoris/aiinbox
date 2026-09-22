@@ -30,14 +30,13 @@ Before making changes, read the relevant repository instructions and project sta
 Primary sources of truth, in order:
 
 1. explicit current user goal;
-2. `Оркестрационный протокол Codex → Reviewer.md` — latest Orchestrator decision and the current approved Phase prompt take precedence over everything below; on conflict, stop only the conflicting part and report to the Orchestrator;
-3. `AGENTS.md`;
-4. `docs/PRODUCT_SPEC.md`;
-5. `docs/DECISIONS.md`;
-6. `docs/IMPLEMENTATION_STATE.md`;
-7. existing tests;
-8. existing implementation;
-9. `docs/RUNBOOK.md`.
+2. `AGENTS.md`;
+3. `docs/PRODUCT_SPEC.md`;
+4. `docs/DECISIONS.md`;
+5. `docs/IMPLEMENTATION_STATE.md`;
+6. existing tests;
+7. existing implementation;
+8. `docs/RUNBOOK.md`.
 
 If documents disagree with working code, investigate the discrepancy instead of silently choosing one.
 
@@ -1115,7 +1114,7 @@ Whenever operational procedure changes, update the runbook.
 
 # 48. Git discipline
 
-Git workflow is governed by the orchestration protocol (`Оркестрационный протокол Codex → Reviewer.md`, §2–4, §22–23), which takes precedence over this section: `main` is a protected integration branch; each Phase is implemented on a `phase/NN-short-description` branch, pushed and opened as a PR; merge is performed only by the Orchestrator (squash by default).
+Git workflow is defined in this repository: `main` is a protected integration branch; each scoped change is implemented on a dedicated branch, pushed and opened as a PR; merge is performed only after external review, with squash as the default merge method.
 
 Before editing:
 
@@ -1129,7 +1128,7 @@ Keep changes scoped to the task.
 
 Prefer coherent checkpoints.
 
-Commits follow the protocol's conventional format (`feat:`, `test:`, `fix:`, `docs:`) and are made on the phase branch, not on `main`.
+Commits use conventional prefixes (`feat:`, `test:`, `fix:`, `docs:`, `chore:`) and are made on the change branch, not on `main`.
 
 Never force-push, rewrite published history, reset unrelated changes, or delete user work.
 
@@ -1316,16 +1315,16 @@ without requiring hidden conversation history or manual reconstruction from the 
 
 # 57. External review via ChatGPT (Orchestrator, Browser Use)
 
-Development is governed by the external Orchestrator per `Оркестрационный протокол Codex → Reviewer.md`. The implementation agent never self-approves a Phase (protocol §11): the only permitted claims are `implementation complete` and `ready for external review`; acceptance, merge and the transition to the next Phase belong to the Orchestrator.
+Development uses an external Orchestrator. The implementation agent never self-approves a change: the only permitted claims are `implementation complete` and `ready for external review`; acceptance and merge belong to the Orchestrator.
 
 * Orchestrator: ChatGPT, fixed conversation (opened via Browser Use; the main agent performs browser work itself, review sessions are not delegated to subagents):
 
   https://chatgpt.com/g/g-p-6aa5a9bad2ec819181757f71917ef6c0-aiinbox/c/6aa15a98-8e28-83ed-b71d-e1142ccccffc
 
-Review mechanism (protocol §5–9):
+Review mechanism:
 
-1. Phase branch `phase/NN-short-description` is pushed and a PR to `main` is opened with the protocol's PR body template.
-2. A `REVIEW REQUEST` in the protocol's format (Repository and PR are mandatory) is sent to the fixed conversation.
+1. A dedicated change branch is pushed and a PR to `main` is opened with scope and verification in the PR body.
+2. A `REVIEW REQUEST` with repository, PR number and exact HEAD SHA is sent to the fixed conversation.
 3. Phase state in `docs/IMPLEMENTATION_STATE.md` moves to `IN_REVIEW`.
 4. Outcomes: `APPROVED` / `CHANGES REQUIRED` (fix in the same branch and PR, then `RE-REVIEW REQUEST`) / `BLOCKED` (continue everything not affected by the blocker).
 
@@ -1335,6 +1334,6 @@ Approval → merge handshake (no TOCTOU): after `APPROVED @ HEAD A` the agent ma
 
 The Orchestrator verifies GitHub directly (PR metadata, diff, SHAs, runs). As companion material, a submission may also include the main diff (`git diff <base>..HEAD`) and a project archive built from git-tracked files only (`git archive --format=zip -o temp/project.zip HEAD`), so ignored paths (`.env`, `data/`, `temp/`, virtualenvs) never leave the machine — send them when the Orchestrator asks or cannot access GitHub.
 
-No scope expansion while a `REVIEW REQUEST` is open (protocol §12): no next Phase, no unrelated architecture changes, no bonus functionality.
+No scope expansion while a `REVIEW REQUEST` is open: no unrelated architecture changes or bonus functionality.
 
-If ChatGPT or the browser is unavailable, apply §4/§5: record the pending external verification in `docs/IMPLEMENTATION_STATE.md` and continue all work that does not depend on it.
+If the Orchestrator is unavailable, record the pending external verification in `docs/IMPLEMENTATION_STATE.md` and continue all work that does not depend on it.
