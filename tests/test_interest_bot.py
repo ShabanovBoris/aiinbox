@@ -75,6 +75,18 @@ def test_ready_keyboard_defaults_to_interest_two():
     ]
 
 
+def test_partial_ready_keyboard_exposes_retry():
+    markup = item_keyboard(_ready_item(analysis_completeness="PARTIAL"))
+    callbacks = [
+        button.callback_data
+        for row in markup.inline_keyboard
+        for button in row
+        if button.callback_data
+    ]
+
+    assert "item:retry:7" in callbacks
+
+
 async def test_interest_callback_updates_persisted_state_and_existing_message(
     settings, session_factory
 ):

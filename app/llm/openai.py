@@ -100,11 +100,37 @@ def build_user_message(
             "SOURCE CONTEXT (untrusted, part of captured source): " + content.source_context
         )
     source_count = content.metadata.get("source_count")
-    if isinstance(source_count, int) and source_count > 1:
+    successful_source_count = content.metadata.get("successful_source_count")
+    source_failures = content.metadata.get("source_failures")
+    if isinstance(source_count, int):
+        parts.append(f"TOTAL SOURCES: {source_count}")
+    if isinstance(successful_source_count, int):
+        parts.append(f"SUCCESSFULLY EXTRACTED: {successful_source_count}")
+    if isinstance(source_failures, list) and source_failures:
+        for failure in source_failures:
+            if not isinstance(failure, dict):
+                continue
+            parts.append(
+                "FAILED SOURCE: "
+                f"index={failure.get('source_index')} "
+                f"type={failure.get('source_type')} "
+                f"reason={failure.get('error_code') or 'EXTRACTION_FAILED'}"
+            )
         parts.append(
-            f"MULTI-SOURCE ITEM: {source_count} sources. Synthesize all substantive sources "
-            "into one result; do not omit later sources."
+            "Failed source contents are unavailable. Do not infer or invent them. "
+            "Analyze only successfully extracted sources and available message context."
         )
+    if isinstance(source_count, int) and source_count > 1:
+        if isinstance(source_failures, list) and source_failures:
+            parts.append(
+                f"MULTI-SOURCE ITEM: {source_count} sources. Synthesize every successfully "
+                "extracted substantive source into one result; do not omit later available sources."
+            )
+        else:
+            parts.append(
+                f"MULTI-SOURCE ITEM: {source_count} sources. Synthesize all substantive sources "
+                "into one result; do not omit later sources."
+            )
     visual_notes = content.metadata.get("visual_notes")
     if visual_notes:
         parts.append(f"VISUAL NOTES (from video frames, untrusted): {visual_notes}")

@@ -5,10 +5,12 @@ from app.domain.models import NormalizedContent
 from app.domain.priority import PriorityEngine
 from app.errors import AppError
 from app.extractors.audio import AudioExtractor
+from app.services.actions import apply_item_action
 from app.services.analysis import Analyzer
+from app.services.delivery import ITEM_READY
 from app.services.ingestion import ingest_message, ingest_voice
 from app.services.processing import ProcessingPipeline
-from app.storage.models import Item, ItemSource
+from app.storage.models import Delivery, Item, ItemSource
 from app.workers.processing import ProcessingWorker
 from tests.fakes import FakeDownloader, FakeLlmProvider, FakeTranscriber
 
@@ -114,6 +116,65 @@ async def test_failed_embedded_url_degrades_to_text_and_successful_source(sessio
             )
         )
         assert statuses == ["READY", "FAILED"]
+
+
+async def test_retry_partial_item_reuses_ready_source_and_regenerates_analysis(session_factory):
+    failed_url = "https://example.com/retry-me"
+    item = (
+        await ingest_message(
+            session_factory,
+            telegram_user_id=42,
+            chat_id=42,
+            message_id=2,
+            text=f"Сравни https://example.com/stable и {failed_url}",
+        )
+    ).items[0]
+    provider = FakeLlmProvider()
+    extractor = CompositeWebExtractor({failed_url})
+    worker = _worker(session_factory, provider, extractor)
+
+    assert await worker.process_one() is True
+    assert len(provider.calls) == 1
+
+    async with session_factory() as session:
+        stored = await session.get(Item, item.id)
+        delivery = await session.scalar(
+            select(Delivery).where(Delivery.item_id == item.id, Delivery.type == ITEM_READY)
+        )
+        assert stored.analysis_completeness == "PARTIAL"
+        delivery.status = "SENT"
+        await session.commit()
+
+    extractor.failures.clear()
+    retried = await apply_item_action(session_factory, 42, item.id, "retry")
+    assert retried is not None
+    assert retried.processing_status is ProcessingStatus.QUEUED
+    assert retried.processing_stage == "EXTRACTING"
+
+    async with session_factory() as session:
+        statuses = list(
+            await session.scalars(
+                select(ItemSource.extraction_status)
+                .where(ItemSource.item_id == item.id)
+                .order_by(ItemSource.source_index)
+            )
+        )
+        assert statuses == ["READY", "PENDING"]
+
+    assert await worker.process_one() is True
+    assert extractor.calls.count("https://example.com/stable") == 1
+    assert extractor.calls.count(failed_url) == 2
+    assert len(provider.calls) == 2
+    assert failed_url in provider.calls[-1][0].text
+
+    async with session_factory() as session:
+        stored = await session.get(Item, item.id)
+        delivery = await session.scalar(
+            select(Delivery).where(Delivery.item_id == item.id, Delivery.type == ITEM_READY)
+        )
+        assert stored.processing_status is ProcessingStatus.READY
+        assert stored.analysis_completeness == "FULL_TEXT"
+        assert delivery.status == "PENDING"
 
 
 async def test_failed_only_url_with_message_text_still_analyzes_text(session_factory):

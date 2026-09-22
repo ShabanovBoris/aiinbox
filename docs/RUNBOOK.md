@@ -5,7 +5,7 @@
 
 ## Быстрый старт
 
-Требования: Python 3.12+, `uv`, `ffmpeg`.
+Требования: Python 3.12+, `uv`, `ffmpeg`/`ffprobe`.
 Для production off-host backup дополнительно нужны Docker Compose, `rsync` и
 SSH; `rsync` должен быть установлен и на backup host.
 

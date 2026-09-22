@@ -109,7 +109,10 @@ class ProcessingPipeline:
         await sync_item_search(session, item.id)
         # Delivery intent входит в тот же commit, что READY: падение процесса
         # после commit больше не создаёт окно безвозвратной потери уведомления.
-        await enqueue_item_delivery(session, item, ITEM_READY)
+        # Reopen is needed when a READY/PARTIAL Item is explicitly retried after
+        # a child source recovers; the same durable delivery key then publishes
+        # the newly synthesized result once instead of suppressing it as a replay.
+        await enqueue_item_delivery(session, item, ITEM_READY, reopen=True)
         await session.commit()
         log.info(
             "item analyzed id=%s category=%s type=%s priority=%s",

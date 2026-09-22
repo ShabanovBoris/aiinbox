@@ -2,7 +2,7 @@
 
 from datetime import UTC, datetime
 
-from sqlalchemy import or_, select, update
+from sqlalchemy import and_, case, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.sql import text
 
@@ -100,15 +100,29 @@ async def apply_item_action(
                 .returning(Item.id)
             )
         elif action == "retry":
+            retryable_partial = and_(
+                Item.processing_status == ProcessingStatus.READY,
+                Item.analysis_completeness == "PARTIAL",
+                Item.id.in_(
+                    select(ItemSource.item_id).where(ItemSource.extraction_status == "FAILED")
+                ),
+            )
             transition = (
                 update(Item)
                 .where(
                     Item.id == item_id,
                     Item.user_id == user_id,
-                    Item.processing_status == ProcessingStatus.FAILED,
+                    or_(Item.processing_status == ProcessingStatus.FAILED, retryable_partial),
                 )
                 .values(
                     processing_status=ProcessingStatus.QUEUED,
+                    # A partial READY result already has a final analysis checkpoint.
+                    # Re-enter extraction so only failed child sources reopen, while
+                    # READY source checkpoints are restored and the Item is reanalyzed.
+                    processing_stage=case(
+                        (retryable_partial, "EXTRACTING"),
+                        else_=Item.processing_stage,
+                    ),
                     error_code=None,
                     error_message=None,
                 )

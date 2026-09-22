@@ -475,6 +475,34 @@ def test_multi_source_prompt_requires_whole_item_synthesis():
     assert "SOURCE 2 [WEB]" in prompt
 
 
+def test_partial_source_prompt_names_missing_source_and_forbids_inference():
+    content = NormalizedContent(
+        source_type=SourceType.WEB,
+        text="Текст доступной статьи",
+        source_context="Пост с двумя ссылками",
+        metadata={
+            "source_count": 2,
+            "successful_source_count": 1,
+            "source_failures": [
+                {
+                    "source_index": 1,
+                    "source_type": "WEB",
+                    "error_code": "EXTRACTION_FAILED",
+                    "error_message": "unavailable",
+                }
+            ],
+        },
+    )
+
+    prompt = build_user_message(content, DEFAULT_PROFILE, [])
+
+    assert "TOTAL SOURCES: 2" in prompt
+    assert "SUCCESSFULLY EXTRACTED: 1" in prompt
+    assert "FAILED SOURCE: index=1 type=WEB reason=EXTRACTION_FAILED" in prompt
+    assert "Do not infer or invent them" in prompt
+    assert "only successfully extracted sources" in prompt
+
+
 def test_forwarded_ready_item_shows_source_and_public_original_link_only_when_complete():
     metadata = normalize_forward_origin(_channel_origin())
     item = Item(

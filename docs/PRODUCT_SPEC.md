@@ -428,8 +428,11 @@ Archived Item остаётся searchable.
 
 ## 55. Retry
 
-Только FAILED → QUEUED. Error fields очищаются, processing checkpoints сохраняются.
-Pending stale `ITEM_FAILED` delivery отменяется атомарно.
+FAILED → QUEUED. `READY/PARTIAL` с failed child source также можно вернуть в QUEUED:
+повторно извлекаются только failed sources, READY checkpoints переиспользуются, после
+чего общий analysis пересобирается. Error fields очищаются, processing checkpoints
+сохраняются. Pending stale `ITEM_FAILED` delivery отменяется атомарно; новый READY
+результат после partial-retry переоткрывает durable READY delivery.
 
 ## 56. Error handling
 

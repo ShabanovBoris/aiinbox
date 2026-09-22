@@ -32,9 +32,8 @@ async def enqueue_item_delivery(
 ) -> Delivery:
     """Persist an Item delivery intent inside the caller's business transaction.
 
-    FAILED may legitimately happen again after user Retry, so that delivery key
-    can be reopened. READY is not reopened: replaying a completed pipeline must
-    not create a duplicate success notification.
+    A caller may explicitly reopen a terminal key when a new processing pass
+    produces a new result, such as FAILED retry or PARTIAL source recovery.
     """
     existing = await session.scalar(
         select(Delivery).where(

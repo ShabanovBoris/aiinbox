@@ -1,5 +1,6 @@
 from datetime import UTC, datetime
 
+import pytest
 from aiogram.types import Chat, Document, Message, MessageOriginChannel, Video
 from aiogram.types import User as TgUser
 from sqlalchemy import select
@@ -64,6 +65,40 @@ def _fake_audio_converter(video_path, audio_path) -> None:
     """Test seam for ffmpeg: conversion semantics are tested without a local binary."""
     assert video_path.exists()
     audio_path.write_bytes(b"fake-wav")
+
+
+async def test_unknown_document_video_duration_is_probed_before_stt(tmp_path):
+    """Unknown Telegram duration cannot bypass the configured media resource cap."""
+    source = ItemSource(
+        item_id=1,
+        source_index=0,
+        source_type=SourceType.VIDEO,
+        source_file_id="document-video-1",
+        content_duration_seconds=None,
+    )
+    transcriber = FakeTranscriber("must not run")
+    converted = False
+
+    def convert(video_path, audio_path):
+        nonlocal converted
+        converted = True
+
+    extractor = VideoExtractor(
+        transcriber,
+        FakeDownloader(),
+        tmp_path / "video",
+        max_duration_seconds=120,
+        audio_converter=convert,
+        duration_probe=lambda _: 121,
+    )
+
+    with pytest.raises(AppError) as error:
+        await extractor.extract(source)
+
+    assert error.value.code == "TOO_LARGE"
+    assert source.content_duration_seconds == 121
+    assert converted is False
+    assert transcriber.calls == 0
 
 
 async def test_video_handler_creates_one_item_with_caption(settings, session_factory, monkeypatch):

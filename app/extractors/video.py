@@ -1,4 +1,5 @@
 import asyncio
+import math
 import shutil
 import subprocess
 from collections.abc import Awaitable, Callable, Mapping
@@ -28,12 +29,14 @@ class VideoExtractor:
         temp_dir: Path,
         max_duration_seconds: int = 7200,
         audio_converter: Callable[[Path, Path], None] | None = None,
+        duration_probe: Callable[[Path], int] | None = None,
     ):
         self.transcriber = transcriber
         self.downloader = downloader
         self.temp_dir = Path(temp_dir)
         self.max_duration_seconds = max_duration_seconds
         self._audio_converter = audio_converter or _extract_audio_track
+        self._duration_probe = duration_probe or _probe_media_duration
 
     async def extract(
         self,
@@ -54,6 +57,18 @@ class VideoExtractor:
         work_dir.mkdir(parents=True, exist_ok=True)
         try:
             video_path = await self.downloader.download(source.source_file_id, work_dir)
+            if not duration:
+                # Telegram Document does not guarantee media duration. Probe the
+                # downloaded file before ffmpeg conversion/STT so the configured
+                # resource bound cannot be bypassed by document-shaped video.
+                duration = await asyncio.to_thread(self._duration_probe, video_path)
+                source.content_duration_seconds = duration
+                if duration > self.max_duration_seconds:
+                    raise AppError(
+                        "TOO_LARGE",
+                        f"video duration {duration}s exceeds {self.max_duration_seconds}s",
+                        permanent=True,
+                    )
             audio_path = work_dir / "audio.wav"
             await asyncio.to_thread(self._audio_converter, video_path, audio_path)
             transcript = await self.transcriber.transcribe(
@@ -107,3 +122,39 @@ def _extract_audio_track(video_path: Path, audio_path: Path) -> None:
             "TRANSCRIPTION_FAILED",
             f"ffmpeg video audio extraction failed: {result.returncode}",
         )
+
+
+def _probe_media_duration(video_path: Path) -> int:
+    """Validate unknown Telegram video duration before expensive media processing.
+
+    ffprobe is part of the ffmpeg runtime already required by the video pipeline;
+    rounding up prevents a fractional duration just over the limit from slipping
+    through the integer application bound.
+    """
+    argv = [
+        "ffprobe",
+        "-v",
+        "error",
+        "-show_entries",
+        "format=duration",
+        "-of",
+        "default=noprint_wrappers=1:nokey=1",
+        str(video_path),
+    ]
+    try:
+        result = subprocess.run(argv, capture_output=True, text=True, timeout=30)
+    except FileNotFoundError as exc:
+        raise AppError(
+            "EXTRACTION_FAILED", "ffprobe is required to validate video duration"
+        ) from exc
+    except subprocess.TimeoutExpired as exc:
+        raise AppError("TIMEOUT", "video duration probe timed out") from exc
+    if result.returncode != 0:
+        raise AppError("EXTRACTION_FAILED", "video duration probe failed")
+    try:
+        duration = float(result.stdout.strip())
+    except ValueError as exc:
+        raise AppError("EXTRACTION_FAILED", "video duration is unavailable") from exc
+    if not math.isfinite(duration) or duration <= 0:
+        raise AppError("EXTRACTION_FAILED", "video duration is unavailable")
+    return math.ceil(duration)

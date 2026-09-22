@@ -38,7 +38,9 @@ def item_keyboard(item: Item) -> InlineKeyboardMarkup:
     original_url = forward_original_url(item.source_metadata_json)
     if original_url:
         rows.append([InlineKeyboardButton(text="↗ Открыть оригинал", url=original_url)])
-    if item.processing_status is ProcessingStatus.FAILED:
+    if item.processing_status is ProcessingStatus.FAILED or (
+        item.processing_status is ProcessingStatus.READY and item.analysis_completeness == "PARTIAL"
+    ):
         rows.append([InlineKeyboardButton(text="🔁 Retry", callback_data=f"item:retry:{item.id}")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 

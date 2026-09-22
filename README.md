@@ -15,7 +15,7 @@ Personal AI Inbox — личный Telegram-бот, который приним�
 - `uv` для локальной разработки
 - Telegram bot token и allowlist user id
 - OpenAI или OpenRouter API key и model ids для анализа (и transcription для voice/audio)
-- `ffmpeg` для video visual analysis и long-audio OpenRouter STT
+- `ffmpeg`/`ffprobe` для video processing, проверки duration и long-audio OpenRouter STT
 - для production off-host backup: `rsync` + SSH на deployment/backup hosts
 
 ## Архитектура
