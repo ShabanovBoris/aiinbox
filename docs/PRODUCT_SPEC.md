@@ -87,7 +87,10 @@ notifications — durable `DeliveryWorker`.
 - Telegram voice;
 - Telegram audio;
 - Telegram video: transcript + optional representative-frame vision;
-- forwarded Telegram text/URL/voice/audio/video с сохранением доступного provenance;
+- Telegram PDF/TXT/Markdown/DOCX как document ItemSource; PDF поддерживается и по
+  URL;
+- forwarded Telegram text/URL/voice/audio/video/document с сохранением доступного
+  provenance;
 - forwarded photo-post с URL в caption/text_link: caption и ссылки сохраняются как
   единый source content, само изображение не анализируется;
 - `/today`, `/inbox`, `/category`, `/search`;
@@ -97,9 +100,11 @@ notifications — durable `DeliveryWorker`.
 - daily digest и snooze resurfacing.
 
 Direct Telegram video поддержан. Видео, которое Telegram прислал как `Document`,
-тоже нормализуется в VIDEO по MIME/расширению. Video note, direct image и обычные
-document formats пока не поддерживаются. Forwarded non-video document получает
-явный ответ о неподдерживаемом формате.
+тоже нормализуется в VIDEO по MIME/расширению. PDF, TXT, Markdown и DOCX
+принимаются direct/forwarded как `DOCUMENT`; URL PDF проходит существующую
+SSRF-safe web boundary и сохраняется как `DOCUMENT_TEXT`. OCR для сканированных
+PDF не выполняется.
+Video note, direct image и остальные document formats не поддерживаются.
 Forwarded photo с caption сохраняет и анализирует caption/ссылки; само изображение
 пока не анализируется. Photo без caption остаётся неподдерживаемым.
 
@@ -115,7 +120,8 @@ Forwarded photo с caption сохраняет и анализирует caption/
 - Calendar/Notion integrations;
 - browser fallback для сложных страниц;
 - playlists, DRM/paywall/CAPTCHA bypass;
-- direct Telegram image/non-video-document ingestion;
+- direct Telegram image ingestion;
+- OCR, spreadsheets, presentations and other non-PM-03 document formats;
 - Telegram video note.
 
 ## 8. Структура проекта
@@ -158,8 +164,8 @@ Retry меняет processing status; Done/Later/Archive — lifecycle state.
 - окружающий URL текст direct-message сохраняется также как `user_note`;
 - каждый distinct URL внутри сообщения становится дочерним `ItemSource` типа
   `WEB`/`YOUTUBE`; повтор одного URL внутри того же сообщения схлопывается;
-- voice/audio/video становятся media `ItemSource`; caption и URL рядом с media
-  принадлежат тому же Item;
+- voice/audio/video/document становятся media/file `ItemSource`; caption и URL
+  рядом с ними принадлежат тому же Item;
 - каждый ItemSource извлекается и checkpoint'ится независимо, после чего все
   успешные source contents объединяются в один `NormalizedContent` и один analysis;
 - для multi-source Item Analyzer обязан учитывать каждый содержательный успешный
@@ -208,7 +214,8 @@ user note, author/language/duration/metadata.
 ## 18. Web page extraction
 
 WEB использует SSRF-safe HTTP transport, bounded redirects/download, trafilatura.
-Playwright fallback отключён.
+PDF response сначала проверяется по MIME и signature, затем разбирается тем же
+document parser без второго HTTP downloader. Playwright fallback отключён.
 
 ## 19. Критерий успешного extraction
 
@@ -243,7 +250,8 @@ Vision выполняется только если provider declares `capabilit
 
 ## 25. Временные файлы
 
-Media/frames живут только в configured temp directory и удаляются после обработки.
+Media/frames и скачанные документы живут только в configured temp directory и
+удаляются после extraction. Durable transcripts/document text остаются в SQLite.
 В Docker temp directory — tmpfs.
 
 ## 26. Audio / Voice

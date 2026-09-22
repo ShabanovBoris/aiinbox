@@ -168,7 +168,7 @@ Examples:
 - forwarded voice → VOICE;
 - forwarded audio → AUDIO;
 - forwarded video → VIDEO;
-- forwarded document → DOCUMENT after PM-03.
+- forwarded document → DOCUMENT (implemented by PM-03).
 
 One forwarded Telegram message remains one Item. URLs/media are child ItemSources,
 all successful sources plus original text/caption are synthesized once, and a
@@ -180,14 +180,8 @@ Detailed specification: [PM-02_FORWARDED_MESSAGES.md](PM-02_FORWARDED_MESSAGES.m
 
 ## 7. PM-03 — Telegram Video & Documents
 
-Current state: Telegram video is already implemented through the shared composite
-Item pipeline, including compatible video transported by Telegram as `Document`.
-Remaining PM-03 work is native document extraction for:
-
-- PDF;
-- TXT;
-- Markdown;
-- DOCX.
+Current state: Telegram video and PDF/TXT/Markdown/DOCX ingestion use the shared
+composite Item pipeline. PM-03 implementation is awaiting external review.
 
 Video uses existing STT + representative frames + optional vision with transcript-only
 fallback and source-local retry checkpoints.

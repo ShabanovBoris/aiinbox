@@ -26,6 +26,7 @@ class SourceType(enum.Enum):
     AUDIO = "AUDIO"
     YOUTUBE = "YOUTUBE"
     VIDEO = "VIDEO"
+    DOCUMENT = "DOCUMENT"
 
 
 # Тип контента определяет, попадает ли Item в /today и что с ним делать;
@@ -50,3 +51,4 @@ class ContentKind(enum.Enum):
     DESCRIPTION = "DESCRIPTION"
     CHUNK_SUMMARY = "CHUNK_SUMMARY"
     TRANSCRIPT_CHUNK = "TRANSCRIPT_CHUNK"
+    DOCUMENT_TEXT = "DOCUMENT_TEXT"

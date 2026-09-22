@@ -12,7 +12,7 @@ from app.extractors.audio import AudioExtractor
 from app.llm.base import TranscriptionSegmentCheckpoint
 from app.services.actions import apply_item_action
 from app.services.analysis import Analyzer
-from app.services.ingestion import ingest_voice
+from app.services.ingestion import ingest_media
 from app.services.processing import ProcessingPipeline
 from app.storage.models import Content, Event, Item
 from app.workers.processing import ProcessingWorker
@@ -30,7 +30,7 @@ def make_worker(session_factory, transcriber, downloader, temp: Path):
 
 async def seed_voice(session_factory, file_id="file-123", message_id=1):
     return (
-        await ingest_voice(
+        await ingest_media(
             session_factory,
             telegram_user_id=42,
             chat_id=42,
@@ -177,7 +177,7 @@ async def test_empty_transcript_is_transcription_failed(tmp_path, session_factor
 async def test_voice_ingestion_is_idempotent(session_factory):
     first = await seed_voice(session_factory, message_id=1)
     second = (
-        await ingest_voice(
+        await ingest_media(
             session_factory,
             telegram_user_id=42,
             chat_id=42,
@@ -333,7 +333,7 @@ async def test_downloader_get_file_not_found_is_permanent(tmp_path):
 async def test_voice_size_limit_creates_durable_item_atomically(session_factory):
     # Регрессия: oversized media сохраняется атомарно как FAILED/TOO_LARGE
     # (PRODUCT_SPEC §66) БЕЗ промежуточного claimable QUEUED-состояния.
-    ingested = await ingest_voice(
+    ingested = await ingest_media(
         session_factory,
         telegram_user_id=42,
         chat_id=42,

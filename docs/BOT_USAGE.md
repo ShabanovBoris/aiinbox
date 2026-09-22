@@ -100,14 +100,31 @@ vision-модель доступна, добавляет информацию и
 есть содержательный caption или рабочая ссылка, Item всё равно завершается
 частичным анализом.
 
+### Документы
+
+Можно отправить или переслать PDF, TXT, Markdown (`.md`/`.markdown`) и DOCX.
+Подпись и URL рядом с документом остаются в том же Item; для прямого сообщения
+подпись также задаёт пользовательский контекст.
+
+Из PDF извлекается выделяемый текст с сохранением порядка страниц. Сканированные
+PDF и документы без извлекаемого текста завершаются понятной ошибкой: OCR не
+поддерживается. Для DOCX читаются абзацы и таблицы; `.doc`, `.docm`, архивы,
+таблицы и презентации не поддерживаются. Размер файла и извлечённого текста
+ограничен настройками `MAX_DOCUMENT_BYTES` и `MAX_DOCUMENT_TEXT_CHARS`.
+
+Ссылка, фактически возвращающая PDF, проходит тот же защищённый web downloader,
+что и обычные страницы: проверяются публичный адрес, каждый redirect и общий
+download limit. `.pdf` URL, возвращающий HTML, не считается PDF-документом.
+
 ### Пересланные сообщения
 
-Можно пересылать боту обычный текст, статьи/YouTube-ссылки, voice, audio и video.
+Можно пересылать боту обычный текст, статьи/YouTube-ссылки, voice, audio, video
+и поддерживаемые документы.
 Forwarding не меняет тип Item: пересланная статья остаётся `WEB`, YouTube —
-`YOUTUBE`, голосовое — `VOICE`, видео — `VIDEO`.
+`YOUTUBE`, голосовое — `VOICE`, видео — `VIDEO`, документ — `DOCUMENT`.
 
 Любое входящее Telegram-сообщение считается одной единицей контента. Несколько
-ссылок, voice/audio/video и caption не создают отдельные Items: это дочерние
+ссылок, voice/audio/video/documents и caption не создают отдельные Items: это дочерние
 sources одного Item. Каждый source извлекается отдельно, после чего бот делает
 один общий анализ всего доступного содержимого.
 
@@ -134,12 +151,12 @@ source content; для forwarded URL/media передаётся в анализ 
 и public username канала, и id исходного сообщения. Для private/hidden origin
 ссылка не строится.
 
-### Что напрямую не поддерживается
+### Что не поддерживается
 
-В текущем Telegram router нет обработки video note, direct image и обычных
-non-video documents. Если Telegram прислал видео как `Document` (`video/*` или
-распознаваемое video-расширение), оно всё равно идёт в VIDEO pipeline. Обычный
-Telegram video и forwarded video обрабатываются через transcript + optional vision.
+Video note и direct image не обрабатываются. Если Telegram прислал видео как
+`Document` (`video/*` или распознаваемое video-расширение), оно всё равно идёт в
+VIDEO pipeline. Обычный Telegram video и forwarded video используют transcript
+и optional vision. Из документов принимаются только PDF/TXT/Markdown/DOCX.
 
 Если один из поддерживаемых вложенных sources не удалось извлечь, но у сообщения
 остался текст или другой успешный source, результат помечается как частичный,
@@ -277,7 +294,7 @@ WATCH
 - пользовательскую заметку;
 - tags;
 - извлечённый текст страницы;
-- transcript и другой сохранённый content.
+- transcript, извлечённый текст документов и другой сохранённый content.
 
 В поиск входят в том числе `DONE` и `ARCHIVED` Items. По умолчанию возвращается
 до 10 результатов.
@@ -435,9 +452,11 @@ https://example.com/c
 
 - доступ к боту ограничен Telegram allowlist;
 - direct/forwarded Telegram video поддерживаются, включая video-as-document;
-- direct image, video note и non-video document пока не обрабатываются;
-- forwarded non-video document пока не поддерживается;
+- direct image и video note пока не обрабатываются;
+- документы ограничены PDF/TXT/Markdown/DOCX и настройками file/text size;
+- OCR, `.doc`/`.docm`, таблицы, презентации и произвольные архивы не поддерживаются;
 - web extraction ограничен публичной сетью и download cap 5 MB;
+- URL PDF использует тот же web download cap 5 MB и SSRF-защиту;
 - voice/audio ограничены 20 MB по умолчанию;
 - YouTube ограничен 2 часами и media caps из конфигурации;
 - для OpenRouter long-audio STT и video visual analysis нужен `ffmpeg`;

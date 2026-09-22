@@ -20,7 +20,7 @@ from app.bot.handlers import (
     make_router,
     on_forwarded_photo,
     on_text,
-    on_unsupported_forwarded_media,
+    on_unsupported_document,
     on_voice_audio,
 )
 from app.bot.keyboards import item_keyboard
@@ -34,7 +34,7 @@ from app.domain.priority import PriorityEngine
 from app.extractors.audio import AudioExtractor
 from app.llm.openai import build_user_message
 from app.services.analysis import Analyzer
-from app.services.ingestion import ingest_message, ingest_voice
+from app.services.ingestion import ingest_media, ingest_message
 from app.services.processing import ProcessingPipeline
 from app.storage.models import Content, Event, Item
 from app.workers.processing import ProcessingWorker
@@ -321,7 +321,7 @@ async def test_forwarded_audio_paths_keep_caption_as_source_context(
 ):
     metadata = normalize_forward_origin(_channel_origin())
     item = (
-        await ingest_voice(
+        await ingest_media(
             session_factory,
             telegram_user_id=42,
             chat_id=42,
@@ -535,8 +535,8 @@ def test_forwarded_ready_item_shows_source_and_public_original_link_only_when_co
 
 async def test_unsupported_forwarded_media_fails_gracefully(settings, monkeypatch):
     sent = _capture_answers(monkeypatch)
-    await on_unsupported_forwarded_media(_message(_channel_origin(), text=None), settings)
-    assert sent == ["Пересланные документы пока не поддерживаются."]
+    await on_unsupported_document(_message(_channel_origin(), text=None), settings)
+    assert sent == ["Этот формат документа пока не поддерживается."]
 
 
 def test_forwarding_is_not_a_source_type():

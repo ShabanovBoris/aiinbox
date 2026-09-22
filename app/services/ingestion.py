@@ -185,7 +185,7 @@ def _add_source_contents(session: AsyncSession, items: list[Item], source_text: 
     )
 
 
-async def ingest_voice(
+async def ingest_media(
     session_factory: async_sessionmaker,
     *,
     telegram_user_id: int,
@@ -195,13 +195,17 @@ async def ingest_voice(
     duration_seconds: int | None,
     source_type: SourceType,
     too_large: tuple[int, int] | None = None,
+    prechecked_failure: tuple[str, str] | None = None,
     source_metadata: dict | None = None,
     source_text: str | None = None,
+    source_details: dict | None = None,
     default_timezone: str = "UTC",
 ) -> IngestResult:
-    """Persist media + caption URLs as one Item whose sources extract independently.
+    """Persist one Telegram file source plus caption URLs as one composite Item.
 
-    A known oversized media source fails locally. If caption text or another URL
+    The message remains the Item identity; media/document metadata stays on its
+    child source so direct and forwarded files share the same extraction pipeline.
+    A known oversized file source fails locally. If caption text or another URL
     remains analyzable, the Item still enters the queue and can finish PARTIAL.
     """
     text = source_text or ""
@@ -240,6 +244,13 @@ async def ingest_voice(
                 item.processing_status = ProcessingStatus.FAILED
                 item.error_code = media_error_code
                 item.error_message = media_error_message
+        elif prechecked_failure is not None:
+            media_status = "FAILED"
+            media_error_code, media_error_message = prechecked_failure
+            if not text.strip() and not urls:
+                item.processing_status = ProcessingStatus.FAILED
+                item.error_code = media_error_code
+                item.error_message = media_error_message
         session.add(item)
         try:
             await session.flush()
@@ -253,7 +264,15 @@ async def ingest_voice(
                     extraction_status=media_status,
                     error_code=media_error_code,
                     error_message=media_error_message,
-                    metadata_json={"failure_permanent": True} if too_large is not None else None,
+                    metadata_json={
+                        **(source_details or {}),
+                        **(
+                            {"failure_permanent": True}
+                            if too_large is not None or prechecked_failure is not None
+                            else {}
+                        ),
+                    }
+                    or None,
                 )
             )
             for offset, (url_type, url) in enumerate(urls, start=1):
@@ -289,5 +308,6 @@ async def ingest_voice(
         return IngestResult([item], [])
 
 
+# ❌ Удалено прежнее имя ingest_voice: общий путь теперь принимает voice/audio/video/documents.
 # ❌ Удален URL-per-Item race resolver: URL больше не является идентичностью Item;
 # один Telegram message атомарно создаёт один Item и дочерние ItemSource.

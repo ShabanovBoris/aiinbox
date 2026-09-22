@@ -10,6 +10,7 @@ from app.bot.files import TelegramFileDownloader
 from app.config import Settings
 from app.domain.priority import PriorityEngine
 from app.extractors.audio import AudioExtractor
+from app.extractors.document import DocumentExtractor
 from app.extractors.video import VideoExtractor
 from app.extractors.web import WebPageExtractor
 from app.extractors.youtube import YoutubeExtractor
@@ -83,6 +84,15 @@ def build_transcriber(settings: Settings) -> OpenAiTranscriptionProvider:
 
 def build_extractors(settings: Settings, bot) -> tuple:
     """Compose source adapters; Telegram media extractors require a live bot."""
+    document_downloader = (
+        TelegramFileDownloader(bot, settings.max_document_bytes) if bot is not None else None
+    )
+    document_extractor = DocumentExtractor(
+        document_downloader,
+        Path(settings.temp_dir) / "documents",
+        max_file_bytes=settings.max_document_bytes,
+        max_text_chars=settings.max_document_text_chars,
+    )
     web_extractor = WebPageExtractor(
         min_text_length=settings.min_extracted_text_length,
         timeout_seconds=settings.web_timeout_seconds,
@@ -90,6 +100,7 @@ def build_extractors(settings: Settings, bot) -> tuple:
         max_redirects=settings.max_redirects,
         max_attempts=settings.web_max_attempts,
         backoff_seconds=settings.web_backoff_seconds,
+        document_extractor=document_extractor,
     )
     youtube_extractor = YoutubeExtractor(
         transcriber=build_transcriber(settings),
@@ -116,7 +127,7 @@ def build_extractors(settings: Settings, bot) -> tuple:
             Path(settings.temp_dir) / "video",
             max_duration_seconds=settings.max_video_duration_seconds,
         )
-    return web_extractor, audio_extractor, youtube_extractor, video_extractor
+    return web_extractor, audio_extractor, youtube_extractor, video_extractor, document_extractor
 
 
 async def _drain_worker_tasks(tasks: list[asyncio.Task], timeout: float) -> None:
@@ -212,9 +223,13 @@ async def run(settings: Settings) -> None:
         else:
             log.warning("TELEGRAM_BOT_TOKEN is empty — bot disabled, workers only")
 
-        web_extractor, audio_extractor, youtube_extractor, video_extractor = build_extractors(
-            settings, bot
-        )
+        (
+            web_extractor,
+            audio_extractor,
+            youtube_extractor,
+            video_extractor,
+            document_extractor,
+        ) = build_extractors(settings, bot)
         pipeline = ProcessingPipeline(
             analyzer,
             PriorityEngine(),
@@ -222,6 +237,7 @@ async def run(settings: Settings) -> None:
             audio_extractor,
             youtube_extractor,
             video_extractor,
+            document_extractor=document_extractor,
             visual_frame_interval_seconds=settings.video_frame_interval_seconds,
             visual_max_frames=settings.video_max_frames,
             visual_scene_threshold=settings.video_scene_threshold,

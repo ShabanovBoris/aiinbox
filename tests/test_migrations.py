@@ -55,6 +55,28 @@ def test_fresh_database_migrates_to_latest_schema(tmp_path):
             "SELECT kind, text FROM contents WHERE item_id = ?",
             (item_id,),
         ).fetchone() == ("TRANSCRIPT_CHUNK", "part")
+        document_item_id = conn.execute(
+            "INSERT INTO items (user_id, telegram_message_id, source_index, processing_status, "
+            "state, source_type, processing_stage, user_note) "
+            "VALUES (?, 3, 0, 'QUEUED', 'ACTIVE', 'DOCUMENT', 'INGESTED', '') RETURNING id",
+            (user_id,),
+        ).fetchone()[0]
+        source_id = conn.execute(
+            "INSERT INTO item_sources (item_id, source_index, source_type) "
+            "VALUES (?, 0, 'DOCUMENT') RETURNING id",
+            (document_item_id,),
+        ).fetchone()[0]
+        conn.execute(
+            "INSERT INTO contents (item_id, source_id, kind, text) "
+            "VALUES (?, ?, 'DOCUMENT_TEXT', 'durable document text')",
+            (document_item_id, source_id),
+        )
+        assert conn.execute(
+            "SELECT source_type FROM item_sources WHERE id = ?", (source_id,)
+        ).fetchone() == ("DOCUMENT",)
+        assert conn.execute(
+            "SELECT kind, text FROM contents WHERE item_id = ?", (document_item_id,)
+        ).fetchone() == ("DOCUMENT_TEXT", "durable document text")
         try:
             conn.execute(
                 "INSERT INTO items (user_id, telegram_message_id, source_index,"

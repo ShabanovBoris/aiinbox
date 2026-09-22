@@ -1,7 +1,9 @@
 import asyncio
 import ipaddress
 from collections.abc import Awaitable, Callable
-from urllib.parse import urljoin
+from dataclasses import dataclass
+from email.message import Message as EmailMessage
+from urllib.parse import unquote, urljoin, urlsplit
 
 import httpx
 import trafilatura
@@ -9,6 +11,7 @@ import trafilatura
 from app.domain.enums import SourceType
 from app.domain.models import NormalizedContent
 from app.errors import AppError
+from app.extractors.document import DocumentExtractor, safe_document_file_name
 from app.services.url_security import resolve_pinned_ip, resolve_validated_ips
 from app.storage.models import Item
 
@@ -26,6 +29,17 @@ def _resolve_ip_literal_safe(host: str):
         return ipaddress.ip_address(host)
     except ValueError:
         return None
+
+
+@dataclass(frozen=True)
+class FetchedResource:
+    """Carry the bounded secure response body and headers to its content parser."""
+
+    body: bytes
+    content_type: str | None
+    content_disposition: str | None
+    charset: str | None
+    final_url: str
 
 
 class PinningTransport(httpx.AsyncBaseTransport):
@@ -91,6 +105,7 @@ class WebPageExtractor:
         client_factory: Callable[[], httpx.AsyncClient] | None = None,
         renderer: Callable[[str], Awaitable[str]] | None = None,
         resolver: Callable[[str], Awaitable[list[str]]] | None = None,
+        document_extractor: DocumentExtractor | None = None,
     ):
         self.min_text_length = min_text_length
         self.timeout_seconds = timeout_seconds
@@ -102,6 +117,9 @@ class WebPageExtractor:
         # renderer(url) -> html; подменяется в тестах (Playwright не требуется)
         self._renderer = renderer
         self._resolver = resolver
+        self.document_extractor = document_extractor or DocumentExtractor(
+            max_file_bytes=max_download_bytes
+        )
 
     def _default_client(self) -> httpx.AsyncClient:
         return httpx.AsyncClient(
@@ -112,7 +130,33 @@ class WebPageExtractor:
         )
 
     async def extract(self, item: Item) -> NormalizedContent:
-        html = await self._fetch_with_retries(item.source_url)
+        resource = await self._fetch_resource_with_retries(item.source_url)
+        media_type = (resource.content_type or "").split(";", 1)[0].strip().lower()
+        pdf_signature = b"%PDF-" in resource.body[:1024]
+        html_types = {"text/html", "application/xhtml+xml"}
+        url_file_name = _response_file_name(resource)
+        url_looks_like_pdf = (urlsplit(resource.final_url).path or "").lower().endswith(".pdf")
+
+        if media_type == "application/pdf" and not pdf_signature:
+            raise AppError("UNSUPPORTED_SOURCE", "PDF response has no PDF signature", True)
+        if media_type == "application/octet-stream" and not pdf_signature:
+            raise AppError("UNSUPPORTED_SOURCE", "binary web resource is not a supported PDF", True)
+        is_pdf = pdf_signature and (
+            media_type in {"application/pdf", "application/octet-stream"}
+            or (url_looks_like_pdf and media_type not in html_types)
+        )
+        if is_pdf:
+            content = await asyncio.to_thread(
+                self.document_extractor.extract_bytes,
+                resource.body,
+                url_file_name,
+                media_type or None,
+            )
+            content.url = item.source_url
+            content.metadata["final_url"] = resource.final_url
+            return content
+
+        html = self._decode_html(resource)
         text, meta = await self._text_from_html(html)
         if len(text) < self.min_text_length:
             text, meta = await self._fallback(item.source_url)
@@ -132,10 +176,15 @@ class WebPageExtractor:
         )
 
     async def _fetch_with_retries(self, url: str) -> str:
+        """Preserve the text helper for existing callers while sharing secure fetching."""
+        return self._decode_html(await self._fetch_resource_with_retries(url))
+
+    async def _fetch_resource_with_retries(self, url: str) -> FetchedResource:
+        """Retry transient failures around the same DNS-pinned response boundary."""
         last_error: AppError | None = None
         for attempt in range(self.max_attempts):
             try:
-                return await self._fetch_with_redirects(url)
+                return await self._fetch_resource_with_redirects(url)
             except AppError as exc:
                 if exc.code not in _RETRYABLE_CODES or exc.permanent:
                     raise
@@ -144,6 +193,11 @@ class WebPageExtractor:
         raise last_error  # pragma: no cover — цикл всегда завершается raise/return
 
     async def _fetch_with_redirects(self, url: str) -> str:
+        """Keep the legacy HTML fetch seam backed by the resource fetch implementation."""
+        return self._decode_html(await self._fetch_resource_with_redirects(url))
+
+    async def _fetch_resource_with_redirects(self, url: str) -> FetchedResource:
+        """Follow redirects through PinningTransport and return only capped response bytes."""
         current = url
         async with self._client_factory() as client:
             for _ in range(self.max_redirects):
@@ -162,14 +216,21 @@ class WebPageExtractor:
                                 f"HTTP {response.status_code} for {current}",
                                 permanent=response.status_code < 500,
                             )
-                        return await self._read_capped(response)
+                        body = await self._read_capped(response)
+                        return FetchedResource(
+                            body=body,
+                            content_type=response.headers.get("content-type"),
+                            content_disposition=response.headers.get("content-disposition"),
+                            charset=response.charset_encoding,
+                            final_url=current,
+                        )
                 except httpx.TimeoutException as exc:
                     raise AppError("TIMEOUT", f"request timed out: {current}") from exc
                 except httpx.HTTPError as exc:
                     raise AppError("DOWNLOAD_FAILED", f"download failed: {exc}") from exc
         raise AppError("DOWNLOAD_FAILED", "redirect limit exceeded", permanent=True)
 
-    async def _read_capped(self, response: httpx.Response) -> str:
+    async def _read_capped(self, response: httpx.Response) -> bytes:
         """Инкрементальное чтение с жёстким byte-cap: ответ без Content-Length
         не может заставить процесс буферизовать произвольный объём."""
         content_length = response.headers.get("content-length")
@@ -189,8 +250,16 @@ class WebPageExtractor:
                     permanent=True,
                 )
             buffer.extend(chunk)
-        charset = response.charset_encoding or "utf-8"
-        return buffer.decode(charset, errors="replace")
+        return bytes(buffer)
+
+    @staticmethod
+    def _decode_html(resource: FetchedResource) -> str:
+        """Decode HTML only after response type has been checked for PDF/binary data."""
+        charset = resource.charset or "utf-8"
+        try:
+            return resource.body.decode(charset, errors="replace")
+        except LookupError:
+            return resource.body.decode("utf-8", errors="replace")
 
     async def _fallback(self, url: str):
         """Playwright fallback жёстко отключён (решение Orchestrator по Phase 3):
@@ -224,3 +293,14 @@ class WebPageExtractor:
             return text.strip(), metadata
 
         return await asyncio.to_thread(_extract)
+
+
+def _response_file_name(resource: FetchedResource) -> str | None:
+    """Prefer the safe server filename, then use the final URL's last path segment."""
+    if resource.content_disposition:
+        disposition = EmailMessage()
+        disposition["content-disposition"] = resource.content_disposition
+        file_name = safe_document_file_name(disposition.get_filename())
+        if file_name:
+            return file_name
+    return safe_document_file_name(unquote(urlsplit(resource.final_url).path.rsplit("/", 1)[-1]))

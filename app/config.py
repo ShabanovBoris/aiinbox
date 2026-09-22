@@ -54,6 +54,10 @@ class Settings(BaseSettings):
     video_max_frames: int = Field(120, ge=1)
     video_scene_threshold: float = Field(0.35, ge=0.0, le=1.0)
 
+    # Bounded document acquisition and durable text extraction (PM-03).
+    max_document_bytes: int = Field(20_000_000, ge=1)
+    max_document_text_chars: int = Field(500_000, ge=1)
+
     # Сменный LLM-провайдер: model ids только через конфиг (PRODUCT_SPEC §29).
     llm_provider: Literal["openai", "openrouter"] = "openai"
     openai_api_key: str = ""

@@ -13,6 +13,7 @@ from app.domain.models import AnalysisResult, NormalizedContent
 from app.domain.priority import PriorityEngine
 from app.errors import AppError
 from app.extractors.audio import AudioExtractor
+from app.extractors.document import DocumentExtractor
 from app.extractors.text import TextExtractor
 from app.extractors.video import VideoExtractor
 from app.extractors.web import WebPageExtractor
@@ -49,6 +50,7 @@ class ProcessingPipeline:
         visual_frame_interval_seconds: int = 20,
         visual_max_frames: int = 120,
         visual_scene_threshold: float = 0.35,
+        document_extractor: DocumentExtractor | None = None,
     ):
         self.analyzer = analyzer
         self.priority = priority
@@ -56,6 +58,7 @@ class ProcessingPipeline:
         self.audio_extractor = audio_extractor
         self.youtube_extractor = youtube_extractor
         self.video_extractor = video_extractor
+        self.document_extractor = document_extractor
         self.visual_frame_interval_seconds = visual_frame_interval_seconds
         self.visual_max_frames = visual_max_frames
         self.visual_scene_threshold = visual_scene_threshold
@@ -384,26 +387,49 @@ class ProcessingPipeline:
             await self._delete_transcript_checkpoints(session, item.id, source_id)
             content.duration_seconds = source.content_duration_seconds
             return content
+        if source.source_type is SourceType.DOCUMENT:
+            if self.document_extractor is None:
+                raise AppError("UNSUPPORTED_SOURCE", "document extractor not wired", permanent=True)
+            content = await self.document_extractor.extract(source)
+            session.add(
+                Content(
+                    item_id=item.id,
+                    source_id=source_id,
+                    kind=ContentKind.DOCUMENT_TEXT,
+                    text=content.text,
+                    metadata_json={**content.metadata, "title": content.title},
+                )
+            )
+            source.metadata_json = {**(source.metadata_json or {}), **content.metadata}
+            return content
         if source.source_type is SourceType.WEB:
             content = await self.web_extractor.extract(source)
             # WEB_TEXT персистится атомарно с checkpoint'ом ANALYZING:
             # переживает restart, retry не перекачивает страницу (ТЗ §46, §59).
             # metadata_json хранит заголовок/автора/язык/заметку — resume
             # восстанавливает эквивалентный NormalizedContent целиком.
+            is_document = content.source_type is SourceType.DOCUMENT
+            content_metadata = (
+                {**content.metadata, "title": content.title}
+                if is_document
+                else {
+                    "title": content.title,
+                    "author": content.author,
+                    "language": content.language,
+                    "user_note": None,
+                }
+            )
             session.add(
                 Content(
                     item_id=item.id,
                     source_id=source_id,
-                    kind=ContentKind.WEB_TEXT,
+                    kind=ContentKind.DOCUMENT_TEXT if is_document else ContentKind.WEB_TEXT,
                     text=content.text,
-                    metadata_json={
-                        "title": content.title,
-                        "author": content.author,
-                        "language": content.language,
-                        "user_note": None,
-                    },
+                    metadata_json=content_metadata,
                 )
             )
+            if is_document and isinstance(source, ItemSource):
+                source.metadata_json = {**(source.metadata_json or {}), **content.metadata}
             return content
         raise AppError("UNSUPPORTED_SOURCE", f"unsupported source type: {source.source_type.value}")
 
@@ -753,26 +779,40 @@ class ProcessingPipeline:
             SourceType.VIDEO,
         ):
             kind = ContentKind.TRANSCRIPT
+        elif source.source_type is SourceType.DOCUMENT:
+            kind = ContentKind.DOCUMENT_TEXT
         elif source.source_type is not SourceType.WEB:
             return None
-        row = await session.scalar(
-            select(Content).where(
-                Content.item_id == item.id,
-                Content.source_id == source.id,
-                Content.kind == kind,
-            )
+        source_content_kind = (
+            Content.kind.in_((ContentKind.WEB_TEXT, ContentKind.DOCUMENT_TEXT))
+            if source.source_type is SourceType.WEB
+            else Content.kind == kind
         )
+        query = select(Content).where(
+            Content.item_id == item.id,
+            Content.source_id == source.id,
+            source_content_kind,
+        )
+        row = await session.scalar(query.order_by(Content.id.desc()))
         if row is None:
             return None
         meta = row.metadata_json or {}
+        restored_source_type = (
+            SourceType.DOCUMENT if row.kind is ContentKind.DOCUMENT_TEXT else source.source_type
+        )
         content = NormalizedContent(
-            source_type=source.source_type,
+            source_type=restored_source_type,
             title=meta.get("title"),
             text=row.text,
             url=source.source_url if source.source_type is SourceType.WEB else None,
             duration_seconds=meta.get("duration_seconds"),
             author=meta.get("author"),
             language=meta.get("language"),
+            metadata=(
+                {key: value for key, value in meta.items() if key != "title"}
+                if row.kind is ContentKind.DOCUMENT_TEXT
+                else {}
+            ),
         )
         if source.source_type is SourceType.YOUTUBE:
             description_row = await session.scalar(
