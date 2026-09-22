@@ -175,11 +175,19 @@ class WebPageExtractor:
         content_length = response.headers.get("content-length")
         if content_length and content_length.isdigit():
             if int(content_length) > self.max_download_bytes:
-                raise AppError("TOO_LARGE", f"response exceeds {self.max_download_bytes} bytes")
+                raise AppError(
+                    "TOO_LARGE",
+                    f"response exceeds {self.max_download_bytes} bytes",
+                    permanent=True,
+                )
         buffer = bytearray()
         async for chunk in response.aiter_bytes():
             if len(buffer) + len(chunk) > self.max_download_bytes:
-                raise AppError("TOO_LARGE", f"response exceeds {self.max_download_bytes} bytes")
+                raise AppError(
+                    "TOO_LARGE",
+                    f"response exceeds {self.max_download_bytes} bytes",
+                    permanent=True,
+                )
             buffer.extend(chunk)
         charset = response.charset_encoding or "utf-8"
         return buffer.decode(charset, errors="replace")

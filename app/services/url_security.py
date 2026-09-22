@@ -60,18 +60,22 @@ async def resolve_validated_ips(
     """Все IP хоста после проверки; любой запрещённый адрес → SECURITY_REJECTED."""
     parts = urlsplit(url)
     if parts.scheme not in ("http", "https"):
-        raise AppError("SECURITY_REJECTED", f"scheme {parts.scheme!r} is not allowed")
+        raise AppError(
+            "SECURITY_REJECTED", f"scheme {parts.scheme!r} is not allowed", permanent=True
+        )
     host = parts.hostname
     if not host:
-        raise AppError("SECURITY_REJECTED", "URL has no host")
+        raise AppError("SECURITY_REJECTED", "URL has no host", permanent=True)
     if host == "localhost" or host.endswith(".localhost"):
         # localhost запрещён по имени: его резолюция не должна зависеть от DNS.
-        raise AppError("SECURITY_REJECTED", "localhost is not allowed")
+        raise AppError("SECURITY_REJECTED", "localhost is not allowed", permanent=True)
 
     literal = _resolve_ip_literal(host)
     if literal is not None:
         if _is_blocked_ip(literal):
-            raise AppError("SECURITY_REJECTED", f"host {host!r} is a forbidden address")
+            raise AppError(
+                "SECURITY_REJECTED", f"host {host!r} is a forbidden address", permanent=True
+            )
         return [str(literal)]
 
     try:
@@ -82,7 +86,11 @@ async def resolve_validated_ips(
         raise AppError("DOWNLOAD_FAILED", f"host {host!r} resolved to no addresses")
     for ip_str in ips:
         if _is_blocked_ip(ipaddress.ip_address(ip_str)):
-            raise AppError("SECURITY_REJECTED", f"host {host!r} resolves to forbidden address")
+            raise AppError(
+                "SECURITY_REJECTED",
+                f"host {host!r} resolves to forbidden address",
+                permanent=True,
+            )
     return ips
 
 

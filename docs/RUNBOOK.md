@@ -63,6 +63,11 @@ uv run alembic upgrade head
 
 Application startup делает это автоматически.
 
+Downgrade с `c2d4e6f8a0b1` теряет composite source rows. Если несколько Items
+ссылаются на один URL пользователя, legacy-ограничение позволяет сохранить URL
+только у первого Item; у остальных `source_url` будет обнулён. Это schema
+rollback, а не полное восстановление прежней модели данных.
+
 ## Quality gate
 
 ```bash
