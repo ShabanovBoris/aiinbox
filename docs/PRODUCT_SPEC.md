@@ -558,6 +558,15 @@ DB-файл и тоже проверяет его; замена canonical databa
 (OpenAI или OpenRouter) и Telegram API. Default test suite остаётся полностью
 offline; live smoke запускается оператором после deployment с production env.
 
+## 85. Off-host backup verification
+
+Каждое backup generation имеет SHA-256 sidecar. Production backup должен
+реплицировать `.db` + `.sha256` в отдельный failure domain, скачать тот же
+generation обратно и до объявления успеха выполнить checksum verification,
+`PRAGMA integrity_check`, `PRAGMA foreign_key_check` и restore в отдельный
+временный DB-файл. Off-host credentials принадлежат deployment host и не
+передаются application runtime.
+
 ## 99. Основной критерий успеха продукта
 
 После нескольких недель бессистемного сохранения материалов `/today` должен

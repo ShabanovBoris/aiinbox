@@ -1,5 +1,6 @@
 import argparse
 import asyncio
+import hashlib
 import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
@@ -79,6 +80,59 @@ def backup_database(source: Path, destination: Path) -> None:
         raise
 
 
+def sha256_file(path: Path) -> str:
+    """Return a stable content fingerprint for an exported backup artifact."""
+    if not path.is_file():
+        raise FileNotFoundError(path)
+    with path.open("rb") as handle:
+        return hashlib.file_digest(handle, "sha256").hexdigest()
+
+
+def write_backup_checksum(backup: Path) -> Path:
+    """Write a standard sha256sum sidecar used to verify off-host round trips."""
+    checksum = Path(f"{backup}.sha256")
+    if checksum.exists():
+        raise FileExistsError(checksum)
+    checksum.write_text(f"{sha256_file(backup)}  {backup.name}\n", encoding="ascii")
+    return checksum
+
+
+def create_backup_generation(source: Path, destination: Path) -> Path:
+    """Create one verified DB snapshot plus its independently transferable checksum."""
+    checksum = Path(f"{destination}.sha256")
+    if checksum.exists():
+        raise FileExistsError(checksum)
+    backup_database(source, destination)
+    try:
+        return write_backup_checksum(destination)
+    except BaseException:
+        destination.unlink(missing_ok=True)
+        checksum.unlink(missing_ok=True)
+        raise
+
+
+def verify_backup_copy(database: Path, checksum_file: Path) -> None:
+    """Verify transferred bytes before trusting the SQLite-level validation."""
+    if not checksum_file.is_file():
+        raise FileNotFoundError(checksum_file)
+    parts = checksum_file.read_text(encoding="ascii").strip().split(maxsplit=1)
+    if len(parts) != 2:
+        raise RuntimeError(f"Invalid checksum file: {checksum_file}")
+    expected, filename = parts
+    if len(expected) != 64 or any(char not in "0123456789abcdefABCDEF" for char in expected):
+        raise RuntimeError(f"Invalid SHA-256 digest in {checksum_file}")
+    if filename != database.name:
+        raise RuntimeError(
+            f"Checksum file {checksum_file} names {filename!r}, expected {database.name!r}"
+        )
+    actual = sha256_file(database)
+    if actual.lower() != expected.lower():
+        raise RuntimeError(
+            f"SHA-256 mismatch for {database}: expected {expected.lower()}, got {actual}"
+        )
+    verify_database(database)
+
+
 def restore_database(backup: Path, target: Path) -> None:
     """Restore into a new SQLite file so production replacement stays explicit.
 
@@ -125,6 +179,7 @@ def rotate_backups(directory: Path, keep: int) -> list[Path]:
     removed = backups[keep:]
     for path in removed:
         path.unlink()
+        Path(f"{path}.sha256").unlink(missing_ok=True)
     return removed
 
 
@@ -219,8 +274,15 @@ def build_parser() -> argparse.ArgumentParser:
     backup.add_argument("--output-dir", type=Path)
     backup.add_argument("--keep", type=int)
 
-    verify = subparsers.add_parser("verify", help="run SQLite integrity_check")
+    verify = subparsers.add_parser("verify", help="run SQLite integrity and foreign-key checks")
     verify.add_argument("--database", type=Path)
+
+    verify_copy = subparsers.add_parser(
+        "verify-copy",
+        help="verify a transferred backup checksum plus SQLite integrity",
+    )
+    verify_copy.add_argument("--database", type=Path, required=True)
+    verify_copy.add_argument("--checksum-file", type=Path, required=True)
 
     restore = subparsers.add_parser("restore", help="restore a backup into a new database file")
     restore.add_argument("--backup", type=Path, required=True)
@@ -244,14 +306,19 @@ def main() -> None:
         keep = settings.backup_keep if args.keep is None else args.keep
         stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
         destination = output_dir / f"aiinbox-{stamp}.db"
-        backup_database(database, destination)
+        checksum = create_backup_generation(database, destination)
         removed = rotate_backups(output_dir, keep)
-        print(f"backup={destination} integrity=ok rotated={len(removed)}")
+        print(f"backup={destination} checksum={checksum} integrity=ok rotated={len(removed)}")
         return
 
     if args.command == "verify":
         verify_database(args.database or database)
         print(f"database={args.database or database} integrity=ok")
+        return
+
+    if args.command == "verify-copy":
+        verify_backup_copy(args.database, args.checksum_file)
+        print(f"database={args.database} checksum=ok integrity=ok")
         return
 
     if args.command == "restore":

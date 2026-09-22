@@ -81,3 +81,13 @@ Backup создаётся через SQLite Online Backup API, а не копи�
 числом поколений. Restore всегда создаёт новый файл. При canonical swap
 остановленного приложения старые `.db`, `-wal` и `-shm` архивируются как
 единый recovery set, чтобы sidecars старой БД не применились к restored DB.
+
+## D-014 — Off-host backup через host-owned rsync/SSH
+
+Каждое verified SQLite backup generation состоит из `.db` и стандартного
+`.sha256` sidecar. Off-host transport принадлежит deployment host, а не
+application runtime: `scripts/offsite_backup.sh` использует rsync/SSH и обычный
+OpenSSH key/config, не добавляя cloud SDK или storage credentials в контейнер.
+Успешная replication включает download-back того же generation,
+checksum + SQLite/FK verification и restore drill во временную DB. Canonical
+`/data/app.db` при таком drill не изменяется.

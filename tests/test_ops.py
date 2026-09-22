@@ -8,12 +8,14 @@ import pytest
 from app.domain.enums import ProcessingStatus, SourceType
 from app.ops import (
     backup_database,
+    create_backup_generation,
     database_status,
     rebuild_search,
     restore_database,
     rotate_backups,
     smoke_external,
     sqlite_database_path,
+    verify_backup_copy,
     verify_database,
 )
 from app.storage.models import Item, User
@@ -66,6 +68,25 @@ def test_restore_refuses_to_overwrite_existing_database(tmp_path):
     assert target.read_bytes() == b"existing"
 
 
+def test_backup_generation_checksum_detects_transfer_corruption(tmp_path):
+    """Off-host copies must fail before restore when transferred bytes changed."""
+    source = tmp_path / "source.db"
+    backup = tmp_path / "aiinbox-test.db"
+    connection = sqlite3.connect(source)
+    connection.execute("CREATE TABLE sample(value TEXT)")
+    connection.execute("INSERT INTO sample(value) VALUES ('durable')")
+    connection.commit()
+    connection.close()
+
+    checksum = create_backup_generation(source, backup)
+    verify_backup_copy(backup, checksum)
+
+    backup.write_bytes(backup.read_bytes() + b"corruption")
+
+    with pytest.raises(RuntimeError, match="SHA-256 mismatch"):
+        verify_backup_copy(backup, checksum)
+
+
 def test_verify_database_rejects_foreign_key_orphans(tmp_path):
     """Verified backup must include referential integrity, not only page integrity."""
     database = tmp_path / "orphan.db"
@@ -92,6 +113,7 @@ def test_backup_rotation_removes_only_old_aiinbox_generations(tmp_path):
     for index in range(3):
         path = tmp_path / f"aiinbox-{index}.db"
         path.write_bytes(str(index).encode())
+        Path(f"{path}.sha256").write_text(f"{index}\n")
         os.utime(path, (index + 1, index + 1))
         backups.append(path)
     unrelated = tmp_path / "manual.db"
@@ -101,7 +123,10 @@ def test_backup_rotation_removes_only_old_aiinbox_generations(tmp_path):
 
     assert removed == [backups[0]]
     assert not backups[0].exists()
+    assert not Path(f"{backups[0]}.sha256").exists()
     assert backups[1].exists() and backups[2].exists()
+    assert Path(f"{backups[1]}.sha256").exists()
+    assert Path(f"{backups[2]}.sha256").exists()
     assert unrelated.exists()
 
 

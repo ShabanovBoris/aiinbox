@@ -16,6 +16,7 @@ Personal AI Inbox — личный Telegram-бот, который приним�
 - Telegram bot token и allowlist user id
 - OpenAI или OpenRouter API key и model ids для анализа (и transcription для voice/audio)
 - `ffmpeg` для video visual analysis и long-audio OpenRouter STT
+- для production off-host backup: `rsync` + SSH на deployment/backup hosts
 
 ## Архитектура
 
@@ -101,6 +102,8 @@ Compose хранит SQLite в named volume `aiinbox_data`, а временны�
 docker compose exec -T app python -m app.ops status
 docker compose exec -T app python -m app.ops smoke
 docker compose exec -T app python -m app.ops backup
+# production host: backup → off-host → download-back → verify → restore drill
+OFFSITE_BACKUP_TARGET='backup@example:/srv/aiinbox' ./scripts/offsite_backup.sh
 ```
 
 `status` показывает DB/queue/FAILED/provider configuration без секретов.
@@ -108,7 +111,9 @@ docker compose exec -T app python -m app.ops backup
 команда опциональная и может потреблять небольшое число provider tokens.
 `backup` использует SQLite Online Backup API, проверяет snapshot через
 `integrity_check` + `foreign_key_check` и оставляет ограниченное число
-поколений.
+поколений. Каждое поколение получает `.sha256` sidecar; off-host script
+реплицирует оба файла по rsync/SSH и проверяет восстановление скачанной обратно
+копии, не меняя canonical `/data/app.db`.
 
 ## Проверки
 
