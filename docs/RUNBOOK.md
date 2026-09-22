@@ -1,89 +1,65 @@
 # Runbook
 
-Как запускать, проверять и диагностировать Personal AI Inbox.
-Заполняется по мере появления реальных команд и проблем; не выдумывать команды заранее.
-
-Статус: MVP Phase 0–13 завершён. PR #17 с поддержкой OpenRouter squash-merged;
-текущий post-MVP проход посвящён hardening найденных review gaps.
-
-FTS5 индекс `item_search` контролируется приложением: после обработки Item он
-синхронизируется вместе с READY, а перед поиском индекс пользователя
-пересобирается. Это позволяет искать также в `contents` и автоматически
-подхватывать Items, созданные до FTS-миграции.
-
-Item actions выполняются callback-кнопками Telegram и сохраняются транзакционно:
-Done, Later (завтра/неделя/месяц), Archive и Retry для FAILED. События лежат в
-таблице `events`; lifecycle state и timestamps — в `items`. При сбое обработки
-пользователь получает кнопку Retry, а повтор действия не создаёт дубликат
-события. Retry сохраняет `processing_stage`, поэтому уже извлечённый контент не
-обрабатывается заново.
-
-Уведомления Phase 11 используют SQLite-таблицу `reminders` как durable
-идемпотентный журнал. `/settings` показывает настройки и принимает минимальные
-изменения: `timezone Europe/Moscow`, `time 09:00`, `quiet 22:30-08:00`.
-Daily digest отправляется один раз за локальный день через `TodayService`, а
-отложенные Items возвращаются после `snoozed_until`, кроме quiet hours.
-`ReminderWorker` запускается вместе с Telegram bot и не требует внешнего
-scheduler.
-
-## Production hardening
-
-`ProcessingWorker` применяет `PROCESSING_TIMEOUT_SECONDS` к одной полной
-обработке Item. При превышении Item получает `PROCESSING_TIMEOUT` и остаётся
-доступным для Retry; обычный restart дополнительно возвращает все
-`PROCESSING` Items в `QUEUED` через `requeue_stale`. При SIGTERM/SIGINT сначала
-подаётся stop-сигнал и воркерам даётся `SHUTDOWN_TIMEOUT_SECONDS` на завершение
-текущей операции, после чего зависшие задачи отменяются. Неожиданное завершение
-processing/profile/delivery/reminder worker или Telegram polling валит весь процесс после
-того же cleanup; DB infrastructure error также выходит наружу вместо маскировки
-как обычный FAILED Item. В Docker Compose процесс поднимается снова через
-`restart: unless-stopped`, а незавершённый PROCESSING Item requeue-ится на старте.
-
-Для Docker см. корневой `README.md`: образ содержит закреплённый Python 3.12,
-ffmpeg и устанавливает production-зависимости строго из `uv.lock`. SQLite должен
-быть вынесен в volume `/data`; временные media files — в `/tmp/aiinbox`/tmpfs.
-Контейнер запускается non-root пользователем. Playwright fallback отключён по
-решению безопасности, поэтому Chromium-зависимости в образ не устанавливаются.
-В контейнере обязательно используйте абсолютный URL
-`sqlite+aiosqlite:////data/app.db`, иначе relative SQLite path окажется под
-`/app`, а не в persistent volume.
-
-## Контракты репозитория
-
-- Канонические продуктовые требования: `docs/PRODUCT_SPEC.md`
-- Состояние этапов и post-MVP изменений: `docs/IMPLEMENTATION_STATE.md`
-- Архитектурные решения и инварианты: `docs/DECISIONS.md`
-- Журнал вердиктов ревью: `docs/REVIEWS.md`
-- Правила реализации и review workflow: `AGENTS.md`
+Операционный runbook текущего Personal AI Inbox. Product behavior описан в
+`PRODUCT_SPEC.md`, пользовательская поверхность — в `BOT_USAGE.md`.
 
 ## Быстрый старт
 
-Требования: Python 3.12+, [uv](https://docs.astral.sh/uv/). macOS/Linux.
+Требования: Python 3.12+, `uv`, `ffmpeg`.
 
 ```bash
 uv venv --python 3.12
 uv sync
-cp .env.example .env   # заполнить TELEGRAM_BOT_TOKEN, ALLOWED_TELEGRAM_USER_IDS,
-                       # и credentials/model ids выбранного LLM_PROVIDER
+cp .env.example .env
+# заполнить TELEGRAM_BOT_TOKEN, ALLOWED_TELEGRAM_USER_IDS
+# и credentials/model ids выбранного LLM_PROVIDER
 uv run python -m app.main
 ```
 
-`app.main` сам применяет миграции (`alembic upgrade head`), затем запускает
-Telegram polling и processing workers. Без `TELEGRAM_BOT_TOKEN` приложение
-стартует в headless-режиме (только воркеры) — локальный smoke без Telegram network.
-Для анализа нужен реальный ключ выбранного provider-а. Для OpenRouter задайте
-`LLM_PROVIDER=openrouter`, `OPENROUTER_API_KEY`, analysis/transcription model ids
-и при необходимости vision model; endpoint по умолчанию —
-`https://openrouter.ai/api/v1`. Без валидного ключа Item'ы уходят в FAILED с
-error_code=LLM_FAILED — happy path LLM проверяется FakeLlmProvider'ом в тестах,
-live-проверка требует ключа.
+`app.main` автоматически выполняет `alembic upgrade head`.
+Без `TELEGRAM_BOT_TOKEN` Telegram polling отключён, workers остаются активны.
 
-OpenRouter STT использует OpenAI-compatible multipart только для коротких файлов.
-Файлы больше 25 MB или аудио длиннее 5 минут сначала режутся `ffmpeg` на
-5-минутные mono WAV PCM 16 kHz сегменты и транскрибируются с bounded concurrency
-до 4 запросов. Готовые сегменты checkpoint'ятся с SHA-256 input + provider/model
-identity и переиспользуются только при полном совпадении на retry.
-Для long-audio/YouTube STT fallback `ffmpeg` должен быть доступен в `PATH`.
+Поддержаны `LLM_PROVIDER=openai` и `LLM_PROVIDER=openrouter`.
+OpenRouter endpoint по умолчанию — `https://openrouter.ai/api/v1`.
+
+## Docker
+
+```bash
+docker build -t personal-ai-inbox .
+docker run --rm --env-file .env \
+  -e DATABASE_URL=sqlite+aiosqlite:////data/app.db \
+  -e TEMP_DIR=/tmp/aiinbox \
+  -v aiinbox_data:/data \
+  --tmpfs /tmp/aiinbox \
+  personal-ai-inbox
+```
+
+Compose:
+
+```bash
+docker compose up --build -d
+docker compose logs -f app
+docker compose down
+```
+
+SQLite живёт в named volume `/data`; temporary media — tmpfs
+`/tmp/aiinbox`. Container запускается non-root.
+
+## Миграции
+
+Проверить head:
+
+```bash
+uv run alembic heads
+```
+
+Применить вручную:
+
+```bash
+uv run alembic upgrade head
+```
+
+Application startup делает это автоматически.
 
 ## Quality gate
 
@@ -93,83 +69,103 @@ uv run ruff format --check .
 uv run pytest
 ```
 
-GitHub Actions workflow `.github/workflows/quality.yml` выполняет тот же gate на
-PR и push в `main`. Job `quality` является required status check для защищённой
-ветки `main`.
+GitHub Actions job `quality` выполняет тот же gate и является required status
+check для protected `main`.
 
-## Git workflow
+## Диагностика Items
 
-`main` — защищённая integration branch. Реализация фаз в `main` запрещена.
-
-```bash
-# перед началом фазы
-git checkout main
-git pull --ff-only
-git status
-git checkout -b phase/NN-short-description
-
-# commits на ветке (формат feat:/test:/fix:/docs:), затем
-git push -u origin phase/NN-short-description
-# PR phase/NN-... → main, title "Phase NN: <short description>"
-# REVIEW REQUEST Orchestrator'у с repository, PR и exact HEAD SHA
-```
-
-- Merge — только Orchestrator, squash, заголовок `Phase NN: <description>`.
-- Handshake APPROVED → merge: см. `AGENTS.md` §57 — после `APPROVED @ HEAD A`
-  агент делает единственный status-finalization commit (HEAD B, delta
-  docs-status-only) и объявляет `MERGE READY`; Orchestrator проверяет delta
-  и squash-merges с ожидаемым HEAD B.
-- После merge: `git checkout main && git pull --ff-only`, затем новая ветка.
-- Запрещены: direct commit в `main`, force push, merge собственного PR,
-  старт следующей фазы до `APPROVED`, несколько фаз в одном PR.
-
-## Внешняя ревью-проверка (Orchestrator: ChatGPT через Browser Use)
-
-Механизм review определён в `AGENTS.md` §57: PR + `REVIEW REQUEST` в фиксированную
-беседу ChatGPT. Orchestrator проверяет GitHub напрямую (PR, diff, SHA, CI).
-
-- Каждый вердикт (`APPROVED` / `CHANGES REQUIRED` / `BLOCKED`) агент немедленно
-  фиксирует в `docs/REVIEWS.md` (PR + reviewed HEAD SHA) — durable record,
-  пережидающий смену сессий. Ограничение GitHub: автор PR не может оставить
-  `REQUEST_CHANGES` на собственный PR, поэтому формальный PR review от identity
-  Orchestrator'а может быть недоступен.
-- Сопроводительный материал (когда Orchestrator попросит):
+Default local DB: `data/app.db`.
 
 ```bash
-git diff main..HEAD > temp/review.diff
-git archive --format=zip -o temp/project.zip HEAD
+sqlite3 data/app.db \
+  "SELECT id, processing_status, processing_stage, state, source_type, error_code
+   FROM items ORDER BY id DESC LIMIT 50"
 ```
 
-`git archive` упаковывает только git-tracked файлы, поэтому `.env`, `data/`,
-`temp/` и прочие игнорируемые пути физически не покидают машину.
-Сами `temp/review.diff` и `temp/project.zip` игнорируются git'ом.
-
-## Диагностика
-
-Инспекция базы (по умолчанию `data/app.db`):
+FAILED:
 
 ```bash
-sqlite3 data/app.db "SELECT id, processing_status, processing_stage, state, source_type FROM items ORDER BY created_at"
+sqlite3 data/app.db \
+  "SELECT id, processing_stage, error_code, error_message
+   FROM items WHERE processing_status='FAILED' ORDER BY id DESC"
 ```
 
-Провалившиеся Item'ы — с кодом и причиной (стек-трейсы только в логах):
+На restart все stale `PROCESSING` автоматически возвращаются в `QUEUED`.
+Обычный пользовательский retry делается кнопкой `🔁 Retry`.
+
+Ручной fallback только для диагностики:
+
+```sql
+UPDATE items
+SET processing_status='QUEUED', error_code=NULL, error_message=NULL
+WHERE id=<id> AND processing_status='FAILED';
+```
+
+Не очищать `processing_stage`/contents: это resume checkpoints.
+
+## Immediate deliveries
 
 ```bash
-sqlite3 data/app.db "SELECT id, error_code, error_message FROM items WHERE processing_status='FAILED'"
+sqlite3 data/app.db \
+  "SELECT id, kind, status, item_id, profile_update_job_id, attempts, updated_at
+   FROM deliveries ORDER BY id DESC LIMIT 50"
 ```
 
-Состояние уведомлений и неудачные доставки:
+`PENDING/SENDING` восстанавливаются delivery worker-ом/startup recovery.
+`SENT` — зафиксированная успешная delivery state; transport semantics
+at-least-once, поэтому crash сразу после Telegram send может дать дубль.
+
+## Reminders / digest
 
 ```bash
-sqlite3 data/app.db "SELECT id, user_id, item_id, type, scheduled_at, status, sent_at FROM reminders ORDER BY scheduled_at"
+sqlite3 data/app.db \
+  "SELECT id, user_id, item_id, type, scheduled_at, status, sent_at
+   FROM reminders ORDER BY scheduled_at DESC LIMIT 50"
 ```
 
-`SENT` означает, что delivery claim зафиксирован до отправки Telegram и после
-перезапуска не будет создан повторно. `FAILED` означает, что Telegram-вызов
-завершился ошибкой; техническая причина остаётся в логах приложения.
+Digest/snooze используют отдельную reminder semantics. Quiet hours и timezone
+берутся из user settings.
 
-- Зависшие `PROCESSING` после падения процесса возвращаются в `QUEUED`
-  автоматически при следующем старте (`requeue_stale`).
-- Retry из Telegram доступен для FAILED Items; он сохраняет stage и продолжает
-  с durable checkpoint'а, очищая error-поля. Ручной fallback при диагностике:
-  `UPDATE items SET processing_status='QUEUED', error_code=NULL, error_message=NULL WHERE id=...`.
+## Profile updates
+
+```bash
+sqlite3 data/app.db \
+  "SELECT id, user_id, status, error_code, created_at, updated_at
+   FROM profile_update_jobs ORDER BY id DESC LIMIT 50"
+```
+
+Stale `RUNNING` job requeue'ится при startup.
+
+## OpenRouter long STT
+
+Файлы >25 MB или аудио >5 минут режутся `ffmpeg` на 5-минутные mono WAV PCM
+16 kHz сегменты и транскрибируются с bounded concurrency. Segment checkpoints
+содержат SHA-256 input + provider/model identity.
+
+Если STT падает, сначала проверять:
+
+- доступность `ffmpeg`;
+- `OPENROUTER_API_KEY`;
+- `OPENROUTER_TRANSCRIPTION_MODEL`;
+- provider response в logs;
+- наличие compatible `TRANSCRIPT_CHUNK` checkpoints.
+
+## Web extraction / SSRF
+
+Playwright fallback отключён. Слишком короткая страница может завершиться
+`EXTRACTION_FAILED`; это ожидаемое поведение, а не повод включать unrestricted
+browser.
+
+`SECURITY_REJECTED` означает, что URL/IP/redirect нарушил SSRF policy.
+
+## Shutdown / restart
+
+SIGTERM/SIGINT:
+
+1. stop new work;
+2. workers получают bounded drain по `SHUTDOWN_TIMEOUT_SECONDS`;
+3. зависшие tasks отменяются;
+4. Telegram session и DB engine закрываются.
+
+Critical worker/polling failure завершает процесс. Docker Compose
+`restart: unless-stopped` поднимает его снова; durable state восстанавливается.

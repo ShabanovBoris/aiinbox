@@ -106,9 +106,14 @@ uv run pytest
 `main` (`.github/workflows/quality.yml`). Job `quality` назначен required status
 check для защищённой ветки `main`, поэтому merge требует успешного CI.
 
-Для диагностики SQLite, зависших Items и ручного retry см. [docs/RUNBOOK.md](docs/RUNBOOK.md).
-Полный продуктовый контракт находится в [docs/PRODUCT_SPEC.md](docs/PRODUCT_SPEC.md),
-а решения и история внешних review — в `docs/DECISIONS.md` и `docs/REVIEWS.md`.
+Документация:
+- [docs/BOT_USAGE.md](docs/BOT_USAGE.md) — пользовательская поверхность Telegram;
+- [docs/PRODUCT_SPEC.md](docs/PRODUCT_SPEC.md) — текущий product contract;
+- [docs/DECISIONS.md](docs/DECISIONS.md) — архитектурные инварианты;
+- [docs/RUNBOOK.md](docs/RUNBOOK.md) — запуск, диагностика и recovery.
+
+История implementation/review хранится в GitHub PR, commits и Actions, а не
+дублируется отдельными repo-журналами.
 
 ## Конфигурация
 
