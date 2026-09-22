@@ -9,7 +9,7 @@ from sqlalchemy.sql import text
 from app.domain.enums import ItemState, ProcessingStatus
 from app.services.delivery import ITEM_FAILED
 from app.services.notifications import add_snooze_reminder, cancel_snooze_reminders
-from app.storage.models import Delivery, Event, Item, User
+from app.storage.models import Delivery, Event, Item, ItemSource, User
 
 
 def _utc_now() -> datetime:
@@ -132,6 +132,18 @@ async def apply_item_action(
                 # Failure delivery belongs to the FAILED state being left. Marking
                 # it terminal in the same transaction prevents the outbox from
                 # announcing an obsolete failure after the user has already retried.
+                await session.execute(
+                    update(ItemSource)
+                    .where(
+                        ItemSource.item_id == item_id,
+                        ItemSource.extraction_status == "FAILED",
+                    )
+                    .values(
+                        extraction_status="PENDING",
+                        error_code=None,
+                        error_message=None,
+                    )
+                )
                 await session.execute(
                     update(Delivery)
                     .where(

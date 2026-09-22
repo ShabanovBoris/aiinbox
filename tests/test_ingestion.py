@@ -4,10 +4,10 @@ import pytest
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 
-from app.domain.enums import ItemState, ProcessingStatus, SourceType
-from app.services.ingestion import _ingest_web_urls, ingest_message
+from app.domain.enums import ContentKind, ProcessingStatus, SourceType
+from app.services.ingestion import ingest_message
 from app.services.url_parsing import normalize_url, parse_message
-from app.storage.models import Event, Item, User
+from app.storage.models import Content, Event, Item, ItemSource, User
 
 
 async def ingest(session_factory, message_id: int = 1, text: str = "Изучить AI agents"):
@@ -50,33 +50,59 @@ async def test_url_message_creates_web_item_with_note(session_factory):
     assert item.source_type is SourceType.WEB
     assert item.source_url == "https://example.com/a?id=7"
     assert item.user_note == "Полезная статья про архитектуру"
+    async with session_factory() as session:
+        source = await session.scalar(select(ItemSource).where(ItemSource.item_id == item.id))
+        assert source is not None
+        assert source.source_type is SourceType.WEB
+        assert source.source_url == "https://example.com/a?id=7"
+        source_text = await session.scalar(
+            select(Content.text).where(
+                Content.item_id == item.id,
+                Content.kind == ContentKind.USER_TEXT,
+            )
+        )
+        assert source_text == (
+            "Полезная статья про архитектуру https://Example.com/a?utm_source=x&id=7"
+        )
 
 
-async def test_multiple_urls_create_items_with_indexes(session_factory):
+async def test_multiple_urls_create_one_item_with_child_sources(session_factory):
     result = await ingest(
         session_factory,
         text="Две статьи https://example.com/one и https://example.com/two",
     )
-    assert len(result.items) == 2
-    assert [item.source_index for item in result.items] == [0, 1]
-    assert {item.source_url for item in result.items} == {
-        "https://example.com/one",
-        "https://example.com/two",
-    }
-
-
-async def test_duplicate_url_across_messages_is_skipped(session_factory):
-    await ingest(session_factory, message_id=1, text="https://example.com/a")
-    second = await ingest(session_factory, message_id=2, text="https://example.com/a")
-    assert second.items == []
-    assert second.duplicates == ["https://example.com/a"]
+    assert len(result.items) == 1
+    item = result.items[0]
+    assert item.source_type is SourceType.TEXT
+    assert item.source_url is None
+    assert item.user_note == "Две статьи и"
     async with session_factory() as session:
-        assert await session.scalar(select(func.count()).select_from(Item)) == 1
+        sources = (
+            await session.scalars(
+                select(ItemSource)
+                .where(ItemSource.item_id == item.id)
+                .order_by(ItemSource.source_index)
+            )
+        ).all()
+        assert [(source.source_index, source.source_url) for source in sources] == [
+            (0, "https://example.com/one"),
+            (1, "https://example.com/two"),
+        ]
+
+
+async def test_same_url_in_different_messages_keeps_both_message_items(session_factory):
+    first = await ingest(session_factory, message_id=1, text="https://example.com/a")
+    second = await ingest(session_factory, message_id=2, text="https://example.com/a")
+    assert first.items[0].id != second.items[0].id
+    assert second.duplicates == []
+    async with session_factory() as session:
+        assert await session.scalar(select(func.count()).select_from(Item)) == 2
+        assert await session.scalar(select(func.count()).select_from(ItemSource)) == 2
         assert (
             await session.scalar(
                 select(func.count()).select_from(Event).where(Event.event_type == "CREATED")
             )
-            == 1
+            == 2
         )
 
 
@@ -87,24 +113,49 @@ async def test_repeated_url_inside_single_message_deduplicated(session_factory):
         text="https://example.com/a и ещё раз https://example.com/a",
     )
     assert len(result.items) == 1
+    async with session_factory() as session:
+        assert (
+            await session.scalar(
+                select(func.count())
+                .select_from(ItemSource)
+                .where(ItemSource.item_id == result.items[0].id)
+            )
+            == 1
+        )
 
 
-async def test_unique_user_url_constraint_enforced_at_db_level(session_factory):
+async def test_item_source_index_unique_per_item_at_db_level(session_factory):
     async with session_factory() as session:
         user = User(telegram_user_id=42, telegram_chat_id=42)
         session.add(user)
         await session.flush()
-        base = dict(
+        item = Item(
             user_id=user.id,
             telegram_message_id=1,
+            source_index=0,
             processing_status=ProcessingStatus.QUEUED,
-            source_type=SourceType.WEB,
-            source_url="https://example.com/dup",
+            source_type=SourceType.TEXT,
             user_note="",
         )
-        session.add(Item(**base, source_index=0))
+        session.add(item)
+        await session.flush()
+        session.add(
+            ItemSource(
+                item_id=item.id,
+                source_index=0,
+                source_type=SourceType.WEB,
+                source_url="https://example.com/one",
+            )
+        )
         await session.commit()
-        session.add(Item(**base, source_index=1))
+        session.add(
+            ItemSource(
+                item_id=item.id,
+                source_index=0,
+                source_type=SourceType.WEB,
+                source_url="https://example.com/two",
+            )
+        )
         with pytest.raises(IntegrityError):
             await session.commit()
 
@@ -175,8 +226,7 @@ def test_parse_message_without_urls():
 
 
 async def test_concurrent_overlapping_url_dedup_converges(session_factory):
-    # Регрессия Phase 4: конкурентные сообщения с пересекающимися URL —
-    # итог: каждый URL ровно один Item, исключений нет.
+    # URL identity is message-local: overlapping links do not merge two distinct posts.
     results = await asyncio.gather(
         ingest_message(
             session_factory,
@@ -193,23 +243,25 @@ async def test_concurrent_overlapping_url_dedup_converges(session_factory):
             text="https://example.com/b и https://example.com/c",
         ),
     )
-    urls = [item.source_url for result in results for item in result.items]
-    assert sorted(urls) == [
-        "https://example.com/a",
-        "https://example.com/b",
-        "https://example.com/c",
-    ]
+    assert sum(len(result.items) for result in results) == 2
     async with session_factory() as session:
+        urls = list(await session.scalars(select(ItemSource.source_url).order_by(ItemSource.id)))
+        assert sorted(urls) == [
+            "https://example.com/a",
+            "https://example.com/b",
+            "https://example.com/b",
+            "https://example.com/c",
+        ]
         assert (
             await session.scalar(
                 select(func.count()).select_from(Event).where(Event.event_type == "CREATED")
             )
-            == 3
+            == 2
         )
 
 
 async def test_concurrent_youtube_url_resolve_preserves_source_type(session_factory):
-    # Regression: race-resolve must retain YouTube semantics for later processing.
+    # Child source routing remains semantic even when the Item itself is composite TEXT.
     results = await asyncio.gather(
         ingest_message(
             session_factory,
@@ -227,65 +279,9 @@ async def test_concurrent_youtube_url_resolve_preserves_source_type(session_fact
         ),
     )
     items = [item for result in results for item in result.items]
-    assert {item.source_url for item in items} == {
-        "https://www.youtube.com/watch?v=shared",
-        "https://www.youtube.com/watch?v=first",
-        "https://www.youtube.com/watch?v=second",
-    }
-    assert all(item.source_type is SourceType.YOUTUBE for item in items)
-
-
-async def test_youtube_race_resolve_has_source_type_and_one_created_event(
-    session_factory, monkeypatch
-):
-    """Force the unique conflict so this test covers rollback and re-resolve."""
-    async with session_factory() as setup:
-        user = User(telegram_user_id=42, telegram_chat_id=42)
-        setup.add(user)
-        await setup.commit()
-        user_id = user.id
-
-    first_url = "https://www.youtube.com/watch?v=claimed"
-    second_url = "https://www.youtube.com/watch?v=resolved"
-    injected = False
+    assert len(items) == 2
+    assert all(item.source_type is SourceType.TEXT for item in items)
     async with session_factory() as session:
-        original_flush = session.flush
-
-        async def flush_with_competing_insert(*, objects=None):
-            nonlocal injected
-            if not injected:
-                injected = True
-                async with session_factory() as rival:
-                    rival_item = Item(
-                        user_id=user_id,
-                        telegram_message_id=99,
-                        source_index=0,
-                        processing_status=ProcessingStatus.QUEUED,
-                        state=ItemState.ACTIVE,
-                        source_type=SourceType.YOUTUBE,
-                        source_url=first_url,
-                        processing_stage="INGESTED",
-                        user_note="",
-                    )
-                    rival.add(rival_item)
-                    await rival.flush()
-                    rival.add(Event(user_id=user_id, item_id=rival_item.id, event_type="CREATED"))
-                    await rival.commit()
-            return await original_flush(objects=objects)
-
-        monkeypatch.setattr(session, "flush", flush_with_competing_insert)
-        items, duplicates = await _ingest_web_urls(
-            session, user_id, 100, "", [first_url, second_url]
-        )
-
-    assert duplicates == [first_url]
-    assert len(items) == 1
-    assert items[0].source_url == second_url
-    assert items[0].source_type is SourceType.YOUTUBE
-    async with session_factory() as session:
-        assert (
-            await session.scalar(
-                select(func.count()).select_from(Event).where(Event.event_type == "CREATED")
-            )
-            == 2
-        )
+        sources = (await session.scalars(select(ItemSource))).all()
+        assert len(sources) == 4
+        assert all(source.source_type is SourceType.YOUTUBE for source in sources)

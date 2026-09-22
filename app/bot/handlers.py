@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.bot.formatting import format_ready_item
 from app.bot.keyboards import item_keyboard
+from app.bot.provenance import normalize_forward_origin, text_with_entity_urls
 from app.config import Settings
 from app.domain.enums import ItemState, ProcessingStatus, SourceType
 from app.services.actions import apply_item_action, record_item_events, set_item_interest
@@ -30,7 +31,7 @@ from app.storage.models import Item
 log = logging.getLogger(__name__)
 
 HELP_TEXT = (
-    "Personal AI Inbox — отправь текст, URL, voice/audio или YouTube-ссылку.\n\n"
+    "Personal AI Inbox — отправь или перешли текст, URL, voice/audio/video или YouTube-ссылку.\n\n"
     "Команды:\n"
     "/today — приоритетные Items на сегодня\n"
     "/inbox — последние Items\n"
@@ -119,7 +120,8 @@ async def on_text(
         # Allowlist: неавторизованным молча не отвечаем и ничего не обрабатываем.
         log.warning("unauthorized telegram user ignored user_id=%s", user_id)
         return
-    if not message.text:
+    text = text_with_entity_urls(message.text, message.entities)
+    if not text:
         return
     # Тяжёлая обработка запрещена в handler: только валидация, Item QUEUED и ответ.
     # Сначала persistence, потом ACK: при ошибке БД пользователь не получает
@@ -129,15 +131,13 @@ async def on_text(
         telegram_user_id=user_id,
         chat_id=message.chat.id,
         message_id=message.message_id,
-        text=message.text,
+        text=text,
+        source_metadata=normalize_forward_origin(message.forward_origin),
         default_timezone=settings.default_timezone,
     )
     ack_lines = []
     if result.items:
-        if len(result.items) == 1 and result.items[0].source_type is SourceType.TEXT:
-            ack_lines.append("Принял. Разбираю…")
-        else:
-            ack_lines.append(f"Принял {len(result.items)} ссылок. Разбираю…")
+        ack_lines.append("Принял. Разбираю…")
     if result.duplicates:
         ack_lines.append("Часть ссылок уже сохранена — дубли пропустил.")
     if ack_lines:
@@ -162,6 +162,8 @@ async def on_voice_audio(
     # как FAILED/TOO_LARGE (PRODUCT_SPEC §66) — без claimable промежуточного
     # состояния, чтобы воркер не начал скачивание.
     oversized = (file_size, max_audio_bytes) if file_size > max_audio_bytes else None
+    source_metadata = normalize_forward_origin(message.forward_origin)
+    source_text = text_with_entity_urls(message.caption, message.caption_entities)
     result = await ingest_voice(
         session_factory,
         telegram_user_id=user_id,
@@ -171,18 +173,124 @@ async def on_voice_audio(
         duration_seconds=media.duration,
         source_type=source_type,
         too_large=oversized,
+        source_metadata=source_metadata,
+        source_text=source_text,
         default_timezone=settings.default_timezone,
     )
     item = result.items[0]
-    if item.error_code == "TOO_LARGE":
+    if item.processing_status is ProcessingStatus.FAILED and item.error_code == "TOO_LARGE":
         limit_mb = max_audio_bytes / 1_000_000
         await message.answer(
             f"Файл слишком большой ({file_size / 1_000_000:.1f} МБ > лимита "
             f"{limit_mb:.0f} МБ). Метаданные сохранил — файл не скачан."
         )
         return
+    if oversized is not None:
+        limit_mb = max_audio_bytes / 1_000_000
+        await message.answer(
+            f"Файл слишком большой ({file_size / 1_000_000:.1f} МБ > лимита "
+            f"{limit_mb:.0f} МБ), но текст и ссылки из сообщения разберу."
+        )
+        return
     label = "аудио" if is_audio else "голосовое"
     await message.answer(f"Принял {label}. Разбираю…")
+
+
+async def on_video(
+    message: Message, settings: Settings, session_factory: async_sessionmaker
+) -> None:
+    """Persist Telegram video, caption and caption URLs as one composite Item."""
+    user_id = message.from_user.id if message.from_user else None
+    if not settings.is_allowed(user_id):
+        return
+    media = message.video
+    if media is None and _is_video_document(message):
+        media = message.document
+    if media is None:
+        return
+    file_size = media.file_size or 0
+    oversized = (
+        (file_size, settings.max_video_bytes) if file_size > settings.max_video_bytes else None
+    )
+    source_text = text_with_entity_urls(message.caption, message.caption_entities)
+    result = await ingest_voice(
+        session_factory,
+        telegram_user_id=user_id,
+        chat_id=message.chat.id,
+        message_id=message.message_id,
+        file_id=media.file_id,
+        duration_seconds=getattr(media, "duration", None),
+        source_type=SourceType.VIDEO,
+        too_large=oversized,
+        source_metadata=normalize_forward_origin(message.forward_origin),
+        source_text=source_text,
+        default_timezone=settings.default_timezone,
+    )
+    item = result.items[0]
+    if item.processing_status is ProcessingStatus.FAILED and item.error_code == "TOO_LARGE":
+        await message.answer(
+            f"Видео слишком большое ({file_size / 1_000_000:.1f} МБ > лимита "
+            f"{settings.max_video_bytes / 1_000_000:.0f} МБ)."
+        )
+        return
+    if oversized is not None:
+        await message.answer("Видео превышает лимит, но текст и ссылки из сообщения разберу.")
+        return
+    await message.answer("Принял видео. Разбираю текст, ссылки и видео…")
+
+
+def _is_video_document(message: Message) -> bool:
+    """Normalize Telegram's alternate transport for videos into the VIDEO source path.
+
+    Telegram may expose a forwarded/uploaded video as Document instead of Video;
+    MIME and common video suffixes are transport signals, while downstream
+    extraction remains identical and still produces one media ItemSource.
+    """
+    document = message.document
+    if document is None:
+        return False
+    mime_type = (document.mime_type or "").lower()
+    file_name = (document.file_name or "").lower()
+    return mime_type.startswith("video/") or file_name.endswith(
+        (".mp4", ".m4v", ".mov", ".mkv", ".webm", ".avi")
+    )
+
+
+async def on_forwarded_photo(
+    message: Message, settings: Settings, session_factory: async_sessionmaker
+) -> None:
+    """Analyze forwarded photo caption/links even while image understanding is unavailable."""
+    user_id = message.from_user.id if message.from_user else None
+    if not settings.is_allowed(user_id):
+        return
+    text = text_with_entity_urls(message.caption, message.caption_entities)
+    if not text:
+        await message.answer("Пересланные фото без поддерживаемой ссылки пока не поддерживаются.")
+        return
+    result = await ingest_message(
+        session_factory,
+        telegram_user_id=user_id,
+        chat_id=message.chat.id,
+        message_id=message.message_id,
+        text=text,
+        source_metadata=normalize_forward_origin(message.forward_origin),
+        default_timezone=settings.default_timezone,
+    )
+    ack_lines = []
+    if result.items:
+        ack_lines.append("Принял пересланное сообщение. Текст и ссылки разбираю…")
+    if result.duplicates:
+        ack_lines.append("Часть ссылок уже сохранена — дубли пропустил.")
+    if ack_lines:
+        await message.answer("\n".join(ack_lines))
+
+
+async def on_unsupported_forwarded_media(message: Message, settings: Settings) -> None:
+    """Keep unsupported document capture explicit until its extractor is implemented."""
+    user_id = message.from_user.id if message.from_user else None
+    if not settings.is_allowed(user_id):
+        return
+    await message.answer("Пересланные документы пока не поддерживаются.")
 
 
 def make_router(
@@ -190,20 +298,9 @@ def make_router(
 ) -> Router:
     router = Router()
 
-    @router.message(CommandStart())
-    async def start(message: Message) -> None:
-        await on_start(message, settings)
-
-    @router.message(Command("help"))
-    async def help_command(message: Message) -> None:
-        await on_help(message, settings)
-
-    # Не-командный текст — источники TEXT/WEB; медиа-источники добавляются
-    # в своих фазах и идут через тот же pipeline.
-    @router.message(F.text, ~F.text.startswith("/"))
-    async def text(message: Message) -> None:
-        await on_text(message, settings, session_factory)
-
+    # Specific media handlers must precede the forwarded-text catch-all. Aiogram's
+    # MagicFilter field lookup is permissive enough that relying on F.text alone for
+    # dispatch priority can let a media update reach the wrong callback.
     @router.message(F.voice)
     async def voice(message: Message) -> None:
         await on_voice_audio(
@@ -215,6 +312,43 @@ def make_router(
         await on_voice_audio(
             message, settings, session_factory, message.audio, True, max_audio_bytes
         )
+
+    @router.message(F.video)
+    async def video(message: Message) -> None:
+        await on_video(message, settings, session_factory)
+
+    @router.message(F.forward_origin, F.photo)
+    async def forwarded_photo(message: Message) -> None:
+        await on_forwarded_photo(message, settings, session_factory)
+
+    @router.message(F.document)
+    async def document(message: Message) -> None:
+        # Telegram sometimes serializes ordinary/forwarded video as Document.
+        # Normalize it here so message transport does not change Item semantics.
+        if _is_video_document(message):
+            await on_video(message, settings, session_factory)
+        elif message.forward_origin:
+            await on_unsupported_forwarded_media(message, settings)
+
+    # Forwarded slash-prefixed text is captured content, not a command for this bot.
+    # This edge rule must run before Command filters to preserve author semantics.
+    @router.message(F.forward_origin, F.text)
+    async def forwarded_text(message: Message) -> None:
+        await on_text(message, settings, session_factory)
+
+    @router.message(CommandStart())
+    async def start(message: Message) -> None:
+        await on_start(message, settings)
+
+    @router.message(Command("help"))
+    async def help_command(message: Message) -> None:
+        await on_help(message, settings)
+
+    # Не-командный текст — источники TEXT/WEB; медиа-источники добавляются
+    # в своих фазах и идут через тот же pipeline.
+    @router.message(~F.forward_origin, F.text, ~F.text.startswith("/"))
+    async def text(message: Message) -> None:
+        await on_text(message, settings, session_factory)
 
     @router.message(Command("profile"))
     async def profile(message: Message) -> None:

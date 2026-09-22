@@ -75,7 +75,7 @@ URL
 └─ otherwise → WEB
 ~~~
 
-Reuse canonical URL normalization and per-user dedup logic where safe.
+Reuse canonical URL normalization and message-local ItemSource dedup logic.
 
 Preserve meaningful path/query components needed by Instagram/yt-dlp.
 
@@ -278,7 +278,7 @@ A forwarded Telegram message containing an Instagram Reel URL:
 
 - routes to INSTAGRAM;
 - preserves PM-02 forward metadata;
-- uses same URL dedup;
+- uses the same message-local URL source identity;
 - original forwarded text/caption remains source/user-context according to PM-02 semantics.
 
 ## 20. Tests

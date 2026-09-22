@@ -1,7 +1,7 @@
-"""Разбор входящего сообщения: URL'ы отделяются от пользовательской заметки.
+"""Разбор сообщения на surrounding text и URL-компоненты одного Item.
 
-ТЗ §13: text + URL → один Item (source_url, user_note); text + несколько URL →
-Item на каждый URL с общим user_note; source_index обеспечивает идемпотентность.
+ТЗ §13: Telegram message остаётся одним Item; normalized URL становятся ordered
+ItemSource rows, а окружающий direct-message text проецируется в user_note.
 """
 
 import re

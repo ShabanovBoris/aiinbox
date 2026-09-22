@@ -10,6 +10,7 @@ from app.domain.priority import PriorityEngine
 from app.errors import AppError
 from app.extractors.audio import AudioExtractor
 from app.llm.base import TranscriptionSegmentCheckpoint
+from app.services.actions import apply_item_action
 from app.services.analysis import Analyzer
 from app.services.ingestion import ingest_voice
 from app.services.processing import ProcessingPipeline
@@ -111,10 +112,9 @@ async def test_voice_retry_after_stt_failure_reruns_stt(tmp_path, session_factor
     assert failed.error_code == "TRANSCRIPTION_FAILED"
     assert temp_files(tmp_path / "audio") == []  # temp удалён даже при ошибке
 
-    async with session_factory() as session:
-        row = await session.get(Item, item.id)
-        row.processing_status = ProcessingStatus.QUEUED
-        await session.commit()
+    retried = await apply_item_action(session_factory, 42, item.id, "retry")
+    assert retried is not None
+    assert retried.processing_status is ProcessingStatus.QUEUED
 
     working = FakeTranscriber()
     assert (
@@ -623,10 +623,9 @@ async def test_partial_stt_checkpoint_survives_failure_and_retry(
             "segment_seconds": 300,
             "format_version": "fake-v1",
         }
-        stored.processing_status = ProcessingStatus.QUEUED
-        stored.error_code = None
-        stored.error_message = None
-        await session.commit()
+    retried = await apply_item_action(session_factory, 42, item.id, "retry")
+    assert retried is not None
+    assert retried.processing_status is ProcessingStatus.QUEUED
 
     assert await worker.process_one() is True
     assert transcriber.completed_seen[0] == {}

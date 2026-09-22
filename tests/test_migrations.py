@@ -19,6 +19,8 @@ def test_fresh_database_migrates_to_latest_schema(tmp_path):
         assert {
             "users",
             "items",
+            "item_sources",
+            "contents",
             "item_search",
             "events",
             "reminders",
@@ -41,6 +43,8 @@ def test_fresh_database_migrates_to_latest_schema(tmp_path):
             (user_id,),
         )
         item_id = conn.execute("SELECT id FROM items").fetchone()[0]
+        content_columns = {row[1] for row in conn.execute("PRAGMA table_info(contents)")}
+        assert "source_id" in content_columns
         # Новый resumable STT checkpoint должен быть совместим именно с
         # production Alembic schema, а не только с Base.metadata.create_all.
         conn.execute(
@@ -62,6 +66,20 @@ def test_fresh_database_migrates_to_latest_schema(tmp_path):
             pass
         else:
             raise AssertionError("duplicate (user_id, telegram_message_id, source_index) allowed")
+
+        # URL identity is now message-local: the same URL in another Telegram
+        # message must not collapse two Items with different surrounding context.
+        conn.execute(
+            "UPDATE items SET source_url = 'https://example.com/shared' WHERE id = ?",
+            (item_id,),
+        )
+        conn.execute(
+            "INSERT INTO items (user_id, telegram_message_id, source_index, processing_status,"
+            " state, source_type, source_url, processing_stage, user_note)"
+            " VALUES (?, 2, 0, 'QUEUED', 'ACTIVE', 'WEB',"
+            " 'https://example.com/shared', 'INGESTED', '')",
+            (user_id,),
+        )
     finally:
         conn.close()
 

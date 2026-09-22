@@ -1,3 +1,4 @@
+from app.bot.provenance import forward_source_label
 from app.domain.enums import SourceType
 from app.domain.models import UserProfile
 from app.storage.models import Item
@@ -33,8 +34,16 @@ def format_ready_item(item: Item) -> str:
     if item.priority_score is not None:
         lines.append(f"Приоритет: {item.priority_score}/100")
     lines.append(f"Интерес: {item.interest_level}/3")
-    if item.source_type is SourceType.YOUTUBE and item.analysis_completeness == "TRANSCRIPT_ONLY":
+    source_label = forward_source_label(item.source_metadata_json)
+    if source_label:
+        lines.append(f"Источник: {source_label}")
+    if (
+        item.source_type in (SourceType.YOUTUBE, SourceType.VIDEO)
+        and item.analysis_completeness == "TRANSCRIPT_ONLY"
+    ):
         lines.append("Анализ: по транскрипту, без визуальной части")
+    elif item.analysis_completeness == "PARTIAL":
+        lines.append("Анализ: частичный — не весь вложенный контент удалось обработать")
     if item.summary:
         lines.append("")
         lines.append(item.summary)
