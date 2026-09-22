@@ -5,6 +5,7 @@ COPY --from=ghcr.io/astral-sh/uv:0.11.12 /uv /uvx /bin/
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     DATABASE_URL=sqlite+aiosqlite:////data/app.db \
+    BACKUP_DIR=/backups \
     TEMP_DIR=/tmp/aiinbox \
     UV_PROJECT_ENVIRONMENT=/opt/venv \
     UV_LINK_MODE=copy \
@@ -29,8 +30,8 @@ COPY docs ./docs
 
 RUN groupadd --system --gid 10001 aiinbox \
     && useradd --system --uid 10001 --gid aiinbox --home-dir /app aiinbox \
-    && mkdir -p /data /tmp/aiinbox \
-    && chown -R aiinbox:aiinbox /data /tmp/aiinbox
+    && mkdir -p /data /backups /tmp/aiinbox \
+    && chown -R aiinbox:aiinbox /data /backups /tmp/aiinbox
 
 USER 10001:10001
 

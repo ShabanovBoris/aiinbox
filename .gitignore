@@ -17,6 +17,7 @@ dist/
 # Runtime data & temp artifacts
 data/
 temp/
+backups/
 
 # Coverage
 .coverage

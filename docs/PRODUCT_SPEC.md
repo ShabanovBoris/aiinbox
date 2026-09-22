@@ -536,6 +536,27 @@ SIGTERM/SIGINT останавливает приём новой работы, д
 Infrastructure failure критического task приводит к process exit; restart
 восстанавливает PROCESSING/SENDING/RUNNING durable state.
 
+## 82. Operational health
+
+`python -m app.ops status` показывает размер DB, QUEUED/PROCESSING/FAILED,
+pending deliveries, configured provider/model, worker concurrency и Telegram
+configuration без credentials. Docker healthcheck использует тот же локальный
+DB/config boundary; unexpected critical worker exit завершает основной процесс,
+после чего внешний supervisor выполняет restart.
+
+## 83. SQLite backup / restore
+
+Live SQLite backup создаётся через Online Backup API и после создания проходит
+`PRAGMA integrity_check`. Backup generations хранятся отдельно от live DB и
+ротируются bounded числом. Restore создаёт новый DB-файл и тоже проверяет его;
+замена canonical database выполняется только после остановки приложения.
+
+## 84. Deployment smoke
+
+`python -m app.ops smoke` — явная live-проверка configured analysis provider
+(OpenAI или OpenRouter) и Telegram API. Default test suite остаётся полностью
+offline; live smoke запускается оператором после deployment с production env.
+
 ## 99. Основной критерий успеха продукта
 
 После нескольких недель бессистемного сохранения материалов `/today` должен

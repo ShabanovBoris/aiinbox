@@ -72,6 +72,138 @@ uv run pytest
 GitHub Actions job `quality` выполняет тот же gate и является required status
 check для protected `main`.
 
+## Operational status / health
+
+Локально:
+
+```bash
+uv run python -m app.ops status
+```
+
+В deployment:
+
+```bash
+docker compose exec -T app python -m app.ops status
+docker compose ps
+```
+
+`status` не печатает credentials. Он показывает размер DB, QUEUED/PROCESSING/
+FAILED, pending deliveries, configured provider/model, processing concurrency и
+наличие Telegram config. Critical worker/polling task находится под fail-fast
+supervisor: его неожиданное завершение роняет основной process; Compose
+`restart: unless-stopped` поднимает его снова.
+
+Compose healthcheck каждые 30 секунд выполняет:
+
+```bash
+python -m app.ops health
+```
+
+Это дешёвая DB/status-проверка. Полный SQLite integrity check запускается
+отдельно, чтобы не сканировать всю БД на каждом health interval:
+
+```bash
+uv run python -m app.ops verify
+# Docker:
+docker compose exec -T app python -m app.ops verify
+```
+
+## Backup rotation
+
+Backup создаётся из live SQLite через Online Backup API, поэтому останавливать
+workers для обычного snapshot не требуется:
+
+```bash
+uv run python -m app.ops backup
+# Docker пишет snapshot в отдельный aiinbox_backups volume:
+docker compose exec -T app python -m app.ops backup
+```
+
+Defaults: `BACKUP_DIR=./backups`, `BACKUP_KEEP=14`; в Compose
+`BACKUP_DIR=/backups`. Каждый snapshot сначала проходит
+`PRAGMA integrity_check`, и только после этого выполняется rotation.
+
+Пример ежедневного cron на VPS:
+
+```cron
+17 3 * * * cd /opt/aiinbox && docker compose exec -T app python -m app.ops backup
+```
+
+Cron должен запускаться от пользователя, у которого есть доступ к Docker.
+
+## Restore drill / recovery
+
+Restore намеренно не перезаписывает существующий файл. Сначала создаётся и
+проверяется новый DB, затем оператор явно меняет canonical file.
+
+```bash
+docker compose stop app
+
+# Выбрать snapshot из /backups и ещё раз проверить его.
+docker compose run --rm --no-deps app \
+  python -m app.ops verify --database /backups/aiinbox-YYYYMMDDTHHMMSSffffffZ.db
+
+# Восстановить в новый файл.
+docker compose run --rm --no-deps app \
+  python -m app.ops restore \
+  --backup /backups/aiinbox-YYYYMMDDTHHMMSSffffffZ.db \
+  --target /data/app-restored.db
+
+# Сохранить предыдущую БД и атомарно выбрать восстановленную.
+docker compose run --rm --no-deps app sh -c \
+  'mv /data/app.db /data/app.db.pre-restore && mv /data/app-restored.db /data/app.db'
+
+docker compose up -d app
+docker compose exec -T app python -m app.ops status
+docker compose exec -T app python -m app.ops smoke
+```
+
+Если используется SQLite WAL, после остановки app не копируйте `.db` вручную
+как backup-процедуру: штатный `app.ops backup` делает консистентный snapshot
+через SQLite API.
+
+## FTS maintenance
+
+`item_search` — производная проекция. Для полного rebuild из canonical
+`items/contents`:
+
+```bash
+uv run python -m app.ops rebuild-search
+# Docker:
+docker compose exec -T app python -m app.ops rebuild-search
+```
+
+## Live provider smoke
+
+После deployment:
+
+```bash
+docker compose exec -T app python -m app.ops smoke
+```
+
+Команда использует текущий `LLM_PROVIDER`: выполняет короткий реальный запрос
+через configured OpenAI/OpenRouter analysis model и Telegram `getMe`. Она
+возвращает provider/model и bot username, но не credentials. Live smoke не входит
+в default pytest/CI, чтобы тесты не зависели от внешней сети и production secrets.
+
+## Production deploy recipe
+
+Минимальный single-host deployment:
+
+```bash
+cd /opt/aiinbox
+docker compose build
+docker compose up -d
+docker compose ps
+docker compose exec -T app python -m app.ops status
+docker compose exec -T app python -m app.ops smoke
+docker compose exec -T app python -m app.ops backup
+```
+
+Для production обязательны persistent volumes `aiinbox_data` и
+`aiinbox_backups`, restart policy из Compose и внешний cron для backup.
+Перед обновлением, меняющим schema, сделайте verified backup.
+
 ## Диагностика Items
 
 Default local DB: `data/app.db`.
