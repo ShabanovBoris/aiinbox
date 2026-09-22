@@ -61,6 +61,7 @@ class Item(Base):
         # Дедупликация URL per-user на уровне БД; для TEXT-Item source_url NULL
         # (SQLite уникальность не действует на NULL-пары).
         UniqueConstraint("user_id", "source_url", name="uq_items_user_url"),
+        CheckConstraint("interest_level BETWEEN 1 AND 3", name="ck_items_interest_level"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -107,6 +108,11 @@ class Item(Base):
     interest_fit: Mapped[float | None] = mapped_column(Float)
     estimated_action_minutes: Mapped[int | None] = mapped_column(Integer)
     priority_score: Mapped[int | None] = mapped_column(Integer, index=True)
+    # Ручной интерес — отдельный пользовательский сигнал. Он не участвует в
+    # PriorityEngine и потому не смешивается с model-derived interest_fit.
+    interest_level: Mapped[int] = mapped_column(
+        Integer, default=2, server_default="2", nullable=False
+    )
     priority_reason: Mapped[str | None] = mapped_column(Text)
     next_action: Mapped[str | None] = mapped_column(Text)
     suggested_due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

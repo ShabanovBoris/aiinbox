@@ -62,7 +62,8 @@ async def test_delivery_worker_sends_ready_item_and_marks_sent(session_factory):
     worker = DeliveryWorker(session_factory, bot, retry_backoff_seconds=0)
     assert await worker.process_one() is True
     expected = (
-        "✓ Сохранено\n\n🎯 Разобрать материал\nКатегория: Обучение\nТип: LEARN\nПриоритет: 80/100"
+        "✓ Сохранено\n\n🎯 Разобрать материал\nКатегория: Обучение\nТип: LEARN\n"
+        "Приоритет: 80/100\nИнтерес: 2/3"
     )
     assert bot.messages == [(7777, expected)]
 
