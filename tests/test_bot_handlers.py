@@ -87,6 +87,9 @@ async def test_help_lists_mvp_commands(settings, monkeypatch):
     assert "/today" in sent[0]
     assert "/settings" in sent[0]
     assert "/help" in sent[0]
+    assert "YouTube-ссылку" in sent[0]
+    assert "или видео" not in sent[0]
+    assert "/inbox — последние Items" in sent[0]
 
 
 async def test_two_allowed_users_ingest_separately(settings, session_factory, monkeypatch):

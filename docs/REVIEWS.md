@@ -1140,3 +1140,28 @@
   at-least-once delivery semantics this was explicitly accepted as non-blocking.
 - This verdict authorizes only the protocol status-finalization commit; no
   product-code changes are allowed before the merge handshake.
+
+## 2026-09-22 — PR #20 — 167d180 — CHANGES REQUIRED (review 1)
+
+- Reviewer: Orchestrator; reviewed exact PR HEAD
+  `167d180ad58f41bf120f8631a2cfe05c7edd1ff1`.
+- User guide content was largely consistent with supported Telegram behavior.
+- Finding: the PR branch diverged before PR #18/#19, so verification did not run
+  against the current hardened `main`.
+- Finding: built-in `/help` still said direct "video" was accepted although the
+  router only handles text, voice/audio and URLs; it also called `/inbox`
+  active-only although retrieval intentionally returns recent Items across states.
+- Resolution in the same PR: merge current `main`, synchronize `/help`, add
+  a regression, and re-run required `quality` on the combined tree.
+
+## 2026-09-22 — PR #20 — e094900 — APPROVED (review 2)
+
+- Reviewer: Orchestrator; approved exact HEAD
+  `e09490000b1f5654521ed72cc9454c18c9dfc7b6`.
+- Confirmed: branch synchronized with current `main`; `BOT_USAGE.md` matches the
+  supported Telegram input/command/action/notification surface; README and
+  built-in `/help` no longer imply unsupported direct video or active-only inbox.
+- Regression added for the user-facing `/help` contract.
+- Required GitHub Actions job `quality` passed on the approved HEAD:
+  Ruff check PASS, Ruff format PASS, pytest 251 passed.
+- This verdict authorizes only this status-finalization commit before squash merge.

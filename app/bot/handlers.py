@@ -28,10 +28,10 @@ from app.storage.models import Item
 log = logging.getLogger(__name__)
 
 HELP_TEXT = (
-    "Personal AI Inbox — отправь текст, URL, voice/audio, YouTube или видео.\n\n"
+    "Personal AI Inbox — отправь текст, URL, voice/audio или YouTube-ссылку.\n\n"
     "Команды:\n"
     "/today — приоритетные Items на сегодня\n"
-    "/inbox — активные Items\n"
+    "/inbox — последние Items\n"
     "/search <текст> — поиск по сохранённому содержимому\n"
     "/category [имя] — категории и Items категории\n"
     "/profile — текущий профиль\n"
