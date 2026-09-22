@@ -4,7 +4,12 @@ services:
     env_file: .env
     environment:
       DATABASE_URL: sqlite+aiosqlite:////data/app.db
+      TEMP_DIR: /tmp/aiinbox
     volumes:
-      - ./data:/data
-      - ./temp:/app/temp
+      - aiinbox_data:/data
+    tmpfs:
+      - /tmp/aiinbox:mode=1777
     restart: unless-stopped
+
+volumes:
+  aiinbox_data:

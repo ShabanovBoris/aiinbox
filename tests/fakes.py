@@ -151,7 +151,14 @@ class FakeTranscriber:
         self.calls = 0
         self.durations: list[int | None] = []
 
-    async def transcribe(self, audio_path: Path, *, duration_seconds: int | None = None) -> str:
+    async def transcribe(
+        self,
+        audio_path: Path,
+        *,
+        duration_seconds: int | None = None,
+        completed_segments=None,
+        on_segment=None,
+    ) -> str:
         self.calls += 1
         self.durations.append(duration_seconds)
         if self.fail:

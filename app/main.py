@@ -15,6 +15,7 @@ from app.extractors.youtube import YoutubeExtractor
 from app.llm.openai import OpenAiProvider
 from app.llm.transcription import OpenAiTranscriptionProvider, OpenRouterTranscriptionProvider
 from app.services.analysis import Analyzer
+from app.services.delivery import DeliveryWorker, requeue_sending_deliveries
 from app.services.notifications import ReminderWorker
 from app.services.processing import ProcessingPipeline
 from app.services.profile import (
@@ -23,7 +24,6 @@ from app.services.profile import (
     requeue_running_profile_jobs,
 )
 from app.storage.database import make_engine, make_session_factory
-from app.storage.models import User
 from app.workers.processing import ProcessingWorker, requeue_stale
 from app.workers.profile import ProfileUpdateWorker
 
@@ -162,30 +162,9 @@ async def _start_polling(dispatcher, bot) -> None:
     await dispatcher.start_polling(bot, handle_signals=False, close_bot_session=False)
 
 
-def _profile_done_notifier(bot, session_factory):
-    """Уведомление о завершении /profile_update: адресат — users.telegram_chat_id
-    (job.user_id — внутренний PK). Возвращает coroutine или None (headless)."""
-
-    async def notify(job, profile, changed):
-        async with session_factory() as session:
-            user = await session.get(User, job.user_id)
-            chat_id = user.telegram_chat_id if user else None
-        if chat_id is None:
-            return
-        await bot.send_message(chat_id, "Профиль обновлён: " + ", ".join(changed))
-
-    return notify
-
-
-def _item_failure_notifier(bot, session_factory):
-    """Уведомляет о FAILED Item и оставляет пользователю кнопку Retry."""
-
-    async def notify(item):
-        from app.bot.notify import send_item_failure
-
-        await send_item_failure(bot, session_factory, item)
-
-    return notify
+# ❌ Удалены best-effort notifier callbacks: они выполнялись уже после business
+# commit и терялись при crash. Immediate Telegram side effects теперь принадлежат
+# durable DeliveryWorker, а intent создаётся в той же транзакции, что READY/FAILED/DONE.
 
 
 async def run(settings: Settings) -> None:
@@ -194,6 +173,7 @@ async def run(settings: Settings) -> None:
     try:
         await requeue_stale(session_factory)
         await requeue_running_profile_jobs(session_factory)
+        await requeue_sending_deliveries(session_factory)
         await apply_profile_seed(session_factory, settings.profile_seed_file)
         configure_profile_seed(settings.profile_seed_file)
 
@@ -204,14 +184,12 @@ async def run(settings: Settings) -> None:
         )
         polling = None
         bot = None
-        on_result = None
         if settings.telegram_bot_token:
             # aiogram импортируется лениво: без токена приложение стартует чисто
             # воркерами — локальный smoke test не требует Telegram network.
             from aiogram import Bot, Dispatcher
 
             from app.bot.handlers import make_router
-            from app.bot.notify import send_item_result
 
             bot = Bot(settings.telegram_bot_token)
             downloader = TelegramFileDownloader(bot, settings.max_audio_bytes)
@@ -223,7 +201,6 @@ async def run(settings: Settings) -> None:
                 make_router(settings, session_factory, settings.max_audio_bytes)
             )
             polling = asyncio.create_task(_start_polling(dispatcher, bot), name="telegram-polling")
-            on_result = lambda item: send_item_result(bot, session_factory, item)  # noqa: E731
             log.info("telegram bot started")
         else:
             log.warning("TELEGRAM_BOT_TOKEN is empty — bot disabled, workers only")
@@ -237,10 +214,8 @@ async def run(settings: Settings) -> None:
             youtube_extractor,
             visual_frame_interval_seconds=settings.video_frame_interval_seconds,
             visual_max_frames=settings.video_max_frames,
+            visual_scene_threshold=settings.video_scene_threshold,
         )
-
-        on_profile_done = _profile_done_notifier(bot, session_factory) if bot is not None else None
-        on_failure = _item_failure_notifier(bot, session_factory) if bot is not None else None
 
         stop = asyncio.Event()
         loop = asyncio.get_running_loop()
@@ -249,14 +224,22 @@ async def run(settings: Settings) -> None:
             session_factory,
             build_provider(settings),
             poll_seconds=settings.processing_poll_seconds,
-            on_done=on_profile_done,
         )
         profile_tasks = [
             asyncio.create_task(profile_worker.run_forever(stop), name=f"profile-worker-{i}")
             for i in range(1)
         ]
         reminder_tasks = []
+        delivery_tasks = []
         if bot is not None:
+            delivery_worker = DeliveryWorker(
+                session_factory,
+                bot,
+                poll_seconds=settings.processing_poll_seconds,
+            )
+            delivery_tasks.append(
+                asyncio.create_task(delivery_worker.run_forever(stop), name="delivery-worker")
+            )
             reminder_worker = ReminderWorker(
                 session_factory,
                 bot,
@@ -275,16 +258,14 @@ async def run(settings: Settings) -> None:
                     session_factory,
                     pipeline,
                     settings.processing_poll_seconds,
-                    on_result,
-                    on_failure,
-                    settings.processing_timeout_seconds,
+                    processing_timeout_seconds=settings.processing_timeout_seconds,
                 ).run_forever(stop),
                 name=f"processing-worker-{i}",
             )
             for i in range(settings.processing_concurrency)
         ]
 
-        all_worker_tasks = worker_tasks + profile_tasks + reminder_tasks
+        all_worker_tasks = worker_tasks + profile_tasks + delivery_tasks + reminder_tasks
         critical_tasks = all_worker_tasks + ([polling] if polling is not None else [])
         # ❌ Удален пассивный await stop.wait(): завершившийся worker/polling
         # оставлял процесс живым без гарантии дальнейшей обработки.

@@ -61,15 +61,17 @@ uv run python -m app.main
 
 ## Docker
 
-Образ содержит Python 3.12 и `ffmpeg`; Python-зависимость `yt-dlp` входит в
-package dependencies. SQLite хранится в volume, чтобы перезапуск контейнера
-не терял очередь и checkpoints:
+Образ использует закреплённый Python 3.12 patch release, `ffmpeg` и зависимости
+строго из `uv.lock` (`uv sync --frozen --no-dev`). SQLite хранится в volume,
+чтобы перезапуск контейнера не терял очередь и checkpoints:
 
 ```bash
 docker build -t personal-ai-inbox .
 docker run --rm --env-file .env \
   -e DATABASE_URL=sqlite+aiosqlite:////data/app.db \
-  -v "$(pwd)/data:/data" \
+  -e TEMP_DIR=/tmp/aiinbox \
+  -v aiinbox_data:/data \
+  --tmpfs /tmp/aiinbox \
   personal-ai-inbox
 ```
 
@@ -82,13 +84,15 @@ docker run --rm --env-file .env \
 Эквивалентный compose-запуск:
 
 ```bash
-mkdir -p data temp
 docker compose up --build -d
 docker compose logs -f app
 docker compose down
 ```
 
-Compose монтирует SQLite в `./data` и временные media files в `./temp`.
+Compose хранит SQLite в named volume `aiinbox_data`, а временные media files —
+в tmpfs `/tmp/aiinbox`. Контейнер работает не от root; `TEMP_DIR` в Compose
+зафиксирован явно, чтобы значение `./temp` из локального `.env` не переопределило
+контейнерный безопасный путь.
 
 ## Проверки
 
@@ -97,6 +101,10 @@ uv run ruff check .
 uv run ruff format --check .
 uv run pytest
 ```
+
+Тот же набор автоматически запускается GitHub Actions для каждого PR и push в
+`main` (`.github/workflows/quality.yml`). Job `quality` назначен required status
+check для защищённой ветки `main`, поэтому merge требует успешного CI.
 
 Для диагностики SQLite, зависших Items и ручного retry см. [docs/RUNBOOK.md](docs/RUNBOOK.md).
 Полный продуктовый контракт находится в [docs/PRODUCT_SPEC.md](docs/PRODUCT_SPEC.md),

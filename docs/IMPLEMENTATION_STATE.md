@@ -6,7 +6,7 @@
 
 Статусы: `NOT_STARTED` / `IN_PROGRESS` / `IN_REVIEW` / `DONE` / `BLOCKED`.
 
-Правило статусов (оркестрационный протокол §25): `IN_REVIEW` = реализация завершена, PR открыт и отправлен `REVIEW REQUEST` Orchestrator'у; `DONE` ставится только после явного `APPROVED` Orchestrator'а; `BLOCKED` — только реальный внешний блокер. Фаза в `IN_REVIEW` не расширяется по scope: исправления идут в ту же branch и PR.
+Правило статусов: `IN_REVIEW` = реализация завершена, PR открыт и отправлен `REVIEW REQUEST` Orchestrator'у; `DONE` ставится только после явного `APPROVED` Orchestrator'а; `BLOCKED` — только реальный внешний блокер. Фаза в `IN_REVIEW` не расширяется по scope: исправления идут в ту же branch и PR.
 
 Handshake APPROVED → DONE → merge: после `APPROVED @ HEAD A` агент делает
 единственный status-finalization commit (`IN_REVIEW` → `DONE`, с записью approved
@@ -15,13 +15,6 @@ HEAD A), delta A..B — только статусная документация
 squash merge с ожидаемым HEAD B. Вердикты фиксируются в `docs/REVIEWS.md`.
 
 Архитектурные решения фиксируются отдельно — в `docs/DECISIONS.md`.
-
-## Contract addendum — PR #1 — orchestration protocol adoption
-
-Статус: APPROVED @ 5611be6b52fc546cd4dd060b985d24af8619ed88
-(GitHub review: pullrequestreview-5187945174). Вердикты и история ревью —
-в `docs/REVIEWS.md`. Squash merge выполняет Orchestrator; Phase 1 начинается
-только после merge и sync main (протокол §9.2, §23).
 
 ## Phases
 
@@ -47,6 +40,54 @@ squash merge с ожидаемым HEAD B. Вердикты фиксируютс
 | Изменение | Статус | PR |
 |---|---|---|
 | OpenRouter provider support | DONE | #17 |
+| MVP reliability hardening | DONE | #18 |
+| Telegram bot usage guide | IN_REVIEW | #20 |
+
+### Telegram bot usage guide — IN_REVIEW
+
+PR #20. Initial Orchestrator review of `167d180ad58f41bf120f8631a2cfe05c7edd1ff1`
+found the Markdown guide broadly accurate, but the branch was behind current
+`main` and built-in `/help` still advertised unsupported direct video and
+misdescribed `/inbox` as active-only.
+
+Completed:
+✓ full user guide for supported Telegram inputs, commands, actions and notifications
+✓ README link and source description synchronized with supported media
+✓ built-in `/help` synchronized with router/retrieval behavior
+✓ regression protects unsupported-video and inbox wording
+✓ branch synchronized with current `main` before final verification
+
+Remaining:
+□ required `quality` on synchronized HEAD
+□ Orchestrator final review
+
+### MVP reliability hardening — DONE
+
+PR #18: `APPROVED @ 77126ad3baf4d482411c9f3a89913187aea9daf6`.
+
+Completed:
+✓ durable immediate Telegram outbox для READY/FAILED/profile update и startup recovery
+✓ OpenRouter long-STT checkpoints с identity по SHA-256 segment input + provider/model/
+  segmentation contract; несовместимые/legacy checkpoints не переиспользуются
+✓ representative frames bounded до materialization: каждый ffmpeg pass имеет
+  hard cap `VIDEO_MAX_FRAMES`, а известная duration увеличивает periodic interval
+  и разрежает scene candidates, сохраняя late-timeline coverage
+✓ Retry атомарно отменяет obsolete `ITEM_FAILED` outbox intent; DeliveryWorker
+  дополнительно suppress'ит failure delivery, если Item уже не FAILED
+✓ успешный final TRANSCRIPT удаляет `TRANSCRIPT_CHUNK` checkpoints в той же
+  транзакции; failure-path checkpoints остаются для retry и не дублируют FTS
+✓ config validation, CI workflow, locked/non-root Docker + tmpfs hardening
+✓ `quality` подтверждён Orchestrator'ом как required status check для `main`
+✓ regressions для changed STT bytes/model, bounded late-timeline visual coverage
+  и stale FAILED delivery после Retry
+
+Remaining:
+□ — нет
+
+Last verification:
+targeted audio/visual/delivery pytest → 39 passed; full pytest → 251 passed;
+ruff check . → pass; ruff format --check . → pass; git diff --check → pass;
+alembic heads → `5d8e9a1b2c3d (head)`.
 
 ### OpenRouter provider support — DONE
 
@@ -76,13 +117,13 @@ git diff --check → pass
 
 ### Phase 0 — Project contract — DONE
 
-Статус присвоен до введения оркестрационного протокола: контрактные документы
-приняты тем, что работа перешла к следующим шагам. Дальнейшие фазы проходят
-через `IN_REVIEW` и `DONE` только по `APPROVED` Orchestrator'а.
+Статус присвоен на bootstrap-этапе после фиксации канонического продуктового
+контракта и repository workflow. Дальнейшие изменения проходят через
+`IN_REVIEW` и `DONE` только по `APPROVED` Orchestrator'а.
 
 Completed:
-✓ repository изучен: пустой greenfield, только два планировочных документа
-✓ docs/PRODUCT_SPEC.md — ТЗ перенесено без изменений
+✓ repository изучен и исходные требования сведены в канонические repo-документы
+✓ docs/PRODUCT_SPEC.md — канонический продуктовый контракт
 ✓ AGENTS.md — правила, архитектурные инварианты, resumable processing,
   правило продвижения без внешних зависимостей
 ✓ docs/DECISIONS.md — D-001 (resumable), D-002 (ядро/края)
@@ -97,7 +138,7 @@ Remaining:
 □ — нет
 
 Last verification:
-diff «ТЗ ↔ docs/PRODUCT_SPEC.md» — различие только в служебной шапке
+docs/PRODUCT_SPEC.md принят как канонический product source of truth
 branch protection: gh api .../branches/main/protection → PR required, force push
 и deletions запрещены, linear history включена
 (pytest/ruff неприменимы: кода ещё нет)

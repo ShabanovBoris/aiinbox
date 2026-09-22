@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.domain.enums import ProcessingStatus
 from app.errors import AppError
+from app.services.delivery import ITEM_FAILED, enqueue_item_delivery
 from app.services.processing import ProcessingPipeline
 from app.storage.models import Item
 
@@ -53,8 +54,6 @@ class ProcessingWorker:
         session_factory: async_sessionmaker,
         pipeline: ProcessingPipeline,
         poll_seconds: float = 1.0,
-        on_result=None,
-        on_failure=None,
         processing_timeout_seconds: float = 900.0,
     ):
         self.session_factory = session_factory
@@ -63,10 +62,6 @@ class ProcessingWorker:
         # The worker owns the end-to-end deadline so a hung provider cannot
         # keep an Item in PROCESSING forever; startup recovery then requeues it.
         self.processing_timeout_seconds = processing_timeout_seconds
-        # on_result — auxiliary-колбэк (доставка результата в Telegram);
-        # его сбой не должен ломать уже готовый результат.
-        self.on_result = on_result
-        self.on_failure = on_failure
 
     async def run_forever(self, stop: asyncio.Event) -> None:
         while not stop.is_set():
@@ -113,6 +108,15 @@ class ProcessingWorker:
             # (persisted WEB_TEXT/analysis), и retry повторял бы дорогие этапы.
             item.error_code = exc.code if isinstance(exc, AppError) else "UNKNOWN"
             item.error_message = str(exc)[:500]
+            # FAILED и Retry-кнопка должны переживать crash между DB commit и
+            # Telegram: reopen создаёт новое намерение после пользовательского Retry.
+            await enqueue_item_delivery(
+                session,
+                item,
+                ITEM_FAILED,
+                payload={"error_code": item.error_code},
+                reopen=True,
+            )
             await session.commit()
 
     async def process_one(self) -> bool:
@@ -180,23 +184,10 @@ class ProcessingWorker:
                 getattr(item, "processing_stage", None),
                 time.monotonic() - started,
             )
-            if self.on_result is not None:
-                try:
-                    await self.on_result(item)
-                except Exception:
-                    log.exception("result delivery failed item_id=%s", item_id)
             return True
 
         # Both provider errors and the explicit deadline use the same durable
         # failure path, including the user-facing retry notification.
         assert failure is not None
         await self.mark_failed(item_id, failure)
-        if self.on_failure is not None:
-            async with self.session_factory() as session:
-                failed_item = await session.get(Item, item_id)
-            if failed_item is not None:
-                try:
-                    await self.on_failure(failed_item)
-                except Exception:
-                    log.exception("failure delivery failed item_id=%s", item_id)
         return True

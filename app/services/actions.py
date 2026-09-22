@@ -6,8 +6,9 @@ from sqlalchemy import or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.domain.enums import ItemState, ProcessingStatus
+from app.services.delivery import ITEM_FAILED
 from app.services.notifications import add_snooze_reminder, cancel_snooze_reminders
-from app.storage.models import Event, Item, User
+from app.storage.models import Delivery, Event, Item, User
 
 
 def _utc_now() -> datetime:
@@ -126,6 +127,19 @@ async def apply_item_action(
                 await cancel_snooze_reminders(session, user_id, item_id)
             if action == "snooze":
                 await add_snooze_reminder(session, user_id, item_id, snoozed_until)
+            if action == "retry":
+                # Failure delivery belongs to the FAILED state being left. Marking
+                # it terminal in the same transaction prevents the outbox from
+                # announcing an obsolete failure after the user has already retried.
+                await session.execute(
+                    update(Delivery)
+                    .where(
+                        Delivery.item_id == item_id,
+                        Delivery.type == ITEM_FAILED,
+                        Delivery.status.in_(("PENDING", "SENDING")),
+                    )
+                    .values(status="CANCELLED", last_error=None)
+                )
 
         if transitioned_item_id is not None and event_type is not None:
             session.add(

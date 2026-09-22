@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.domain.models import ProfilePatch, UserProfile
 from app.errors import AppError
 from app.llm.base import LlmProvider
+from app.services.delivery import enqueue_profile_delivery
 from app.storage.models import ProfileUpdateJob, User
 
 log = logging.getLogger(__name__)
@@ -207,6 +208,14 @@ async def update_profile_from_patch(
         )
         await session.execute(
             update(ProfileUpdateJob).where(ProfileUpdateJob.id == job.id).values(status="DONE")
+        )
+        # Профиль, DONE job и уведомление — одна транзакция. Worker доставки
+        # использует сохранённый changed-list и не повторяет LLM/profile merge.
+        await enqueue_profile_delivery(
+            session,
+            user_id=job.user_id,
+            profile_update_job_id=job.id,
+            changed=list(data),
         )
         await session.commit()
         merged = await get_profile(session, job.user_id)

@@ -28,10 +28,10 @@ from app.storage.models import Item
 log = logging.getLogger(__name__)
 
 HELP_TEXT = (
-    "Personal AI Inbox — отправь текст, URL, voice/audio, YouTube или видео.\n\n"
+    "Personal AI Inbox — отправь текст, URL, voice/audio или YouTube-ссылку.\n\n"
     "Команды:\n"
     "/today — приоритетные Items на сегодня\n"
-    "/inbox — активные Items\n"
+    "/inbox — последние Items\n"
     "/search <текст> — поиск по сохранённому содержимому\n"
     "/category [имя] — категории и Items категории\n"
     "/profile — текущий профиль\n"
@@ -395,6 +395,7 @@ async def on_profile(message: Message, settings: Settings, session_factory) -> N
             chat_id=message.chat.id,
             timezone=settings.default_timezone,
         )
+        await session.commit()
         profile = await get_profile(session, user.id)
     await message.answer(format_profile(profile))
 
@@ -459,6 +460,7 @@ async def on_inbox(message: Message, settings: Settings, session_factory) -> Non
             chat_id=message.chat.id,
             timezone=settings.default_timezone,
         )
+        await session.commit()
         items = await list_inbox(session, user.id)
     await message.answer(format_item_list(items, "Входящие:"))
 
@@ -476,6 +478,7 @@ async def on_category(message: Message, settings: Settings, session_factory, cat
             chat_id=message.chat.id,
             timezone=settings.default_timezone,
         )
+        await session.commit()
         if category:
             items = await list_category_items(session, user.id, category)
             response = format_item_list(items, f"Категория: {category}")
@@ -500,5 +503,6 @@ async def on_search(message: Message, settings: Settings, session_factory, query
             chat_id=message.chat.id,
             timezone=settings.default_timezone,
         )
+        await session.commit()
         items = await search_items(session, user.id, query)
     await message.answer(format_item_list(items, "Результаты поиска:"))

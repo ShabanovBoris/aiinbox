@@ -5,7 +5,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from pydantic import ValidationError
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.enums import ContentKind, ProcessingStatus, SourceType
@@ -16,7 +16,9 @@ from app.extractors.audio import AudioExtractor
 from app.extractors.text import TextExtractor
 from app.extractors.web import WebPageExtractor
 from app.extractors.youtube import YoutubeExtractor
+from app.llm.base import TranscriptionSegmentCheckpoint
 from app.services.analysis import Analyzer
+from app.services.delivery import ITEM_READY, enqueue_item_delivery
 from app.services.frames import extract_representative_frames
 from app.services.profile import get_profile
 from app.services.retrieval import sync_item_search
@@ -43,6 +45,7 @@ class ProcessingPipeline:
         youtube_extractor: YoutubeExtractor | None = None,
         visual_frame_interval_seconds: int = 20,
         visual_max_frames: int = 120,
+        visual_scene_threshold: float = 0.35,
     ):
         self.analyzer = analyzer
         self.priority = priority
@@ -51,6 +54,7 @@ class ProcessingPipeline:
         self.youtube_extractor = youtube_extractor
         self.visual_frame_interval_seconds = visual_frame_interval_seconds
         self.visual_max_frames = visual_max_frames
+        self.visual_scene_threshold = visual_scene_threshold
 
     async def run(self, session: AsyncSession, item: Item) -> None:
         analysis = None
@@ -98,6 +102,9 @@ class ProcessingPipeline:
         # Индекс — производная проекция; обновляется в том же commit, что и READY,
         # чтобы новый результат не появлялся в поиске без основного Item.
         await sync_item_search(session, item.id)
+        # Delivery intent входит в тот же commit, что READY: падение процесса
+        # после commit больше не создаёт окно безвозвратной потери уведомления.
+        await enqueue_item_delivery(session, item, ITEM_READY)
         await session.commit()
         log.info(
             "item analyzed id=%s category=%s type=%s priority=%s",
@@ -136,6 +143,8 @@ class ProcessingPipeline:
                 work_dir / "frames",
                 interval_seconds=self.visual_frame_interval_seconds,
                 max_frames=self.visual_max_frames,
+                scene_threshold=self.visual_scene_threshold,
+                duration_seconds=content.duration_seconds or item.content_duration_seconds,
             )
             if not frames:
                 return None
@@ -179,7 +188,12 @@ class ProcessingPipeline:
         if item.source_type is SourceType.YOUTUBE:
             if self.youtube_extractor is None:
                 raise AppError("UNSUPPORTED_SOURCE", "youtube extractor not wired")
-            content = await self.youtube_extractor.extract(item)
+            completed_segments, on_segment = await self._transcript_checkpoints(session, item)
+            content = await self.youtube_extractor.extract(
+                item,
+                completed_segments=completed_segments,
+                on_segment=on_segment,
+            )
             # TRANSCRIPT/DESCRIPTION персистятся атомарно с checkpoint'ом
             # ANALYZING: retry не перекачивает видео и не повторяет STT (ТЗ §59).
             session.add(
@@ -204,11 +218,17 @@ class ProcessingPipeline:
                         text=content.metadata["description_excerpt"],
                     )
                 )
+            await self._delete_transcript_checkpoints(session, item.id)
             return content
         if item.source_type in (SourceType.VOICE, SourceType.AUDIO):
             if self.audio_extractor is None:
                 raise AppError("UNSUPPORTED_SOURCE", "voice/audio extractor not wired")
-            content = await self.audio_extractor.extract(item)
+            completed_segments, on_segment = await self._transcript_checkpoints(session, item)
+            content = await self.audio_extractor.extract(
+                item,
+                completed_segments=completed_segments,
+                on_segment=on_segment,
+            )
             # TRANSCRIPT персистится атомарно с checkpoint'ом ANALYZING:
             # retry не повторяет скачивание и транскрипцию (ТЗ §59).
             session.add(
@@ -219,6 +239,7 @@ class ProcessingPipeline:
                     metadata_json={"duration_seconds": item.content_duration_seconds},
                 )
             )
+            await self._delete_transcript_checkpoints(session, item.id)
             content.duration_seconds = item.content_duration_seconds
             return content
         if item.source_type is SourceType.WEB:
@@ -242,6 +263,84 @@ class ProcessingPipeline:
             )
             return content
         return await TextExtractor().extract(item)
+
+    @staticmethod
+    async def _delete_transcript_checkpoints(session: AsyncSession, item_id: int) -> None:
+        """Remove STT work-in-progress rows only after a final transcript exists.
+
+        This runs in the caller's final-transcript transaction: rollback keeps
+        durable chunks for retry, while a successful commit leaves one canonical
+        transcript for retrieval/FTS instead of indexing both chunks and aggregate.
+        """
+        await session.execute(
+            delete(Content).where(
+                Content.item_id == item_id,
+                Content.kind == ContentKind.TRANSCRIPT_CHUNK,
+            )
+        )
+
+    @staticmethod
+    async def _transcript_checkpoints(session: AsyncSession, item: Item):
+        """Expose durable per-segment STT progress without leaking DB into providers.
+
+        OpenRouter may split long media into many requests. Each successful
+        segment is committed immediately, so a later timeout/restart resumes
+        from the missing indices instead of paying for completed STT again.
+        """
+        rows = (
+            await session.scalars(
+                select(Content)
+                .where(
+                    Content.item_id == item.id,
+                    Content.kind == ContentKind.TRANSCRIPT_CHUNK,
+                )
+                .order_by(Content.id)
+            )
+        ).all()
+        completed: dict[int, TranscriptionSegmentCheckpoint] = {}
+        for row in rows:
+            meta = row.metadata_json or {}
+            index = meta.get("segment_index")
+            if not isinstance(index, int):
+                continue
+            try:
+                completed[index] = TranscriptionSegmentCheckpoint(
+                    text=row.text,
+                    input_sha256=meta["input_sha256"],
+                    provider=meta["provider"],
+                    model=meta["model"],
+                    segment_seconds=meta["segment_seconds"],
+                    format_version=meta["format_version"],
+                )
+            except (KeyError, TypeError):
+                # Legacy index-only checkpoints are deliberately not reusable.
+                continue
+
+        checkpoint_lock = asyncio.Lock()
+
+        async def persist(index: int, checkpoint: TranscriptionSegmentCheckpoint) -> None:
+            async with checkpoint_lock:
+                if completed.get(index) == checkpoint:
+                    return
+                session.add(
+                    Content(
+                        item_id=item.id,
+                        kind=ContentKind.TRANSCRIPT_CHUNK,
+                        text=checkpoint.text,
+                        metadata_json={
+                            "segment_index": index,
+                            "input_sha256": checkpoint.input_sha256,
+                            "provider": checkpoint.provider,
+                            "model": checkpoint.model,
+                            "segment_seconds": checkpoint.segment_seconds,
+                            "format_version": checkpoint.format_version,
+                        },
+                    )
+                )
+                await session.commit()
+                completed[index] = checkpoint
+
+        return completed, persist
 
     @staticmethod
     async def _restored_content(session: AsyncSession, item: Item) -> NormalizedContent | None:

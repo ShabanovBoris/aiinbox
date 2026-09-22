@@ -188,11 +188,17 @@ async def test_vision_failure_keeps_item_ready_transcript_only(
 
 def test_frames_extraction_dedups_identical_frames(tmp_path):
     # Дедупликация: идентичные кадры (статичный слайд) не дублируются.
+    captured: list[list[str]] = []
+
     def runner(argv):
-        pattern = Path(argv[-1]).parent
-        (pattern / "frame_0001.jpg").write_bytes(b"same")
-        (pattern / "frame_0002.jpg").write_bytes(b"same")
-        (pattern / "frame_0003.jpg").write_bytes(b"other")
+        captured.append(argv)
+        pattern = Path(argv[-1])
+        if pattern.name.startswith("periodic_"):
+            (pattern.parent / "periodic_00001.jpg").write_bytes(b"same")
+            (pattern.parent / "periodic_00002.jpg").write_bytes(b"same")
+        else:
+            (pattern.parent / "scene_00001.jpg").write_bytes(b"same")
+            (pattern.parent / "scene_00002.jpg").write_bytes(b"other")
         return 0
 
     frames = extract_representative_frames(
@@ -202,7 +208,51 @@ def test_frames_extraction_dedups_identical_frames(tmp_path):
         max_frames=120,
         runner=runner,
     )
-    assert [f.name for f in frames] == ["frame_0001.jpg", "frame_0003.jpg"]
+    assert [f.name for f in frames] == ["periodic_00001.jpg", "scene_00002.jpg"]
+    assert len(captured) == 2
+    periodic_filter = captured[0][captured[0].index("-vf") + 1]
+    scene_filter = captured[1][captured[1].index("-vf") + 1]
+    assert periodic_filter == "fps=1/20,mpdecimate"
+    assert r"gt(scene\,0.35)" in scene_filter
+    assert "pict_type" not in scene_filter
+
+
+def test_frames_budget_preserves_late_timeline_coverage(tmp_path):
+    # Regression PR #18 re-review: both ffmpeg passes are bounded before JPEG
+    # materialization, while the periodic baseline still reaches the late timeline.
+    materialized: list[tuple[str, int]] = []
+
+    def runner(argv):
+        pattern = Path(argv[-1])
+        cap = int(argv[argv.index("-frames:v") + 1])
+        if pattern.name.startswith("periodic_"):
+            periodic_filter = argv[argv.index("-vf") + 1]
+            interval = int(periodic_filter.split("fps=1/", 1)[1].split(",", 1)[0])
+            for index in range(cap):
+                (pattern.parent / f"periodic_{index:05d}.jpg").write_bytes(
+                    f"t={index * interval}".encode()
+                )
+        else:
+            for index in range(cap):
+                (pattern.parent / f"scene_{index:05d}.jpg").write_bytes(f"scene-{index}".encode())
+        materialized.append((pattern.name, cap))
+        return 0
+
+    frames = extract_representative_frames(
+        tmp_path / "video.mp4",
+        tmp_path / "coverage",
+        interval_seconds=20,
+        max_frames=5,
+        duration_seconds=600,
+        runner=runner,
+    )
+
+    assert len(frames) == 5
+    assert frames[0].name == "periodic_00000.jpg"
+    assert any(frame.read_bytes() == b"t=480" for frame in frames)
+    assert any(frame.name.startswith("scene_") for frame in frames)
+    assert materialized == [("periodic_%05d.jpg", 5), ("scene_%05d.jpg", 5)]
+    assert len(list((tmp_path / "coverage").glob("*.jpg"))) <= 2 * 5
 
 
 def test_frames_extraction_ffmpeg_failure_raises(tmp_path):

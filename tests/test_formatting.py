@@ -39,6 +39,16 @@ def test_format_contains_key_fields():
     assert "Почему: Сильно связано с профессиональными целями" in text
 
 
+def test_youtube_transcript_only_is_explicit_in_user_output():
+    item = make_ready_item()
+    item.source_type = SourceType.YOUTUBE
+    item.analysis_completeness = "TRANSCRIPT_ONLY"
+
+    text = format_ready_item(item)
+
+    assert "Анализ: по транскрипту, без визуальной части" in text
+
+
 def test_item_list_format_stays_within_telegram_limit():
     items = [make_ready_item() for _ in range(20)]
     for item in items:

@@ -5,7 +5,17 @@ from aiogram.types import Chat, Message
 from aiogram.types import User as TgUser
 from sqlalchemy import func, select
 
-from app.bot.handlers import _item_action_label, on_help, on_settings, on_start, on_text, on_today
+from app.bot.handlers import (
+    _item_action_label,
+    on_category,
+    on_help,
+    on_inbox,
+    on_search,
+    on_settings,
+    on_start,
+    on_text,
+    on_today,
+)
 from app.domain.enums import ItemState, ItemType, ProcessingStatus, SourceType
 from app.storage.models import Event, Item, User
 
@@ -77,6 +87,9 @@ async def test_help_lists_mvp_commands(settings, monkeypatch):
     assert "/today" in sent[0]
     assert "/settings" in sent[0]
     assert "/help" in sent[0]
+    assert "YouTube-ссылку" in sent[0]
+    assert "или видео" not in sent[0]
+    assert "/inbox — последние Items" in sent[0]
 
 
 async def test_two_allowed_users_ingest_separately(settings, session_factory, monkeypatch):
@@ -131,6 +144,27 @@ async def test_today_records_shown_event(settings, session_factory, monkeypatch)
             await session.scalar(select(Event.event_type).where(Event.event_type == "TODAY_SHOWN"))
             == "TODAY_SHOWN"
         )
+
+
+@pytest.mark.parametrize(
+    ("handler", "args"),
+    [
+        (on_inbox, ()),
+        (on_category, ("",)),
+        (on_search, ("missing",)),
+    ],
+)
+async def test_first_read_only_command_persists_user(
+    settings, session_factory, monkeypatch, handler, args
+):
+    capture_answers(monkeypatch)
+
+    await handler(make_message(42), settings, session_factory, *args)
+
+    async with session_factory() as session:
+        user = await session.scalar(select(User).where(User.telegram_user_id == 42))
+        assert user is not None
+        assert user.telegram_chat_id == 42
 
 
 async def test_settings_command_persists_minimal_notification_settings(
