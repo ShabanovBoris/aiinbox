@@ -6,6 +6,8 @@
 ## Быстрый старт
 
 Требования: Python 3.12+, `uv`, `ffmpeg`.
+Для production off-host backup дополнительно нужны Docker Compose, `rsync` и
+SSH; `rsync` должен быть установлен и на backup host.
 
 ```bash
 uv venv --python 3.12
@@ -122,7 +124,7 @@ docker compose exec -T app python -m app.ops backup
 Defaults: `BACKUP_DIR=./backups`, `BACKUP_KEEP=14`; в Compose
 `BACKUP_DIR=/backups`. Каждый snapshot сначала проходит
 `PRAGMA integrity_check` и `PRAGMA foreign_key_check`, и только после этого
-выполняется rotation.
+получает `.sha256` sidecar и участвует в rotation.
 
 Пример ежедневного cron на VPS:
 
@@ -134,9 +136,59 @@ Cron должен запускаться от пользователя, у ко�
 
 Отдельный volume `aiinbox_backups` защищает от логических ошибок и неудачного
 upgrade, но обычно остаётся на том же VPS/disk. Это **не disaster-recovery
-copy**. До `v1.0-mvp` минимум одно актуальное поколение backup должно регулярно
-реплицироваться off-host (другой host или S3-compatible storage). Конкретный
-механизм sync можно внедрить отдельно, без изменения backup format.
+copy**.
+
+## Off-host replication + recovery drill
+
+Минимальная production-схема использует отдельный SSH host/failure domain.
+На backup host заранее создайте каталог, доступный отдельному backup-user, и
+настройте non-interactive SSH key через обычный OpenSSH config. Приложению этот
+ключ и remote credentials не передаются.
+
+На deployment host:
+
+```bash
+cd /opt/aiinbox
+OFFSITE_BACKUP_TARGET='backup@example:/srv/aiinbox' ./scripts/offsite_backup.sh
+```
+
+`OFFSITE_BACKUP_TARGET` должен быть rsync-over-SSH target вида
+`user@host:/absolute/path`; remote directory должен существовать. Скрипт:
+
+1. создаёт новый verified SQLite backup + `.sha256`;
+2. копирует exact generation из `/backups` во временный host directory;
+3. отправляет `.db` и `.sha256` на backup host;
+4. скачивает **тот же** generation обратно;
+5. выполняет `verify-copy`: SHA-256 → SQLite integrity → foreign keys;
+6. делает `restore` скачанной копии в `/tmp/aiinbox`, не меняя canonical DB.
+
+Успех заканчивается строкой:
+
+```text
+offsite_backup=ok generation=aiinbox-...db recovery_drill=ok
+```
+
+Пример ежедневного production cron вместо local-only backup cron:
+
+```cron
+17 3 * * * cd /opt/aiinbox && OFFSITE_BACKUP_TARGET='backup@example:/srv/aiinbox' ./scripts/offsite_backup.sh >> /var/log/aiinbox-backup.log 2>&1
+```
+
+Remote retention настраивается на backup host независимо; deployment script
+намеренно не удаляет remote generations.
+
+Для ручной проверки уже скачанной off-host копии:
+
+```bash
+docker compose run --rm --no-deps \
+  -v "$PWD/recovery:/recovery:ro" \
+  app python -m app.ops verify-copy \
+  --database /recovery/aiinbox-YYYYMMDDTHHMMSSffffffZ.db \
+  --checksum-file /recovery/aiinbox-YYYYMMDDTHHMMSSffffffZ.db.sha256
+```
+
+До `v1.0-mvp` production gate требует хотя бы одного успешного запуска
+`offsite_backup.sh` против реального удалённого host.
 
 ## Restore drill / recovery
 
@@ -156,12 +208,14 @@ docker compose run --rm --no-deps app \
   --backup /backups/aiinbox-YYYYMMDDTHHMMSSffffffZ.db \
   --target /data/app-restored.db
 
-# Архивировать весь старый SQLite recovery set и только потом выбрать restored DB.
+# Если старая DB есть, архивировать весь SQLite recovery set.
 # Это гарантирует, что старые WAL/SHM sidecars не переживут canonical swap.
 docker compose run --rm --no-deps app sh -c \
   'set -eu
    stamp=$(date -u +%Y%m%dT%H%M%SZ)
-   mv /data/app.db /data/app.db.pre-restore.$stamp
+   if [ -e /data/app.db ]; then
+     mv /data/app.db /data/app.db.pre-restore.$stamp
+   fi
    if [ -e /data/app.db-wal ]; then
      mv /data/app.db-wal /data/app.db-wal.pre-restore.$stamp
    fi
@@ -222,8 +276,11 @@ docker compose exec -T app python -m app.ops backup
 ```
 
 Для production обязательны persistent volumes `aiinbox_data` и
-`aiinbox_backups`, restart policy из Compose и внешний cron для backup.
-Перед обновлением, меняющим schema, сделайте verified backup.
+`aiinbox_backups`, restart policy из Compose и cron для off-host backup.
+Перед обновлением, меняющим schema, сделайте verified backup. Перед
+`v1.0-mvp` на production должны успешно пройти `status`, `smoke` и
+`scripts/offsite_backup.sh`; последний включает recovery drill скачанной
+off-host копии.
 
 ## Диагностика Items
 
