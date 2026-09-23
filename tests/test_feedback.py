@@ -10,7 +10,7 @@ from app.services.feedback import (
     record_item_feedback,
 )
 from app.services.retrieval import TodayService, list_category_items
-from app.storage.models import Event, Item, User
+from app.storage.models import Event, FeedbackCallbackReceipt, Item, User
 
 
 async def _create_item(
@@ -327,6 +327,57 @@ async def test_replayed_category_callback_cannot_reapply_after_a_later_correctio
         assert len(events) == 2
 
 
+async def test_noop_category_callback_receipt_prevents_late_replay(session_factory):
+    item_id = await _create_item(session_factory, category="AI")
+    await _create_item(session_factory, title="Programming category", category="Programming")
+
+    noop = await correct_item_category(
+        session_factory, 42, item_id, "AI", idempotency_key="telegram-callback:category-noop"
+    )
+    changed = await correct_item_category(
+        session_factory,
+        42,
+        item_id,
+        "Programming",
+        idempotency_key="telegram-callback:category-change",
+    )
+    replay = await correct_item_category(
+        session_factory, 42, item_id, "AI", idempotency_key="telegram-callback:category-noop"
+    )
+
+    assert noop is not None and noop[1] is False
+    assert changed is not None and changed[1] is True
+    assert replay is not None and replay[1] is False
+    async with session_factory() as session:
+        stored = await session.get(Item, item_id)
+        corrections = list(
+            (
+                await session.scalars(
+                    select(Event)
+                    .where(Event.item_id == item_id, Event.event_type == "CATEGORY_CORRECTED")
+                    .order_by(Event.id)
+                )
+            ).all()
+        )
+        receipts = list(
+            (
+                await session.scalars(
+                    select(FeedbackCallbackReceipt.idempotency_key)
+                    .where(FeedbackCallbackReceipt.user_id == stored.user_id)
+                    .order_by(FeedbackCallbackReceipt.id)
+                )
+            ).all()
+        )
+        assert stored.category == "Programming"
+        assert len(corrections) == 1
+        assert corrections[0].payload_json == {
+            "from": "AI",
+            "to": "Programming",
+            "source": "telegram",
+        }
+        assert receipts == ["telegram-callback:category-noop", "telegram-callback:category-change"]
+
+
 async def test_type_correction_updates_today_and_keeps_semantic_priority(session_factory):
     item_id = await _create_item(session_factory, item_type=ItemType.REFERENCE)
 
@@ -387,3 +438,66 @@ async def test_type_noop_invalid_and_unauthorized_corrections_are_safe(session_f
     assert noop is not None and noop[1] is False
     assert denied is None
     assert await _event_rows(session_factory, item_id) == []
+
+
+async def test_noop_type_callback_receipt_prevents_late_replay(session_factory):
+    item_id = await _create_item(session_factory, item_type=ItemType.LEARN)
+
+    noops = await asyncio.gather(
+        *[
+            correct_item_type(
+                session_factory,
+                42,
+                item_id,
+                ItemType.LEARN,
+                idempotency_key="telegram-callback:type-noop",
+            )
+            for _ in range(4)
+        ]
+    )
+    changed = await correct_item_type(
+        session_factory,
+        42,
+        item_id,
+        ItemType.READ,
+        idempotency_key="telegram-callback:type-change",
+    )
+    replay = await correct_item_type(
+        session_factory,
+        42,
+        item_id,
+        ItemType.LEARN,
+        idempotency_key="telegram-callback:type-noop",
+    )
+
+    assert all(result is not None and result[1] is False for result in noops)
+    assert changed is not None and changed[1] is True
+    assert replay is not None and replay[1] is False
+    async with session_factory() as session:
+        stored = await session.get(Item, item_id)
+        corrections = list(
+            (
+                await session.scalars(
+                    select(Event)
+                    .where(Event.item_id == item_id, Event.event_type == "TYPE_CORRECTED")
+                    .order_by(Event.id)
+                )
+            ).all()
+        )
+        receipts = list(
+            (
+                await session.scalars(
+                    select(FeedbackCallbackReceipt.idempotency_key)
+                    .where(FeedbackCallbackReceipt.user_id == stored.user_id)
+                    .order_by(FeedbackCallbackReceipt.id)
+                )
+            ).all()
+        )
+        assert stored.item_type is ItemType.READ
+        assert len(corrections) == 1
+        assert corrections[0].payload_json == {
+            "from": "LEARN",
+            "to": "READ",
+            "source": "telegram",
+        }
+        assert receipts == ["telegram-callback:type-noop", "telegram-callback:type-change"]

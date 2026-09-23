@@ -448,7 +448,10 @@ auxiliary history; исправления категории и типа мен�
 Event в одной транзакции, остальные сигналы Item не меняют. Nullable
 idempotency_key с уникальностью по паре user_id/idempotency_key схлопывает
 повторную доставку Telegram callback, сохраняя возможность нового события от
-последующего нажатия.
+последующего нажатия. Для category/type correction отдельная
+feedback_callback_receipts сохраняет callback receipt даже при no-op, который
+не должен создавать семантический Event; receipt и реальное исправление
+фиксируются одной SQLite-транзакцией.
 
 ## 50. reminders
 

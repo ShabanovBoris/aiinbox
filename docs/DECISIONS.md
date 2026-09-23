@@ -325,12 +325,16 @@ Context: Telegram may redeliver one callback, while a later intentional click
 must remain a new feedback signal for future analysis.
 
 Decision: store a nullable idempotency key on Event and enforce uniqueness per
-user in SQLite. Telegram feedback uses the namespaced CallbackQuery identity;
-canonical corrections check that identity before applying a mutation.
+user in SQLite. Telegram feedback uses the namespaced CallbackQuery identity.
+Category/type corrections also persist a user-scoped callback receipt in the
+same serialized transaction, including when the selected value is already
+current and no semantic correction Event should be created.
 
 Reason: transport retry identity is distinct from the meaning or age of a
 feedback event, and application-only existence checks race under concurrent
 callbacks.
 
 Consequences: legacy and non-callback Events keep a NULL key; later feedback
-with a new callback identity remains append-only history.
+with a new callback identity remains append-only history. The separate receipt
+preserves no-op correction idempotency without adding synthetic Events to the
+behavioural history.

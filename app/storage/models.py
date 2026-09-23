@@ -246,6 +246,26 @@ class Event(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 
+class FeedbackCallbackReceipt(Base):
+    """Remember correction callbacks whose no-op must not become a later mutation.
+
+    This transport record stays separate from Event so a user selecting the
+    already-current value does not create a misleading semantic correction.
+    """
+
+    __tablename__ = "feedback_callback_receipts"
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id", "idempotency_key", name="uq_feedback_callback_receipts_user_key"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(160), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
 class Reminder(Base):
     """Durable notification claim/state used by the periodic reminder worker.
 

@@ -274,8 +274,11 @@ For feedback that may be intentionally repeated across time, preserve legitimate
 
 Do not globally deduplicate “USEFUL forever” if future semantics need time-series feedback.
 
-Canonical corrections serialize writers with SQLite BEGIN IMMEDIATE, check the
-callback key before changing Item, then commit the new value and Event together.
+Canonical corrections serialize writers with SQLite BEGIN IMMEDIATE and store
+a user-scoped row in feedback_callback_receipts for each accepted callback,
+including a no-op selection. A real change commits the Item update, receipt,
+and correction Event together; a no-op commits only the receipt. This keeps a
+late retry from becoming a later mutation without adding a fake Event.
 
 ## 13. Event payload contract
 
@@ -429,12 +432,15 @@ If free-text category correction requires conversational state, keep state minim
 
 ## 21. Migration
 
-The migration adds nullable Event.idempotency_key and a unique
-(user_id, idempotency_key) index. Existing Events remain intact with a NULL key;
-SQLite permits multiple NULL keys, and the same non-NULL key may be used by
-different users.
+Migrations add nullable Event.idempotency_key with a unique
+(user_id, idempotency_key) index, plus feedback_callback_receipts with a unique
+(user_id, idempotency_key) constraint. Existing Events remain intact with a
+NULL key; SQLite permits multiple NULL keys, and the same non-NULL key may be
+used by different users. The receipt table stores transport outcomes that do
+not correspond to semantic Event rows.
 
-Do not create a new feedback table merely for these event types.
+Do not create a new feedback event table merely for these event types;
+feedback_callback_receipts stores transport identities only, not feedback data.
 
 ## 22. Acceptance criteria
 

@@ -365,6 +365,9 @@ ORDER BY id;
 
 Telegram callback retries reuse the same namespaced idempotency key. Later user
 clicks have a different key and remain separate history entries.
+No-op category/type corrections create no Event; their consumed callback keys
+are stored in `feedback_callback_receipts` so a delayed replay cannot become a
+later change.
 
 ## Immediate deliveries
 

@@ -23,6 +23,7 @@ def test_fresh_database_migrates_to_latest_schema(tmp_path):
             "contents",
             "item_search",
             "events",
+            "feedback_callback_receipts",
             "reminders",
             "deliveries",
             "alembic_version",
@@ -258,6 +259,10 @@ def test_event_idempotency_migration_preserves_history_and_allows_legacy_nulls(t
     command.upgrade(cfg, "head")
 
     with sqlite3.connect(db) as conn:
+        receipt_columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(feedback_callback_receipts)")
+        }
+        assert {"user_id", "idempotency_key", "created_at"} <= receipt_columns
         assert conn.execute(
             "SELECT event_type, payload_json, idempotency_key FROM events ORDER BY id"
         ).fetchall() == [("DONE", "{}", None), ("SNOOZED", "{}", None)]
@@ -284,4 +289,25 @@ def test_event_idempotency_migration_preserves_history_and_allows_legacy_nulls(t
             "INSERT INTO events (user_id, item_id, event_type, idempotency_key) "
             "VALUES (?, ?, 'USEFUL', 'telegram-callback:one')",
             (second_user_id, item_ids[2]),
+        )
+        conn.execute(
+            "INSERT INTO feedback_callback_receipts (user_id, idempotency_key) "
+            "VALUES (?, 'telegram-callback:noop')",
+            (first_user_id,),
+        )
+        conn.commit()
+        try:
+            conn.execute(
+                "INSERT INTO feedback_callback_receipts (user_id, idempotency_key) "
+                "VALUES (?, 'telegram-callback:noop')",
+                (first_user_id,),
+            )
+        except sqlite3.IntegrityError:
+            conn.rollback()
+        else:
+            raise AssertionError("duplicate callback receipt for one user was allowed")
+        conn.execute(
+            "INSERT INTO feedback_callback_receipts (user_id, idempotency_key) "
+            "VALUES (?, 'telegram-callback:noop')",
+            (second_user_id,),
         )

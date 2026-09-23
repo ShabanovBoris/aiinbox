@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.sql import text
 
 from app.domain.enums import ItemType, ProcessingStatus
-from app.storage.models import Event, Item, User
+from app.storage.models import Event, FeedbackCallbackReceipt, Item, User
 
 _FEEDBACK_EVENT_TYPES = {
     "USEFUL",
@@ -49,6 +49,19 @@ async def _has_callback_event(session: AsyncSession, user_id: int, idempotency_k
             select(Event.id).where(
                 Event.user_id == user_id,
                 Event.idempotency_key == idempotency_key,
+            )
+        )
+        is not None
+    )
+
+
+async def _has_callback_receipt(session: AsyncSession, user_id: int, idempotency_key: str) -> bool:
+    """Detect a correction callback already consumed without creating an Event."""
+    return (
+        await session.scalar(
+            select(FeedbackCallbackReceipt.id).where(
+                FeedbackCallbackReceipt.user_id == user_id,
+                FeedbackCallbackReceipt.idempotency_key == idempotency_key,
             )
         )
         is not None
@@ -122,9 +135,14 @@ async def correct_item_category(
         if item is None:
             await session.rollback()
             return None
-        if await _has_callback_event(session, item.user_id, idempotency_key):
+        if await _has_callback_event(
+            session, item.user_id, idempotency_key
+        ) or await _has_callback_receipt(session, item.user_id, idempotency_key):
             await session.commit()
             return item, False
+        # Persist the transport outcome even for a canonical no-op. Without
+        # this separate receipt, a delayed replay could mutate a later value.
+        session.add(FeedbackCallbackReceipt(user_id=item.user_id, idempotency_key=idempotency_key))
         if item.category == category:
             await session.commit()
             return item, False
@@ -133,7 +151,7 @@ async def correct_item_category(
             select(Item.id).where(Item.user_id == item.user_id, Item.category == category).limit(1)
         )
         if category_exists is None:
-            await session.rollback()
+            await session.commit()
             return None
 
         previous = item.category
@@ -176,9 +194,14 @@ async def correct_item_type(
         if item is None:
             await session.rollback()
             return None
-        if await _has_callback_event(session, item.user_id, idempotency_key):
+        if await _has_callback_event(
+            session, item.user_id, idempotency_key
+        ) or await _has_callback_receipt(session, item.user_id, idempotency_key):
             await session.commit()
             return item, False
+        # No-op corrections have no semantic Event, so their callback identity
+        # needs its own durable row within the same serialized transaction.
+        session.add(FeedbackCallbackReceipt(user_id=item.user_id, idempotency_key=idempotency_key))
         if item.item_type is item_type:
             await session.commit()
             return item, False
