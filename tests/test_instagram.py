@@ -1,6 +1,8 @@
 """Offline regressions for Instagram URL routing, extraction, and durable resume."""
 
 import asyncio
+import io
+import json
 import os
 import sys
 import threading
@@ -16,7 +18,8 @@ from app.bot.notify import send_item_failure
 from app.domain.enums import ContentKind, ProcessingStatus, SourceType
 from app.domain.models import NormalizedContent, UserProfile
 from app.domain.priority import PriorityEngine
-from app.errors import AppError
+from app.errors import AppError, MediaTooLargeError
+from app.extractors import instagram as instagram_module
 from app.extractors import instagram_worker
 from app.extractors.instagram import InstagramExtractor, is_instagram_reel_url
 from app.llm.base import TranscriptionSegmentCheckpoint
@@ -77,7 +80,7 @@ class FakeInstagramYdl:
                         "total_bytes": len(self.media_bytes),
                     }
                 )
-            extension = "m4a" if "bestaudio" in self.options["format"] else "mp4"
+            extension = "m4a" if Path(self.options["outtmpl"]).name.startswith("audio") else "mp4"
             output = Path(self.options["outtmpl"].replace("%(ext)s", extension))
             output.parent.mkdir(parents=True, exist_ok=True)
             output.write_bytes(self.media_bytes)
@@ -781,6 +784,148 @@ def test_killable_worker_returns_bounded_metadata(monkeypatch):
     assert result["info"]["id"] == "ABC123"
     assert len(result["info"]["description"]) == 2_000
     assert result["info"]["_all_formats_no_audio"] is False
+
+
+async def test_video_download_obeys_narrower_delivery_limit(tmp_path, monkeypatch):
+    """Telegram's upload cap reaches yt-dlp's max-filesize and progress hook."""
+    extractor, calls, _ = extractor_for(tmp_path, max_video_bytes=500)
+
+    async def info(url):
+        assert url == REEL_A
+        return reel_info()
+
+    monkeypatch.setattr(extractor, "_info", info)
+    source = ItemSource(source_url=REEL_A)
+    work_dir = tmp_path / "work"
+    work_dir.mkdir()
+    path = await extractor.download_video(source, work_dir, byte_limit=100, include_audio=True)
+
+    assert path.read_bytes() == b"fake-media"
+    assert calls[-1][2]["max_filesize"] == 100
+    assert "+bestaudio" in calls[-1][2]["format"]
+
+
+async def test_delivery_video_byte_limit_has_distinct_size_error(tmp_path, monkeypatch):
+    extractor, _, _ = extractor_for(tmp_path)
+
+    async def info(url):
+        assert url == REEL_A
+        return reel_info()
+
+    async def oversized_media(*args, **kwargs):
+        raise AppError("TOO_LARGE", "media exceeds byte limit", permanent=True)
+
+    monkeypatch.setattr(extractor, "_info", info)
+    monkeypatch.setattr(extractor, "_download_media", oversized_media)
+    with pytest.raises(MediaTooLargeError) as error:
+        await extractor.download_video(ItemSource(source_url=REEL_A), tmp_path / "work")
+
+    assert error.value.code == "TOO_LARGE"
+
+
+async def test_delivery_duration_limit_is_not_classified_as_byte_size(tmp_path, monkeypatch):
+    extractor, _, _ = extractor_for(
+        tmp_path,
+        reel_info(duration=51),
+        max_duration_seconds=50,
+    )
+    media_calls = []
+
+    async def info(url):
+        return reel_info(duration=51)
+
+    async def should_not_download(*args, **kwargs):
+        media_calls.append(args)
+        raise AssertionError("duration rejection should happen before media download")
+
+    monkeypatch.setattr(extractor, "_info", info)
+    monkeypatch.setattr(extractor, "_download_media", should_not_download)
+    with pytest.raises(AppError) as error:
+        await extractor.download_video(ItemSource(source_url=REEL_A), tmp_path / "work")
+
+    assert not isinstance(error.value, MediaTooLargeError)
+    assert error.value.code == "TOO_LARGE"
+    assert media_calls == []
+
+
+def test_instagram_worker_classifies_oversized_content_length_before_output(monkeypatch, tmp_path):
+    """The worker hook must classify a known oversized transfer before yt-dlp's silent abort."""
+    download_dir = tmp_path / "worker"
+    output = io.StringIO()
+
+    class HeaderOversizeYdl:
+        def __init__(self, options):
+            self.options = options
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def extract_info(self, url, download=False):
+            assert url == REEL_A
+            assert download is True
+            assert "max_filesize" not in self.options
+            self.options["progress_hooks"][0](
+                {"status": "downloading", "downloaded_bytes": 0, "total_bytes": 101}
+            )
+            pytest.fail("the size hook must stop before an output file is created")
+
+        def prepare_filename(self, info):
+            return str(download_dir / "video.mp4")
+
+    monkeypatch.setattr(instagram_worker.yt_dlp, "YoutubeDL", HeaderOversizeYdl)
+    monkeypatch.setattr(
+        instagram_worker.sys,
+        "stdin",
+        io.StringIO(
+            json.dumps(
+                {
+                    "mode": "download",
+                    "url": REEL_A,
+                    "options": {
+                        "max_filesize": 100,
+                        "outtmpl": str(download_dir / "video.%(ext)s"),
+                    },
+                    "byte_limit": 100,
+                    "download_dir": str(download_dir),
+                    "stem": "video",
+                }
+            )
+        ),
+    )
+    monkeypatch.setattr(instagram_worker.sys, "stdout", output)
+
+    instagram_worker.main()
+
+    response = json.loads(output.getvalue())
+    assert response["ok"] is False
+    assert response["kind"] == "yt_dlp"
+    mapped_error = instagram_module._map_ytdlp_error(
+        yt_dlp.utils.DownloadError(response["message"])
+    )
+    assert mapped_error.code == "TOO_LARGE"
+    assert mapped_error.permanent is True
+    assert list(download_dir.iterdir()) == []
+
+
+def test_instagram_worker_rejects_partial_download_result(tmp_path):
+    """An in-progress yt-dlp file is not a valid Instagram media result."""
+    download_dir = tmp_path / "download"
+    download_dir.mkdir()
+    partial = download_dir / "video.mp4.part"
+    partial.write_bytes(b"unfinished")
+
+    with pytest.raises(AppError, match="incomplete video file"):
+        InstagramExtractor._resolve_download_path(
+            str(partial),
+            {
+                "download_dir": str(download_dir),
+                "stem": "video",
+                "byte_limit": 100,
+            },
+        )
 
 
 async def test_production_ytdlp_worker_protocol_rejects_unsupported_url_offline(tmp_path):

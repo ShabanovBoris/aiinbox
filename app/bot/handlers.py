@@ -15,6 +15,7 @@ from app.domain.enums import ItemState, ProcessingStatus, SourceType
 from app.extractors.document import document_format_hint, safe_document_file_name
 from app.extractors.instagram import is_instagram_reel_url
 from app.services.actions import apply_item_action, record_item_events, set_item_interest
+from app.services.delivery import enqueue_item_video_delivery
 from app.services.ingestion import ingest_media, ingest_message
 from app.services.notifications import (
     format_settings,
@@ -492,6 +493,28 @@ async def on_item_callback(
         item_id = int(raw_item_id)
     except ValueError:
         await callback.answer("Некорректный Item")
+        return
+    if action == "video":
+        if len(parts) != 4:
+            await callback.answer("Некорректный источник видео")
+            return
+        try:
+            source_id = int(parts[3])
+        except ValueError:
+            await callback.answer("Некорректный источник видео")
+            return
+        result = await enqueue_item_video_delivery(
+            session_factory,
+            user.id,
+            item_id,
+            source_id,
+        )
+        if result is None:
+            await callback.answer("Это видео сейчас недоступно")
+        elif result == "IN_PROGRESS":
+            await callback.answer("Видео уже готовится")
+        else:
+            await callback.answer("Поставил видео в очередь")
         return
     if action == "interest":
         if len(parts) != 4:

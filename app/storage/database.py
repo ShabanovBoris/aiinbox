@@ -22,7 +22,12 @@ def enable_sqlite_fk(engine: AsyncEngine) -> AsyncEngine:
 
 def make_engine(settings: Settings) -> AsyncEngine:
     url = settings.database_url
-    engine = create_async_engine(url)
+    # Wait for transient SQLite writer contention; external calls release their
+    # read transactions separately so this remains a bounded fallback.
+    engine = create_async_engine(
+        url,
+        connect_args={"timeout": 30} if url.startswith("sqlite") else {},
+    )
     if url.startswith("sqlite"):
         # SQLite-файл живёт в репозитории (data/); директория должна существовать
         # до первого подключения, иначе aiosqlite упадёт на open.

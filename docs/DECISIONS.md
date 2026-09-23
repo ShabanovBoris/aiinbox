@@ -206,18 +206,115 @@ Reason: сохраняется полезный публичный контек�
 Consequences: `DESCRIPTION` и source metadata восстанавливают caption-only Item
 после Retry; пользовательский результат явно помечается `CAPTION_ONLY`.
 
-## D-022 — Killable media subprocesses для Instagram
+## D-022 — Killable yt-dlp workers для Instagram и YouTube downloads
 
 Context: Python yt-dlp может продолжить блокирующую операцию после отмены
 async-задачи. `asyncio.run()` также ждёт default executor при shutdown, а
 отмена wrapper-задачи `to_thread` не гарантирует, что поток перестал писать.
+Это относится и к on-demand загрузке YouTube-видео для Telegram.
 
-Decision: выполнять production yt-dlp и ffprobe вызовы в отдельной process
-group с wall-clock timeout. При timeout/shutdown завершать process group и
-удалять download directory только после подтверждённого выхода процессов.
+Decision: Instagram yt-dlp/ffprobe и YouTube yt-dlp media downloads выполнять в
+отдельных process groups с wall-clock timeout. При timeout/shutdown завершать
+process group и удалять download directory только после подтверждённого выхода
+процессов.
 
 Reason: это сохраняет D-008 bounded processing/shutdown и исключает гонку
 очистки каталога с downloader-ом. Offline test factory остаётся injectable.
 
 Consequences: metadata/download добавляют короткий запуск дочернего Python
 процесса; приложение не ждёт media tools в default executor при завершении.
+YouTube media transfer имеет отдельный настраиваемый wall-clock limit.
+
+## D-023 — On-demand video delivery через существующий outbox
+
+Context: пользователь может захотеть получить исходный YouTube/Reel внутри
+Telegram после обработки. Загрузка и отправка велики и не должны выполняться в
+callback handler или хранить постоянную копию медиа.
+
+Decision: каждая готовая media ItemSource получает свой callback и durable
+`ITEM_VIDEO:<source_id>` delivery. Worker скачивает файл в уникальную temp-папку,
+ограничивает его размером Bot API и wall-clock timeout, отправляет исходное
+аудио/видео и удаляет временный файл после остановки downloader-а. Успешный
+Telegram `file_id` сохраняется для повторной отправки.
+
+Reason: source-scoped outbox сохраняет быстрый handler, restart recovery и
+независимость нескольких видео в одном Item без новой таблицы или media storage.
+
+Consequences: повторный запрос обычно не скачивает файл заново; crash между
+Telegram send и записью `file_id` сохраняет at-least-once семантику и может дать
+дубликат.
+
+## D-024 — Короткие SQLite-транзакции вокруг внешней обработки
+
+Context: media extraction и LLM-вызовы могут длиться секунды, пока несколько
+background workers используют один SQLite-файл. Удержание read transaction в
+этих паузах способно сорвать запись delivery outbox с `database is locked`.
+
+Decision: завершать checkpoint-чтения до внешних вызовов, сохранять готовый
+транскрипт до необязательного video vision и ждать SQLite writer contention не
+дольше 30 секунд.
+
+Reason: короткие транзакции сохраняют конкурентную обработку и позволяют
+durable outbox доставить READY даже при обычной конкуренции workers.
+
+Consequences: долгие provider/download вызовы не удерживают SQLite read lock;
+обработка остаётся single-process, а блокировка дольше 30 секунд остаётся
+инфраструктурной ошибкой.
+
+## D-025 — Ограниченный повтор невалидного AnalysisResult
+
+Context: OpenAI-compatible provider вернул HTTP 200 с усечённым JSON, из-за чего
+уже извлечённый Instagram transcript не дошёл до READY.
+
+Decision: задавать явный output-token budget и повторять structured analysis
+не более двух раз с увеличенным budget и коротким exponential backoff, если
+ответ не прошёл схему.
+
+Reason: временная ошибка провайдера восстанавливается без ручного Retry и без
+повторной загрузки источника; систематически неверный ответ всё ещё становится
+FAILED.
+
+Consequences: такой сбой может создать до двух дополнительных LLM-запросов;
+текст ответа модели не попадает в ошибки и логи.
+
+## D-026 — Telegram-ограничения принадлежат адаптеру интерфейса
+
+Context: Telegram — текущий интерфейс, но тот же pipeline может получить другой
+вход и иметь другую поверхность выдачи. Сейчас часть ограничений задаётся
+конфигурацией, часть захардкожена; облачный Bot API и локальный Bot API Server
+имеют разные медиа-возможности.
+
+Decision: транспортные лимиты Telegram принадлежат его адаптеру и конфигурации
+выбранного профиля Bot API. Они ограничивают только приём/представление в этом
+интерфейсе и не становятся правилами домена. Настройки не могут превысить
+возможности выбранного Telegram API, но могут отличаться для локального Bot API
+Server или другой конфигурации развёртывания. Будущий интерфейс получает свои
+лимиты и не наследует значения Telegram.
+
+Текущие ограничения, которые adapter должен учитывать:
+
+| Ограничение | Текущее значение или реализация | Почему это принадлежит интерфейсу |
+| --- | --- | --- |
+| Скачивание входящих файлов из Telegram | Облачный `getFile` ограничен 20 MB. `MAX_AUDIO_BYTES`, `MAX_VIDEO_BYTES` и `MAX_DOCUMENT_BYTES` сейчас настраиваются и по умолчанию равны 20 MB. | Это лимит получения байтов через Telegram. Локальный Bot API Server снимает download limit; HTTP/web-клиент может передать те же данные другим способом. |
+| Отправка медиа в Telegram | `sendAudio`, `sendVideo` и `sendDocument` в облачном Bot API ограничены 50 MB. Сейчас `TELEGRAM_MAX_UPLOAD_BYTES` захардкожен в `app/services/delivery.py`. | Лимит определяет возможность доставки файла, а не возможность его скачать, проанализировать или сохранить. Локальный Bot API Server допускает загрузку до 2000 MB. |
+| Текст сообщения | 4096 символов после разбора entities. `app/bot/formatting.py` сейчас фиксирует это в `_TELEGRAM_MAX_MESSAGE_LENGTH`. | Telegram-форматтер должен укладывать ответ в API limit; общий результат приложения нельзя заранее обрезать для всех будущих интерфейсов. |
+| Подпись к медиа | Telegram принимает до 1024 символов после разбора entities. Сейчас captions короткие и отдельного лимита в конфигурации нет. | При появлении динамических подписей их длина должна ограничиваться Telegram presenter-ом, не source/domain content. |
+| `callback_data` inline-кнопки | 1–64 байта. `app/bot/keyboards.py` кодирует тип действия и Item/Source IDs непосредственно в callback. | Ограничение относится к сериализации Telegram-действия. Другой интерфейс сможет использовать собственные URL, формы или action IDs. |
+| Частота отправки сообщений | Ограничения зависят от чата и режима broadcast; Telegram может вернуть `retry_after`. Отдельного Telegram rate limiter сейчас нет. | Delivery adapter должен уважать серверную задержку и иметь свою bounded pacing/retry policy; бизнес-обработка не должна зависеть от квот Telegram. |
+
+Reason: облачный Telegram Bot API ограничивает скачивание через `getFile` до 20 MB,
+загрузку медиа — до 50 MB, `sendMessage` — до 4096 символов, media caption — до
+1024 символов, а callback payload — до 64 байт. Эти значения описывают
+конкретный transport и могут измениться или отличаться у локального Bot API
+Server ([Telegram Bot API](https://core.telegram.org/bots/api), [Bots FAQ](https://core.telegram.org/bots/faq)).
+
+Consequences / future adapter TODO: при добавлении второго интерфейса вынести
+`TELEGRAM_MAX_UPLOAD_BYTES` в настройки Telegram adapter; отделить входные
+transport caps от parser/analysis budgets там, где один параметр сейчас служит
+обоим слоям; ограничивать текст, captions и action payload только при
+формировании Telegram ответа; добавить обработку `retry_after` в Telegram
+delivery policy. `YOUTUBE_MAX_AUDIO_BYTES`, `YOUTUBE_MAX_VIDEO_BYTES`,
+`INSTAGRAM_MAX_AUDIO_BYTES`, `INSTAGRAM_MAX_VIDEO_BYTES` и duration caps являются
+отдельными source/processing budgets: их нельзя автоматически приравнивать к
+лимиту Telegram upload. Например, разрешение анализировать большой ролик не
+означает, что его обязательно можно отправить обратно через Telegram.

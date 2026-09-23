@@ -1,10 +1,11 @@
 import json
+from types import SimpleNamespace
 
 import pytest
 
 from app.bot.formatting import format_categories, format_item_list, format_ready_item
 from app.domain.enums import ItemType, SourceType
-from app.domain.models import AnalysisResult
+from app.domain.models import DEFAULT_PROFILE, AnalysisResult, NormalizedContent
 from app.llm.base import LlmError
 from app.llm.openai import OpenAiProvider
 from app.storage.models import Item
@@ -81,6 +82,90 @@ def test_openai_parse_garbage_raises_invalid_output():
     with pytest.raises(LlmError) as exc_info:
         OpenAiProvider.parse_analysis("not json at all")
     assert exc_info.value.code == "INVALID_LLM_OUTPUT"
+
+
+async def test_openai_analysis_retries_truncated_structured_output_twice():
+    """Two bounded retries recover a transiently truncated analysis response."""
+
+    class FakeCompletions:
+        def __init__(self):
+            self.requests = []
+            self.responses = [
+                SimpleNamespace(
+                    choices=[
+                        SimpleNamespace(
+                            message=SimpleNamespace(content='{"title":"cut off'),
+                            finish_reason="length",
+                        )
+                    ]
+                ),
+                SimpleNamespace(
+                    choices=[
+                        SimpleNamespace(
+                            message=SimpleNamespace(content='{"title":"still cut off'),
+                            finish_reason="error",
+                        )
+                    ]
+                ),
+                SimpleNamespace(
+                    choices=[
+                        SimpleNamespace(
+                            message=SimpleNamespace(content=make_analysis().model_dump_json()),
+                            finish_reason="stop",
+                        )
+                    ]
+                ),
+            ]
+
+        async def create(self, **kwargs):
+            self.requests.append(kwargs)
+            return self.responses.pop(0)
+
+    provider = OpenAiProvider(api_key="k", model="gpt-test")
+    completions = FakeCompletions()
+    provider._client = SimpleNamespace(chat=SimpleNamespace(completions=completions))
+
+    result = await provider.analyze(
+        NormalizedContent(source_type=SourceType.INSTAGRAM, text="transcript"),
+        DEFAULT_PROFILE,
+        [],
+    )
+
+    assert result.title == make_analysis().title
+    assert [request["max_tokens"] for request in completions.requests] == [2048, 4096, 4096]
+
+
+async def test_openai_analysis_stops_after_three_invalid_responses_without_logging_content():
+    """Persistent malformed provider output stays a controlled, privacy-safe Item error."""
+
+    class FakeCompletions:
+        def __init__(self):
+            self.calls = 0
+
+        async def create(self, **_kwargs):
+            self.calls += 1
+            return SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(content='{"title":"private transcript fragment'),
+                        finish_reason="length",
+                    )
+                ]
+            )
+
+    provider = OpenAiProvider(api_key="k", model="gpt-test")
+    completions = FakeCompletions()
+    provider._client = SimpleNamespace(chat=SimpleNamespace(completions=completions))
+
+    with pytest.raises(LlmError, match="required JSON schema") as exc_info:
+        await provider.analyze(
+            NormalizedContent(source_type=SourceType.INSTAGRAM, text="transcript"),
+            DEFAULT_PROFILE,
+            [],
+        )
+
+    assert completions.calls == 3
+    assert "private transcript fragment" not in str(exc_info.value)
 
 
 def test_openai_parse_rejects_extra_fields():

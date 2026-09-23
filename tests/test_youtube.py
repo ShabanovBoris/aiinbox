@@ -1,5 +1,7 @@
 """Тесты YouTube extractor: фейковый yt-dlp + MockTransport, без сети/YouTube."""
 
+import io
+import json
 from pathlib import Path
 
 import httpx
@@ -8,8 +10,11 @@ from sqlalchemy import select
 
 from app.domain.enums import ContentKind, ProcessingStatus, SourceType
 from app.domain.priority import PriorityEngine
-from app.errors import AppError
+from app.errors import AppError, MediaTooLargeError
+from app.extractors import youtube as youtube_module
+from app.extractors import youtube_worker as youtube_worker_module
 from app.extractors.youtube import YoutubeExtractor
+from app.extractors.youtube_worker import execute as execute_youtube_download
 from app.services.actions import apply_item_action
 from app.services.analysis import Analyzer
 from app.services.ingestion import ingest_message
@@ -240,6 +245,7 @@ def test_production_composition_wires_youtube_extractor(tmp_path):
     assert video is None
     assert documents is not None
     assert instagram is not None
+    assert youtube.download_timeout_seconds == settings.youtube_download_timeout_seconds
 
 
 def test_www_youtube_nocookie_classified():
@@ -273,6 +279,7 @@ async def test_subtitle_oversize_is_too_large(tmp_path):
         tmp_path,
         [info],
         max_subtitle_bytes=100_000,
+        prepared_file=tmp_path / "fallback-audio.m4a",
         http_client_factory=lambda: httpx.AsyncClient(
             transport=httpx.MockTransport(handler), follow_redirects=True, timeout=5
         ),
@@ -569,11 +576,227 @@ async def test_video_byte_limit_enforced_independently(tmp_path):
         max_audio_bytes=5_000_000,
         ydl_factory=ydl_factory,
     )
-    with pytest.raises(AppError) as exc_info:
+    with pytest.raises(MediaTooLargeError) as exc_info:
         await extractor.download_video(URL, tmp_path / "work")
     assert exc_info.value.code == "TOO_LARGE"
     assert captured_options["format"] == "bestvideo[height<=720]/best[height<=720]"
     assert "5 000 000" in str(exc_info.value) or "5000000" in str(exc_info.value) or True
+
+
+async def test_video_download_obeys_narrower_delivery_limit(tmp_path):
+    """The Telegram delivery boundary can tighten, but never widen, the extractor cap."""
+    captured_options = {}
+    downloaded = None
+
+    class VideoYdl:
+        def __init__(self, options):
+            self.options = options
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def extract_info(self, url, download=False):
+            nonlocal downloaded
+            downloaded = Path(
+                self.options["outtmpl"].replace("%(id)s", "abc123").replace("%(ext)s", "mp4")
+            )
+            downloaded.parent.mkdir(parents=True, exist_ok=True)
+            downloaded.write_bytes(b"small-video")
+            return make_info()
+
+        def prepare_filename(self, info):
+            return str(downloaded)
+
+    def factory(options):
+        captured_options.update(options)
+        return VideoYdl(options)
+
+    extractor = YoutubeExtractor(
+        transcriber=FakeTranscriber(),
+        temp_dir=tmp_path / "yt",
+        max_video_bytes=500,
+        ydl_factory=factory,
+    )
+    path = await extractor.download_video(
+        URL, tmp_path / "work", byte_limit=100, include_audio=True
+    )
+
+    assert path.read_bytes() == b"small-video"
+    assert captured_options["max_filesize"] == 100
+    assert "+bestaudio" in captured_options["format"]
+
+
+async def test_production_video_download_uses_bounded_worker_contract(monkeypatch, tmp_path):
+    """Production YouTube transfers use the child protocol and retain validated output."""
+    work_dir = tmp_path / "work"
+    work_dir.mkdir()
+    captured = {}
+
+    async def run_worker(command, payload, **kwargs):
+        captured["command"] = command
+        captured["request"] = json.loads(payload)
+        captured["kwargs"] = kwargs
+        video_path = work_dir / "abc123.mp4"
+        video_path.write_bytes(b"bounded-video")
+        return json.dumps({"ok": True, "result": {"path": str(video_path)}}).encode()
+
+    monkeypatch.setattr(youtube_module, "run_killable_subprocess", run_worker)
+    extractor = YoutubeExtractor(
+        transcriber=FakeTranscriber(),
+        temp_dir=tmp_path / "youtube",
+        download_timeout_seconds=41,
+    )
+
+    path = await extractor.download_video(URL, work_dir, byte_limit=100, include_audio=True)
+
+    assert captured["command"][1:] == ["-m", "app.extractors.youtube_worker"]
+    assert captured["request"]["url"] == URL
+    assert captured["request"]["options"]["max_filesize"] == 100
+    assert "+bestaudio" in captured["request"]["options"]["format"]
+    assert captured["kwargs"]["timeout_seconds"] == 41
+    assert captured["kwargs"]["cleanup_dir"] == work_dir
+    assert captured["kwargs"]["retain_dir_on_success"] is True
+    assert path == work_dir / "abc123.mp4"
+    assert path.read_bytes() == b"bounded-video"
+
+
+def test_youtube_worker_uses_python_api_and_checks_result_within_download_dir(
+    monkeypatch, tmp_path
+):
+    """The isolated worker keeps yt-dlp on its Python API and returns only its media path."""
+    options = {"outtmpl": str(tmp_path / "worker" / "%(id)s.%(ext)s")}
+
+    class FakeYdl:
+        def __init__(self, captured_options):
+            assert captured_options == options
+            self.video_path = None
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def extract_info(self, url, download=False):
+            assert url == URL
+            assert download is True
+            self.video_path = Path(options["outtmpl"].replace("%(id)s", "abc123")).with_suffix(
+                ".mp4"
+            )
+            self.video_path.parent.mkdir(parents=True, exist_ok=True)
+            self.video_path.write_bytes(b"worker-video")
+            return {"id": "abc123"}
+
+        def prepare_filename(self, info):
+            return str(self.video_path)
+
+    monkeypatch.setattr(youtube_module.yt_dlp, "YoutubeDL", FakeYdl)
+    result = execute_youtube_download(
+        {
+            "url": URL,
+            "options": options,
+            "byte_limit": 100,
+            "download_dir": str(tmp_path / "worker"),
+        }
+    )
+
+    assert result == {"path": str(tmp_path / "worker" / "abc123.mp4")}
+
+
+def test_youtube_worker_classifies_oversized_content_length_before_output(monkeypatch, tmp_path):
+    """The worker's hook, rather than yt-dlp max_filesize, owns byte-limit classification."""
+    download_dir = tmp_path / "worker"
+    output = io.StringIO()
+
+    class HeaderOversizeYdl:
+        def __init__(self, options):
+            self.options = options
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def extract_info(self, url, download=False):
+            assert url == URL
+            assert download is True
+            assert "max_filesize" not in self.options
+            self.options["progress_hooks"][0](
+                {"status": "downloading", "downloaded_bytes": 0, "total_bytes": 101}
+            )
+            pytest.fail("the size hook must stop before an output file is created")
+
+        def prepare_filename(self, info):
+            return str(download_dir / "abc123.mp4")
+
+    monkeypatch.setattr(youtube_worker_module.yt_dlp, "YoutubeDL", HeaderOversizeYdl)
+    monkeypatch.setattr(
+        youtube_worker_module.sys,
+        "stdin",
+        io.StringIO(
+            json.dumps(
+                {
+                    "url": URL,
+                    "options": {
+                        "max_filesize": 100,
+                        "outtmpl": str(download_dir / "%(id)s.%(ext)s"),
+                    },
+                    "byte_limit": 100,
+                    "download_dir": str(download_dir),
+                    "required_streams": ["video", "audio"],
+                }
+            )
+        ),
+    )
+    monkeypatch.setattr(youtube_worker_module.sys, "stdout", output)
+
+    youtube_worker_module.main()
+
+    response = json.loads(output.getvalue())
+    assert response["ok"] is False
+    assert response["kind"] == "app"
+    assert response["code"] == "TOO_LARGE"
+    assert list(download_dir.iterdir()) == []
+
+
+def test_youtube_worker_rejects_partial_result_file(monkeypatch, tmp_path):
+    """The child must never report yt-dlp's in-progress .part file as finished media."""
+    partial_path = tmp_path / "worker" / "abc123.mp4.part"
+
+    class PartialYdl:
+        def __init__(self, options):
+            self.options = options
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def extract_info(self, url, download=False):
+            assert url == URL
+            assert download is True
+            partial_path.parent.mkdir(parents=True, exist_ok=True)
+            partial_path.write_bytes(b"unfinished")
+            return {"id": "abc123"}
+
+        def prepare_filename(self, info):
+            return str(partial_path)
+
+    monkeypatch.setattr(youtube_module.yt_dlp, "YoutubeDL", PartialYdl)
+    with pytest.raises(AppError, match="no completed YouTube output"):
+        execute_youtube_download(
+            {
+                "url": URL,
+                "options": {"outtmpl": str(tmp_path / "worker" / "%(id)s.%(ext)s")},
+                "byte_limit": 100,
+                "download_dir": str(tmp_path / "worker"),
+            }
+        )
 
 
 def patch_youtube_visual(monkeypatch, extractor, tmp_path):

@@ -355,13 +355,24 @@ WHERE id=<id> AND processing_status='FAILED';
 
 ```bash
 sqlite3 data/app.db \
-  "SELECT id, kind, status, item_id, profile_update_job_id, attempts, updated_at
+  "SELECT id, type, status, item_id, profile_update_job_id, attempts, last_error, updated_at
    FROM deliveries ORDER BY id DESC LIMIT 50"
 ```
 
 `PENDING/SENDING` восстанавливаются delivery worker-ом/startup recovery.
 `SENT` — зафиксированная успешная delivery state; transport semantics
 at-least-once, поэтому crash сразу после Telegram send может дать дубль.
+`ITEM_VIDEO:<source_id>` rows означают, что пользователь запросил конкретный
+YouTube/Reel source. Для Telegram video `file_id` сохраняется в delivery payload
+для повторного нажатия; generic document `file_id` не кэшируется, так как он не
+подтверждает, что отправленный файл содержит видеодорожку. Локальный media-файл удаляется.
+Если именно отправка видео превышает лимит размера Telegram, delivery worker
+скачивает аудиодорожку в пределах того же лимита и отправляет её с подписью,
+объясняющей, что видео слишком большое. Если аудиодорожка тоже не проходит лимит
+или её не удалось получить, бот отправляет отдельное пояснение. Ошибки скачивания
+или анализа до пользовательского запроса сами по себе этот fallback не запускают.
+После исчерпания попыток `FAILED` video delivery снова ставится в очередь при
+нажатии соответствующей кнопки.
 
 ## Reminders / digest
 
@@ -420,6 +431,17 @@ shutdown завершают процессы до очистки частног�
 оператор настроил cookie file, проверьте доступность указанного файла и нажмите
 Retry у Item. `RATE_LIMITED` — временное ограничение платформы; повторите Retry
 позже. Не используйте browser-cookie harvesting, private API или обход защиты.
+
+## YouTube media downloads
+
+`YOUTUBE_DOWNLOAD_TIMEOUT_SECONDS` defaults to 300 seconds. Production yt-dlp
+media downloads run in a killable process group; timeout or shutdown stops the
+group before the temporary directory can be removed. A timed-out delivery uses
+the normal bounded outbox retry policy and can be requested again after a
+terminal failure. The worker resolves the completed output and checks its actual
+streams with `ffprobe`: visual analysis requires video, while Telegram delivery
+requires both video and audio. A separate audio/video component or `.part` file
+cannot be sent as the requested full video.
 
 ## Shutdown / restart
 

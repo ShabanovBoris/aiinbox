@@ -5,7 +5,8 @@ from sqlalchemy import func, select
 from app.bot.handlers import on_item_callback
 from app.bot.keyboards import item_keyboard
 from app.domain.enums import ItemState, ItemType, ProcessingStatus, SourceType
-from app.storage.models import Event, Item, ItemSource, User
+from app.services.delivery import ITEM_VIDEO_PREFIX
+from app.storage.models import Delivery, Event, Item, ItemSource, User
 
 
 class FakeCallbackMessage:
@@ -143,6 +144,133 @@ def test_multi_url_keyboard_exposes_each_child_source():
 
     assert ("🔗 Открыть 1", "https://example.com/first") in links
     assert ("🔗 Открыть 2", "https://example.com/second") in links
+
+
+def test_ready_keyboard_exposes_each_ready_youtube_and_instagram_source():
+    """Project one explicit send action per ready child media source."""
+    sources = [
+        ItemSource(
+            id=31,
+            item_id=7,
+            source_index=0,
+            source_type=SourceType.YOUTUBE,
+            source_url="https://www.youtube.com/watch?v=first",
+            extraction_status="READY",
+        ),
+        ItemSource(
+            id=32,
+            item_id=7,
+            source_index=1,
+            source_type=SourceType.INSTAGRAM,
+            source_url="https://www.instagram.com/reel/second/",
+            extraction_status="READY",
+        ),
+        ItemSource(
+            id=33,
+            item_id=7,
+            source_index=2,
+            source_type=SourceType.YOUTUBE,
+            source_url="https://www.youtube.com/watch?v=failed",
+            extraction_status="FAILED",
+        ),
+    ]
+
+    buttons = [
+        button
+        for row in item_keyboard(_ready_item(), sources).inline_keyboard
+        for button in row
+        if button.callback_data and button.callback_data.startswith("item:video:")
+    ]
+
+    assert [(button.text, button.callback_data) for button in buttons] == [
+        ("📹 Отправить YouTube", "item:video:7:31"),
+        ("📹 Отправить Instagram Reel", "item:video:7:32"),
+    ]
+
+
+async def test_video_callback_enqueues_one_source_scoped_delivery(settings, session_factory):
+    """The callback persists a user-scoped outbox intent instead of downloading inline."""
+    item_id = await _persist_ready_item(session_factory)
+    async with session_factory() as session:
+        source = ItemSource(
+            item_id=item_id,
+            source_index=0,
+            source_type=SourceType.YOUTUBE,
+            source_url="https://www.youtube.com/watch?v=ready",
+            extraction_status="READY",
+        )
+        session.add(source)
+        await session.commit()
+        source_id = source.id
+        sibling = ItemSource(
+            item_id=item_id,
+            source_index=1,
+            source_type=SourceType.INSTAGRAM,
+            source_url="https://www.instagram.com/reel/sibling/",
+            extraction_status="READY",
+        )
+        session.add(sibling)
+        await session.commit()
+        sibling_id = sibling.id
+
+    callback = FakeCallback(42, f"item:video:{item_id}:{source_id}")
+    await on_item_callback(callback, settings, session_factory)
+
+    async with session_factory() as session:
+        delivery = await session.scalar(
+            select(Delivery).where(
+                Delivery.item_id == item_id,
+                Delivery.type == f"{ITEM_VIDEO_PREFIX}{source_id}",
+            )
+        )
+        assert delivery is not None
+        assert delivery.status == "PENDING"
+        assert delivery.payload_json == {"source_id": source_id}
+    assert callback.answers == ["Поставил видео в очередь"]
+
+    duplicate = FakeCallback(42, f"item:video:{item_id}:{source_id}")
+    await on_item_callback(duplicate, settings, session_factory)
+    assert duplicate.answers == ["Видео уже готовится"]
+
+    sibling_callback = FakeCallback(42, f"item:video:{item_id}:{sibling_id}")
+    await on_item_callback(sibling_callback, settings, session_factory)
+    assert sibling_callback.answers == ["Поставил видео в очередь"]
+    async with session_factory() as session:
+        deliveries = list(
+            (
+                await session.scalars(
+                    select(Delivery).where(Delivery.item_id == item_id).order_by(Delivery.type)
+                )
+            ).all()
+        )
+    assert {delivery.type for delivery in deliveries} == {
+        f"{ITEM_VIDEO_PREFIX}{source_id}",
+        f"{ITEM_VIDEO_PREFIX}{sibling_id}",
+    }
+
+
+async def test_video_callback_cannot_enqueue_another_users_source(settings, session_factory):
+    """Source ids in callback data never bypass the Item ownership boundary."""
+    item_id = await _persist_ready_item(session_factory)
+    async with session_factory() as session:
+        source = ItemSource(
+            item_id=item_id,
+            source_index=0,
+            source_type=SourceType.INSTAGRAM,
+            source_url="https://www.instagram.com/reel/private/",
+            extraction_status="READY",
+        )
+        session.add(source)
+        await session.commit()
+        source_id = source.id
+
+    callback = FakeCallback(1000, f"item:video:{item_id}:{source_id}")
+    await on_item_callback(callback, settings, session_factory)
+
+    async with session_factory() as session:
+        count = await session.scalar(select(func.count(Delivery.id)))
+    assert count == 0
+    assert callback.answers == ["Это видео сейчас недоступно"]
 
 
 async def test_interest_callback_updates_persisted_state_and_existing_message(

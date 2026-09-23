@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import logging
 
@@ -192,27 +193,44 @@ class OpenAiProvider:
         profile: UserProfile,
         categories: list[str],
     ) -> AnalysisResult:
-        try:
-            response = await self._client.chat.completions.create(
-                model=self._model,
-                messages=[
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {
-                        "role": "user",
-                        "content": build_user_message(content, profile, categories),
-                    },
-                ],
-                # Structured Outputs: генерация ограничена схемой AnalysisResult,
-                # а не парсингом свободного текста (PRODUCT_SPEC §30).
-                response_format=self.response_format,
-            )
-        except LlmError:
-            raise
-        except Exception as exc:  # граница адаптера: SDK-ошибки → код приложения
-            log.warning("llm analyze failed: %s", exc)
-            raise LlmError("LLM_FAILED", f"provider call failed: {exc}") from exc
-        raw = response.choices[0].message.content or ""
-        return self.parse_analysis(raw)
+        for attempt, max_tokens in enumerate((2048, 4096, 4096)):
+            try:
+                response = await self._client.chat.completions.create(
+                    model=self._model,
+                    messages=[
+                        {"role": "system", "content": SYSTEM_PROMPT},
+                        {
+                            "role": "user",
+                            "content": build_user_message(content, profile, categories),
+                        },
+                    ],
+                    # Structured Outputs: генерация ограничена схемой AnalysisResult,
+                    # а не парсингом свободного текста (PRODUCT_SPEC §30).
+                    response_format=self.response_format,
+                    max_tokens=max_tokens,
+                )
+            except LlmError:
+                raise
+            except Exception as exc:  # граница адаптера: SDK-ошибки → код приложения
+                log.warning("llm analyze failed: %s", exc)
+                raise LlmError("LLM_FAILED", f"provider call failed: {exc}") from exc
+
+            choice = response.choices[0]
+            try:
+                return self.parse_analysis(choice.message.content or "")
+            except LlmError:
+                if attempt == 2:
+                    raise
+                retry_delay = 0.5 * (2**attempt)
+                log.warning(
+                    "llm analysis returned invalid structured output; retry=%s/2 "
+                    "delay=%.1fs finish_reason=%s",
+                    attempt + 1,
+                    retry_delay,
+                    choice.finish_reason,
+                )
+                await asyncio.sleep(retry_delay)
+        raise AssertionError("analysis retry loop must return or raise")
 
     async def summarize_chunk(self, text: str) -> str:
         """Summarize one application-sized fragment before final analysis."""
@@ -287,8 +305,12 @@ class OpenAiProvider:
     def parse_analysis(raw: str) -> AnalysisResult:
         try:
             return AnalysisResult.model_validate_json(raw)
-        except ValidationError as exc:
-            raise LlmError("INVALID_LLM_OUTPUT", f"invalid analysis JSON: {exc}") from exc
+        except ValidationError:
+            # Pydantic includes fragments of input in ValidationError; transcripts
+            # and model responses can contain private user content.
+            raise LlmError(
+                "INVALID_LLM_OUTPUT", "analysis response did not match the required JSON schema"
+            ) from None
 
     async def describe_images(
         self, images: list, context: str | None, *, preferred_language: str

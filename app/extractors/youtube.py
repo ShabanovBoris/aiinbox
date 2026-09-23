@@ -11,8 +11,10 @@ extraction (уникальная — нет коллизий между пара
 """
 
 import asyncio
+import json
 import logging
 import shutil
+import sys
 from collections.abc import Awaitable, Callable, Mapping
 from pathlib import Path
 from typing import Any
@@ -24,12 +26,19 @@ import yt_dlp
 
 from app.domain.enums import SourceType
 from app.domain.models import NormalizedContent
-from app.errors import AppError
+from app.errors import AppError, MediaTooLargeError
+from app.extractors.subprocess_runner import (
+    cleanup_temporary_directory,
+    run_killable_subprocess,
+)
 from app.llm.base import TranscriptionProvider, TranscriptionSegmentCheckpoint
 from app.services.subtitles import parse_subtitles
 from app.storage.models import Item, ItemSource
 
 log = logging.getLogger(__name__)
+
+_WORKER_OUTPUT_LIMIT_BYTES = 64_000
+_DEFAULT_DOWNLOAD_TIMEOUT_SECONDS = 300.0
 
 _YOUTUBE_HOSTS = {
     "youtube.com",
@@ -67,6 +76,7 @@ class YoutubeExtractor:
         ydl_factory: Callable[[dict], Any] = default_ydl_factory,
         http_client_factory: Callable[[], httpx.AsyncClient] | None = None,
         timeout_seconds: float = 60.0,
+        download_timeout_seconds: float = _DEFAULT_DOWNLOAD_TIMEOUT_SECONDS,
         max_attempts: int = 3,
         backoff_seconds: float = 0.5,
     ):
@@ -82,6 +92,7 @@ class YoutubeExtractor:
             lambda: httpx.AsyncClient(follow_redirects=True, timeout=timeout_seconds)
         )
         self.timeout_seconds = timeout_seconds
+        self.download_timeout_seconds = download_timeout_seconds
         self.max_attempts = max_attempts
         self.backoff_seconds = backoff_seconds
 
@@ -165,7 +176,7 @@ class YoutubeExtractor:
                 },
             )
         finally:
-            shutil.rmtree(work_dir, ignore_errors=True)
+            cleanup_temporary_directory(work_dir)
 
     async def _info(self, url: str) -> dict:
         options = {
@@ -283,45 +294,103 @@ class YoutubeExtractor:
             await asyncio.sleep(self.backoff_seconds * (2**attempt))
         raise last_error  # pragma: no cover
 
-    async def download_video(self, url: str, work_dir: Path) -> Path:
-        """Скачивание видео для визуального анализа (Phase 7)."""
+    async def download_video(
+        self,
+        url: str,
+        work_dir: Path,
+        *,
+        byte_limit: int | None = None,
+        include_audio: bool = False,
+    ) -> Path:
+        """Download bounded source video for visual analysis or an explicit Telegram send.
+
+        A caller may impose a narrower transport limit while the extractor keeps
+        its configured cap as the upper bound for every consumer. Frame analysis
+        defaults to video-only; user delivery opts into the combined audio/video stream.
+        """
+        effective_limit = self.max_video_bytes
+        if byte_limit is not None:
+            effective_limit = min(effective_limit, byte_limit)
+        format_selector = (
+            "best[height<=720]/bestvideo[height<=720]+bestaudio/best"
+            if include_audio
+            else "bestvideo[height<=720]/best[height<=720]"
+        )
         options = {
             "quiet": True,
             "no_warnings": True,
             "noplaylist": True,
-            # Для visual analysis аудиодорожка не нужна: DASH video-only должен
-            # быть допустим, иначе часть роликов не имеет combined <=720p format.
-            "format": "bestvideo[height<=720]/best[height<=720]",
-            "max_filesize": self.max_video_bytes,
+            # Frame analysis stays video-only; an explicit send requests the audio track too.
+            "format": format_selector,
+            "max_filesize": effective_limit,
             "outtmpl": str(work_dir / "%(id)s.%(ext)s"),
             "socket_timeout": self.timeout_seconds,
         }
-        return await self._run_download(url, options, self.max_video_bytes)
+        required_streams = ("video", "audio") if include_audio else ("video",)
+        try:
+            return await self._run_download(
+                url, options, effective_limit, required_streams=required_streams
+            )
+        except AppError as exc:
+            if exc.code != "TOO_LARGE":
+                raise
+            raise MediaTooLargeError(str(exc), permanent=exc.permanent) from exc
 
-    async def _download_audio(self, url: str, work_dir: Path) -> Path:
+    async def download_audio(
+        self, url: str, work_dir: Path, *, byte_limit: int | None = None
+    ) -> Path:
+        """Expose bounded source audio to delivery without coupling it to transcription."""
+        try:
+            return await self._download_audio(url, work_dir, byte_limit=byte_limit)
+        except AppError as exc:
+            if exc.code != "TOO_LARGE":
+                raise
+            raise MediaTooLargeError(str(exc), permanent=exc.permanent) from exc
+
+    async def _download_audio(
+        self, url: str, work_dir: Path, *, byte_limit: int | None = None
+    ) -> Path:
+        effective_limit = self.max_audio_bytes
+        if byte_limit is not None:
+            effective_limit = min(effective_limit, byte_limit)
         options = {
             "quiet": True,
             "no_warnings": True,
             "noplaylist": True,
             "format": "bestaudio/best",
-            "max_filesize": self.max_audio_bytes,
+            "max_filesize": effective_limit,
             "outtmpl": str(work_dir / "%(id)s.%(ext)s"),
             "socket_timeout": self.timeout_seconds,
         }
-        return await self._run_download(url, options, self.max_audio_bytes)
+        return await self._run_download(url, options, effective_limit, required_streams=("audio",))
 
-    async def _run_download(self, url: str, options: dict, byte_limit: int) -> Path:
+    async def _run_download(
+        self,
+        url: str,
+        options: dict,
+        byte_limit: int,
+        *,
+        required_streams: tuple[str, ...],
+    ) -> Path:
+        if self._ydl_factory is default_ydl_factory:
+            return await self._run_download_worker(
+                url, options, byte_limit, required_streams=required_streams
+            )
+
         def _download() -> Path:
             with self._ydl_factory(options) as ydl:
                 info = ydl.extract_info(url, download=True)
-                filename = ydl.prepare_filename(info)
-                path = Path(filename)
-                if not path.exists():
-                    # расширение могло измениться при конвертации
-                    candidates = list(path.parent.glob(path.stem + ".*"))
-                    if not candidates:
-                        raise AppError("DOWNLOAD_FAILED", "audio file missing after download")
-                    path = candidates[0]
+                output_path = (
+                    info.get("filepath") if isinstance(info, dict) else None
+                ) or ydl.prepare_filename(info)
+                if not isinstance(output_path, str) or not output_path:
+                    raise AppError("DOWNLOAD_FAILED", "yt-dlp returned no completed output path")
+                path = Path(output_path)
+                if path.name.endswith(".part"):
+                    raise AppError("DOWNLOAD_FAILED", "yt-dlp left an incomplete video file")
+                # ❌ Удален glob fallback: отдельная аудиодорожка не заменяет готовое видео.
+                if path.is_symlink() or not path.is_file():
+                    raise AppError("DOWNLOAD_FAILED", "completed media file missing after download")
                 if path.stat().st_size > byte_limit:
                     raise AppError(
                         "TOO_LARGE",
@@ -338,3 +407,76 @@ class YoutubeExtractor:
             raise AppError("DOWNLOAD_FAILED", f"yt-dlp download failed: {exc}") from exc
         except yt_dlp.utils.YoutubeDLError as exc:
             raise AppError("DOWNLOAD_FAILED", f"yt-dlp error: {exc}") from exc
+
+    async def _run_download_worker(
+        self,
+        url: str,
+        options: dict,
+        byte_limit: int,
+        *,
+        required_streams: tuple[str, ...],
+    ) -> Path:
+        """Run production media downloads in a killable child; injected factories stay offline."""
+        download_dir = Path(options["outtmpl"]).parent
+        request = json.dumps(
+            {
+                "url": url,
+                "options": options,
+                "byte_limit": byte_limit,
+                "download_dir": str(download_dir),
+                "required_streams": list(required_streams),
+            },
+            ensure_ascii=False,
+            allow_nan=False,
+        ).encode("utf-8")
+        output = await run_killable_subprocess(
+            [sys.executable, "-m", "app.extractors.youtube_worker"],
+            request,
+            timeout_seconds=self.download_timeout_seconds,
+            output_limit_bytes=_WORKER_OUTPUT_LIMIT_BYTES,
+            operation_name="YouTube download",
+            cleanup_dir=download_dir,
+            retain_dir_on_success=True,
+        )
+
+        try:
+            response = json.loads(output)
+            if not isinstance(response, dict) or not isinstance(response.get("ok"), bool):
+                raise AppError("DOWNLOAD_FAILED", "YouTube worker returned invalid data")
+            if not response["ok"]:
+                kind = response.get("kind")
+                message = response.get("message")
+                if kind == "app":
+                    raise AppError(
+                        str(response.get("code", "DOWNLOAD_FAILED")),
+                        str(message or "YouTube download failed"),
+                        bool(response.get("permanent")),
+                    )
+                if kind == "yt_dlp":
+                    raise AppError(
+                        "DOWNLOAD_FAILED", f"yt-dlp download failed: {message or 'unknown error'}"
+                    )
+                raise AppError("DOWNLOAD_FAILED", "YouTube worker failed")
+
+            result = response.get("result")
+            prepared_path = result.get("path") if isinstance(result, dict) else None
+            if not isinstance(prepared_path, str):
+                raise AppError("DOWNLOAD_FAILED", "YouTube worker returned invalid data")
+            path = Path(prepared_path)
+            if path.name.endswith(".part"):
+                raise AppError("DOWNLOAD_FAILED", "yt-dlp left an incomplete video file")
+            # ❌ Удален parent glob fallback: worker уже проверяет итоговый файл и дорожки.
+            if path.is_symlink() or not path.is_file():
+                raise AppError("DOWNLOAD_FAILED", "completed video file missing after download")
+            if path.resolve().parent != download_dir.resolve():
+                raise AppError("DOWNLOAD_FAILED", "YouTube output escaped its temporary directory")
+            if path.stat().st_size > byte_limit:
+                raise AppError("TOO_LARGE", f"download exceeds {byte_limit} bytes", permanent=True)
+            return path
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            shutil.rmtree(download_dir, ignore_errors=True)
+            raise AppError("DOWNLOAD_FAILED", "YouTube worker returned invalid data") from exc
+        except Exception:
+            # The worker has exited before response parsing, so releasing its output is safe.
+            shutil.rmtree(download_dir, ignore_errors=True)
+            raise

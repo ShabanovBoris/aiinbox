@@ -233,6 +233,38 @@ async def test_existing_categories_passed_to_provider(session_factory):
     assert categories == [make_analysis().category]
 
 
+async def test_transcript_checkpoint_lookup_releases_read_transaction(session_factory):
+    """A media download starts only after its persisted STT lookup releases SQLite."""
+    item = await seed(session_factory)
+    async with session_factory() as session:
+        stored = await session.get(Item, item.id)
+        await ProcessingPipeline._transcript_checkpoints(session, stored)
+        assert not session.in_transaction()
+
+
+async def test_analyzer_releases_category_read_before_provider_call(session_factory):
+    """LLM latency must not keep the analysis session's SQLite read transaction open."""
+    item = await seed(session_factory)
+
+    class TransactionCheckingProvider(FakeLlmProvider):
+        session = None
+
+        async def analyze(self, content, profile, categories):
+            assert not self.session.in_transaction()
+            return await super().analyze(content, profile, categories)
+
+    provider = TransactionCheckingProvider()
+    async with session_factory() as session:
+        provider.session = session
+        await Analyzer(provider).analyze(
+            NormalizedContent(source_type=item.source_type, text="short"),
+            session,
+            item.user_id,
+            DEFAULT_PROFILE,
+            item.id,
+        )
+
+
 async def test_invalid_llm_output_fails_item_without_losing_text(session_factory):
     item = await seed(session_factory)
     provider = FakeLlmProvider(error=LlmError("INVALID_LLM_OUTPUT", "bad json"))

@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from app.config import Settings
 from app.domain.enums import ProcessingStatus, SourceType
 from app.ops import (
     backup_database,
@@ -18,12 +19,28 @@ from app.ops import (
     verify_backup_copy,
     verify_database,
 )
+from app.storage.database import make_engine
 from app.storage.models import Item, User
 
 
 def test_sqlite_database_path_handles_container_absolute_path():
     """Operational tooling must resolve the same SQLite path syntax used by Docker."""
     assert sqlite_database_path("sqlite+aiosqlite:////data/app.db") == Path("/data/app.db")
+
+
+async def test_application_sqlite_engine_uses_bounded_lock_wait(tmp_path):
+    """The production engine waits briefly for another worker's SQLite write."""
+    settings = Settings(
+        _env_file=None,
+        database_url=f"sqlite+aiosqlite:///{tmp_path / 'database.db'}",
+    )
+    engine = make_engine(settings)
+    try:
+        async with engine.connect() as connection:
+            result = await connection.exec_driver_sql("PRAGMA busy_timeout")
+            assert result.scalar_one() == 30_000
+    finally:
+        await engine.dispose()
 
 
 def test_backup_restore_roundtrip_includes_committed_wal(tmp_path):

@@ -5,7 +5,7 @@ from collections.abc import Sequence
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from app.bot.provenance import forward_original_url
-from app.domain.enums import ProcessingStatus
+from app.domain.enums import ProcessingStatus, SourceType
 from app.storage.models import Item, ItemSource
 
 
@@ -35,6 +35,35 @@ def item_keyboard(item: Item, sources: Sequence[ItemSource] | None = None) -> In
             [InlineKeyboardButton(text="🗄 Archive", callback_data=f"item:archive:{item.id}")],
         ]
     )
+    if item.processing_status is ProcessingStatus.READY:
+        video_sources = [
+            source
+            for source in sources or ()
+            if source.id is not None
+            and source.source_type in {SourceType.YOUTUBE, SourceType.INSTAGRAM}
+            and source.extraction_status == "READY"
+            and source.source_url
+        ]
+        totals = {
+            source_type: sum(source.source_type is source_type for source in video_sources)
+            for source_type in (SourceType.YOUTUBE, SourceType.INSTAGRAM)
+        }
+        ranks = {SourceType.YOUTUBE: 0, SourceType.INSTAGRAM: 0}
+        for source in video_sources:
+            ranks[source.source_type] += 1
+            label = "YouTube" if source.source_type is SourceType.YOUTUBE else "Instagram Reel"
+            if totals[source.source_type] > 1:
+                label += f" {ranks[source.source_type]}"
+            # A composite Item may contain several clips; each callback names its
+            # exact ItemSource so the delivery worker never guesses which one to send.
+            rows.append(
+                [
+                    InlineKeyboardButton(
+                        text=f"📹 Отправить {label}",
+                        callback_data=f"item:video:{item.id}:{source.id}",
+                    )
+                ]
+            )
     source_urls = []
     if sources is not None:
         source_urls = list(
