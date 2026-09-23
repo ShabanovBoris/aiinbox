@@ -13,6 +13,9 @@ dist/
 .env
 .env.*
 !.env.example
+cookies.txt
+instagram-cookies.txt
+.cookies/
 
 # Runtime data & temp artifacts
 data/

@@ -190,3 +190,18 @@ Reason: reply preview позволяет перейти к исходной ко
 
 Consequences: если исходное сообщение уже удалено или недоступно, Bot API всё
 равно отправляет результат без reply anchor.
+
+## D-021 — Instagram captions остаются Description
+
+Context: Reel caption может быть единственным доступным текстом, но он не
+подтверждает, что речь в самом видео была распознана.
+
+Decision: хранить bounded caption как `DESCRIPTION`; включать его как source
+context рядом с transcript/visual notes. Если transcript недоступен, vision не
+дал результата, а caption содержит не менее 40 символов, источник может стать
+`CAPTION_ONLY`. Не записывать caption в `TRANSCRIPT`.
+
+Reason: сохраняется полезный публичный контекст без ложного обещания STT.
+
+Consequences: `DESCRIPTION` и source metadata восстанавливают caption-only Item
+после Retry; пользовательский результат явно помечается `CAPTION_ONLY`.

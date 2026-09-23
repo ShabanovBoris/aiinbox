@@ -11,6 +11,7 @@ from app.config import Settings
 from app.domain.priority import PriorityEngine
 from app.extractors.audio import AudioExtractor
 from app.extractors.document import DocumentExtractor
+from app.extractors.instagram import InstagramExtractor
 from app.extractors.video import VideoExtractor
 from app.extractors.web import WebPageExtractor
 from app.extractors.youtube import YoutubeExtractor
@@ -114,6 +115,15 @@ def build_extractors(settings: Settings, bot) -> tuple:
         ),
         timeout_seconds=settings.web_timeout_seconds,
     )
+    instagram_extractor = InstagramExtractor(
+        transcriber=build_transcriber(settings),
+        temp_dir=Path(settings.temp_dir) / "instagram",
+        max_duration_seconds=settings.instagram_max_duration_seconds,
+        max_audio_bytes=settings.instagram_max_audio_bytes,
+        max_video_bytes=settings.instagram_max_video_bytes,
+        cookies_file=settings.instagram_cookies_file or None,
+        timeout_seconds=settings.web_timeout_seconds,
+    )
     audio_extractor = None
     video_extractor = None
     if bot is not None:
@@ -127,7 +137,14 @@ def build_extractors(settings: Settings, bot) -> tuple:
             Path(settings.temp_dir) / "video",
             max_duration_seconds=settings.max_video_duration_seconds,
         )
-    return web_extractor, audio_extractor, youtube_extractor, video_extractor, document_extractor
+    return (
+        web_extractor,
+        audio_extractor,
+        youtube_extractor,
+        video_extractor,
+        document_extractor,
+        instagram_extractor,
+    )
 
 
 async def _drain_worker_tasks(tasks: list[asyncio.Task], timeout: float) -> None:
@@ -229,6 +246,7 @@ async def run(settings: Settings) -> None:
             youtube_extractor,
             video_extractor,
             document_extractor,
+            instagram_extractor,
         ) = build_extractors(settings, bot)
         pipeline = ProcessingPipeline(
             analyzer,
@@ -238,6 +256,7 @@ async def run(settings: Settings) -> None:
             youtube_extractor,
             video_extractor,
             document_extractor=document_extractor,
+            instagram_extractor=instagram_extractor,
             visual_frame_interval_seconds=settings.video_frame_interval_seconds,
             visual_max_frames=settings.video_max_frames,
             visual_scene_threshold=settings.video_scene_threshold,

@@ -5,6 +5,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.domain.enums import ContentKind, ProcessingStatus, SourceType
+from app.extractors.instagram import is_instagram_reel_url
 from app.extractors.youtube import is_youtube_url
 from app.services.url_parsing import normalize_url, parse_message
 from app.storage.models import Content, Event, Item, ItemSource, User
@@ -129,7 +130,12 @@ def _normalized_urls(raw_urls: list[str]) -> list[tuple[SourceType, str]]:
         if normalized in seen:
             continue
         seen.add(normalized)
-        source_type = SourceType.YOUTUBE if is_youtube_url(normalized) else SourceType.WEB
+        if is_youtube_url(normalized):
+            source_type = SourceType.YOUTUBE
+        elif is_instagram_reel_url(normalized):
+            source_type = SourceType.INSTAGRAM
+        else:
+            source_type = SourceType.WEB
         result.append((source_type, normalized))
     return result
 

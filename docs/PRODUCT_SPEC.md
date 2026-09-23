@@ -84,6 +84,7 @@ notifications — durable `DeliveryWorker`.
 - plain text;
 - web URL;
 - YouTube URL;
+- public Instagram Reel URL, processed best-effort through yt-dlp;
 - Telegram voice;
 - Telegram audio;
 - Telegram video: transcript + optional representative-frame vision;
@@ -107,6 +108,10 @@ PDF не выполняется.
 Video note, direct image и остальные document formats не поддерживаются.
 Forwarded photo с caption сохраняет и анализирует caption/ссылки; само изображение
 пока не анализируется. Photo без caption остаётся неподдерживаемым.
+Instagram support is limited to one canonical Reel URL per source. Profile feeds,
+Stories and protected/private media are not crawled or bypassed. Speech uses the
+existing transcription provider; caption remains description context, and visual
+analysis uses the shared representative-frame pipeline.
 
 ## 7. Текущие non-goals
 
@@ -245,6 +250,15 @@ vision capability сохраняются `VISUAL_NOTES`, и Item получае�
 отсутствие аудио и идут по обычной retry/error policy.
 
 Vision также остаётся опциональным обогащением успешной транскрипции.
+
+Instagram Reel: only `/reel/<id>` URLs on `instagram.com` and `www.instagram.com`
+are routed to the Instagram ItemSource before generic WEB routing. yt-dlp metadata
+is fetched before media; audio/video, duration, output path and temporary storage
+are bounded. The configured cookie file is optional and operator-provisioned;
+private-account bypass and browser-cookie harvesting are unsupported. A
+meaningful caption may become a `CAPTION_ONLY` source when speech is unavailable;
+it is stored as `DESCRIPTION`, never `TRANSCRIPT`. Transcript and visual notes
+reuse the existing source-local durable checkpoints and aggregate analysis.
 
 ## 23. Анализ визуальной части видео
 
@@ -465,12 +479,14 @@ FAILED → QUEUED. `READY/PARTIAL` с failed child source также можно 
 Основные коды: `UNSUPPORTED_SOURCE`, `DOWNLOAD_FAILED`, `TOO_LARGE`,
 `EXTRACTION_FAILED`, `TRANSCRIPTION_FAILED`, `LLM_FAILED`,
 `INVALID_LLM_OUTPUT`, `TIMEOUT`, `PROCESSING_TIMEOUT`,
-`SECURITY_REJECTED`, `UNKNOWN`.
+`SECURITY_REJECTED`, `AUTH_REQUIRED`, `RATE_LIMITED`, `UNKNOWN`.
 
 ## 58. Retry policy
 
 Transient external failures: bounded attempts + exponential backoff.
 Permanent 4xx/security/unsupported/invalid input не retry-ятся.
+Instagram `AUTH_REQUIRED` permits an explicit user Retry after the operator updates
+the optional cookie file; workers do not automatically requeue failed Items.
 
 ## 59. LLM failure
 
@@ -513,6 +529,8 @@ Defaults:
 - web download: 5 MB;
 - YouTube duration: 7200 s;
 - YouTube audio/video: 50 MB;
+- Instagram Reel duration: 7200 s;
+- Instagram Reel audio/video: 50 MB;
 - subtitles: 2 MB.
 
 Все значения задаются config и валидируются на startup.

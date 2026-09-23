@@ -36,7 +36,7 @@ from app.llm.openai import SYSTEM_PROMPT, build_user_message
 from app.services.analysis import Analyzer
 from app.services.ingestion import ingest_media, ingest_message
 from app.services.processing import ProcessingPipeline
-from app.storage.models import Content, Event, Item
+from app.storage.models import Content, Event, Item, ItemSource
 from app.workers.processing import ProcessingWorker
 from tests.fakes import FakeDownloader, FakeLlmProvider, FakeTranscriber, make_analysis
 
@@ -416,6 +416,46 @@ async def test_forwarded_photo_hidden_caption_link_routes_to_web(
             )
         )
         assert source_text == f"{caption}\nhttps://github.com/masong/review-prompts"
+
+
+async def test_forwarded_hidden_reel_link_and_article_stay_one_item(
+    settings, session_factory, monkeypatch
+):
+    sent = _capture_answers(monkeypatch)
+    text = "Сравнить Reel с этой статьёй https://example.com/article"
+    reel_url = "https://www.instagram.com/reel/ABC123/"
+    message = _message(
+        _channel_origin(),
+        text=text,
+        entities=[
+            MessageEntity(
+                type="text_link",
+                offset=text.index("Reel"),
+                length=len("Reel"),
+                url=reel_url,
+            )
+        ],
+    )
+
+    await on_text(message, settings, session_factory)
+
+    assert sent == ["Принял Reel. Разбираю…"]
+    async with session_factory() as session:
+        item = await session.scalar(select(Item))
+        sources = (
+            await session.scalars(
+                select(ItemSource)
+                .where(ItemSource.item_id == item.id)
+                .order_by(ItemSource.source_index)
+            )
+        ).all()
+    assert item.source_type is SourceType.TEXT
+    assert item.user_note == ""
+    assert item.source_metadata_json["forwarded"] is True
+    assert [(source.source_type, source.source_url) for source in sources] == [
+        (SourceType.WEB, "https://example.com/article"),
+        (SourceType.INSTAGRAM, reel_url),
+    ]
 
 
 async def test_forwarded_photo_is_matched_by_router(settings, session_factory):

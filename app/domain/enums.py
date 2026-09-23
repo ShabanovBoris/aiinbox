@@ -18,13 +18,15 @@ class ItemState(enum.Enum):
 
 
 # Источник содержимого. Расширяется по фазам (WEB — Phase 3, VOICE/AUDIO — Phase 5,
-# YOUTUBE — Phase 6); после NormalizedContent все источники идут по одному пайплайну.
+# YOUTUBE — Phase 6, INSTAGRAM — PM-04); после NormalizedContent все источники
+# идут по одному пайплайну.
 class SourceType(enum.Enum):
     TEXT = "TEXT"
     WEB = "WEB"
     VOICE = "VOICE"
     AUDIO = "AUDIO"
     YOUTUBE = "YOUTUBE"
+    INSTAGRAM = "INSTAGRAM"
     VIDEO = "VIDEO"
     DOCUMENT = "DOCUMENT"
 

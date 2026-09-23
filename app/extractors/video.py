@@ -36,7 +36,7 @@ class VideoExtractor:
         self.temp_dir = Path(temp_dir)
         self.max_duration_seconds = max_duration_seconds
         self._audio_converter = audio_converter or _extract_audio_track
-        self._duration_probe = duration_probe or _probe_media_duration
+        self._duration_probe = duration_probe or probe_media_duration
 
     async def extract(
         self,
@@ -131,8 +131,8 @@ def _extract_audio_track(video_path: Path, audio_path: Path) -> None:
         )
 
 
-def _probe_media_duration(video_path: Path) -> int:
-    """Validate unknown Telegram video duration before expensive media processing.
+def probe_media_duration(video_path: Path) -> int:
+    """Probe unknown media duration before expensive processing in video adapters.
 
     ffprobe is part of the ffmpeg runtime already required by the video pipeline;
     rounding up prevents a fractional duration just over the limit from slipping

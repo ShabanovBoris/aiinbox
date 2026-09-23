@@ -1,9 +1,24 @@
+from collections.abc import Sequence
+
 from app.bot.provenance import forward_source_label
 from app.domain.enums import SourceType
 from app.domain.models import UserProfile
-from app.storage.models import Item
+from app.storage.models import Item, ItemSource
 
 _TELEGRAM_MAX_MESSAGE_LENGTH = 4096
+
+
+def format_instagram_failure_reason(error_code: str | None) -> str:
+    """Project an Instagram source error into concise user-facing Russian copy.
+
+    ItemSource remains the canonical owner of the failure code; this shared
+    projection keeps both partial-result and all-failed Telegram messages aligned.
+    """
+    return {
+        "AUTH_REQUIRED": "доступ требует авторизации Instagram",
+        "RATE_LIMITED": "обработка временно ограничена Instagram",
+        "UNSUPPORTED_SOURCE": "ссылка на этот Reel не поддерживается",
+    }.get(error_code or "", "обработать Reel не удалось")
 
 
 def _fit_message(lines: list[str]) -> str:
@@ -26,7 +41,7 @@ def _fit_message(lines: list[str]) -> str:
     return "\n".join(output)
 
 
-def format_ready_item(item: Item) -> str:
+def format_ready_item(item: Item, sources: Sequence[ItemSource] | None = None) -> str:
     """Компактный результат анализа для Telegram (PRODUCT_SPEC §14): без перегруза."""
     lines = ["✓ Сохранено", "", f"🎯 {item.title}"]
     lines.append(f"Категория: {item.category}")
@@ -39,13 +54,30 @@ def format_ready_item(item: Item) -> str:
         lines.append(f"Источник: {source_label}")
     if item.analysis_completeness == "VISUAL_ONLY":
         lines.append("Анализ: только по визуальным кадрам — транскрипт недоступен")
+    elif item.analysis_completeness == "CAPTION_ONLY":
+        lines.append("Анализ: только по подписи Reel — транскрипт речи недоступен")
     elif (
-        item.source_type in (SourceType.YOUTUBE, SourceType.VIDEO)
-        and item.analysis_completeness == "TRANSCRIPT_ONLY"
-    ):
+        item.source_type in (SourceType.YOUTUBE, SourceType.VIDEO, SourceType.INSTAGRAM)
+        or any(
+            source.source_type in (SourceType.YOUTUBE, SourceType.VIDEO, SourceType.INSTAGRAM)
+            for source in sources or ()
+        )
+    ) and item.analysis_completeness == "TRANSCRIPT_ONLY":
         lines.append("Анализ: по транскрипту, без визуальной части")
     elif item.analysis_completeness == "PARTIAL":
         lines.append("Анализ: частичный — не весь вложенный контент удалось обработать")
+        instagram_failure = next(
+            (
+                source
+                for source in sources or ()
+                if source.source_type is SourceType.INSTAGRAM
+                and source.extraction_status == "FAILED"
+            ),
+            None,
+        )
+        if instagram_failure:
+            reason = format_instagram_failure_reason(instagram_failure.error_code)
+            lines.append(f"Reel: {reason}.")
     if item.summary:
         lines.append("")
         lines.append(item.summary)

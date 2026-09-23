@@ -83,6 +83,25 @@ https://www.youtube.com/watch?v=...
 получил текст, бот попробует анализ только по кадрам; такой результат будет
 `VISUAL_ONLY` и появится, только если visual analysis успешно завершится.
 
+### Instagram Reels
+
+Можно отправить ссылку на конкретный Reel:
+
+```text
+https://www.instagram.com/reel/ABC123/
+```
+
+Поддерживается публичное извлечение через yt-dlp. Доступный звук транскрибируется
+через настроенный STT provider; при включённой vision-модели бот анализирует
+representative frames. Подпись сохраняется отдельно как описание и не считается
+транскриптом. Если речи нет и подпись содержательна, Item может быть обработан как
+`CAPTION_ONLY`; если доступны только кадры — как `VISUAL_ONLY`.
+
+Лимиты по умолчанию: 2 часа и 50 MB для audio и video. Instagram может требовать
+cookies или временно ограничивать доступ; бот сохранит ссылку и покажет
+контролируемую ошибку. Для необязательной ручной настройки cookie file см.
+[RUNBOOK](RUNBOOK.md). Stories, профили и private-account обход не поддерживаются.
+
 ### Голосовые сообщения
 
 Telegram voice message можно отправить напрямую боту. Оно сохранится как
@@ -161,8 +180,10 @@ Telegram не предоставляет постоянную ссылку на 
 
 ### Что не поддерживается
 
-Video note и direct image не обрабатываются. Если Telegram прислал видео как
-`Document` (`video/*` или распознаваемое video-расширение), оно всё равно идёт в
+Video note и direct image не обрабатываются. Instagram поддерживается только для
+конкретных Reel URL; extraction зависит от текущего поведения yt-dlp и Instagram.
+Если Telegram прислал видео как `Document` (`video/*` или распознаваемое
+video-расширение), оно всё равно идёт в
 VIDEO pipeline. Обычный Telegram video и forwarded video используют transcript
 и optional vision. Из документов принимаются только PDF/TXT/Markdown/DOCX.
 
@@ -472,6 +493,7 @@ https://example.com/c
 - URL PDF использует тот же web download cap 5 MB и SSRF-защиту;
 - voice/audio ограничены 20 MB по умолчанию;
 - YouTube ограничен 2 часами и media caps из конфигурации;
+- Instagram Reel ограничен `INSTAGRAM_MAX_DURATION_SECONDS` и отдельными audio/video caps;
 - для OpenRouter long-audio STT и video visual analysis нужен `ffmpeg`;
 - без vision-модели YouTube/Telegram video всё равно обрабатываются по transcript;
 - вывод Telegram ограничивается 4096 символами, поэтому длинные ответы

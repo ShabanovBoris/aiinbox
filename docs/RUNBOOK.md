@@ -29,6 +29,14 @@ uv run python -m app.main
 Поддержаны `LLM_PROVIDER=openai` и `LLM_PROVIDER=openrouter`.
 OpenRouter endpoint по умолчанию — `https://openrouter.ai/api/v1`.
 
+Instagram Reels обрабатываются без авторизации по умолчанию. При необходимости
+оператор может вручную положить yt-dlp cookies в файл вне репозитория и указать
+`INSTAGRAM_COOKIES_FILE=/absolute/path/to/cookies.txt`. Ограничьте права файла
+владельцем приложения; не добавляйте cookies в Git, SQLite backup или export.
+Файл не читается из browser profile и его содержимое не логируется. Defaults:
+`INSTAGRAM_MAX_DURATION_SECONDS=7200`, `INSTAGRAM_MAX_AUDIO_BYTES=50000000` и
+`INSTAGRAM_MAX_VIDEO_BYTES=50000000`.
+
 ## Docker
 
 ```bash
@@ -390,6 +398,19 @@ Playwright fallback отключён. Слишком короткая стран
 browser.
 
 `SECURITY_REJECTED` означает, что URL/IP/redirect нарушил SSRF policy.
+
+## Instagram extraction
+
+Instagram поддерживает только URL вида `https://www.instagram.com/reel/<id>/` и
+`https://instagram.com/reel/<id>/`. Один Reel становится одним ItemSource внутри
+исходного Telegram Item. yt-dlp сначала получает metadata, затем скачивает только
+нужное media; длительность и фактический размер файла проверяются до STT/frame
+analysis. Временные файлы удаляются после обработки.
+
+`AUTH_REQUIRED` означает, что Instagram не выдал media без авторизации. Если
+оператор настроил cookie file, проверьте доступность указанного файла и нажмите
+Retry у Item. `RATE_LIMITED` — временное ограничение платформы; повторите Retry
+позже. Не используйте browser-cookie harvesting, private API или обход защиты.
 
 ## Shutdown / restart
 

@@ -233,12 +233,13 @@ def test_production_composition_wires_youtube_extractor(tmp_path):
         openai_transcription_model="w",
         temp_dir=str(tmp_path),
     )
-    web, audio, youtube, video, documents = build_extractors(settings, bot=None)
+    web, audio, youtube, video, documents, instagram = build_extractors(settings, bot=None)
     assert web is not None
     assert youtube is not None
     assert audio is None  # headless: bot отсутствует
     assert video is None
     assert documents is not None
+    assert instagram is not None
 
 
 def test_www_youtube_nocookie_classified():

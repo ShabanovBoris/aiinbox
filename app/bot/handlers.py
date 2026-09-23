@@ -13,6 +13,7 @@ from app.bot.provenance import normalize_forward_origin, text_with_entity_urls
 from app.config import Settings
 from app.domain.enums import ItemState, ProcessingStatus, SourceType
 from app.extractors.document import document_format_hint, safe_document_file_name
+from app.extractors.instagram import is_instagram_reel_url
 from app.services.actions import apply_item_action, record_item_events, set_item_interest
 from app.services.ingestion import ingest_media, ingest_message
 from app.services.notifications import (
@@ -28,13 +29,14 @@ from app.services.retrieval import (
     list_inbox,
     search_items,
 )
+from app.services.url_parsing import find_urls
 from app.storage.models import Item, ItemSource
 
 log = logging.getLogger(__name__)
 
 HELP_TEXT = (
-    "Personal AI Inbox — отправь или перешли текст, URL, voice/audio/video, документ "
-    "или YouTube-ссылку.\n\n"
+    "Personal AI Inbox — отправь или перешли текст, URL, voice/audio/video, документ, "
+    "YouTube-ссылку или Instagram Reel.\n\n"
     "Команды:\n"
     "/today — приоритетные Items на сегодня\n"
     "/inbox — последние Items\n"
@@ -140,7 +142,11 @@ async def on_text(
     )
     ack_lines = []
     if result.items:
-        ack_lines.append("Принял. Разбираю…")
+        ack_lines.append(
+            "Принял Reel. Разбираю…"
+            if any(is_instagram_reel_url(url) for url in find_urls(text))
+            else "Принял. Разбираю…"
+        )
     if result.duplicates:
         ack_lines.append("Часть ссылок уже сохранена — дубли пропустил.")
     if ack_lines:

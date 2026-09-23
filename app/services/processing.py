@@ -14,6 +14,7 @@ from app.domain.priority import PriorityEngine
 from app.errors import AppError
 from app.extractors.audio import AudioExtractor
 from app.extractors.document import DocumentExtractor
+from app.extractors.instagram import InstagramExtractor
 from app.extractors.text import TextExtractor
 from app.extractors.video import VideoExtractor
 from app.extractors.web import WebPageExtractor
@@ -52,6 +53,7 @@ class ProcessingPipeline:
         visual_max_frames: int = 120,
         visual_scene_threshold: float = 0.35,
         document_extractor: DocumentExtractor | None = None,
+        instagram_extractor: InstagramExtractor | None = None,
     ):
         self.analyzer = analyzer
         self.priority = priority
@@ -60,6 +62,7 @@ class ProcessingPipeline:
         self.youtube_extractor = youtube_extractor
         self.video_extractor = video_extractor
         self.document_extractor = document_extractor
+        self.instagram_extractor = instagram_extractor
         self.visual_frame_interval_seconds = visual_frame_interval_seconds
         self.visual_max_frames = visual_max_frames
         self.visual_scene_threshold = visual_scene_threshold
@@ -206,9 +209,13 @@ class ProcessingPipeline:
         if content.metadata.get("source_failures"):
             return "PARTIAL"
 
+        successful_source_count = int(content.metadata.get("successful_source_count") or 0)
+        caption_only_sources = int(content.metadata.get("caption_only_source_count") or 0)
+        if successful_source_count and caption_only_sources == successful_source_count:
+            return "CAPTION_ONLY"
+
         visual_only_sources = int(content.metadata.get("visual_only_source_count") or 0)
         if visual_only_sources:
-            successful_source_count = int(content.metadata.get("successful_source_count") or 0)
             return "VISUAL_ONLY" if visual_only_sources == successful_source_count else "PARTIAL"
 
         # ❌ Удалена зависимость completeness от parent Item.source_type: composite
@@ -216,18 +223,26 @@ class ProcessingPipeline:
         source_types = set(content.metadata.get("successful_source_types") or [])
         if not source_types:
             source_types = {content.source_type.value}
+        transcript_source_count = int(content.metadata.get("transcript_source_count") or 0)
         transcript_types = {
             SourceType.VOICE.value,
             SourceType.AUDIO.value,
             SourceType.YOUTUBE.value,
             SourceType.VIDEO.value,
+            SourceType.INSTAGRAM.value,
         }
-        if source_types & transcript_types:
+        has_transcript = (
+            transcript_source_count > 0
+            if "transcript_source_count" in content.metadata
+            else bool(source_types & transcript_types)
+        )
+        if has_transcript:
             visual_source_count = int(content.metadata.get("visual_source_count") or 0)
             visual_with_notes = int(content.metadata.get("visual_source_count_with_notes") or 0)
             if not content.metadata.get("successful_source_types") and content.source_type in (
                 SourceType.YOUTUBE,
                 SourceType.VIDEO,
+                SourceType.INSTAGRAM,
             ):
                 visual_source_count = 1
                 visual_with_notes = int(bool(visual_notes or content.metadata.get("visual_notes")))
@@ -315,6 +330,7 @@ class ProcessingPipeline:
         source: Item | ItemSource,
         source_id: int | None,
         transcript_error: AppError,
+        fallback_content: NormalizedContent | None = None,
     ) -> NormalizedContent:
         """Promote transcript gaps only after a durable visual source checkpoint.
 
@@ -325,19 +341,39 @@ class ProcessingPipeline:
             # Legacy parent Items lack a source-level checkpoint for this transition.
             raise transcript_error
 
-        content = NormalizedContent(
+        content = fallback_content or NormalizedContent(
             source_type=source.source_type,
             text=_VISUAL_ONLY_VIDEO_CONTEXT,
             url=source.source_url if source.source_type is SourceType.YOUTUBE else None,
             user_note=item.user_note or None,
             duration_seconds=source.content_duration_seconds,
-            metadata={
-                "visual_only": True,
-                "transcript_error_code": transcript_error.code,
-            },
+            metadata={},
         )
+        content.text = _VISUAL_ONLY_VIDEO_CONTEXT
+        content.metadata["visual_only"] = True
+        content.metadata["transcript_error_code"] = transcript_error.code
+        content.duration_seconds = content.duration_seconds or source.content_duration_seconds
         visual_error = await self._enrich_source_visual(session, item, source, content, source_id)
         if not content.metadata.get("visual_notes"):
+            description = content.metadata.get("description_excerpt")
+            if (
+                source.source_type is SourceType.INSTAGRAM
+                and isinstance(description, str)
+                and len(description.strip()) >= 40
+            ):
+                # A meaningful caption can keep a silent/empty Reel useful, but
+                # its durable DESCRIPTION kind and completeness label stay distinct
+                # from a transcript.
+                content.text = description
+                content.source_context = None
+                content.metadata.pop("visual_only", None)
+                content.metadata["caption_only"] = True
+                if isinstance(source, ItemSource):
+                    source.metadata_json = {
+                        **(source.metadata_json or {}),
+                        "instagram_caption_only": True,
+                    }
+                return content
             if visual_error is not None:
                 source.metadata_json = {
                     **(source.metadata_json or {}),
@@ -352,8 +388,16 @@ class ProcessingPipeline:
 
         source.metadata_json = {
             **(source.metadata_json or {}),
-            "video_visual_only": True,
-            "video_transcript_error_code": transcript_error.code,
+            (
+                "instagram_visual_only"
+                if source.source_type is SourceType.INSTAGRAM
+                else "video_visual_only"
+            ): True,
+            (
+                "instagram_transcript_error_code"
+                if source.source_type is SourceType.INSTAGRAM
+                else "video_transcript_error_code"
+            ): transcript_error.code,
         }
         log.info(
             "video source continues with visual-only content item_id=%s "
@@ -372,6 +416,101 @@ class ProcessingPipeline:
         source_id: int | None,
     ) -> NormalizedContent:
         """Run one source adapter; parent Item owns the eventual combined analysis."""
+        if source.source_type is SourceType.INSTAGRAM:
+            if self.instagram_extractor is None:
+                raise AppError("UNSUPPORTED_SOURCE", "Instagram extractor not wired")
+            completed_segments, on_segment = await self._transcript_checkpoints(
+                session, item, source_id
+            )
+            content = await self.instagram_extractor.extract(
+                source,
+                completed_segments=completed_segments,
+                on_segment=on_segment,
+            )
+            self._record_instagram_source_metadata(source, content)
+            description = content.metadata.get("description_excerpt")
+            if source_id is not None:
+                await session.execute(
+                    delete(Content).where(
+                        Content.item_id == item.id,
+                        Content.source_id == source_id,
+                        Content.kind == ContentKind.DESCRIPTION,
+                    )
+                )
+                if description:
+                    session.add(
+                        Content(
+                            item_id=item.id,
+                            source_id=source_id,
+                            kind=ContentKind.DESCRIPTION,
+                            text=description,
+                            metadata_json={
+                                "title": content.title,
+                                "canonical_url": content.url,
+                                "instagram_id": content.metadata.get("instagram_id"),
+                                "creator": content.metadata.get("creator"),
+                                "username": content.metadata.get("username"),
+                            },
+                        )
+                    )
+
+            transcript_error_code = content.metadata.get("transcript_error_code")
+            if transcript_error_code:
+                # Caption and provider metadata are committed before optional vision,
+                # so a crash after VISUAL_NOTES does not lose source context.
+                await session.commit()
+                transcript_error = AppError(
+                    str(transcript_error_code), "Instagram Reel has no usable transcript"
+                )
+                content = await self._visual_only_fallback(
+                    session,
+                    item,
+                    source,
+                    source_id,
+                    transcript_error,
+                    fallback_content=content,
+                )
+                self._record_instagram_source_metadata(source, content)
+                await session.commit()
+            else:
+                if source_id is not None:
+                    session.add(
+                        Content(
+                            item_id=item.id,
+                            source_id=source_id,
+                            kind=ContentKind.TRANSCRIPT,
+                            text=content.text,
+                            metadata_json={
+                                "duration_seconds": content.duration_seconds,
+                                "via_stt": content.metadata.get("via_stt"),
+                                "title": content.title,
+                                "canonical_url": content.url,
+                                "author": content.author,
+                                "instagram_id": content.metadata.get("instagram_id"),
+                                "username": content.metadata.get("username"),
+                            },
+                        )
+                    )
+                    await self._delete_transcript_checkpoints(session, item.id, source_id)
+                content.duration_seconds = (
+                    source.content_duration_seconds or content.duration_seconds
+                )
+                # Commit STT before downloading again for optional frame analysis.
+                await session.commit()
+                await self._enrich_source_visual(session, item, source, content, source_id)
+            log.info(
+                "instagram extraction item_id=%s source_id=%s stage=EXTRACTING "
+                "duration_seconds=%s result=%s",
+                item.id,
+                source_id,
+                content.duration_seconds,
+                "CAPTION_ONLY"
+                if content.metadata.get("caption_only")
+                else "VISUAL_ONLY"
+                if content.metadata.get("visual_only")
+                else "TRANSCRIPT",
+            )
+            return content
         if source.source_type is SourceType.YOUTUBE:
             if self.youtube_extractor is None:
                 raise AppError("UNSUPPORTED_SOURCE", "youtube extractor not wired")
@@ -553,6 +692,8 @@ class ProcessingPipeline:
         temp_root = None
         if source.source_type is SourceType.YOUTUBE and self.youtube_extractor is not None:
             temp_root = Path(self.youtube_extractor.temp_dir)
+        elif source.source_type is SourceType.INSTAGRAM and self.instagram_extractor is not None:
+            temp_root = Path(self.instagram_extractor.temp_dir)
         elif source.source_type is SourceType.VIDEO and self.video_extractor is not None:
             temp_root = Path(self.video_extractor.temp_dir)
         if temp_root is None:
@@ -563,6 +704,8 @@ class ProcessingPipeline:
             work_dir.mkdir(parents=True, exist_ok=True)
             if source.source_type is SourceType.YOUTUBE:
                 video = await self.youtube_extractor.download_video(source.source_url, work_dir)
+            elif source.source_type is SourceType.INSTAGRAM:
+                video = await self.instagram_extractor.download_video(source, work_dir)
             else:
                 video = await self.video_extractor.download_video(source, work_dir)
             frames = await asyncio.to_thread(
@@ -617,6 +760,31 @@ class ProcessingPipeline:
             return AppError("VISUAL_FAILED", "video visual analysis failed")
         finally:
             shutil.rmtree(work_dir, ignore_errors=True)
+
+    @staticmethod
+    def _record_instagram_source_metadata(
+        source: Item | ItemSource, content: NormalizedContent
+    ) -> None:
+        """Persist only bounded, stable Reel facts needed for source diagnosis/resume."""
+        if not isinstance(source, ItemSource):
+            return
+        source_metadata = dict(source.metadata_json or {})
+        fields = {
+            "instagram_id": "instagram_id",
+            "creator": "creator",
+            "username": "username",
+            "via_stt": "via_stt",
+            "caption_only": "instagram_caption_only",
+            "visual_only": "instagram_visual_only",
+            "transcript_error_code": "instagram_transcript_error_code",
+        }
+        for stored_key in fields.values():
+            source_metadata.pop(stored_key, None)
+        for content_key, stored_key in fields.items():
+            value = content.metadata.get(content_key)
+            if value is not None:
+                source_metadata[stored_key] = value
+        source.metadata_json = source_metadata or None
 
     @staticmethod
     async def _item_sources(session: AsyncSession, item_id: int) -> list[ItemSource]:
@@ -690,8 +858,8 @@ class ProcessingPipeline:
                     lines.append(f"Title: {content.title}")
                 if content.author:
                     lines.append(f"Author: {content.author}")
-                description = content.metadata.get("description_excerpt")
-                if description:
+                description = content.source_context or content.metadata.get("description_excerpt")
+                if description and not content.metadata.get("caption_only"):
                     lines.append(f"Description: {description}")
                 visual_notes = content.metadata.get("visual_notes")
                 if visual_notes:
@@ -704,8 +872,30 @@ class ProcessingPipeline:
         visual_sources = [
             content
             for content in extracted
-            if content.source_type in (SourceType.YOUTUBE, SourceType.VIDEO)
+            if content.source_type
+            in (
+                SourceType.YOUTUBE,
+                SourceType.VIDEO,
+                SourceType.INSTAGRAM,
+            )
+            and not content.metadata.get("caption_only")
         ]
+        transcript_source_types = {
+            SourceType.VOICE,
+            SourceType.AUDIO,
+            SourceType.YOUTUBE,
+            SourceType.VIDEO,
+            SourceType.INSTAGRAM,
+        }
+        transcript_source_count = sum(
+            content.source_type in transcript_source_types
+            and not content.metadata.get("caption_only")
+            and not content.metadata.get("visual_only")
+            for content in extracted
+        )
+        caption_only_source_count = sum(
+            bool(content.metadata.get("caption_only")) for content in extracted
+        )
         visual_only_source_count = sum(
             bool(content.metadata.get("visual_only")) for content in visual_sources
         )
@@ -716,6 +906,8 @@ class ProcessingPipeline:
                 "successful_source_count": len(extracted),
                 "successful_source_types": [content.source_type.value for content in extracted],
                 "source_failures": failures,
+                "transcript_source_count": transcript_source_count,
+                "caption_only_source_count": caption_only_source_count,
                 "visual_source_count": len(visual_sources),
                 "visual_only_source_count": visual_only_source_count,
                 "visual_source_count_with_notes": sum(
@@ -723,13 +915,18 @@ class ProcessingPipeline:
                 ),
             }
         )
+        source_context_parts = []
+        if forwarded and message_text:
+            source_context_parts.append(message_text)
+        if single is not None and single.source_context and not single.metadata.get("caption_only"):
+            source_context_parts.append(single.source_context)
         return NormalizedContent(
             source_type=single.source_type if single else item.source_type,
             title=single.title if single else None,
             text=combined_text,
             url=single.url if single else None,
             user_note=(item.user_note or None) if not forwarded else None,
-            source_context=message_text if forwarded and message_text else None,
+            source_context="\n\n".join(source_context_parts) or None,
             author=single.author if single else None,
             language=single.language if single else None,
             duration_seconds=single.duration_seconds if single else None,
@@ -840,7 +1037,10 @@ class ProcessingPipeline:
             return content
         source_text = await ProcessingPipeline._stored_source_text(session, item.id)
         if source_text:
-            content.source_context = source_text
+            if not content.source_context or not content.source_context.startswith(source_text):
+                content.source_context = "\n\n".join(
+                    part for part in (source_text, content.source_context) if part
+                )
         return content
 
     @staticmethod
@@ -888,6 +1088,7 @@ class ProcessingPipeline:
             SourceType.AUDIO,
             SourceType.YOUTUBE,
             SourceType.VIDEO,
+            SourceType.INSTAGRAM,
         ):
             kind = ContentKind.TRANSCRIPT
         elif source.source_type is SourceType.DOCUMENT:
@@ -906,7 +1107,22 @@ class ProcessingPipeline:
         )
         row = await session.scalar(query.order_by(Content.id.desc()))
         if row is None:
-            if source.source_type in (SourceType.VIDEO, SourceType.YOUTUBE):
+            if source.source_type in (
+                SourceType.VIDEO,
+                SourceType.YOUTUBE,
+                SourceType.INSTAGRAM,
+            ):
+                description_row = None
+                if source.source_type is SourceType.INSTAGRAM:
+                    description_row = await session.scalar(
+                        select(Content)
+                        .where(
+                            Content.item_id == item.id,
+                            Content.source_id == source.id,
+                            Content.kind == ContentKind.DESCRIPTION,
+                        )
+                        .order_by(Content.id.desc())
+                    )
                 visual_notes = await session.scalar(
                     select(Content.text).where(
                         Content.item_id == item.id,
@@ -918,14 +1134,51 @@ class ProcessingPipeline:
                     return NormalizedContent(
                         source_type=source.source_type,
                         text=_VISUAL_ONLY_VIDEO_CONTEXT,
-                        url=source.source_url if source.source_type is SourceType.YOUTUBE else None,
+                        url=source.source_url
+                        if source.source_type in (SourceType.YOUTUBE, SourceType.INSTAGRAM)
+                        else None,
                         duration_seconds=source.content_duration_seconds,
+                        source_context=description_row.text if description_row else None,
                         metadata={
                             "visual_only": True,
                             "transcript_error_code": (source.metadata_json or {}).get(
-                                "video_transcript_error_code"
+                                "instagram_transcript_error_code"
+                                if source.source_type is SourceType.INSTAGRAM
+                                else "video_transcript_error_code"
                             ),
+                            "description_excerpt": description_row.text
+                            if description_row
+                            else None,
                             "visual_notes": visual_notes,
+                        },
+                    )
+            if source.source_type is SourceType.INSTAGRAM and (source.metadata_json or {}).get(
+                "instagram_caption_only"
+            ):
+                description_row = await session.scalar(
+                    select(Content)
+                    .where(
+                        Content.item_id == item.id,
+                        Content.source_id == source.id,
+                        Content.kind == ContentKind.DESCRIPTION,
+                    )
+                    .order_by(Content.id.desc())
+                )
+                if description_row is not None:
+                    description_meta = description_row.metadata_json or {}
+                    return NormalizedContent(
+                        source_type=SourceType.INSTAGRAM,
+                        title=description_meta.get("title"),
+                        text=description_row.text,
+                        url=description_meta.get("canonical_url") or source.source_url,
+                        author=description_meta.get("creator"),
+                        duration_seconds=source.content_duration_seconds,
+                        metadata={
+                            "instagram_id": description_meta.get("instagram_id"),
+                            "creator": description_meta.get("creator"),
+                            "username": description_meta.get("username"),
+                            "description_excerpt": description_row.text,
+                            "caption_only": True,
                         },
                     )
             return None
@@ -961,7 +1214,28 @@ class ProcessingPipeline:
                 "via_stt": meta.get("via_stt"),
                 "cues": meta.get("cues"),
             }
-        if source.source_type in (SourceType.YOUTUBE, SourceType.VIDEO):
+        if source.source_type is SourceType.INSTAGRAM:
+            description_row = await session.scalar(
+                select(Content)
+                .where(
+                    Content.item_id == item.id,
+                    Content.source_id == source.id,
+                    Content.kind == ContentKind.DESCRIPTION,
+                )
+                .order_by(Content.id.desc())
+            )
+            description = description_row.text if description_row else None
+            description_meta = description_row.metadata_json or {} if description_row else {}
+            content.url = meta.get("canonical_url") or source.source_url
+            content.source_context = description
+            content.metadata = {
+                "description_excerpt": description,
+                "instagram_id": meta.get("instagram_id") or description_meta.get("instagram_id"),
+                "creator": meta.get("author") or description_meta.get("creator"),
+                "username": meta.get("username") or description_meta.get("username"),
+                "via_stt": meta.get("via_stt"),
+            }
+        if source.source_type in (SourceType.YOUTUBE, SourceType.VIDEO, SourceType.INSTAGRAM):
             visual_row = await session.scalar(
                 select(Content).where(
                     Content.item_id == item.id,
@@ -978,7 +1252,12 @@ class ProcessingPipeline:
         session: AsyncSession, item: Item
     ) -> NormalizedContent | None:
         kind, url = ContentKind.WEB_TEXT, item.source_url
-        if item.source_type in (SourceType.VOICE, SourceType.AUDIO, SourceType.YOUTUBE):
+        if item.source_type in (
+            SourceType.VOICE,
+            SourceType.AUDIO,
+            SourceType.YOUTUBE,
+            SourceType.INSTAGRAM,
+        ):
             kind, url = ContentKind.TRANSCRIPT, None
         elif item.source_type is not SourceType.WEB:
             # Forwarded TEXT lives in contents; ordinary TEXT keeps legacy user_note storage.
