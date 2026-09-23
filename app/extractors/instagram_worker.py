@@ -3,6 +3,7 @@
 import json
 import math
 import sys
+from contextlib import redirect_stdout
 from pathlib import Path
 from typing import Any
 
@@ -98,7 +99,10 @@ def main() -> None:
     """Handle one parent request and emit a compact, bounded JSON response."""
     try:
         request = json.load(sys.stdin)
-        response = {"ok": True, "result": execute(request)}
+        # stdout is the worker's machine-readable protocol; keep provider output
+        # away from it so the parent can decode exactly one JSON response.
+        with redirect_stdout(sys.stderr):
+            response = {"ok": True, "result": execute(request)}
     except AppError as exc:
         response = {
             "ok": False,
