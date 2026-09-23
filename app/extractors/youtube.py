@@ -26,7 +26,7 @@ import yt_dlp
 
 from app.domain.enums import SourceType
 from app.domain.models import NormalizedContent
-from app.errors import AppError
+from app.errors import AppError, MediaTooLargeError
 from app.extractors.subprocess_runner import (
     cleanup_temporary_directory,
     run_killable_subprocess,
@@ -326,41 +326,71 @@ class YoutubeExtractor:
             "outtmpl": str(work_dir / "%(id)s.%(ext)s"),
             "socket_timeout": self.timeout_seconds,
         }
-        return await self._run_download(url, options, effective_limit)
+        required_streams = ("video", "audio") if include_audio else ("video",)
+        try:
+            return await self._run_download(
+                url, options, effective_limit, required_streams=required_streams
+            )
+        except AppError as exc:
+            if exc.code != "TOO_LARGE":
+                raise
+            raise MediaTooLargeError(str(exc), permanent=exc.permanent) from exc
 
-    async def _download_audio(self, url: str, work_dir: Path) -> Path:
+    async def download_audio(
+        self, url: str, work_dir: Path, *, byte_limit: int | None = None
+    ) -> Path:
+        """Expose bounded source audio to delivery without coupling it to transcription."""
+        try:
+            return await self._download_audio(url, work_dir, byte_limit=byte_limit)
+        except AppError as exc:
+            if exc.code != "TOO_LARGE":
+                raise
+            raise MediaTooLargeError(str(exc), permanent=exc.permanent) from exc
+
+    async def _download_audio(
+        self, url: str, work_dir: Path, *, byte_limit: int | None = None
+    ) -> Path:
+        effective_limit = self.max_audio_bytes
+        if byte_limit is not None:
+            effective_limit = min(effective_limit, byte_limit)
         options = {
             "quiet": True,
             "no_warnings": True,
             "noplaylist": True,
             "format": "bestaudio/best",
-            "max_filesize": self.max_audio_bytes,
+            "max_filesize": effective_limit,
             "outtmpl": str(work_dir / "%(id)s.%(ext)s"),
             "socket_timeout": self.timeout_seconds,
         }
-        return await self._run_download(url, options, self.max_audio_bytes)
+        return await self._run_download(url, options, effective_limit, required_streams=("audio",))
 
-    async def _run_download(self, url: str, options: dict, byte_limit: int) -> Path:
+    async def _run_download(
+        self,
+        url: str,
+        options: dict,
+        byte_limit: int,
+        *,
+        required_streams: tuple[str, ...],
+    ) -> Path:
         if self._ydl_factory is default_ydl_factory:
-            return await self._run_download_worker(url, options, byte_limit)
+            return await self._run_download_worker(
+                url, options, byte_limit, required_streams=required_streams
+            )
 
         def _download() -> Path:
             with self._ydl_factory(options) as ydl:
                 info = ydl.extract_info(url, download=True)
-                filename = ydl.prepare_filename(info)
-                path = Path(filename)
+                output_path = (
+                    info.get("filepath") if isinstance(info, dict) else None
+                ) or ydl.prepare_filename(info)
+                if not isinstance(output_path, str) or not output_path:
+                    raise AppError("DOWNLOAD_FAILED", "yt-dlp returned no completed output path")
+                path = Path(output_path)
                 if path.name.endswith(".part"):
                     raise AppError("DOWNLOAD_FAILED", "yt-dlp left an incomplete video file")
-                if not path.exists():
-                    # расширение могло измениться при конвертации
-                    candidates = [
-                        candidate
-                        for candidate in path.parent.glob(path.stem + ".*")
-                        if candidate.is_file() and not candidate.name.endswith(".part")
-                    ]
-                    if not candidates:
-                        raise AppError("DOWNLOAD_FAILED", "audio file missing after download")
-                    path = candidates[0]
+                # ❌ Удален glob fallback: отдельная аудиодорожка не заменяет готовое видео.
+                if path.is_symlink() or not path.is_file():
+                    raise AppError("DOWNLOAD_FAILED", "completed media file missing after download")
                 if path.stat().st_size > byte_limit:
                     raise AppError(
                         "TOO_LARGE",
@@ -378,7 +408,14 @@ class YoutubeExtractor:
         except yt_dlp.utils.YoutubeDLError as exc:
             raise AppError("DOWNLOAD_FAILED", f"yt-dlp error: {exc}") from exc
 
-    async def _run_download_worker(self, url: str, options: dict, byte_limit: int) -> Path:
+    async def _run_download_worker(
+        self,
+        url: str,
+        options: dict,
+        byte_limit: int,
+        *,
+        required_streams: tuple[str, ...],
+    ) -> Path:
         """Run production media downloads in a killable child; injected factories stay offline."""
         download_dir = Path(options["outtmpl"]).parent
         request = json.dumps(
@@ -387,6 +424,7 @@ class YoutubeExtractor:
                 "options": options,
                 "byte_limit": byte_limit,
                 "download_dir": str(download_dir),
+                "required_streams": list(required_streams),
             },
             ensure_ascii=False,
             allow_nan=False,
@@ -427,20 +465,10 @@ class YoutubeExtractor:
             path = Path(prepared_path)
             if path.name.endswith(".part"):
                 raise AppError("DOWNLOAD_FAILED", "yt-dlp left an incomplete video file")
-            if not path.exists():
-                candidates = [
-                    candidate
-                    for candidate in path.parent.glob(path.stem + ".*")
-                    if candidate.is_file() and not candidate.name.endswith(".part")
-                ]
-                if not candidates:
-                    raise AppError("DOWNLOAD_FAILED", "video file missing after download")
-                path = candidates[0]
-            if (
-                path.is_symlink()
-                or not path.is_file()
-                or path.resolve().parent != download_dir.resolve()
-            ):
+            # ❌ Удален parent glob fallback: worker уже проверяет итоговый файл и дорожки.
+            if path.is_symlink() or not path.is_file():
+                raise AppError("DOWNLOAD_FAILED", "completed video file missing after download")
+            if path.resolve().parent != download_dir.resolve():
                 raise AppError("DOWNLOAD_FAILED", "YouTube output escaped its temporary directory")
             if path.stat().st_size > byte_limit:
                 raise AppError("TOO_LARGE", f"download exceeds {byte_limit} bytes", permanent=True)

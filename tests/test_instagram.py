@@ -16,7 +16,7 @@ from app.bot.notify import send_item_failure
 from app.domain.enums import ContentKind, ProcessingStatus, SourceType
 from app.domain.models import NormalizedContent, UserProfile
 from app.domain.priority import PriorityEngine
-from app.errors import AppError
+from app.errors import AppError, MediaTooLargeError
 from app.extractors import instagram_worker
 from app.extractors.instagram import InstagramExtractor, is_instagram_reel_url
 from app.llm.base import TranscriptionSegmentCheckpoint
@@ -800,6 +800,49 @@ async def test_video_download_obeys_narrower_delivery_limit(tmp_path, monkeypatc
     assert path.read_bytes() == b"fake-media"
     assert calls[-1][2]["max_filesize"] == 100
     assert "+bestaudio" in calls[-1][2]["format"]
+
+
+async def test_delivery_video_byte_limit_has_distinct_size_error(tmp_path, monkeypatch):
+    extractor, _, _ = extractor_for(tmp_path)
+
+    async def info(url):
+        assert url == REEL_A
+        return reel_info()
+
+    async def oversized_media(*args, **kwargs):
+        raise AppError("TOO_LARGE", "media exceeds byte limit", permanent=True)
+
+    monkeypatch.setattr(extractor, "_info", info)
+    monkeypatch.setattr(extractor, "_download_media", oversized_media)
+    with pytest.raises(MediaTooLargeError) as error:
+        await extractor.download_video(ItemSource(source_url=REEL_A), tmp_path / "work")
+
+    assert error.value.code == "TOO_LARGE"
+
+
+async def test_delivery_duration_limit_is_not_classified_as_byte_size(tmp_path, monkeypatch):
+    extractor, _, _ = extractor_for(
+        tmp_path,
+        reel_info(duration=51),
+        max_duration_seconds=50,
+    )
+    media_calls = []
+
+    async def info(url):
+        return reel_info(duration=51)
+
+    async def should_not_download(*args, **kwargs):
+        media_calls.append(args)
+        raise AssertionError("duration rejection should happen before media download")
+
+    monkeypatch.setattr(extractor, "_info", info)
+    monkeypatch.setattr(extractor, "_download_media", should_not_download)
+    with pytest.raises(AppError) as error:
+        await extractor.download_video(ItemSource(source_url=REEL_A), tmp_path / "work")
+
+    assert not isinstance(error.value, MediaTooLargeError)
+    assert error.value.code == "TOO_LARGE"
+    assert media_calls == []
 
 
 def test_instagram_worker_rejects_partial_download_result(tmp_path):

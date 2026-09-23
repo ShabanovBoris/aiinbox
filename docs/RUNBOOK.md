@@ -363,8 +363,14 @@ sqlite3 data/app.db \
 `SENT` — зафиксированная успешная delivery state; transport semantics
 at-least-once, поэтому crash сразу после Telegram send может дать дубль.
 `ITEM_VIDEO:<source_id>` rows означают, что пользователь запросил конкретный
-YouTube/Reel source. После успешной загрузки Telegram `file_id` сохраняется в
-delivery payload для повторной отправки; локальный media-файл удаляется.
+YouTube/Reel source. Для Telegram video `file_id` сохраняется в delivery payload
+для повторного нажатия; generic document `file_id` не кэшируется, так как он не
+подтверждает, что отправленный файл содержит видеодорожку. Локальный media-файл удаляется.
+Если именно отправка видео превышает лимит размера Telegram, delivery worker
+скачивает аудиодорожку в пределах того же лимита и отправляет её с подписью,
+объясняющей, что видео слишком большое. Если аудиодорожка тоже не проходит лимит
+или её не удалось получить, бот отправляет отдельное пояснение. Ошибки скачивания
+или анализа до пользовательского запроса сами по себе этот fallback не запускают.
 После исчерпания попыток `FAILED` video delivery снова ставится в очередь при
 нажатии соответствующей кнопки.
 
@@ -432,7 +438,10 @@ Retry у Item. `RATE_LIMITED` — временное ограничение пл
 media downloads run in a killable process group; timeout or shutdown stops the
 group before the temporary directory can be removed. A timed-out delivery uses
 the normal bounded outbox retry policy and can be requested again after a
-terminal failure.
+terminal failure. The worker resolves the completed output and checks its actual
+streams with `ffprobe`: visual analysis requires video, while Telegram delivery
+requires both video and audio. A separate audio/video component or `.part` file
+cannot be sent as the requested full video.
 
 ## Shutdown / restart
 

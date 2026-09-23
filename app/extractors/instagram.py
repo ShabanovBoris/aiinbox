@@ -21,7 +21,7 @@ import yt_dlp
 
 from app.domain.enums import SourceType
 from app.domain.models import NormalizedContent
-from app.errors import AppError
+from app.errors import AppError, MediaTooLargeError
 from app.extractors.instagram_worker import size_limit_hook
 from app.extractors.subprocess_runner import (
     cleanup_temporary_directory,
@@ -228,18 +228,58 @@ class InstagramExtractor:
         effective_limit = self.max_video_bytes
         if byte_limit is not None:
             effective_limit = min(effective_limit, byte_limit)
-        video_path = await self._download_media(
-            url,
-            work_dir,
-            media_kind="video",
-            byte_limit=effective_limit,
-            include_audio=include_audio,
-        )
+        try:
+            video_path = await self._download_media(
+                url,
+                work_dir,
+                media_kind="video",
+                byte_limit=effective_limit,
+                include_audio=include_audio,
+            )
+        except AppError as exc:
+            if exc.code != "TOO_LARGE":
+                raise
+            raise MediaTooLargeError(str(exc), permanent=exc.permanent) from exc
         if duration is None:
             duration = await self._probe_duration(video_path)
             self._validate_duration(duration)
             source.content_duration_seconds = duration
         return video_path
+
+    async def download_audio(
+        self,
+        source: Item | ItemSource,
+        work_dir: Path,
+        *,
+        byte_limit: int | None = None,
+    ) -> Path:
+        """Provide bounded Reel audio for the delivery worker's size fallback."""
+        url = source.source_url
+        if not url or not is_instagram_reel_url(url):
+            raise AppError(
+                "UNSUPPORTED_SOURCE", "send a link to one Instagram Reel", permanent=True
+            )
+        info = await self._info(url)
+        duration = self._duration(info)
+        if duration is not None:
+            self._validate_duration(duration)
+            source.content_duration_seconds = duration
+        effective_limit = self.max_audio_bytes
+        if byte_limit is not None:
+            effective_limit = min(effective_limit, byte_limit)
+        try:
+            audio_path = await self._download_media(
+                url, work_dir, media_kind="audio", byte_limit=effective_limit
+            )
+        except AppError as exc:
+            if exc.code != "TOO_LARGE":
+                raise
+            raise MediaTooLargeError(str(exc), permanent=exc.permanent) from exc
+        if duration is None:
+            duration = await self._probe_duration(audio_path)
+            self._validate_duration(duration)
+            source.content_duration_seconds = duration
+        return audio_path
 
     async def _info(self, url: str) -> dict:
         options = self._base_options(skip_download=True)

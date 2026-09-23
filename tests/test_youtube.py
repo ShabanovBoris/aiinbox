@@ -9,7 +9,7 @@ from sqlalchemy import select
 
 from app.domain.enums import ContentKind, ProcessingStatus, SourceType
 from app.domain.priority import PriorityEngine
-from app.errors import AppError
+from app.errors import AppError, MediaTooLargeError
 from app.extractors import youtube as youtube_module
 from app.extractors.youtube import YoutubeExtractor
 from app.extractors.youtube_worker import execute as execute_youtube_download
@@ -277,6 +277,7 @@ async def test_subtitle_oversize_is_too_large(tmp_path):
         tmp_path,
         [info],
         max_subtitle_bytes=100_000,
+        prepared_file=tmp_path / "fallback-audio.m4a",
         http_client_factory=lambda: httpx.AsyncClient(
             transport=httpx.MockTransport(handler), follow_redirects=True, timeout=5
         ),
@@ -573,7 +574,7 @@ async def test_video_byte_limit_enforced_independently(tmp_path):
         max_audio_bytes=5_000_000,
         ydl_factory=ydl_factory,
     )
-    with pytest.raises(AppError) as exc_info:
+    with pytest.raises(MediaTooLargeError) as exc_info:
         await extractor.download_video(URL, tmp_path / "work")
     assert exc_info.value.code == "TOO_LARGE"
     assert captured_options["format"] == "bestvideo[height<=720]/best[height<=720]"
@@ -728,7 +729,7 @@ def test_youtube_worker_rejects_partial_result_file(monkeypatch, tmp_path):
             return str(partial_path)
 
     monkeypatch.setattr(youtube_module.yt_dlp, "YoutubeDL", PartialYdl)
-    with pytest.raises(AppError, match="incomplete video file"):
+    with pytest.raises(AppError, match="no completed YouTube output"):
         execute_youtube_download(
             {
                 "url": URL,

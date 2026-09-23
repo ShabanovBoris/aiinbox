@@ -11,3 +11,10 @@ class AppError(Exception):
         super().__init__(message)
         self.code = code
         self.permanent = permanent
+
+
+class MediaTooLargeError(AppError):
+    """Keep TOO_LARGE compatible while identifying media byte caps to delivery."""
+
+    def __init__(self, message: str, permanent: bool = True):
+        super().__init__("TOO_LARGE", message, permanent)

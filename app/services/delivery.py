@@ -18,7 +18,7 @@ from sqlalchemy.sql import text
 
 from app.bot.notify import send_item_failure, send_item_result
 from app.domain.enums import ProcessingStatus, SourceType
-from app.errors import AppError
+from app.errors import AppError, MediaTooLargeError
 from app.extractors.subprocess_runner import cleanup_temporary_directory
 from app.storage.models import Delivery, Item, ItemSource, User
 
@@ -29,6 +29,20 @@ ITEM_FAILED = "ITEM_FAILED"
 PROFILE_UPDATED = "PROFILE_UPDATED"
 ITEM_VIDEO_PREFIX = "ITEM_VIDEO:"
 TELEGRAM_MAX_UPLOAD_BYTES = 50_000_000
+
+
+def _is_telegram_upload_size_error(exc: Exception) -> bool:
+    """Limit audio fallback to explicit Telegram size rejections, never generic send errors."""
+    message = str(exc).casefold()
+    return any(
+        marker in message
+        for marker in (
+            "request entity too large",
+            "file is too big",
+            "file is too large",
+            "payload too large",
+        )
+    )
 
 
 async def enqueue_item_delivery(
@@ -121,6 +135,11 @@ async def enqueue_item_video_delivery(
             return "IN_PROGRESS"
 
         payload = dict(existing.payload_json or {}) if existing is not None else {}
+        if payload.get("telegram_media_kind") != "video":
+            # ❌ Удален кэш generic document file_id: Telegram не сообщает, что это видео,
+            # поэтому старый audio/document id мог повторяться по кнопке отправки видео.
+            payload.pop("telegram_file_id", None)
+            payload.pop("telegram_media_kind", None)
         payload["source_id"] = source.id
         await enqueue_item_delivery(
             session,
@@ -320,15 +339,8 @@ class DeliveryWorker:
 
         cached_file_id = payload.get("telegram_file_id")
         cached_kind = payload.get("telegram_media_kind")
-        if (
-            isinstance(cached_file_id, str)
-            and cached_file_id
-            and cached_kind
-            in (
-                "video",
-                "document",
-            )
-        ):
+        # ❌ Удалено повторное использование generic document: file_id не подтверждает видеодорожку.
+        if isinstance(cached_file_id, str) and cached_file_id and cached_kind == "video":
             try:
                 return await self._upload_item_video(
                     chat_id, item, source, cached_file_id, cached_kind
@@ -353,37 +365,134 @@ class DeliveryWorker:
         work_dir = Path(extractor.temp_dir) / f"telegram-send-{uuid4().hex}"
         work_dir.mkdir(parents=True, exist_ok=False)
         try:
+            try:
+                if source.source_type is SourceType.YOUTUBE:
+                    downloaded_path = await extractor.download_video(
+                        source.source_url,
+                        work_dir,
+                        byte_limit=TELEGRAM_MAX_UPLOAD_BYTES,
+                        include_audio=True,
+                    )
+                else:
+                    downloaded_path = await extractor.download_video(
+                        source,
+                        work_dir,
+                        byte_limit=TELEGRAM_MAX_UPLOAD_BYTES,
+                        include_audio=True,
+                    )
+                path = Path(downloaded_path)
+                if (
+                    path.is_symlink()
+                    or not path.is_file()
+                    or path.resolve().parent != work_dir.resolve()
+                ):
+                    raise AppError(
+                        "DOWNLOAD_FAILED", "Downloaded video escaped its temporary directory"
+                    )
+                if path.stat().st_size > TELEGRAM_MAX_UPLOAD_BYTES:
+                    raise MediaTooLargeError("Video exceeds Telegram's 50 MB upload limit", True)
+            except AppError as exc:
+                if not isinstance(exc, MediaTooLargeError):
+                    raise
+                if not callable(getattr(extractor, "download_audio", None)):
+                    raise
+                return await self._send_item_audio_fallback(
+                    chat_id, item, source, extractor, work_dir
+                )
+
+            media_kind = "video" if path.suffix.lower() == ".mp4" else "document"
+            try:
+                return await self._upload_item_video(
+                    chat_id, item, source, FSInputFile(path), media_kind
+                )
+            except Exception as exc:
+                if not _is_telegram_upload_size_error(exc):
+                    raise
+                if not callable(getattr(extractor, "download_audio", None)):
+                    raise MediaTooLargeError(
+                        "Telegram rejected the video upload size", True
+                    ) from exc
+                return await self._send_item_audio_fallback(
+                    chat_id, item, source, extractor, work_dir
+                )
+        finally:
+            cleanup_temporary_directory(work_dir)
+
+    async def _send_item_audio_fallback(
+        self,
+        chat_id: int,
+        item: Item,
+        source: ItemSource,
+        extractor,
+        work_dir: Path,
+    ) -> None:
+        """Let delivery own the user-visible fallback when only the video exceeds the send cap."""
+        # Keep YouTube's shared outtmpl away from a completed or partial video in the parent dir.
+        audio_work_dir = work_dir / "audio"
+        audio_work_dir.mkdir(parents=True, exist_ok=True)
+        try:
             if source.source_type is SourceType.YOUTUBE:
-                downloaded_path = await extractor.download_video(
+                audio_path = await extractor.download_audio(
                     source.source_url,
-                    work_dir,
+                    audio_work_dir,
                     byte_limit=TELEGRAM_MAX_UPLOAD_BYTES,
-                    include_audio=True,
                 )
             else:
-                downloaded_path = await extractor.download_video(
+                audio_path = await extractor.download_audio(
                     source,
-                    work_dir,
+                    audio_work_dir,
                     byte_limit=TELEGRAM_MAX_UPLOAD_BYTES,
-                    include_audio=True,
                 )
-            path = Path(downloaded_path)
+            path = Path(audio_path)
             if (
                 path.is_symlink()
                 or not path.is_file()
-                or path.resolve().parent != work_dir.resolve()
+                or path.resolve().parent != audio_work_dir.resolve()
             ):
                 raise AppError(
-                    "DOWNLOAD_FAILED", "Downloaded video escaped its temporary directory"
+                    "DOWNLOAD_FAILED", "Downloaded audio escaped its temporary directory"
                 )
             if path.stat().st_size > TELEGRAM_MAX_UPLOAD_BYTES:
-                raise AppError("TOO_LARGE", "Video exceeds Telegram's 50 MB upload limit", True)
-            media_kind = "video" if path.suffix.lower() == ".mp4" else "document"
-            return await self._upload_item_video(
-                chat_id, item, source, FSInputFile(path), media_kind
+                raise MediaTooLargeError("Audio exceeds Telegram's 50 MB upload limit", True)
+
+            source_label = (
+                "YouTube" if source.source_type is SourceType.YOUTUBE else "Instagram Reel"
             )
-        finally:
-            cleanup_temporary_directory(work_dir)
+            caption = f"Видео из {source_label} превышает лимит отправки. Отправляю только аудио."
+            reply_parameters = (
+                ReplyParameters(
+                    message_id=item.telegram_message_id,
+                    allow_sending_without_reply=True,
+                )
+                if item.telegram_message_id is not None
+                else None
+            )
+            if path.suffix.lower() in {".mp3", ".m4a"}:
+                await self.bot.send_audio(
+                    chat_id=chat_id,
+                    audio=FSInputFile(path),
+                    caption=caption,
+                    reply_parameters=reply_parameters,
+                )
+            else:
+                await self.bot.send_document(
+                    chat_id=chat_id,
+                    document=FSInputFile(path),
+                    caption=caption,
+                    reply_parameters=reply_parameters,
+                )
+            return None
+        except Exception as exc:
+            is_size_error = isinstance(exc, MediaTooLargeError) or _is_telegram_upload_size_error(
+                exc
+            )
+            permanent = is_size_error or (isinstance(exc, AppError) and exc.permanent)
+            code = "AUDIO_TOO_LARGE" if is_size_error else "AUDIO_FALLBACK_FAILED"
+            raise AppError(
+                code,
+                "audio fallback failed after video exceeded Telegram's upload size limit",
+                permanent=permanent,
+            ) from exc
 
     async def _upload_item_video(
         self,
@@ -422,7 +531,8 @@ class DeliveryWorker:
             sent_media = getattr(sent, "document", None)
 
         file_id = getattr(sent_media, "file_id", None)
-        if isinstance(file_id, str) and file_id:
+        # ❌ Удалено кэширование generic document file_id: файл может оказаться аудио.
+        if media_kind == "video" and isinstance(file_id, str) and file_id:
             return {"telegram_file_id": file_id, "telegram_media_kind": media_kind}
         return None
 
@@ -460,11 +570,23 @@ class DeliveryWorker:
             await session.commit()
         if notify_chat_id is not None:
             try:
-                message = (
-                    "Видео превышает лимит Telegram в 50 MB. Откройте исходную ссылку."
-                    if isinstance(exc, AppError) and exc.code == "TOO_LARGE"
-                    else "Не получилось отправить видео. Можно нажать кнопку ещё раз позже."
-                )
+                error_code = exc.code if isinstance(exc, AppError) else None
+                if isinstance(exc, MediaTooLargeError):
+                    message = "Видео превышает лимит Telegram в 50 MB. Откройте исходную ссылку."
+                elif error_code == "TOO_LARGE":
+                    message = "Видео превышает допустимую длительность. Откройте исходную ссылку."
+                elif error_code == "AUDIO_TOO_LARGE":
+                    message = (
+                        "Видео превышает лимит отправки, и аудио тоже слишком большое. "
+                        "Откройте исходную ссылку."
+                    )
+                elif error_code == "AUDIO_FALLBACK_FAILED":
+                    message = (
+                        "Видео превышает лимит отправки, но аудио отправить не удалось. "
+                        "Попробуйте нажать кнопку позже."
+                    )
+                else:
+                    message = "Не получилось отправить видео. Можно нажать кнопку ещё раз позже."
                 await self.bot.send_message(
                     notify_chat_id,
                     message,
