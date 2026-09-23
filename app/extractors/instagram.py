@@ -233,32 +233,34 @@ class InstagramExtractor:
             else "bestvideo[height<=720]/best[height<=720]"
         )
         stem = "audio" if media_kind == "audio" else "video"
+        download_dir = self.temp_dir / f"ig-ytdlp-{uuid4().hex}"
         options = self._base_options(
             skip_download=False,
             format=format_selector,
             max_filesize=byte_limit,
-            outtmpl=str(work_dir / f"{stem}.%(ext)s"),
+            outtmpl=str(download_dir / f"{stem}.%(ext)s"),
             progress_hooks=[self._size_limit_hook(byte_limit)],
         )
 
         def download() -> Path:
+            download_dir.mkdir(parents=True, exist_ok=True)
             with self._ydl_factory(options) as ydl:
                 info = ydl.extract_info(url, download=True)
                 self._validate_single_media(info)
                 prepared = Path(ydl.prepare_filename(info))
                 if not prepared.is_absolute():
-                    prepared = work_dir / prepared
+                    prepared = download_dir / prepared
                 path = prepared
                 if not path.is_file():
                     candidates = sorted(
                         candidate
-                        for candidate in work_dir.glob(f"{stem}.*")
+                        for candidate in download_dir.glob(f"{stem}.*")
                         if candidate.is_file() and not candidate.name.endswith(".part")
                     )
                     if not candidates:
                         raise AppError("DOWNLOAD_FAILED", "Instagram media file is missing")
                     path = candidates[0]
-                if path.is_symlink() or path.resolve().parent != work_dir.resolve():
+                if path.is_symlink() or path.resolve().parent != download_dir.resolve():
                     raise AppError(
                         "DOWNLOAD_FAILED", "yt-dlp output escaped its temporary directory"
                     )
@@ -266,9 +268,21 @@ class InstagramExtractor:
                     raise AppError(
                         "TOO_LARGE", "Instagram media exceeds the configured byte limit", True
                     )
+                # ❌ Удален перенос файла внутри потока: при отмене он мог
+                # конкурировать с очисткой work_dir.
                 return path
 
-        return await self._call_ytdlp(download)
+        # Keep the yt-dlp directory alive after the thread ends; promotion
+        # happens on the event loop, where cancellation cannot race a move.
+        downloaded_path = await self._call_ytdlp(
+            download, cleanup_dir=download_dir, retain_on_success=True
+        )
+        try:
+            destination = work_dir / f"{stem}{downloaded_path.suffix}"
+            shutil.move(downloaded_path, destination)
+            return destination
+        finally:
+            shutil.rmtree(download_dir, ignore_errors=True)
 
     @staticmethod
     def _size_limit_hook(byte_limit: int) -> Callable[[dict], None]:
@@ -299,34 +313,71 @@ class InstagramExtractor:
         options.update(overrides)
         return options
 
-    async def _call_ytdlp(self, operation: Callable[[], Any]) -> Any:
+    async def _call_ytdlp(
+        self,
+        operation: Callable[[], Any],
+        *,
+        cleanup_dir: Path | None = None,
+        retain_on_success: bool = False,
+    ) -> Any:
         """Run synchronous yt-dlp with socket timeout and finite transient retries."""
         last_error: AppError | None = None
+
+        def cleanup_download_dir() -> None:
+            """Release the private download directory after yt-dlp closes its files."""
+            if cleanup_dir is not None:
+                shutil.rmtree(cleanup_dir, ignore_errors=True)
+
         for attempt in range(self.max_attempts):
+            defer_cleanup = False
+            retain_cleanup = False
             try:
-                return await self._run_sync(operation)
+                result = await self._run_sync(
+                    operation,
+                    on_cancellation=(cleanup_download_dir if cleanup_dir is not None else None),
+                )
+                retain_cleanup = cleanup_dir is not None and retain_on_success
+                return result
+            except asyncio.CancelledError:
+                # ❌ Удалено ожидание yt-dlp-потока при отмене: оно могло
+                # удерживать Item в PROCESSING после дедлайна.
+                # Его приватный каталог очищается callback-ом только после завершения потока.
+                defer_cleanup = cleanup_dir is not None
+                raise
             except AppError as exc:
                 last_error = exc
             except yt_dlp.utils.YoutubeDLError as exc:
                 last_error = _map_ytdlp_error(exc)
             except OSError:
                 last_error = AppError("DOWNLOAD_FAILED", "Instagram media file operation failed")
+            finally:
+                if cleanup_dir is not None and not defer_cleanup and not retain_cleanup:
+                    shutil.rmtree(cleanup_dir, ignore_errors=True)
             if last_error.permanent or attempt + 1 == self.max_attempts:
                 raise last_error
             await asyncio.sleep(self.backoff_seconds * (2**attempt))
         raise last_error  # pragma: no cover
 
     @staticmethod
-    async def _run_sync(operation: Callable[[], Any]) -> Any:
-        """Wait for the bounded yt-dlp thread before temp cleanup on cancellation."""
+    async def _run_sync(
+        operation: Callable[[], Any], *, on_cancellation: Callable[[], None] | None = None
+    ) -> Any:
+        """Release the async worker promptly without racing a blocking thread's files."""
         task = asyncio.create_task(asyncio.to_thread(operation))
         try:
             return await asyncio.shield(task)
         except asyncio.CancelledError:
-            try:
-                await asyncio.shield(task)
-            except BaseException:
-                pass
+
+            def reap(completed: asyncio.Task[Any]) -> None:
+                """Consume late thread results and release its temporary-directory lease."""
+                try:
+                    completed.result()
+                except BaseException:
+                    pass
+                if on_cancellation is not None:
+                    on_cancellation()
+
+            task.add_done_callback(reap)
             raise
 
     async def _probe_duration(self, media_path: Path) -> int:

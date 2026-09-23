@@ -1,6 +1,7 @@
 """Offline regressions for Instagram URL routing, extraction, and durable resume."""
 
 import asyncio
+import threading
 from pathlib import Path
 
 import pytest
@@ -631,4 +632,72 @@ async def test_cancelled_extraction_cleans_its_unique_temp_directory(tmp_path):
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
+    assert list((tmp_path / "instagram").iterdir()) == []
+
+
+async def test_worker_timeout_does_not_wait_for_yt_dlp_thread_and_defers_cleanup(
+    tmp_path, session_factory
+):
+    """A timed-out Item is released while its isolated downloader directory stays leased."""
+    started = threading.Event()
+    release = threading.Event()
+    finished = threading.Event()
+    info = reel_info()
+
+    class BlockingDownloadYdl(FakeInstagramYdl):
+        def extract_info(self, url, download=False):
+            if download:
+                started.set()
+                try:
+                    release.wait(timeout=2)
+                finally:
+                    finished.set()
+            return super().extract_info(url, download)
+
+    def factory(options):
+        return BlockingDownloadYdl(options, info, [], b"fake-media")
+
+    extractor = InstagramExtractor(
+        FakeTranscriber(),
+        tmp_path / "instagram",
+        ydl_factory=factory,
+        max_attempts=1,
+        backoff_seconds=0,
+    )
+    item = await ingest_reel(session_factory)
+    worker = ProcessingWorker(
+        session_factory,
+        ProcessingPipeline(
+            Analyzer(FakeLlmProvider()),
+            PriorityEngine(),
+            instagram_extractor=extractor,
+        ),
+        poll_seconds=0.01,
+        processing_timeout_seconds=0.03,
+    )
+    processing = asyncio.create_task(worker.process_one())
+    try:
+        assert await asyncio.to_thread(started.wait, 1)
+        done, _ = await asyncio.wait({processing}, timeout=0.2)
+        assert processing in done
+        assert await processing is True
+
+        async with session_factory() as session:
+            stored = await session.get(Item, item.id)
+        assert stored.processing_status is ProcessingStatus.FAILED
+        assert stored.error_code == "PROCESSING_TIMEOUT"
+
+        temp_dirs = list((tmp_path / "instagram").iterdir())
+        assert len(temp_dirs) == 1
+        assert temp_dirs[0].name.startswith("ig-ytdlp-")
+    finally:
+        release.set()
+        if not processing.done():
+            await processing
+
+    assert await asyncio.to_thread(finished.wait, 1)
+    for _ in range(100):
+        if not list((tmp_path / "instagram").iterdir()):
+            break
+        await asyncio.sleep(0.01)
     assert list((tmp_path / "instagram").iterdir()) == []
