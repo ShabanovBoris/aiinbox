@@ -10,10 +10,11 @@ from app.domain.enums import ContentKind, ProcessingStatus, SourceType
 from app.domain.priority import PriorityEngine
 from app.errors import AppError
 from app.extractors.youtube import YoutubeExtractor
+from app.services.actions import apply_item_action
 from app.services.analysis import Analyzer
 from app.services.ingestion import ingest_message
 from app.services.processing import ProcessingPipeline
-from app.storage.models import Content, Item
+from app.storage.models import Content, Item, ItemSource
 from app.workers.processing import ProcessingWorker, requeue_stale
 from tests.fakes import FakeDownloader, FakeLlmProvider, FakeTranscriber
 
@@ -68,7 +69,7 @@ class FakeYoutubeDL:
 
 
 def make_youtube(tmp_path: Path, ydl_results: list, sub_http=None, **overrides):
-    transcriber = FakeTranscriber()
+    transcriber = overrides.pop("transcriber", None) or FakeTranscriber()
     downloader = FakeDownloader()
     sub_client = httpx.AsyncClient(
         transport=httpx.MockTransport(lambda request: httpx.Response(200, text=SUBTITLE_VTT)),
@@ -106,6 +107,18 @@ def make_youtube_item(source_url: str = URL) -> Item:
         processing_status=ProcessingStatus.PROCESSING,
         user_note="",
     )
+
+
+async def seed_youtube(session_factory, message_id: int = 1) -> Item:
+    """Create the canonical parent Item plus its durable YOUTUBE ItemSource."""
+    result = await ingest_message(
+        session_factory,
+        telegram_user_id=42,
+        chat_id=42,
+        message_id=message_id,
+        text=f"Видео про агентов {URL}",
+    )
+    return result.items[0]
 
 
 async def test_subtitles_used_without_stt(tmp_path):
@@ -560,3 +573,276 @@ async def test_video_byte_limit_enforced_independently(tmp_path):
     assert exc_info.value.code == "TOO_LARGE"
     assert captured_options["format"] == "bestvideo[height<=720]/best[height<=720]"
     assert "5 000 000" in str(exc_info.value) or "5000000" in str(exc_info.value) or True
+
+
+def patch_youtube_visual(monkeypatch, extractor, tmp_path):
+    """Fake only the video/frame boundary while exercising pipeline persistence and Retry."""
+    video_downloads: list[str] = []
+    frame_extractions: list[tuple[Path, int | None]] = []
+
+    async def download_video(url, work_dir):
+        video_downloads.append(url)
+        video = Path(work_dir) / "visual.mp4"
+        video.write_bytes(b"fake-video")
+        return video
+
+    def extract_frames(video, work_dir, **kwargs):
+        frame_dir = Path(work_dir)
+        frame_dir.mkdir(parents=True, exist_ok=True)
+        frame = frame_dir / "frame.jpg"
+        frame.write_bytes(b"fake-frame")
+        frame_extractions.append((frame, kwargs.get("duration_seconds")))
+        return [frame]
+
+    extractor.download_video = download_video
+    monkeypatch.setattr("app.services.processing.extract_representative_frames", extract_frames)
+    return video_downloads, frame_extractions
+
+
+@pytest.mark.parametrize("transcript_gap", ["no_audio_track", "empty_transcript"])
+async def test_youtube_visual_only_fallback_is_durable_across_analysis_retry(
+    transcript_gap, tmp_path, session_factory, monkeypatch
+):
+    item = await seed_youtube(session_factory)
+    if transcript_gap == "no_audio_track":
+        formats = [{"acodec": "none", "vcodec": "avc1"}]
+        transcriber = FakeTranscriber("must not run")
+        prepared_audio = None
+    else:
+        formats = [{"acodec": "mp4a.40.2", "vcodec": "none"}]
+        transcriber = FakeTranscriber("")
+        prepared_audio = tmp_path / "audio.m4a"
+
+    info = make_info(subtitles={}, automatic_captions={}, formats=formats, duration=5400)
+    extractor, transcriber, _ = make_youtube(
+        tmp_path,
+        [info],
+        prepared_file=prepared_audio,
+        transcriber=transcriber,
+    )
+    info_calls: list[str] = []
+    original_info = extractor._info
+
+    async def count_info(url):
+        info_calls.append(url)
+        return await original_info(url)
+
+    extractor._info = count_info
+    video_downloads, frame_extractions = patch_youtube_visual(monkeypatch, extractor, tmp_path)
+    provider = FakeLlmProvider(
+        vision=True,
+        analyze_failures=1,
+        describe_notes="Кадры показывают демонстрацию интерфейса.",
+    )
+    worker = ProcessingWorker(
+        session_factory,
+        ProcessingPipeline(Analyzer(provider), PriorityEngine(), youtube_extractor=extractor),
+        poll_seconds=0.01,
+    )
+
+    assert await worker.process_one() is True
+    async with session_factory() as session:
+        failed_item = await session.get(Item, item.id)
+        source = await session.scalar(select(ItemSource).where(ItemSource.item_id == item.id))
+        contents = list(await session.scalars(select(Content).where(Content.item_id == item.id)))
+        assert failed_item.processing_status is ProcessingStatus.FAILED
+        assert failed_item.processing_stage == "ANALYZING"
+        assert source.extraction_status == "READY"
+        assert source.metadata_json["video_visual_only"] is True
+        assert source.metadata_json["video_transcript_error_code"] == (
+            "NO_AUDIO_TRACK" if transcript_gap == "no_audio_track" else "EMPTY_TRANSCRIPT"
+        )
+        assert any(
+            row.kind is ContentKind.VISUAL_NOTES and row.source_id == source.id for row in contents
+        )
+        assert not any(row.kind is ContentKind.TRANSCRIPT for row in contents)
+    assert provider.calls[0][0].metadata["visual_only"] is True
+    assert provider.calls[0][0].metadata["visual_notes"] == provider.describe_notes
+    assert frame_extractions[0][1] == 5400
+    assert transcriber.calls == (0 if transcript_gap == "no_audio_track" else 1)
+    assert len(info_calls) == 1
+    assert video_downloads == [URL]
+    assert len(frame_extractions) == 1
+    assert provider.describe_calls == 1
+
+    assert await apply_item_action(session_factory, 42, item.id, "retry") is not None
+    assert await worker.process_one() is True
+
+    async with session_factory() as session:
+        ready_item = await session.get(Item, item.id)
+        source = await session.scalar(select(ItemSource).where(ItemSource.item_id == item.id))
+        assert ready_item.processing_status is ProcessingStatus.READY
+        assert ready_item.analysis_completeness == "VISUAL_ONLY"
+        assert source.extraction_status == "READY"
+        assert source.content_duration_seconds == 5400
+    assert len(provider.calls) == 2
+    assert len(info_calls) == 1
+    assert video_downloads == [URL]
+    assert len(frame_extractions) == 1
+    assert transcriber.calls == (0 if transcript_gap == "no_audio_track" else 1)
+    assert provider.describe_calls == 1
+
+
+@pytest.mark.parametrize(
+    ("vision", "describe_fail", "expected_code", "expected_permanent"),
+    [
+        (False, False, "NO_AUDIO_TRACK", True),
+        (True, True, "VISUAL_FAILED", False),
+    ],
+)
+async def test_youtube_visual_fallback_failure_preserves_retry_semantics(
+    vision, describe_fail, expected_code, expected_permanent, tmp_path, session_factory, monkeypatch
+):
+    await seed_youtube(session_factory)
+    info = make_info(
+        subtitles={},
+        automatic_captions={},
+        formats=[{"acodec": "none", "vcodec": "avc1"}],
+    )
+    extractor, transcriber, _ = make_youtube(
+        tmp_path, [info], transcriber=FakeTranscriber("must not run")
+    )
+    video_downloads, _ = patch_youtube_visual(monkeypatch, extractor, tmp_path)
+    provider = FakeLlmProvider(vision=vision, describe_fail=describe_fail)
+    worker = ProcessingWorker(
+        session_factory,
+        ProcessingPipeline(Analyzer(provider), PriorityEngine(), youtube_extractor=extractor),
+        poll_seconds=0.01,
+    )
+
+    assert await worker.process_one() is True
+    async with session_factory() as session:
+        failed_item = await session.scalar(select(Item))
+        source = await session.scalar(
+            select(ItemSource).where(ItemSource.item_id == failed_item.id)
+        )
+        assert failed_item.processing_status is ProcessingStatus.READY
+        assert failed_item.analysis_completeness == "PARTIAL"
+        assert source.extraction_status == "FAILED"
+        assert source.error_code == expected_code
+        assert source.failure_is_permanent is expected_permanent
+        assert provider.describe_calls == (1 if describe_fail else 0)
+        if expected_code == "VISUAL_FAILED":
+            assert source.metadata_json["video_transcript_error_code"] == "NO_AUDIO_TRACK"
+        else:
+            assert "video_transcript_error_code" not in (source.metadata_json or {})
+    assert transcriber.calls == 0
+    assert video_downloads == ([URL] if vision else [])
+    assert provider.describe_calls == (1 if describe_fail else 0)
+
+
+async def test_youtube_no_audio_track_is_reported_before_stt(tmp_path):
+    info = make_info(
+        subtitles={},
+        automatic_captions={},
+        formats=[{"acodec": "none", "vcodec": "avc1"}],
+    )
+    extractor, transcriber, _ = make_youtube(
+        tmp_path, [info], transcriber=FakeTranscriber("must not run")
+    )
+
+    with pytest.raises(AppError) as exc_info:
+        await extractor.extract(make_youtube_item())
+
+    assert exc_info.value.code == "NO_AUDIO_TRACK"
+    assert exc_info.value.permanent is True
+    assert transcriber.calls == 0
+
+
+@pytest.mark.parametrize(
+    ("fail", "expected_code"),
+    [(False, "EMPTY_TRANSCRIPT"), (True, "TRANSCRIPTION_FAILED")],
+)
+async def test_empty_youtube_transcript_is_distinct_from_stt_failure(fail, expected_code, tmp_path):
+    info = make_info(
+        subtitles={},
+        automatic_captions={},
+        formats=[{"acodec": "mp4a.40.2", "vcodec": "none"}],
+    )
+    extractor, transcriber, _ = make_youtube(
+        tmp_path,
+        [info],
+        prepared_file=tmp_path / "audio.m4a",
+        transcriber=FakeTranscriber("", fail=fail),
+    )
+
+    with pytest.raises(AppError) as exc_info:
+        await extractor.extract(make_youtube_item())
+
+    assert exc_info.value.code == expected_code
+    assert transcriber.calls == 1
+
+
+async def test_youtube_visual_checkpoint_recovers_before_source_ready(tmp_path, session_factory):
+    item = await seed_youtube(session_factory)
+    async with session_factory() as session:
+        item = await session.get(Item, item.id)
+        source = await session.scalar(select(ItemSource).where(ItemSource.item_id == item.id))
+        item.processing_stage = "EXTRACTING"
+        source.extraction_status = "PENDING"
+        source.metadata_json = {}
+        session.add(
+            Content(
+                item_id=item.id,
+                source_id=source.id,
+                kind=ContentKind.VISUAL_NOTES,
+                text="Кадр сохранён до завершения source checkpoint.",
+            )
+        )
+        await session.commit()
+
+    provider = FakeLlmProvider(vision=True)
+    worker = ProcessingWorker(
+        session_factory,
+        ProcessingPipeline(Analyzer(provider), PriorityEngine()),
+        poll_seconds=0.01,
+    )
+
+    assert await worker.process_one() is True
+    async with session_factory() as session:
+        ready_item = await session.get(Item, item.id)
+        source = await session.scalar(select(ItemSource).where(ItemSource.item_id == item.id))
+        assert ready_item.processing_status is ProcessingStatus.READY
+        assert ready_item.analysis_completeness == "VISUAL_ONLY"
+        assert source.extraction_status == "READY"
+    assert provider.describe_calls == 0
+    assert provider.calls[0][0].metadata["visual_only"] is True
+    assert provider.calls[0][0].metadata["visual_notes"] == (
+        "Кадр сохранён до завершения source checkpoint."
+    )
+
+
+async def test_youtube_stt_provider_failure_does_not_trigger_visual_fallback(
+    tmp_path, session_factory, monkeypatch
+):
+    item = await seed_youtube(session_factory)
+    info = make_info(
+        subtitles={},
+        automatic_captions={},
+        formats=[{"acodec": "mp4a.40.2", "vcodec": "none"}],
+    )
+    extractor, transcriber, _ = make_youtube(
+        tmp_path,
+        [info],
+        prepared_file=tmp_path / "audio.m4a",
+        transcriber=FakeTranscriber("", fail=True),
+    )
+    video_downloads, _ = patch_youtube_visual(monkeypatch, extractor, tmp_path)
+    provider = FakeLlmProvider(vision=True)
+    worker = ProcessingWorker(
+        session_factory,
+        ProcessingPipeline(Analyzer(provider), PriorityEngine(), youtube_extractor=extractor),
+        poll_seconds=0.01,
+    )
+
+    assert await worker.process_one() is True
+    async with session_factory() as session:
+        item = await session.get(Item, item.id)
+        source = await session.scalar(select(ItemSource).where(ItemSource.item_id == item.id))
+        assert item.processing_status is ProcessingStatus.READY
+        assert item.analysis_completeness == "PARTIAL"
+        assert source.extraction_status == "FAILED"
+        assert source.error_code == "TRANSCRIPTION_FAILED"
+    assert transcriber.calls == 1
+    assert video_downloads == []
+    assert provider.describe_calls == 0

@@ -27,7 +27,7 @@ from app.domain.models import NormalizedContent
 from app.errors import AppError
 from app.llm.base import TranscriptionProvider, TranscriptionSegmentCheckpoint
 from app.services.subtitles import parse_subtitles
-from app.storage.models import Item
+from app.storage.models import Item, ItemSource
 
 log = logging.getLogger(__name__)
 
@@ -87,7 +87,7 @@ class YoutubeExtractor:
 
     async def extract(
         self,
-        item: Item,
+        item: Item | ItemSource,
         *,
         completed_segments: Mapping[int, TranscriptionSegmentCheckpoint] | None = None,
         on_segment: Callable[[int, TranscriptionSegmentCheckpoint], Awaitable[None]] | None = None,
@@ -107,10 +107,29 @@ class YoutubeExtractor:
                     f"video duration {duration}s exceeds {self.max_duration_seconds}s",
                     permanent=True,
                 )
+            if duration:
+                # Persist duration so visual fallback can sample the full timeline.
+                item.content_duration_seconds = duration
 
             transcript, cues = await self._transcript_from_subtitles(info)
             via_stt = transcript is None
             if transcript is None:
+                formats = info.get("formats")
+                if (
+                    isinstance(formats, list)
+                    and formats
+                    and all(
+                        isinstance(video_format, dict) and video_format.get("acodec") == "none"
+                        for video_format in formats
+                    )
+                ):
+                    # Only explicit no-audio metadata is enough to skip STT.
+                    # The pipeline can then try the visual-only path.
+                    raise AppError(
+                        "NO_AUDIO_TRACK",
+                        "YouTube video has no audio track",
+                        permanent=True,
+                    )
                 # fallback: скачиваем аудио и транскрибируем
                 audio_path = await self._download_audio(item.source_url, work_dir)
                 try:
@@ -125,7 +144,7 @@ class YoutubeExtractor:
                     if str(audio_path) not in ("", "."):
                         audio_path.unlink(missing_ok=True)
             if not transcript:
-                raise AppError("TRANSCRIPTION_FAILED", "empty transcript")
+                raise AppError("EMPTY_TRANSCRIPT", "empty YouTube transcript")
 
             canonical = info.get("webpage_url") or item.source_url
             return NormalizedContent(

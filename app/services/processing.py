@@ -138,6 +138,9 @@ class ProcessingPipeline:
             # visual notes уже персистены и восстановлены при resume —
             # повторный download/ffmpeg/vision не нужен (AGENTS §18)
             return existing
+        if "source_count" in content.metadata:
+            # Child sources own their visual pass; the parent path is legacy-only.
+            return None
         persisted = await session.scalar(
             select(Content.text)
             .where(Content.item_id == item.id, Content.kind == ContentKind.VISUAL_NOTES)
@@ -305,6 +308,62 @@ class ProcessingPipeline:
             return await self._text_content(session, item)
         return await self._extract_source(session, item, item, None)
 
+    async def _visual_only_fallback(
+        self,
+        session: AsyncSession,
+        item: Item,
+        source: Item | ItemSource,
+        source_id: int | None,
+        transcript_error: AppError,
+    ) -> NormalizedContent:
+        """Promote transcript gaps only after a durable visual source checkpoint.
+
+        Extractors report why transcript text is unavailable; the application
+        pipeline owns source lifecycle and makes VISUAL_NOTES resumable for Retry.
+        """
+        if source_id is None or not isinstance(source, ItemSource):
+            # Legacy parent Items lack a source-level checkpoint for this transition.
+            raise transcript_error
+
+        content = NormalizedContent(
+            source_type=source.source_type,
+            text=_VISUAL_ONLY_VIDEO_CONTEXT,
+            url=source.source_url if source.source_type is SourceType.YOUTUBE else None,
+            user_note=item.user_note or None,
+            duration_seconds=source.content_duration_seconds,
+            metadata={
+                "visual_only": True,
+                "transcript_error_code": transcript_error.code,
+            },
+        )
+        visual_error = await self._enrich_source_visual(session, item, source, content, source_id)
+        if not content.metadata.get("visual_notes"):
+            if visual_error is not None:
+                source.metadata_json = {
+                    **(source.metadata_json or {}),
+                    "video_transcript_error_code": transcript_error.code,
+                }
+                raise AppError(
+                    visual_error.code,
+                    f"visual fallback failed after {transcript_error.code}",
+                    permanent=visual_error.permanent,
+                ) from visual_error
+            raise transcript_error
+
+        source.metadata_json = {
+            **(source.metadata_json or {}),
+            "video_visual_only": True,
+            "video_transcript_error_code": transcript_error.code,
+        }
+        log.info(
+            "video source continues with visual-only content item_id=%s "
+            "source_id=%s transcript_error_code=%s",
+            item.id,
+            source.id,
+            transcript_error.code,
+        )
+        return content
+
     async def _extract_source(
         self,
         session: AsyncSession,
@@ -319,11 +378,16 @@ class ProcessingPipeline:
             completed_segments, on_segment = await self._transcript_checkpoints(
                 session, item, source_id
             )
-            content = await self.youtube_extractor.extract(
-                source,
-                completed_segments=completed_segments,
-                on_segment=on_segment,
-            )
+            try:
+                content = await self.youtube_extractor.extract(
+                    source,
+                    completed_segments=completed_segments,
+                    on_segment=on_segment,
+                )
+            except AppError as exc:
+                if exc.code not in {"NO_AUDIO_TRACK", "EMPTY_TRANSCRIPT"}:
+                    raise
+                return await self._visual_only_fallback(session, item, source, source_id, exc)
             # TRANSCRIPT/DESCRIPTION персистятся атомарно с checkpoint'ом
             # ANALYZING: retry не перекачивает видео и не повторяет STT (ТЗ §59).
             session.add(
@@ -366,50 +430,9 @@ class ProcessingPipeline:
                     on_segment=on_segment,
                 )
             except AppError as exc:
-                if (
-                    exc.code not in {"NO_AUDIO_TRACK", "EMPTY_TRANSCRIPT"}
-                    or source_id is None
-                    or not isinstance(source, ItemSource)
-                ):
+                if exc.code not in {"NO_AUDIO_TRACK", "EMPTY_TRANSCRIPT"}:
                     raise
-                # Without a transcript, durable frame notes become the source checkpoint.
-                content = NormalizedContent(
-                    source_type=SourceType.VIDEO,
-                    text=_VISUAL_ONLY_VIDEO_CONTEXT,
-                    duration_seconds=source.content_duration_seconds,
-                    metadata={
-                        "visual_only": True,
-                        "transcript_error_code": exc.code,
-                    },
-                )
-                visual_error = await self._enrich_source_visual(
-                    session, item, source, content, source_id
-                )
-                if not content.metadata.get("visual_notes"):
-                    if visual_error is not None:
-                        source.metadata_json = {
-                            **(source.metadata_json or {}),
-                            "video_transcript_error_code": exc.code,
-                        }
-                        raise AppError(
-                            visual_error.code,
-                            f"visual fallback failed after {exc.code}",
-                            permanent=visual_error.permanent,
-                        ) from visual_error
-                    raise
-                source.metadata_json = {
-                    **(source.metadata_json or {}),
-                    "video_visual_only": True,
-                    "video_transcript_error_code": exc.code,
-                }
-                log.info(
-                    "video source continues with visual-only content item_id=%s "
-                    "source_id=%s transcript_error_code=%s",
-                    item.id,
-                    source.id,
-                    exc.code,
-                )
-                return content
+                return await self._visual_only_fallback(session, item, source, source_id, exc)
             session.add(
                 Content(
                     item_id=item.id,
@@ -883,7 +906,7 @@ class ProcessingPipeline:
         )
         row = await session.scalar(query.order_by(Content.id.desc()))
         if row is None:
-            if source.source_type is SourceType.VIDEO:
+            if source.source_type in (SourceType.VIDEO, SourceType.YOUTUBE):
                 visual_notes = await session.scalar(
                     select(Content.text).where(
                         Content.item_id == item.id,
@@ -893,8 +916,9 @@ class ProcessingPipeline:
                 )
                 if visual_notes:
                     return NormalizedContent(
-                        source_type=SourceType.VIDEO,
+                        source_type=source.source_type,
                         text=_VISUAL_ONLY_VIDEO_CONTEXT,
+                        url=source.source_url if source.source_type is SourceType.YOUTUBE else None,
                         duration_seconds=source.content_duration_seconds,
                         metadata={
                             "visual_only": True,
