@@ -28,6 +28,7 @@ from app.services.url_parsing import parse_message
 from app.storage.models import Content, Item, ItemSource
 
 log = logging.getLogger(__name__)
+_VISUAL_ONLY_VIDEO_CONTEXT = "Транскрипт видео недоступен; анализ основан на визуальных кадрах."
 
 
 class ProcessingPipeline:
@@ -199,6 +200,11 @@ class ProcessingPipeline:
         if content.metadata.get("source_failures"):
             return "PARTIAL"
 
+        visual_only_sources = int(content.metadata.get("visual_only_source_count") or 0)
+        if visual_only_sources:
+            successful_source_count = int(content.metadata.get("successful_source_count") or 0)
+            return "VISUAL_ONLY" if visual_only_sources == successful_source_count else "PARTIAL"
+
         # ❌ Удалена зависимость completeness от parent Item.source_type: composite
         # Item может быть TEXT при реальных child sources WEB + YOUTUBE/VIDEO.
         source_types = set(content.metadata.get("successful_source_types") or [])
@@ -345,11 +351,45 @@ class ProcessingPipeline:
             completed_segments, on_segment = await self._transcript_checkpoints(
                 session, item, source_id
             )
-            content = await self.video_extractor.extract(
-                source,
-                completed_segments=completed_segments,
-                on_segment=on_segment,
-            )
+            try:
+                content = await self.video_extractor.extract(
+                    source,
+                    completed_segments=completed_segments,
+                    on_segment=on_segment,
+                )
+            except AppError as exc:
+                if (
+                    exc.code not in {"NO_AUDIO_TRACK", "EMPTY_TRANSCRIPT"}
+                    or source_id is None
+                    or not isinstance(source, ItemSource)
+                ):
+                    raise
+                # Without a transcript, durable frame notes become the source checkpoint.
+                content = NormalizedContent(
+                    source_type=SourceType.VIDEO,
+                    text=_VISUAL_ONLY_VIDEO_CONTEXT,
+                    duration_seconds=source.content_duration_seconds,
+                    metadata={
+                        "visual_only": True,
+                        "transcript_error_code": exc.code,
+                    },
+                )
+                await self._enrich_source_visual(session, item, source, content, source_id)
+                if not content.metadata.get("visual_notes"):
+                    raise
+                source.metadata_json = {
+                    **(source.metadata_json or {}),
+                    "video_visual_only": True,
+                    "video_transcript_error_code": exc.code,
+                }
+                log.info(
+                    "video source continues with visual-only content item_id=%s "
+                    "source_id=%s transcript_error_code=%s",
+                    item.id,
+                    source.id,
+                    exc.code,
+                )
+                return content
             session.add(
                 Content(
                     item_id=item.id,
@@ -360,6 +400,13 @@ class ProcessingPipeline:
                 )
             )
             await self._delete_transcript_checkpoints(session, item.id, source_id)
+            if isinstance(source, ItemSource) and (source.metadata_json or {}).get(
+                "video_visual_only"
+            ):
+                source_metadata = dict(source.metadata_json or {})
+                source_metadata.pop("video_visual_only", None)
+                source_metadata.pop("video_transcript_error_code", None)
+                source.metadata_json = source_metadata
             await self._enrich_source_visual(session, item, source, content, source_id)
             return content
         if source.source_type in (SourceType.VOICE, SourceType.AUDIO):
@@ -442,8 +489,7 @@ class ProcessingPipeline:
         source_id: int | None,
     ) -> None:
         """Attach optional visual facts to one video-like source without owning Item failure."""
-        capabilities = getattr(self.analyzer.provider, "capabilities", None)
-        if not capabilities or not capabilities.vision or source_id is None:
+        if source_id is None:
             return
         existing = await session.scalar(
             select(Content.text).where(
@@ -454,6 +500,9 @@ class ProcessingPipeline:
         )
         if existing:
             content.metadata["visual_notes"] = existing
+            return
+        capabilities = getattr(self.analyzer.provider, "capabilities", None)
+        if not capabilities or not capabilities.vision:
             return
 
         temp_root = None
@@ -501,7 +550,7 @@ class ProcessingPipeline:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            # Visual enrichment is auxiliary: transcript remains valid source content.
+            # Callers decide whether another extracted part keeps the source useful.
             log.warning(
                 "source visual analysis skipped item_id=%s source_id=%s: %s",
                 item.id,
@@ -599,6 +648,9 @@ class ProcessingPipeline:
             for content in extracted
             if content.source_type in (SourceType.YOUTUBE, SourceType.VIDEO)
         ]
+        visual_only_source_count = sum(
+            bool(content.metadata.get("visual_only")) for content in visual_sources
+        )
         combined_metadata = dict(single.metadata) if single is not None else {}
         combined_metadata.update(
             {
@@ -607,6 +659,7 @@ class ProcessingPipeline:
                 "successful_source_types": [content.source_type.value for content in extracted],
                 "source_failures": failures,
                 "visual_source_count": len(visual_sources),
+                "visual_only_source_count": visual_only_source_count,
                 "visual_source_count_with_notes": sum(
                     bool(content.metadata.get("visual_notes")) for content in visual_sources
                 ),
@@ -795,6 +848,29 @@ class ProcessingPipeline:
         )
         row = await session.scalar(query.order_by(Content.id.desc()))
         if row is None:
+            if source.source_type is SourceType.VIDEO and (source.metadata_json or {}).get(
+                "video_visual_only"
+            ):
+                visual_notes = await session.scalar(
+                    select(Content.text).where(
+                        Content.item_id == item.id,
+                        Content.source_id == source.id,
+                        Content.kind == ContentKind.VISUAL_NOTES,
+                    )
+                )
+                if visual_notes:
+                    return NormalizedContent(
+                        source_type=SourceType.VIDEO,
+                        text=_VISUAL_ONLY_VIDEO_CONTEXT,
+                        duration_seconds=source.content_duration_seconds,
+                        metadata={
+                            "visual_only": True,
+                            "transcript_error_code": (source.metadata_json or {}).get(
+                                "video_transcript_error_code"
+                            ),
+                            "visual_notes": visual_notes,
+                        },
+                    )
             return None
         meta = row.metadata_json or {}
         restored_source_type = (

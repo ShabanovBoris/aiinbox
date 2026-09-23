@@ -215,6 +215,10 @@ def test_frames_extraction_dedups_identical_frames(tmp_path):
     assert periodic_filter == "fps=1/20,mpdecimate"
     assert r"gt(scene\,0.35)" in scene_filter
     assert "pict_type" not in scene_filter
+    assert captured[0][captured[0].index("-fps_mode") + 1] == "vfr"
+    assert captured[1][captured[1].index("-fps_mode") + 1] == "vfr"
+    assert captured[0][captured[0].index("-pix_fmt") + 1] == "yuvj420p"
+    assert captured[1][captured[1].index("-pix_fmt") + 1] == "yuvj420p"
 
 
 def test_frames_budget_preserves_late_timeline_coverage(tmp_path):

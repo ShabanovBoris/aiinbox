@@ -1,16 +1,18 @@
 from datetime import UTC, datetime
+from types import SimpleNamespace
 
 import pytest
 from aiogram.types import Chat, Document, Message, MessageOriginChannel, Video
 from aiogram.types import User as TgUser
 from sqlalchemy import select
 
+from app.bot.formatting import format_ready_item
 from app.bot.handlers import make_router, on_video
 from app.domain.enums import ContentKind, ProcessingStatus, SourceType
 from app.domain.models import NormalizedContent
 from app.domain.priority import PriorityEngine
 from app.errors import AppError
-from app.extractors.video import VideoExtractor
+from app.extractors.video import VideoExtractor, _extract_audio_track
 from app.services.analysis import Analyzer
 from app.services.processing import ProcessingPipeline
 from app.storage.models import Content, Item, ItemSource
@@ -65,6 +67,23 @@ def _fake_audio_converter(video_path, audio_path) -> None:
     """Test seam for ffmpeg: conversion semantics are tested without a local binary."""
     assert video_path.exists()
     audio_path.write_bytes(b"fake-wav")
+
+
+def test_ffmpeg_missing_audio_stream_has_specific_permanent_error(tmp_path, monkeypatch):
+    """The no-audio case is a permanent source condition, not a generic ffmpeg failure."""
+    monkeypatch.setattr(
+        "app.extractors.video.subprocess.run",
+        lambda *args, **kwargs: SimpleNamespace(
+            returncode=234,
+            stderr=b"Output file #0 does not contain any stream. Error opening output files.",
+        ),
+    )
+
+    with pytest.raises(AppError) as error:
+        _extract_audio_track(tmp_path / "silent.mp4", tmp_path / "audio.wav")
+
+    assert error.value.code == "NO_AUDIO_TRACK"
+    assert error.value.permanent is True
 
 
 async def test_unknown_document_video_duration_is_probed_before_stt(tmp_path):
@@ -284,6 +303,81 @@ async def test_video_visual_notes_join_transcript_before_single_analysis(
         )
         assert visual is not None
         assert visual.text == "На экране показана диаграмма"
+
+
+async def test_video_without_audio_is_analyzed_from_visual_notes_and_restored(
+    tmp_path, settings, session_factory, monkeypatch
+):
+    """Visual-only video content survives analysis checkpoints and restart restoration."""
+
+    async def fake_answer(self, text, **kwargs):
+        return None
+
+    def fake_frames(video, work_dir, **kwargs):
+        work_dir.mkdir(parents=True, exist_ok=True)
+        frame = work_dir / "frame.jpg"
+        frame.write_bytes(b"frame")
+        return [frame]
+
+    def no_audio(video_path, audio_path):
+        raise AppError("NO_AUDIO_TRACK", "video has no audio track", permanent=True)
+
+    monkeypatch.setattr(Message, "answer", fake_answer)
+    monkeypatch.setattr("app.services.processing.extract_representative_frames", fake_frames)
+    await on_video(_video_message(caption=None), settings, session_factory)
+    provider = FakeLlmProvider(vision=True, describe_notes="На экране текст Works Everywhere")
+    downloader = FakeDownloader()
+    transcriber = FakeTranscriber("must not run")
+    extractor = VideoExtractor(
+        transcriber,
+        downloader,
+        tmp_path / "video",
+        audio_converter=no_audio,
+    )
+    pipeline = ProcessingPipeline(
+        Analyzer(provider),
+        PriorityEngine(),
+        video_extractor=extractor,
+    )
+    worker = ProcessingWorker(session_factory, pipeline, poll_seconds=0.01)
+
+    assert await worker.process_one() is True
+
+    assert len(provider.calls) == 1
+    analyzed_content = provider.calls[0][0]
+    assert analyzed_content.metadata["visual_only"] is True
+    assert analyzed_content.metadata["visual_notes"] == "На экране текст Works Everywhere"
+    async with session_factory() as session:
+        item = await session.scalar(select(Item))
+        source = await session.scalar(select(ItemSource).where(ItemSource.item_id == item.id))
+        assert item.processing_status is ProcessingStatus.READY
+        assert item.analysis_completeness == "VISUAL_ONLY"
+        assert "только по визуальным кадрам" in format_ready_item(item)
+        assert source.extraction_status == "READY"
+        assert source.metadata_json["video_visual_only"] is True
+        assert (
+            await session.scalar(
+                select(Content).where(
+                    Content.item_id == item.id,
+                    Content.source_id == source.id,
+                    Content.kind == ContentKind.TRANSCRIPT,
+                )
+            )
+            is None
+        )
+        restored = await ProcessingPipeline._restored_source_content(session, item, source)
+        assert restored is not None
+        assert restored.metadata["visual_only"] is True
+        assert restored.metadata["visual_notes"] == "На экране текст Works Everywhere"
+        item.processing_status = ProcessingStatus.QUEUED
+        item.processing_stage = "ANALYZING"
+        await session.commit()
+
+    assert await worker.process_one() is True
+    assert len(provider.calls) == 2
+    assert provider.describe_calls == 1
+    assert downloader.calls == 2
+    assert transcriber.calls == 0
 
 
 class FailingVideoExtractor:

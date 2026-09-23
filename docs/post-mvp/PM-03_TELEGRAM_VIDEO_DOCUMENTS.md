@@ -176,13 +176,15 @@ Use explicit completeness:
 
 - TRANSCRIPT_ONLY when vision is unavailable/fails;
 - TRANSCRIPT_AND_VISUAL when both succeeded.
+- VISUAL_ONLY when the video has no transcript but vision succeeds.
 
 A vision failure with a valid transcript should normally remain a successful Item with honest completeness.
+A video with no transcript and failed vision extraction follows the existing failure/partial-content policy.
 
-A transcription failure with no other meaningful content is a failed Item.
+A transcription and vision failure with no other meaningful content is a failed Item.
 
-A transcription/download failure with meaningful caption text or another successful
-ItemSource is a successful `PARTIAL` Item; the source-local failure remains durable.
+If transcription fails outside the visual-only path, meaningful caption text or
+another successful ItemSource keeps the Item `PARTIAL`; the source-local failure remains durable.
 
 ## 8. Video temp/resource policy
 

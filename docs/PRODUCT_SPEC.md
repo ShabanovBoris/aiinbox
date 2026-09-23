@@ -175,6 +175,8 @@ Retry меняет processing status; Done/Later/Archive — lifecycle state.
 - ошибка одного вложенного source не роняет Item, если остаётся meaningful text
   или другой успешно извлечённый source: Item завершается `READY` с
   `analysis_completeness=PARTIAL`;
+- видео без доступной транскрипции может завершиться `READY` с
+  `analysis_completeness=VISUAL_ONLY`, если vision успешно разобрал кадры;
 - если ни один source не извлечён и meaningful text отсутствует, Item становится `FAILED`;
 - один и тот же URL в разных Telegram messages не склеивает Items: контекст сообщения
   является частью пользовательской единицы;

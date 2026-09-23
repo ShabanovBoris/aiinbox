@@ -37,7 +37,9 @@ def format_ready_item(item: Item) -> str:
     source_label = forward_source_label(item.source_metadata_json)
     if source_label:
         lines.append(f"Источник: {source_label}")
-    if (
+    if item.analysis_completeness == "VISUAL_ONLY":
+        lines.append("Анализ: только по визуальным кадрам — транскрипт недоступен")
+    elif (
         item.source_type in (SourceType.YOUTUBE, SourceType.VIDEO)
         and item.analysis_completeness == "TRANSCRIPT_ONLY"
     ):

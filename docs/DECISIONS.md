@@ -138,5 +138,20 @@ Decision: URL остаётся `SourceType.WEB`. Если защищённый w
 Reason: исходный URL остаётся стабильной identity source, а `Content.kind` уже
 точно описывает фактически извлечённое представление.
 
+## D-018 — Silent Telegram videos use visual-only analysis
+
+Context: Some Telegram videos contain useful visual information but have no audio
+stream, so audio extraction cannot produce a transcript.
+
+Decision: When a VIDEO source has no audio stream or an empty transcript, use the
+existing frame/vision path. Mark the Item `VISUAL_ONLY` only after visual notes are
+successfully persisted; restore those notes as the source checkpoint after restart.
+
+Reason: A missing transcript does not make visual content unusable, and the result
+must not imply that speech was analyzed.
+
+Consequences: If visual extraction also fails, existing failure/partial-source
+handling remains in effect.
+
 Consequences: recovery различает web page и URL PDF по durable content kind;
 оба варианта используют один SSRF/DNS-pinning downloader.
