@@ -1,8 +1,12 @@
 # PM-05 — Explicit Feedback
 
-Type: Post-MVP Epic + Detailed Technical Specification  
-Status: NOT_STARTED  
+Type: Post-MVP Epic + Detailed Technical Specification
+Status: IN_REVIEW
 Prerequisite: PM-01 recommended; existing durable Event log required
+
+Current implementation: Telegram feedback controls and transactional canonical
+corrections are implemented on the scoped PM-05 branch and submitted for external
+review. No ranking, retraining, or automatic re-analysis is included.
 
 ## 1. Epic
 
@@ -124,6 +128,11 @@ Keep PM-01 interest buttons separate conceptually:
 ~~~
 
 “High interest” is not the same as “Useful”.
+
+The controls are shown only for READY Items, including READY/PARTIAL results.
+The category picker is bounded to the 20 most frequently used existing user
+categories. Category names travel through short opaque callback tokens rather
+than raw callback data.
 
 ## 7. Useful / Not interesting
 
@@ -255,13 +264,18 @@ Telegram callbacks can repeat.
 
 For toggle-like one-off feedback:
 
-- avoid uncontrolled duplicate identical events from the same callback/update;
-- use a reasonable idempotency key if existing architecture supports it;
-- otherwise conditional service logic must ensure repeated callback is harmless.
+- Event has a nullable 160-character idempotency_key and a unique
+  (user_id, idempotency_key) database index;
+- Telegram stores telegram-callback:<CallbackQuery.id> as the key;
+- repeated delivery of that callback is a no-op, while a later user click has a
+  new key and remains a distinct Event.
 
 For feedback that may be intentionally repeated across time, preserve legitimate later events.
 
 Do not globally deduplicate “USEFUL forever” if future semantics need time-series feedback.
+
+Canonical corrections serialize writers with SQLite BEGIN IMMEDIATE, check the
+callback key before changing Item, then commit the new value and Event together.
 
 ## 13. Event payload contract
 
@@ -365,7 +379,9 @@ Requirements:
 - malformed/stale callback handled;
 - deleted/missing Item handled;
 - unauthorized user cannot modify;
-- after correction show canonical persisted value.
+- after correction show canonical persisted value;
+- Back from the correction menu restores the current source-aware Item keyboard;
+- category/type menu navigation creates no Event.
 
 If free-text category correction requires conversational state, keep state minimal and bounded. Do not add a large workflow framework.
 
@@ -413,11 +429,12 @@ If free-text category correction requires conversational state, keep state minim
 
 ## 21. Migration
 
-If the existing Event table can represent all new events, no schema migration is required.
+The migration adds nullable Event.idempotency_key and a unique
+(user_id, idempotency_key) index. Existing Events remain intact with a NULL key;
+SQLite permits multiple NULL keys, and the same non-NULL key may be used by
+different users.
 
 Do not create a new feedback table merely for these event types.
-
-If callback idempotency needs a new durable key, justify the schema change separately.
 
 ## 22. Acceptance criteria
 
