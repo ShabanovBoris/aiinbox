@@ -578,7 +578,7 @@ async def test_video_byte_limit_enforced_independently(tmp_path):
 def patch_youtube_visual(monkeypatch, extractor, tmp_path):
     """Fake only the video/frame boundary while exercising pipeline persistence and Retry."""
     video_downloads: list[str] = []
-    frame_extractions: list[Path] = []
+    frame_extractions: list[tuple[Path, int | None]] = []
 
     async def download_video(url, work_dir):
         video_downloads.append(url)
@@ -591,7 +591,7 @@ def patch_youtube_visual(monkeypatch, extractor, tmp_path):
         frame_dir.mkdir(parents=True, exist_ok=True)
         frame = frame_dir / "frame.jpg"
         frame.write_bytes(b"fake-frame")
-        frame_extractions.append(frame)
+        frame_extractions.append((frame, kwargs.get("duration_seconds")))
         return [frame]
 
     extractor.download_video = download_video
@@ -613,7 +613,7 @@ async def test_youtube_visual_only_fallback_is_durable_across_analysis_retry(
         transcriber = FakeTranscriber("")
         prepared_audio = tmp_path / "audio.m4a"
 
-    info = make_info(subtitles={}, automatic_captions={}, formats=formats)
+    info = make_info(subtitles={}, automatic_captions={}, formats=formats, duration=5400)
     extractor, transcriber, _ = make_youtube(
         tmp_path,
         [info],
@@ -658,6 +658,7 @@ async def test_youtube_visual_only_fallback_is_durable_across_analysis_retry(
         assert not any(row.kind is ContentKind.TRANSCRIPT for row in contents)
     assert provider.calls[0][0].metadata["visual_only"] is True
     assert provider.calls[0][0].metadata["visual_notes"] == provider.describe_notes
+    assert frame_extractions[0][1] == 5400
     assert transcriber.calls == (0 if transcript_gap == "no_audio_track" else 1)
     assert len(info_calls) == 1
     assert video_downloads == [URL]
@@ -673,6 +674,7 @@ async def test_youtube_visual_only_fallback_is_durable_across_analysis_retry(
         assert ready_item.processing_status is ProcessingStatus.READY
         assert ready_item.analysis_completeness == "VISUAL_ONLY"
         assert source.extraction_status == "READY"
+        assert source.content_duration_seconds == 5400
     assert len(provider.calls) == 2
     assert len(info_calls) == 1
     assert video_downloads == [URL]

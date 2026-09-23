@@ -27,7 +27,7 @@ from app.domain.models import NormalizedContent
 from app.errors import AppError
 from app.llm.base import TranscriptionProvider, TranscriptionSegmentCheckpoint
 from app.services.subtitles import parse_subtitles
-from app.storage.models import Item
+from app.storage.models import Item, ItemSource
 
 log = logging.getLogger(__name__)
 
@@ -87,7 +87,7 @@ class YoutubeExtractor:
 
     async def extract(
         self,
-        item: Item,
+        item: Item | ItemSource,
         *,
         completed_segments: Mapping[int, TranscriptionSegmentCheckpoint] | None = None,
         on_segment: Callable[[int, TranscriptionSegmentCheckpoint], Awaitable[None]] | None = None,
@@ -107,6 +107,9 @@ class YoutubeExtractor:
                     f"video duration {duration}s exceeds {self.max_duration_seconds}s",
                     permanent=True,
                 )
+            if duration:
+                # Persist duration so visual fallback can sample the full timeline.
+                item.content_duration_seconds = duration
 
             transcript, cues = await self._transcript_from_subtitles(info)
             via_stt = transcript is None
