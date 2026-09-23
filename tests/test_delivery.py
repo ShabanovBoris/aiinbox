@@ -1,3 +1,5 @@
+import os
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -8,6 +10,9 @@ from aiogram.types import ReplyParameters
 from sqlalchemy import select
 
 from app.domain.enums import ItemType, ProcessingStatus, SourceType
+from app.extractors import youtube as youtube_module
+from app.extractors.subprocess_runner import run_killable_subprocess
+from app.extractors.youtube import YoutubeExtractor
 from app.services.actions import apply_item_action
 from app.services.delivery import (
     ITEM_FAILED,
@@ -23,6 +28,7 @@ from app.services.delivery import (
 )
 from app.services.ingestion import ingest_message
 from app.storage.models import Delivery, Item, ItemSource, ProfileUpdateJob
+from tests.fakes import FakeTranscriber
 
 
 class FakeBot:
@@ -179,6 +185,83 @@ async def test_video_delivery_downloads_selected_source_and_reuses_telegram_file
     assert await worker.process_one() is True
     assert extractor.calls == [(source_url, TELEGRAM_MAX_UPLOAD_BYTES, True)]
     assert bot.media_sends[1][2] == "cached-telegram-video"
+
+
+async def test_youtube_download_timeout_kills_worker_before_cleanup_and_advances_outbox(
+    tmp_path, session_factory, monkeypatch
+):
+    """A stuck child is reaped before cleanup, leaving the single delivery worker usable."""
+    item_id, source_id, _ = await _make_ready_video_source(session_factory, SourceType.YOUTUBE)
+    await enqueue_item_video_delivery(session_factory, 42, item_id, source_id)
+    async with session_factory() as session:
+        item = await session.get(Item, item_id)
+        await enqueue_item_delivery(session, item, ITEM_READY)
+        await session.commit()
+
+    started = tmp_path / "download-worker.pid"
+    raced_cleanup = tmp_path / "cleanup-raced-worker"
+    program = "\n".join(
+        [
+            "import os, pathlib, sys, time",
+            "directory = pathlib.Path(sys.argv[1])",
+            "started = pathlib.Path(sys.argv[2])",
+            "raced = pathlib.Path(sys.argv[3])",
+            "started.write_text(str(os.getpid()))",
+            "while True:",
+            "    if not directory.is_dir():",
+            "        raced.write_text('cleanup raced worker')",
+            "        break",
+            "    try:",
+            "        (directory / 'active').write_text('writing')",
+            "    except FileNotFoundError:",
+            "        raced.write_text('cleanup raced worker')",
+            "        break",
+            "    time.sleep(0.005)",
+        ]
+    )
+
+    async def run_hanging_download(command, payload, **kwargs):
+        # Keep the real shared process owner, replacing only yt-dlp with a deterministic writer.
+        return await run_killable_subprocess(
+            [
+                sys.executable,
+                "-c",
+                program,
+                str(kwargs["cleanup_dir"]),
+                str(started),
+                str(raced_cleanup),
+            ],
+            payload,
+            **kwargs,
+        )
+
+    monkeypatch.setattr(youtube_module, "run_killable_subprocess", run_hanging_download)
+    extractor = YoutubeExtractor(
+        transcriber=FakeTranscriber(),
+        temp_dir=tmp_path / "youtube",
+        download_timeout_seconds=0.5,
+    )
+    bot = FakeBot()
+    worker = DeliveryWorker(
+        session_factory,
+        bot,
+        youtube_extractor=extractor,
+        max_attempts=1,
+        retry_backoff_seconds=0,
+    )
+
+    assert await worker.process_one() is True
+    child_pid = int(started.read_text())
+    with pytest.raises(ProcessLookupError):
+        os.kill(child_pid, 0)
+    assert not raced_cleanup.exists()
+    assert list((tmp_path / "youtube").iterdir()) == []
+
+    assert await worker.process_one() is True
+    assert any("Разобрать материал" in text for _, text in bot.messages)
+    async with session_factory() as session:
+        deliveries = list((await session.scalars(select(Delivery).order_by(Delivery.id))).all())
+    assert [delivery.status for delivery in deliveries] == ["FAILED", "SENT"]
 
 
 async def test_rejected_cached_file_id_falls_back_to_fresh_video_upload(tmp_path, session_factory):

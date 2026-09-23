@@ -1,5 +1,6 @@
 """Тесты YouTube extractor: фейковый yt-dlp + MockTransport, без сети/YouTube."""
 
+import json
 from pathlib import Path
 
 import httpx
@@ -9,7 +10,9 @@ from sqlalchemy import select
 from app.domain.enums import ContentKind, ProcessingStatus, SourceType
 from app.domain.priority import PriorityEngine
 from app.errors import AppError
+from app.extractors import youtube as youtube_module
 from app.extractors.youtube import YoutubeExtractor
+from app.extractors.youtube_worker import execute as execute_youtube_download
 from app.services.actions import apply_item_action
 from app.services.analysis import Analyzer
 from app.services.ingestion import ingest_message
@@ -240,6 +243,7 @@ def test_production_composition_wires_youtube_extractor(tmp_path):
     assert video is None
     assert documents is not None
     assert instagram is not None
+    assert youtube.download_timeout_seconds == settings.youtube_download_timeout_seconds
 
 
 def test_www_youtube_nocookie_classified():
@@ -620,6 +624,83 @@ async def test_video_download_obeys_narrower_delivery_limit(tmp_path):
     assert path.read_bytes() == b"small-video"
     assert captured_options["max_filesize"] == 100
     assert "+bestaudio" in captured_options["format"]
+
+
+async def test_production_video_download_uses_bounded_worker_contract(monkeypatch, tmp_path):
+    """Production YouTube transfers use the child protocol and retain validated output."""
+    work_dir = tmp_path / "work"
+    work_dir.mkdir()
+    captured = {}
+
+    async def run_worker(command, payload, **kwargs):
+        captured["command"] = command
+        captured["request"] = json.loads(payload)
+        captured["kwargs"] = kwargs
+        video_path = work_dir / "abc123.mp4"
+        video_path.write_bytes(b"bounded-video")
+        return json.dumps({"ok": True, "result": {"path": str(video_path)}}).encode()
+
+    monkeypatch.setattr(youtube_module, "run_killable_subprocess", run_worker)
+    extractor = YoutubeExtractor(
+        transcriber=FakeTranscriber(),
+        temp_dir=tmp_path / "youtube",
+        download_timeout_seconds=41,
+    )
+
+    path = await extractor.download_video(URL, work_dir, byte_limit=100, include_audio=True)
+
+    assert captured["command"][1:] == ["-m", "app.extractors.youtube_worker"]
+    assert captured["request"]["url"] == URL
+    assert captured["request"]["options"]["max_filesize"] == 100
+    assert "+bestaudio" in captured["request"]["options"]["format"]
+    assert captured["kwargs"]["timeout_seconds"] == 41
+    assert captured["kwargs"]["cleanup_dir"] == work_dir
+    assert captured["kwargs"]["retain_dir_on_success"] is True
+    assert path == work_dir / "abc123.mp4"
+    assert path.read_bytes() == b"bounded-video"
+
+
+def test_youtube_worker_uses_python_api_and_checks_result_within_download_dir(
+    monkeypatch, tmp_path
+):
+    """The isolated worker keeps yt-dlp on its Python API and returns only its media path."""
+    options = {"outtmpl": str(tmp_path / "worker" / "%(id)s.%(ext)s")}
+
+    class FakeYdl:
+        def __init__(self, captured_options):
+            assert captured_options == options
+            self.video_path = None
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def extract_info(self, url, download=False):
+            assert url == URL
+            assert download is True
+            self.video_path = Path(options["outtmpl"].replace("%(id)s", "abc123")).with_suffix(
+                ".mp4"
+            )
+            self.video_path.parent.mkdir(parents=True, exist_ok=True)
+            self.video_path.write_bytes(b"worker-video")
+            return {"id": "abc123"}
+
+        def prepare_filename(self, info):
+            return str(self.video_path)
+
+    monkeypatch.setattr(youtube_module.yt_dlp, "YoutubeDL", FakeYdl)
+    result = execute_youtube_download(
+        {
+            "url": URL,
+            "options": options,
+            "byte_limit": 100,
+            "download_dir": str(tmp_path / "worker"),
+        }
+    )
+
+    assert result == {"path": str(tmp_path / "worker" / "abc123.mp4")}
 
 
 def patch_youtube_visual(monkeypatch, extractor, tmp_path):

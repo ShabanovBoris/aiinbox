@@ -23,6 +23,7 @@ from app.config import Settings
         ("youtube_max_audio_bytes", 0),
         ("youtube_max_video_bytes", 0),
         ("youtube_max_subtitle_bytes", 0),
+        ("youtube_download_timeout_seconds", 0),
         ("video_frame_interval_seconds", 0),
         ("video_max_frames", 0),
         ("max_document_bytes", 0),

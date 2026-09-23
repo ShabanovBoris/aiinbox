@@ -110,6 +110,7 @@ def build_extractors(settings: Settings, bot) -> tuple:
         max_audio_bytes=settings.youtube_max_audio_bytes,
         max_video_bytes=settings.youtube_max_video_bytes,
         max_subtitle_bytes=settings.youtube_max_subtitle_bytes,
+        download_timeout_seconds=settings.youtube_download_timeout_seconds,
         subtitle_langs=tuple(
             lang.strip() for lang in settings.subtitle_langs.split(",") if lang.strip()
         ),

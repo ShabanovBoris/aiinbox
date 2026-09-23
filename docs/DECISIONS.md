@@ -206,21 +206,24 @@ Reason: сохраняется полезный публичный контек�
 Consequences: `DESCRIPTION` и source metadata восстанавливают caption-only Item
 после Retry; пользовательский результат явно помечается `CAPTION_ONLY`.
 
-## D-022 — Killable media subprocesses для Instagram
+## D-022 — Killable yt-dlp workers для Instagram и YouTube downloads
 
 Context: Python yt-dlp может продолжить блокирующую операцию после отмены
 async-задачи. `asyncio.run()` также ждёт default executor при shutdown, а
 отмена wrapper-задачи `to_thread` не гарантирует, что поток перестал писать.
+Это относится и к on-demand загрузке YouTube-видео для Telegram.
 
-Decision: выполнять production yt-dlp и ffprobe вызовы в отдельной process
-group с wall-clock timeout. При timeout/shutdown завершать process group и
-удалять download directory только после подтверждённого выхода процессов.
+Decision: Instagram yt-dlp/ffprobe и YouTube yt-dlp media downloads выполнять в
+отдельных process groups с wall-clock timeout. При timeout/shutdown завершать
+process group и удалять download directory только после подтверждённого выхода
+процессов.
 
 Reason: это сохраняет D-008 bounded processing/shutdown и исключает гонку
 очистки каталога с downloader-ом. Offline test factory остаётся injectable.
 
 Consequences: metadata/download добавляют короткий запуск дочернего Python
 процесса; приложение не ждёт media tools в default executor при завершении.
+YouTube media transfer имеет отдельный настраиваемый wall-clock limit.
 
 ## D-023 — On-demand video delivery через существующий outbox
 
@@ -230,8 +233,9 @@ callback handler или хранить постоянную копию меди�
 
 Decision: каждая готовая media ItemSource получает свой callback и durable
 `ITEM_VIDEO:<source_id>` delivery. Worker скачивает файл в уникальную temp-папку,
-ограничивает его размером Bot API, отправляет исходное аудио/видео и удаляет
-временный файл. Успешный Telegram `file_id` сохраняется для повторной отправки.
+ограничивает его размером Bot API и wall-clock timeout, отправляет исходное
+аудио/видео и удаляет временный файл после остановки downloader-а. Успешный
+Telegram `file_id` сохраняется для повторной отправки.
 
 Reason: source-scoped outbox сохраняет быстрый handler, restart recovery и
 независимость нескольких видео в одном Item без новой таблицы или media storage.

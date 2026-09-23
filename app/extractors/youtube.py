@@ -11,8 +11,10 @@ extraction (уникальная — нет коллизий между пара
 """
 
 import asyncio
+import json
 import logging
 import shutil
+import sys
 from collections.abc import Awaitable, Callable, Mapping
 from pathlib import Path
 from typing import Any
@@ -25,11 +27,15 @@ import yt_dlp
 from app.domain.enums import SourceType
 from app.domain.models import NormalizedContent
 from app.errors import AppError
+from app.extractors.subprocess_runner import run_killable_subprocess
 from app.llm.base import TranscriptionProvider, TranscriptionSegmentCheckpoint
 from app.services.subtitles import parse_subtitles
 from app.storage.models import Item, ItemSource
 
 log = logging.getLogger(__name__)
+
+_WORKER_OUTPUT_LIMIT_BYTES = 64_000
+_DEFAULT_DOWNLOAD_TIMEOUT_SECONDS = 300.0
 
 _YOUTUBE_HOSTS = {
     "youtube.com",
@@ -67,6 +73,7 @@ class YoutubeExtractor:
         ydl_factory: Callable[[dict], Any] = default_ydl_factory,
         http_client_factory: Callable[[], httpx.AsyncClient] | None = None,
         timeout_seconds: float = 60.0,
+        download_timeout_seconds: float = _DEFAULT_DOWNLOAD_TIMEOUT_SECONDS,
         max_attempts: int = 3,
         backoff_seconds: float = 0.5,
     ):
@@ -82,6 +89,7 @@ class YoutubeExtractor:
             lambda: httpx.AsyncClient(follow_redirects=True, timeout=timeout_seconds)
         )
         self.timeout_seconds = timeout_seconds
+        self.download_timeout_seconds = download_timeout_seconds
         self.max_attempts = max_attempts
         self.backoff_seconds = backoff_seconds
 
@@ -330,6 +338,9 @@ class YoutubeExtractor:
         return await self._run_download(url, options, self.max_audio_bytes)
 
     async def _run_download(self, url: str, options: dict, byte_limit: int) -> Path:
+        if self._ydl_factory is default_ydl_factory:
+            return await self._run_download_worker(url, options, byte_limit)
+
         def _download() -> Path:
             with self._ydl_factory(options) as ydl:
                 info = ydl.extract_info(url, download=True)
@@ -357,3 +368,72 @@ class YoutubeExtractor:
             raise AppError("DOWNLOAD_FAILED", f"yt-dlp download failed: {exc}") from exc
         except yt_dlp.utils.YoutubeDLError as exc:
             raise AppError("DOWNLOAD_FAILED", f"yt-dlp error: {exc}") from exc
+
+    async def _run_download_worker(self, url: str, options: dict, byte_limit: int) -> Path:
+        """Run production media downloads in a killable child; injected factories stay offline."""
+        download_dir = Path(options["outtmpl"]).parent
+        request = json.dumps(
+            {
+                "url": url,
+                "options": options,
+                "byte_limit": byte_limit,
+                "download_dir": str(download_dir),
+            },
+            ensure_ascii=False,
+            allow_nan=False,
+        ).encode("utf-8")
+        output = await run_killable_subprocess(
+            [sys.executable, "-m", "app.extractors.youtube_worker"],
+            request,
+            timeout_seconds=self.download_timeout_seconds,
+            output_limit_bytes=_WORKER_OUTPUT_LIMIT_BYTES,
+            operation_name="YouTube download",
+            cleanup_dir=download_dir,
+            retain_dir_on_success=True,
+        )
+
+        try:
+            response = json.loads(output)
+            if not isinstance(response, dict) or not isinstance(response.get("ok"), bool):
+                raise AppError("DOWNLOAD_FAILED", "YouTube worker returned invalid data")
+            if not response["ok"]:
+                kind = response.get("kind")
+                message = response.get("message")
+                if kind == "app":
+                    raise AppError(
+                        str(response.get("code", "DOWNLOAD_FAILED")),
+                        str(message or "YouTube download failed"),
+                        bool(response.get("permanent")),
+                    )
+                if kind == "yt_dlp":
+                    raise AppError(
+                        "DOWNLOAD_FAILED", f"yt-dlp download failed: {message or 'unknown error'}"
+                    )
+                raise AppError("DOWNLOAD_FAILED", "YouTube worker failed")
+
+            result = response.get("result")
+            prepared_path = result.get("path") if isinstance(result, dict) else None
+            if not isinstance(prepared_path, str):
+                raise AppError("DOWNLOAD_FAILED", "YouTube worker returned invalid data")
+            path = Path(prepared_path)
+            if not path.exists():
+                candidates = list(path.parent.glob(path.stem + ".*"))
+                if not candidates:
+                    raise AppError("DOWNLOAD_FAILED", "video file missing after download")
+                path = candidates[0]
+            if (
+                path.is_symlink()
+                or not path.is_file()
+                or path.resolve().parent != download_dir.resolve()
+            ):
+                raise AppError("DOWNLOAD_FAILED", "YouTube output escaped its temporary directory")
+            if path.stat().st_size > byte_limit:
+                raise AppError("TOO_LARGE", f"download exceeds {byte_limit} bytes", permanent=True)
+            return path
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            shutil.rmtree(download_dir, ignore_errors=True)
+            raise AppError("DOWNLOAD_FAILED", "YouTube worker returned invalid data") from exc
+        except Exception:
+            # The worker has exited before response parsing, so releasing its output is safe.
+            shutil.rmtree(download_dir, ignore_errors=True)
+            raise

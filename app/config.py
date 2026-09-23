@@ -45,6 +45,7 @@ class Settings(BaseSettings):
     youtube_max_audio_bytes: int = Field(50_000_000, ge=1)
     youtube_max_video_bytes: int = Field(50_000_000, ge=1)
     youtube_max_subtitle_bytes: int = Field(2_000_000, ge=1)
+    youtube_download_timeout_seconds: float = Field(300.0, gt=0)
     subtitle_langs: str = "ru,en"
 
     # Instagram Reel extraction uses the same yt-dlp boundary with independently

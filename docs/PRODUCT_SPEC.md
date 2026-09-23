@@ -533,6 +533,7 @@ Defaults:
 - web download: 5 MB;
 - YouTube duration: 7200 s;
 - YouTube audio/video: 50 MB;
+- YouTube media download timeout: 300 s;
 - Instagram Reel duration: 7200 s;
 - Instagram Reel audio/video: 50 MB;
 - subtitles: 2 MB.

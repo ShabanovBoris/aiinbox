@@ -10,7 +10,6 @@ import math
 import os
 import re
 import shutil
-import signal
 import sys
 from collections.abc import Awaitable, Callable, Mapping
 from pathlib import Path
@@ -24,6 +23,7 @@ from app.domain.enums import SourceType
 from app.domain.models import NormalizedContent
 from app.errors import AppError
 from app.extractors.instagram_worker import size_limit_hook
+from app.extractors.subprocess_runner import run_killable_subprocess
 from app.extractors.video import probe_media_duration
 from app.llm.base import TranscriptionProvider, TranscriptionSegmentCheckpoint
 from app.services.url_parsing import normalize_url
@@ -486,134 +486,18 @@ class InstagramExtractor:
         cleanup_dir: Path | None = None,
         retain_dir_on_success: bool = False,
     ) -> bytes:
-        """Own a killable child through timeout/shutdown before releasing its temp files."""
-        process = await asyncio.create_subprocess_exec(
-            *command,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL,
-            start_new_session=(os.name == "posix"),
+        """Delegate process ownership so Instagram and YouTube share cancellation semantics."""
+        # ❌ Удалены _stop_subprocess() и _wait_for_process_group_exit():
+        # общий runner завершает group до очистки и обслуживает оба extractor-а.
+        return await run_killable_subprocess(
+            command,
+            payload,
+            timeout_seconds=timeout_seconds,
+            output_limit_bytes=_WORKER_OUTPUT_LIMIT_BYTES,
+            operation_name="Instagram extraction",
+            cleanup_dir=cleanup_dir,
+            retain_dir_on_success=retain_dir_on_success,
         )
-
-        async def exchange() -> bytes:
-            """Send the small request and cap child output while draining its pipe."""
-            if process.stdin is None or process.stdout is None:
-                raise AppError("DOWNLOAD_FAILED", "Instagram worker pipes are unavailable")
-            process.stdin.write(payload)
-            try:
-                await process.stdin.drain()
-            except (BrokenPipeError, ConnectionResetError):
-                pass
-            process.stdin.close()
-
-            chunks = []
-            size = 0
-            while True:
-                chunk = await process.stdout.read(
-                    min(16_384, _WORKER_OUTPUT_LIMIT_BYTES - size + 1)
-                )
-                if not chunk:
-                    break
-                size += len(chunk)
-                if size > _WORKER_OUTPUT_LIMIT_BYTES:
-                    raise AppError(
-                        "EXTRACTION_FAILED", "Instagram worker response exceeded its limit", True
-                    )
-                chunks.append(chunk)
-            await process.wait()
-            if process.returncode != 0:
-                raise AppError("DOWNLOAD_FAILED", "Instagram worker process failed")
-            return b"".join(chunks)
-
-        communication = asyncio.create_task(exchange())
-        try:
-            stdout = await asyncio.wait_for(asyncio.shield(communication), timeout=timeout_seconds)
-            if cleanup_dir is not None and not retain_dir_on_success:
-                shutil.rmtree(cleanup_dir, ignore_errors=True)
-            return stdout
-        except TimeoutError as exc:
-            stopped = await InstagramExtractor._stop_subprocess(process, communication)
-            if cleanup_dir is not None and stopped:
-                shutil.rmtree(cleanup_dir, ignore_errors=True)
-            raise AppError("TIMEOUT", "Instagram extraction timed out") from exc
-        except asyncio.CancelledError:
-            stopped = await InstagramExtractor._stop_subprocess(process, communication)
-            if cleanup_dir is not None and stopped:
-                shutil.rmtree(cleanup_dir, ignore_errors=True)
-            raise
-        except Exception:
-            stopped = await InstagramExtractor._stop_subprocess(process, communication)
-            if cleanup_dir is not None and stopped:
-                shutil.rmtree(cleanup_dir, ignore_errors=True)
-            raise
-
-    @staticmethod
-    async def _stop_subprocess(
-        process: asyncio.subprocess.Process, communication: asyncio.Task
-    ) -> bool:
-        """Stop yt-dlp and its helper processes before temp cleanup can run."""
-        if os.name == "posix":
-            try:
-                os.killpg(process.pid, signal.SIGTERM)
-            except ProcessLookupError:
-                pass
-        elif process.returncode is None:
-            process.terminate()
-
-        try:
-            await asyncio.wait_for(process.wait(), timeout=1.0)
-        except TimeoutError:
-            if os.name == "posix":
-                try:
-                    os.killpg(process.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
-            elif process.returncode is None:
-                process.kill()
-            try:
-                await asyncio.wait_for(process.wait(), timeout=1.0)
-            except TimeoutError:
-                return False
-
-        if not communication.done():
-            try:
-                await asyncio.wait_for(communication, timeout=1.0)
-            except TimeoutError:
-                if os.name == "posix":
-                    try:
-                        os.killpg(process.pid, signal.SIGKILL)
-                    except ProcessLookupError:
-                        pass
-                try:
-                    await asyncio.wait_for(communication, timeout=1.0)
-                except (asyncio.CancelledError, Exception, TimeoutError):
-                    return False
-            except (asyncio.CancelledError, Exception):
-                if os.name == "posix":
-                    try:
-                        os.killpg(process.pid, signal.SIGKILL)
-                    except ProcessLookupError:
-                        pass
-        if os.name == "posix":
-            try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                return process.returncode is not None
-            return await InstagramExtractor._wait_for_process_group_exit(process.pid)
-        return process.returncode is not None
-
-    @staticmethod
-    async def _wait_for_process_group_exit(process_group_id: int) -> bool:
-        """Only release files once every process in yt-dlp's isolated group has exited."""
-        deadline = asyncio.get_running_loop().time() + 1.0
-        while True:
-            try:
-                os.killpg(process_group_id, 0)
-            except ProcessLookupError:
-                return True
-            if asyncio.get_running_loop().time() >= deadline:
-                return False
-            await asyncio.sleep(0.01)
 
     @staticmethod
     def _resolve_download_path(prepared_path: Any, request: dict) -> Path:

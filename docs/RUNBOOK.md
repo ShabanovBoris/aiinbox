@@ -426,6 +426,14 @@ shutdown завершают процессы до очистки частног�
 Retry у Item. `RATE_LIMITED` — временное ограничение платформы; повторите Retry
 позже. Не используйте browser-cookie harvesting, private API или обход защиты.
 
+## YouTube media downloads
+
+`YOUTUBE_DOWNLOAD_TIMEOUT_SECONDS` defaults to 300 seconds. Production yt-dlp
+media downloads run in a killable process group; timeout or shutdown stops the
+group before the temporary directory can be removed. A timed-out delivery uses
+the normal bounded outbox retry policy and can be requested again after a
+terminal failure.
+
 ## Shutdown / restart
 
 SIGTERM/SIGINT:
