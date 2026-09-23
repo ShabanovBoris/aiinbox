@@ -14,6 +14,7 @@ from app.domain.models import NormalizedContent
 from app.domain.priority import PriorityEngine
 from app.errors import AppError
 from app.extractors.video import VideoExtractor, _extract_audio_track
+from app.services.actions import apply_item_action
 from app.services.analysis import Analyzer
 from app.services.processing import ProcessingPipeline
 from app.storage.models import Content, Item, ItemSource
@@ -407,6 +408,89 @@ async def test_video_without_audio_is_analyzed_from_visual_notes_and_restored(
     assert provider.describe_calls == 1
     assert downloader.calls == 2
     assert transcriber.calls == 0
+    async with session_factory() as session:
+        source = await session.scalar(select(ItemSource))
+        assert source.extraction_status == "READY"
+
+
+async def test_restored_video_checkpoint_is_ready_before_analyzer_retry(
+    tmp_path, settings, session_factory, monkeypatch
+):
+    """Complete recovered source state before an independent analysis can fail."""
+
+    async def fake_answer(self, text, **kwargs):
+        return None
+
+    monkeypatch.setattr(Message, "answer", fake_answer)
+    await on_video(_video_message(caption=None), settings, session_factory)
+    async with session_factory() as session:
+        item = await session.scalar(select(Item))
+        source = await session.scalar(select(ItemSource).where(ItemSource.item_id == item.id))
+        source.metadata_json = {
+            "video_transcript_error_code": "NO_AUDIO_TRACK",
+            "failure_permanent": False,
+        }
+        item.processing_stage = "EXTRACTING"
+        session.add(
+            Content(
+                item_id=item.id,
+                source_id=source.id,
+                kind=ContentKind.VISUAL_NOTES,
+                text="На кадре сохранённый текст",
+            )
+        )
+        await session.commit()
+
+    provider = FakeLlmProvider(vision=True, analyze_failures=1)
+    downloader = FakeDownloader()
+    transcriber = FakeTranscriber("must not run")
+    extractor = VideoExtractor(
+        transcriber,
+        downloader,
+        tmp_path / "video",
+        audio_converter=lambda *_: pytest.fail("restored video must not be converted"),
+    )
+    worker = ProcessingWorker(
+        session_factory,
+        ProcessingPipeline(
+            Analyzer(provider),
+            PriorityEngine(),
+            video_extractor=extractor,
+        ),
+        poll_seconds=0.01,
+    )
+
+    assert await worker.process_one() is True
+    async with session_factory() as session:
+        item = await session.scalar(select(Item))
+        source = await session.scalar(select(ItemSource).where(ItemSource.item_id == item.id))
+        assert item.processing_status is ProcessingStatus.FAILED
+        assert item.processing_stage == "ANALYZING"
+        assert source.extraction_status == "READY"
+        assert source.error_code is None
+        assert source.error_message is None
+        assert "failure_permanent" not in source.metadata_json
+        assert source.metadata_json["video_transcript_error_code"] == "NO_AUDIO_TRACK"
+
+    assert downloader.calls == 0
+    assert transcriber.calls == 0
+    assert provider.describe_calls == 0
+    assert await apply_item_action(session_factory, 42, item.id, "retry") is not None
+    assert await worker.process_one() is True
+
+    async with session_factory() as session:
+        item = await session.scalar(select(Item))
+        source = await session.scalar(select(ItemSource).where(ItemSource.item_id == item.id))
+        assert item.processing_status is ProcessingStatus.READY
+        assert item.analysis_completeness == "VISUAL_ONLY"
+        assert source.extraction_status == "READY"
+    assert len(provider.calls) == 2
+    assert all(
+        call[0].metadata["visual_notes"] == "На кадре сохранённый текст" for call in provider.calls
+    )
+    assert downloader.calls == 0
+    assert transcriber.calls == 0
+    assert provider.describe_calls == 0
 
 
 @pytest.mark.parametrize("failure_stage", ["no_vision", "frame_extraction", "vision_provider"])

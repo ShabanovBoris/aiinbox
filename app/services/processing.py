@@ -249,6 +249,7 @@ class ProcessingPipeline:
                 failures.append(self._source_failure(source))
                 continue
             content = await self._restored_source_content(session, item, source)
+            restored_checkpoint = content is not None
             if content is None:
                 try:
                     content = await self._extract_source(session, item, source, source.id)
@@ -271,12 +272,16 @@ class ProcessingPipeline:
                         exc.code,
                     )
                     continue
+            if not restored_checkpoint or source.extraction_status == "PENDING":
                 source.extraction_status = "READY"
                 source.error_code = None
                 source.error_message = None
-                # Each successful extraction is a durable checkpoint before the
-                # next independent source starts, so later failures/restart do not
-                # repeat already completed network/STT work.
+                source_metadata = dict(source.metadata_json or {})
+                source_metadata.pop("failure_permanent", None)
+                source.metadata_json = source_metadata or None
+                # Restored durable content is also an extraction checkpoint. Mark
+                # the source READY before analysis so an Analyzer retry restores
+                # the complete Item instead of reopening extraction.
                 await session.commit()
             extracted.append(content)
 
