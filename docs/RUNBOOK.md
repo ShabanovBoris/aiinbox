@@ -81,6 +81,13 @@ Downgrade с `c2d4e6f8a0b1` теряет composite source rows. Если нес�
 только у первого Item; у остальных `source_url` будет обнулён. Это schema
 rollback, а не полное восстановление прежней модели данных.
 
+Migration `f5a7c2d91e04` добавляет `INSTAGRAM` в SQLite CHECK constraints и
+является forward-only для БД, где уже появились реальные `INSTAGRAM` rows.
+Прямой downgrade к предыдущей schema восстановит CHECK без `INSTAGRAM` и может
+завершиться ошибкой, пока такие rows существуют. Штатный rollback production
+делайте через verified backup, созданный до schema upgrade; не полагайтесь на
+Alembic downgrade как на восстановление данных PM-04.
+
 ## Quality gate
 
 ```bash
