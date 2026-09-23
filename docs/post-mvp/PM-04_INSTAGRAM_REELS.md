@@ -1,7 +1,7 @@
 # PM-04 — Instagram Reels
 
 Type: Post-MVP Epic + Detailed Technical Specification  
-Status: IN_PROGRESS
+Status: DONE
 Prerequisites: existing yt-dlp/media pipeline; PM-03 media reuse preferred
 
 ## 1. Epic
