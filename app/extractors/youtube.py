@@ -111,6 +111,22 @@ class YoutubeExtractor:
             transcript, cues = await self._transcript_from_subtitles(info)
             via_stt = transcript is None
             if transcript is None:
+                formats = info.get("formats")
+                if (
+                    isinstance(formats, list)
+                    and formats
+                    and all(
+                        isinstance(video_format, dict) and video_format.get("acodec") == "none"
+                        for video_format in formats
+                    )
+                ):
+                    # Only explicit no-audio metadata is enough to skip STT.
+                    # The pipeline can then try the visual-only path.
+                    raise AppError(
+                        "NO_AUDIO_TRACK",
+                        "YouTube video has no audio track",
+                        permanent=True,
+                    )
                 # fallback: скачиваем аудио и транскрибируем
                 audio_path = await self._download_audio(item.source_url, work_dir)
                 try:
@@ -125,7 +141,7 @@ class YoutubeExtractor:
                     if str(audio_path) not in ("", "."):
                         audio_path.unlink(missing_ok=True)
             if not transcript:
-                raise AppError("TRANSCRIPTION_FAILED", "empty transcript")
+                raise AppError("EMPTY_TRANSCRIPT", "empty YouTube transcript")
 
             canonical = info.get("webpage_url") or item.source_url
             return NormalizedContent(

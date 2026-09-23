@@ -237,8 +237,14 @@ instructions от web/transcript/user content. LLM provider не получае�
 
 ## 22. YouTube/video pipeline
 
-YouTube: metadata → subtitles при наличии → иначе audio download + STT.
-Vision — опциональный дополнительный проход по representative frames.
+YouTube: metadata → пригодные subtitles → иначе audio download + STT. Если
+подтверждено отсутствие audio track или STT вернул пустую транскрипцию,
+применяется тот же visual-only fallback, что для Telegram VIDEO: при доступной
+vision capability сохраняются `VISUAL_NOTES`, и Item получает completeness
+`VISUAL_ONLY`. Ошибки загрузки или провайдера транскрипции не маскируются под
+отсутствие аудио и идут по обычной retry/error policy.
+
+Vision также остаётся опциональным обогащением успешной транскрипции.
 
 ## 23. Анализ визуальной части видео
 

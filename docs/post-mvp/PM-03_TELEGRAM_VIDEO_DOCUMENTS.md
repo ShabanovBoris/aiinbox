@@ -179,6 +179,7 @@ Use explicit completeness:
 - VISUAL_ONLY when the video has no transcript but vision succeeds.
 
 A vision failure with a valid transcript should normally remain a successful Item with honest completeness.
+YouTube uses the same visual-only fallback when there is no audio track or STT returns an empty transcript; only durable `VISUAL_NOTES` produce `VISUAL_ONLY`.
 A video with no transcript and failed vision extraction follows the existing failure/partial-content policy.
 
 A transcription and vision failure with no other meaningful content is a failed Item.
@@ -387,7 +388,8 @@ On unsupported/scanned/unextractable content, return a concise reason and Retry 
 - transcript path;
 - vision=false path;
 - vision success path;
-- vision failure degrades to transcript-only;
+- vision failure degrades to transcript-only when a transcript exists;
+- YouTube no-audio/empty-transcript fallback becomes `VISUAL_ONLY` after durable notes;
 - resume reuses transcript/visual notes;
 - temp cleanup;
 - forwarded video preserves PM-02 metadata.

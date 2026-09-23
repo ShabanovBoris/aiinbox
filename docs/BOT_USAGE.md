@@ -79,7 +79,9 @@ https://www.youtube.com/watch?v=...
 - для visual analysis нужен `ffmpeg` и настроенная vision-модель.
 
 Если visual analysis недоступен или падает, успешный transcript всё равно может
-быть обработан как `TRANSCRIPT_ONLY`.
+быть обработан как `TRANSCRIPT_ONLY`. Если же у видео нет audio track или STT не
+получил текст, бот попробует анализ только по кадрам; такой результат будет
+`VISUAL_ONLY` и появится, только если visual analysis успешно завершится.
 
 ### Голосовые сообщения
 
