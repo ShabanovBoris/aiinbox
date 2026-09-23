@@ -77,7 +77,7 @@ class FakeInstagramYdl:
                         "total_bytes": len(self.media_bytes),
                     }
                 )
-            extension = "m4a" if "bestaudio" in self.options["format"] else "mp4"
+            extension = "m4a" if Path(self.options["outtmpl"]).name.startswith("audio") else "mp4"
             output = Path(self.options["outtmpl"].replace("%(ext)s", extension))
             output.parent.mkdir(parents=True, exist_ok=True)
             output.write_bytes(self.media_bytes)
@@ -781,6 +781,25 @@ def test_killable_worker_returns_bounded_metadata(monkeypatch):
     assert result["info"]["id"] == "ABC123"
     assert len(result["info"]["description"]) == 2_000
     assert result["info"]["_all_formats_no_audio"] is False
+
+
+async def test_video_download_obeys_narrower_delivery_limit(tmp_path, monkeypatch):
+    """Telegram's upload cap reaches yt-dlp's max-filesize and progress hook."""
+    extractor, calls, _ = extractor_for(tmp_path, max_video_bytes=500)
+
+    async def info(url):
+        assert url == REEL_A
+        return reel_info()
+
+    monkeypatch.setattr(extractor, "_info", info)
+    source = ItemSource(source_url=REEL_A)
+    work_dir = tmp_path / "work"
+    work_dir.mkdir()
+    path = await extractor.download_video(source, work_dir, byte_limit=100, include_audio=True)
+
+    assert path.read_bytes() == b"fake-media"
+    assert calls[-1][2]["max_filesize"] == 100
+    assert "+bestaudio" in calls[-1][2]["format"]
 
 
 async def test_production_ytdlp_worker_protocol_rejects_unsupported_url_offline(tmp_path):

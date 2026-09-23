@@ -221,3 +221,54 @@ Reason: это сохраняет D-008 bounded processing/shutdown и искл�
 
 Consequences: metadata/download добавляют короткий запуск дочернего Python
 процесса; приложение не ждёт media tools в default executor при завершении.
+
+## D-023 — On-demand video delivery через существующий outbox
+
+Context: пользователь может захотеть получить исходный YouTube/Reel внутри
+Telegram после обработки. Загрузка и отправка велики и не должны выполняться в
+callback handler или хранить постоянную копию медиа.
+
+Decision: каждая готовая media ItemSource получает свой callback и durable
+`ITEM_VIDEO:<source_id>` delivery. Worker скачивает файл в уникальную temp-папку,
+ограничивает его размером Bot API, отправляет исходное аудио/видео и удаляет
+временный файл. Успешный Telegram `file_id` сохраняется для повторной отправки.
+
+Reason: source-scoped outbox сохраняет быстрый handler, restart recovery и
+независимость нескольких видео в одном Item без новой таблицы или media storage.
+
+Consequences: повторный запрос обычно не скачивает файл заново; crash между
+Telegram send и записью `file_id` сохраняет at-least-once семантику и может дать
+дубликат.
+
+## D-024 — Короткие SQLite-транзакции вокруг внешней обработки
+
+Context: media extraction и LLM-вызовы могут длиться секунды, пока несколько
+background workers используют один SQLite-файл. Удержание read transaction в
+этих паузах способно сорвать запись delivery outbox с `database is locked`.
+
+Decision: завершать checkpoint-чтения до внешних вызовов, сохранять готовый
+транскрипт до необязательного video vision и ждать SQLite writer contention не
+дольше 30 секунд.
+
+Reason: короткие транзакции сохраняют конкурентную обработку и позволяют
+durable outbox доставить READY даже при обычной конкуренции workers.
+
+Consequences: долгие provider/download вызовы не удерживают SQLite read lock;
+обработка остаётся single-process, а блокировка дольше 30 секунд остаётся
+инфраструктурной ошибкой.
+
+## D-025 — Ограниченный повтор невалидного AnalysisResult
+
+Context: OpenAI-compatible provider вернул HTTP 200 с усечённым JSON, из-за чего
+уже извлечённый Instagram transcript не дошёл до READY.
+
+Decision: задавать явный output-token budget и повторять structured analysis
+не более двух раз с увеличенным budget и коротким exponential backoff, если
+ответ не прошёл схему.
+
+Reason: временная ошибка провайдера восстанавливается без ручного Retry и без
+повторной загрузки источника; систематически неверный ответ всё ещё становится
+FAILED.
+
+Consequences: такой сбой может создать до двух дополнительных LLM-запросов;
+текст ответа модели не попадает в ошибки и логи.

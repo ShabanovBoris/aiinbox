@@ -1,4 +1,9 @@
+from pathlib import Path
+from types import SimpleNamespace
+
 import pytest
+from aiogram.exceptions import TelegramBadRequest
+from aiogram.methods import SendVideo
 from aiogram.types import ReplyParameters
 from sqlalchemy import select
 
@@ -7,9 +12,12 @@ from app.services.actions import apply_item_action
 from app.services.delivery import (
     ITEM_FAILED,
     ITEM_READY,
+    ITEM_VIDEO_PREFIX,
     PROFILE_UPDATED,
+    TELEGRAM_MAX_UPLOAD_BYTES,
     DeliveryWorker,
     enqueue_item_delivery,
+    enqueue_item_video_delivery,
     enqueue_profile_delivery,
     requeue_sending_deliveries,
 )
@@ -22,6 +30,7 @@ class FakeBot:
         self.failures = failures
         self.messages: list[tuple[int, str]] = []
         self.message_kwargs: list[dict] = []
+        self.media_sends: list[tuple[int, str, object, dict]] = []
 
     async def send_message(self, chat_id, text, **kwargs):
         if self.failures:
@@ -29,6 +38,32 @@ class FakeBot:
             raise RuntimeError("telegram unavailable")
         self.messages.append((chat_id, text))
         self.message_kwargs.append(kwargs)
+
+    async def send_video(self, chat_id, video, **kwargs):
+        self.media_sends.append((chat_id, "video", video, kwargs))
+        return SimpleNamespace(video=SimpleNamespace(file_id="cached-telegram-video"))
+
+    async def send_document(self, chat_id, document, **kwargs):
+        self.media_sends.append((chat_id, "document", document, kwargs))
+        return SimpleNamespace(document=SimpleNamespace(file_id="cached-telegram-document"))
+
+
+class FakeVideoExtractor:
+    """Write deterministic source media into the delivery worker's private temp folder."""
+
+    def __init__(self, temp_dir: Path, extension: str = ".mp4", size: int = 11):
+        self.temp_dir = temp_dir
+        self.extension = extension
+        self.size = size
+        self.calls: list[tuple[str, int]] = []
+
+    async def download_video(self, source, work_dir, *, byte_limit, include_audio):
+        url = source.source_url if hasattr(source, "source_url") else source
+        self.calls.append((url, byte_limit, include_audio))
+        path = Path(work_dir) / f"clip{self.extension}"
+        with path.open("wb") as media:
+            media.truncate(self.size)
+        return path
 
 
 async def make_item(session_factory, *, status=ProcessingStatus.READY) -> Item:
@@ -76,6 +111,216 @@ async def test_delivery_worker_sends_ready_item_and_marks_sent(session_factory):
         assert delivery.status == "SENT"
         assert delivery.attempts == 1
         assert delivery.sent_at is not None
+
+
+async def _make_ready_video_source(session_factory, source_type: SourceType):
+    """Create one READY ItemSource for an on-demand YouTube/Reel delivery test."""
+    item = await make_item(session_factory)
+    source_url = (
+        "https://www.youtube.com/watch?v=clip"
+        if source_type is SourceType.YOUTUBE
+        else "https://www.instagram.com/reel/clip/"
+    )
+    async with session_factory() as session:
+        source = ItemSource(
+            item_id=item.id,
+            source_index=0,
+            source_type=source_type,
+            source_url=source_url,
+            extraction_status="READY",
+        )
+        session.add(source)
+        await session.commit()
+        return item.id, source.id, source_url
+
+
+@pytest.mark.parametrize("source_type", [SourceType.YOUTUBE, SourceType.INSTAGRAM])
+async def test_video_delivery_downloads_selected_source_and_reuses_telegram_file_id(
+    tmp_path, session_factory, source_type
+):
+    """The outbox downloads one child, cleans temp media, and caches Telegram's file id."""
+    item_id, source_id, source_url = await _make_ready_video_source(session_factory, source_type)
+    assert await enqueue_item_video_delivery(session_factory, 42, item_id, source_id) == "QUEUED"
+    temp_root = tmp_path / source_type.value.lower()
+    extractor = FakeVideoExtractor(temp_root)
+    bot = FakeBot()
+    worker = DeliveryWorker(
+        session_factory,
+        bot,
+        youtube_extractor=extractor,
+        instagram_extractor=extractor,
+        retry_backoff_seconds=0,
+    )
+
+    assert await worker.process_one() is True
+    assert extractor.calls == [(source_url, TELEGRAM_MAX_UPLOAD_BYTES, True)]
+    assert len(bot.media_sends) == 1
+    chat_id, media_kind, uploaded, kwargs = bot.media_sends[0]
+    assert chat_id == 7777
+    assert media_kind == "video"
+    assert not Path(uploaded.path).exists()
+    assert kwargs["supports_streaming"] is True
+    assert kwargs["reply_parameters"] == ReplyParameters(
+        message_id=1,
+        allow_sending_without_reply=True,
+    )
+
+    async with session_factory() as session:
+        delivery = await session.scalar(
+            select(Delivery).where(
+                Delivery.item_id == item_id,
+                Delivery.type == f"{ITEM_VIDEO_PREFIX}{source_id}",
+            )
+        )
+        assert delivery.status == "SENT"
+        assert delivery.payload_json["telegram_file_id"] == "cached-telegram-video"
+
+    assert await enqueue_item_video_delivery(session_factory, 42, item_id, source_id) == "QUEUED"
+    assert await worker.process_one() is True
+    assert extractor.calls == [(source_url, TELEGRAM_MAX_UPLOAD_BYTES, True)]
+    assert bot.media_sends[1][2] == "cached-telegram-video"
+
+
+async def test_rejected_cached_file_id_falls_back_to_fresh_video_upload(tmp_path, session_factory):
+    """A stale Telegram reference triggers one source re-upload in the same request."""
+    item_id, source_id, source_url = await _make_ready_video_source(
+        session_factory, SourceType.YOUTUBE
+    )
+    extractor = FakeVideoExtractor(tmp_path / "youtube")
+
+    class RejectCachedFileIdBot(FakeBot):
+        def __init__(self):
+            super().__init__()
+            self.cached_ids = []
+
+        async def send_video(self, chat_id, video, **kwargs):
+            if isinstance(video, str):
+                self.cached_ids.append(video)
+                raise TelegramBadRequest(
+                    method=SendVideo(chat_id=chat_id, video=video),
+                    message="Bad Request: wrong file identifier/HTTP URL specified",
+                )
+            return await super().send_video(chat_id, video, **kwargs)
+
+    bot = RejectCachedFileIdBot()
+    worker = DeliveryWorker(
+        session_factory,
+        bot,
+        youtube_extractor=extractor,
+        retry_backoff_seconds=0,
+    )
+
+    assert await enqueue_item_video_delivery(session_factory, 42, item_id, source_id) == "QUEUED"
+    assert await worker.process_one() is True
+    assert await enqueue_item_video_delivery(session_factory, 42, item_id, source_id) == "QUEUED"
+    assert await worker.process_one() is True
+
+    assert bot.cached_ids == ["cached-telegram-video"]
+    assert len(extractor.calls) == 2
+    assert len(bot.media_sends) == 2
+    async with session_factory() as session:
+        delivery = await session.scalar(
+            select(Delivery).where(
+                Delivery.item_id == item_id,
+                Delivery.type == f"{ITEM_VIDEO_PREFIX}{source_id}",
+            )
+        )
+        assert delivery.status == "SENT"
+        assert delivery.payload_json["telegram_file_id"] == "cached-telegram-video"
+
+
+async def test_video_delivery_sends_non_mp4_as_document(tmp_path, session_factory):
+    """Unsupported preview containers remain downloadable attachments in Telegram."""
+    item_id, source_id, _ = await _make_ready_video_source(session_factory, SourceType.YOUTUBE)
+    await enqueue_item_video_delivery(session_factory, 42, item_id, source_id)
+    extractor = FakeVideoExtractor(tmp_path / "youtube", extension=".webm")
+    bot = FakeBot()
+    worker = DeliveryWorker(
+        session_factory,
+        bot,
+        youtube_extractor=extractor,
+        retry_backoff_seconds=0,
+    )
+
+    assert await worker.process_one() is True
+    assert bot.media_sends[0][1] == "document"
+    assert not Path(bot.media_sends[0][2].path).exists()
+
+
+async def test_video_delivery_rejects_files_above_telegram_upload_limit(tmp_path, session_factory):
+    """The Bot API cap is enforced even if an extractor returns an oversized file."""
+    item_id, source_id, _ = await _make_ready_video_source(session_factory, SourceType.YOUTUBE)
+    await enqueue_item_video_delivery(session_factory, 42, item_id, source_id)
+    extractor = FakeVideoExtractor(
+        tmp_path / "youtube",
+        size=TELEGRAM_MAX_UPLOAD_BYTES + 1,
+    )
+    bot = FakeBot()
+    worker = DeliveryWorker(
+        session_factory,
+        bot,
+        youtube_extractor=extractor,
+        max_attempts=3,
+        retry_backoff_seconds=0,
+    )
+
+    assert await worker.process_one() is True
+    assert bot.media_sends == []
+    assert (
+        bot.messages[-1][1] == "Видео превышает лимит Telegram в 50 MB. Откройте исходную ссылку."
+    )
+    async with session_factory() as session:
+        delivery = await session.scalar(
+            select(Delivery).where(
+                Delivery.item_id == item_id,
+                Delivery.type == f"{ITEM_VIDEO_PREFIX}{source_id}",
+            )
+        )
+        assert delivery.status == "FAILED"
+        assert delivery.attempts == 1
+        assert "50 MB" in delivery.last_error
+
+
+async def test_terminal_cached_file_failure_allows_fresh_download_on_next_tap(session_factory):
+    """A stale Telegram file id is cleared when delivery fails permanently."""
+    item_id, source_id, _ = await _make_ready_video_source(session_factory, SourceType.YOUTUBE)
+    async with session_factory() as session:
+        item = await session.get(Item, item_id)
+        delivery = Delivery(
+            user_id=item.user_id,
+            item_id=item_id,
+            type=f"{ITEM_VIDEO_PREFIX}{source_id}",
+            status="PENDING",
+            payload_json={
+                "source_id": source_id,
+                "telegram_file_id": "stale-telegram-file-id",
+                "telegram_media_kind": "video",
+            },
+        )
+        session.add(delivery)
+        await session.commit()
+
+    class RejectCachedVideoBot(FakeBot):
+        """Simulate Telegram invalidating a previously cached file id."""
+
+        async def send_video(self, chat_id, video, **kwargs):
+            if isinstance(video, str):
+                raise RuntimeError("file identifier is invalid")
+            return await super().send_video(chat_id, video, **kwargs)
+
+    worker = DeliveryWorker(
+        session_factory,
+        RejectCachedVideoBot(),
+        max_attempts=1,
+        retry_backoff_seconds=0,
+    )
+    assert await worker.process_one() is True
+
+    async with session_factory() as session:
+        stored = await session.get(Delivery, delivery.id)
+        assert stored.status == "FAILED"
+        assert stored.payload_json == {"source_id": source_id}
+    assert await enqueue_item_video_delivery(session_factory, 42, item_id, source_id) == "QUEUED"
 
 
 @pytest.mark.parametrize(

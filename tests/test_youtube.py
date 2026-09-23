@@ -576,6 +576,52 @@ async def test_video_byte_limit_enforced_independently(tmp_path):
     assert "5 000 000" in str(exc_info.value) or "5000000" in str(exc_info.value) or True
 
 
+async def test_video_download_obeys_narrower_delivery_limit(tmp_path):
+    """The Telegram delivery boundary can tighten, but never widen, the extractor cap."""
+    captured_options = {}
+    downloaded = None
+
+    class VideoYdl:
+        def __init__(self, options):
+            self.options = options
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def extract_info(self, url, download=False):
+            nonlocal downloaded
+            downloaded = Path(
+                self.options["outtmpl"].replace("%(id)s", "abc123").replace("%(ext)s", "mp4")
+            )
+            downloaded.parent.mkdir(parents=True, exist_ok=True)
+            downloaded.write_bytes(b"small-video")
+            return make_info()
+
+        def prepare_filename(self, info):
+            return str(downloaded)
+
+    def factory(options):
+        captured_options.update(options)
+        return VideoYdl(options)
+
+    extractor = YoutubeExtractor(
+        transcriber=FakeTranscriber(),
+        temp_dir=tmp_path / "yt",
+        max_video_bytes=500,
+        ydl_factory=factory,
+    )
+    path = await extractor.download_video(
+        URL, tmp_path / "work", byte_limit=100, include_audio=True
+    )
+
+    assert path.read_bytes() == b"small-video"
+    assert captured_options["max_filesize"] == 100
+    assert "+bestaudio" in captured_options["format"]
+
+
 def patch_youtube_visual(monkeypatch, extractor, tmp_path):
     """Fake only the video/frame boundary while exercising pipeline persistence and Retry."""
     video_downloads: list[str] = []

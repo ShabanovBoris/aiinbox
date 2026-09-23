@@ -74,8 +74,8 @@ Telegram → ingestion → SQLite queue → ProcessingWorker
                              Telegram
 ```
 
-Напоминания обслуживает `ReminderWorker`, immediate READY/FAILED/profile
-notifications — durable `DeliveryWorker`.
+Напоминания обслуживает `ReminderWorker`, READY/FAILED/profile notifications и
+явно запрошенная отправка видео — durable `DeliveryWorker`.
 
 ## 6. Текущая поддерживаемая поверхность
 
@@ -305,6 +305,9 @@ Business code не содержит hardcoded model IDs.
 
 Analyzer обязан возвращать schema-validated `AnalysisResult`. Парсинг
 произвольного prose регулярками запрещён.
+Некорректный структурированный ответ получает до двух повторных попыток с
+короткой задержкой и увеличенным лимитом генерации; после третьего невалидного
+ответа Item переходит в `FAILED`.
 
 ## 31. Ограничения AnalysisResult
 
@@ -492,6 +495,7 @@ the optional cookie file; workers do not automatically requeue failed Items.
 
 LLM failure переводит Item в FAILED, не удаляя extraction/transcript/checkpoints.
 Retry продолжает с максимально глубокого compatible durable checkpoint.
+Текст невалидного ответа модели не включается в диагностическую ошибку.
 
 ## 60. Processing stages
 
@@ -559,6 +563,13 @@ READY/FAILED уведомление по Item с VIDEO отправляется 
 которое пользователь отправил или переслал боту. Reply preview возвращает к
 копии видео в чате с ботом; для публичного пересланного поста кнопка выше ведёт
 отдельно к исходному посту.
+
+READY YouTube/Instagram ItemSource получает отдельное действие отправки этого
+источника в Telegram. Callback только ставит source-scoped intent в durable
+outbox; DeliveryWorker ограничивает скачивание размером Bot API, отправляет
+аудио вместе с видео, удаляет локальную временную копию и сохраняет Telegram
+`file_id` для повторной отправки. MP4 уходит как video preview; другие контейнеры
+сохраняются как document.
 
 ## 71. Персонализация
 

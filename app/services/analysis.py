@@ -67,6 +67,9 @@ class Analyzer:
             summaries = await self._durable_chunk_summaries(session, item_id, chunks)
             content = content.model_copy(update={"text": self._bounded_aggregate(summaries)})
         categories = await existing_categories(session, user_id)
+        # The provider call can take seconds; finish the read transaction first so
+        # another worker can claim/update its SQLite outbox rows while analysis runs.
+        await session.commit()
         return await self.provider.analyze(content, profile, categories)
 
     async def _durable_chunk_summaries(

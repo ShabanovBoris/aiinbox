@@ -198,8 +198,20 @@ class InstagramExtractor:
         finally:
             shutil.rmtree(work_dir, ignore_errors=True)
 
-    async def download_video(self, source: Item | ItemSource, work_dir: Path) -> Path:
-        """Provide one bounded video file to the shared representative-frame path."""
+    async def download_video(
+        self,
+        source: Item | ItemSource,
+        work_dir: Path,
+        *,
+        byte_limit: int | None = None,
+        include_audio: bool = False,
+    ) -> Path:
+        """Provide a bounded Reel for representative frames or an explicit Telegram send.
+
+        A caller may impose a narrower transport limit while the extractor keeps
+        its configured cap as the upper bound for every consumer. Frame analysis
+        defaults to video-only; user delivery opts into the combined audio/video stream.
+        """
         url = source.source_url
         if not url or not is_instagram_reel_url(url):
             raise AppError(
@@ -210,8 +222,15 @@ class InstagramExtractor:
         if duration is not None:
             self._validate_duration(duration)
             source.content_duration_seconds = duration
+        effective_limit = self.max_video_bytes
+        if byte_limit is not None:
+            effective_limit = min(effective_limit, byte_limit)
         video_path = await self._download_media(
-            url, work_dir, media_kind="video", byte_limit=self.max_video_bytes
+            url,
+            work_dir,
+            media_kind="video",
+            byte_limit=effective_limit,
+            include_audio=include_audio,
         )
         if duration is None:
             duration = await self._probe_duration(video_path)
@@ -234,12 +253,22 @@ class InstagramExtractor:
         return info
 
     async def _download_media(
-        self, url: str, work_dir: Path, *, media_kind: str, byte_limit: int
+        self,
+        url: str,
+        work_dir: Path,
+        *,
+        media_kind: str,
+        byte_limit: int,
+        include_audio: bool = False,
     ) -> Path:
         format_selector = (
             "bestaudio/best"
             if media_kind == "audio"
-            else "bestvideo[height<=720]/best[height<=720]"
+            else (
+                "best[height<=720]/bestvideo[height<=720]+bestaudio/best"
+                if include_audio
+                else "bestvideo[height<=720]/best[height<=720]"
+            )
         )
         stem = "audio" if media_kind == "audio" else "video"
         download_dir = self.temp_dir / f"ig-ytdlp-{uuid4().hex}"

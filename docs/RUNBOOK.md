@@ -355,13 +355,18 @@ WHERE id=<id> AND processing_status='FAILED';
 
 ```bash
 sqlite3 data/app.db \
-  "SELECT id, kind, status, item_id, profile_update_job_id, attempts, updated_at
+  "SELECT id, type, status, item_id, profile_update_job_id, attempts, last_error, updated_at
    FROM deliveries ORDER BY id DESC LIMIT 50"
 ```
 
 `PENDING/SENDING` восстанавливаются delivery worker-ом/startup recovery.
 `SENT` — зафиксированная успешная delivery state; transport semantics
 at-least-once, поэтому crash сразу после Telegram send может дать дубль.
+`ITEM_VIDEO:<source_id>` rows означают, что пользователь запросил конкретный
+YouTube/Reel source. После успешной загрузки Telegram `file_id` сохраняется в
+delivery payload для повторной отправки; локальный media-файл удаляется.
+После исчерпания попыток `FAILED` video delivery снова ставится в очередь при
+нажатии соответствующей кнопки.
 
 ## Reminders / digest
 

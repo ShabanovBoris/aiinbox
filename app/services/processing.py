@@ -255,6 +255,9 @@ class ProcessingPipeline:
         sources = await self._item_sources(session, item.id)
         if sources:
             return await self._extract_item_sources(session, item, sources)
+        # Close the source lookup transaction before a legacy extractor performs
+        # network or media work.
+        await session.commit()
         return await self._extract_legacy_source(session, item)
 
     async def _extract_item_sources(
@@ -272,6 +275,9 @@ class ProcessingPipeline:
             content = await self._restored_source_content(session, item, source)
             restored_checkpoint = content is not None
             if content is None:
+                # Release the checkpoint lookup's SQLite read lock before downloads
+                # and transcription performed by the source adapter.
+                await session.commit()
                 try:
                     content = await self._extract_source(session, item, source, source.id)
                 except AppError as exc:
@@ -554,6 +560,8 @@ class ProcessingPipeline:
                     )
                 )
             await self._delete_transcript_checkpoints(session, item.id, source_id)
+            # Keep the transcript durable before optional visual downloads/provider calls.
+            await session.commit()
             await self._enrich_source_visual(session, item, source, content, source_id)
             return content
         if source.source_type is SourceType.VIDEO:
@@ -590,6 +598,7 @@ class ProcessingPipeline:
                 source_metadata.pop("video_visual_only", None)
                 source_metadata.pop("video_transcript_error_code", None)
                 source.metadata_json = source_metadata
+            await session.commit()
             await self._enrich_source_visual(session, item, source, content, source_id)
             return content
         if source.source_type in (SourceType.VOICE, SourceType.AUDIO):
@@ -699,6 +708,9 @@ class ProcessingPipeline:
         if temp_root is None:
             return
 
+        # Persist transcript state and release profile/visual-note reads before
+        # downloading frames or calling the vision provider.
+        await session.commit()
         work_dir = temp_root / f"vis-source-{source_id}-{uuid4().hex}"
         try:
             work_dir.mkdir(parents=True, exist_ok=True)
@@ -982,6 +994,10 @@ class ProcessingPipeline:
             except (KeyError, TypeError):
                 # Legacy index-only checkpoints are deliberately not reusable.
                 continue
+
+        # The checkpoint values are now local; do not keep a SQLite read lock open
+        # while a downloader or transcription provider is running.
+        await session.commit()
 
         checkpoint_lock = asyncio.Lock()
 

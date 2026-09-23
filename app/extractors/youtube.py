@@ -283,20 +283,39 @@ class YoutubeExtractor:
             await asyncio.sleep(self.backoff_seconds * (2**attempt))
         raise last_error  # pragma: no cover
 
-    async def download_video(self, url: str, work_dir: Path) -> Path:
-        """Скачивание видео для визуального анализа (Phase 7)."""
+    async def download_video(
+        self,
+        url: str,
+        work_dir: Path,
+        *,
+        byte_limit: int | None = None,
+        include_audio: bool = False,
+    ) -> Path:
+        """Download bounded source video for visual analysis or an explicit Telegram send.
+
+        A caller may impose a narrower transport limit while the extractor keeps
+        its configured cap as the upper bound for every consumer. Frame analysis
+        defaults to video-only; user delivery opts into the combined audio/video stream.
+        """
+        effective_limit = self.max_video_bytes
+        if byte_limit is not None:
+            effective_limit = min(effective_limit, byte_limit)
+        format_selector = (
+            "best[height<=720]/bestvideo[height<=720]+bestaudio/best"
+            if include_audio
+            else "bestvideo[height<=720]/best[height<=720]"
+        )
         options = {
             "quiet": True,
             "no_warnings": True,
             "noplaylist": True,
-            # Для visual analysis аудиодорожка не нужна: DASH video-only должен
-            # быть допустим, иначе часть роликов не имеет combined <=720p format.
-            "format": "bestvideo[height<=720]/best[height<=720]",
-            "max_filesize": self.max_video_bytes,
+            # Frame analysis stays video-only; an explicit send requests the audio track too.
+            "format": format_selector,
+            "max_filesize": effective_limit,
             "outtmpl": str(work_dir / "%(id)s.%(ext)s"),
             "socket_timeout": self.timeout_seconds,
         }
-        return await self._run_download(url, options, self.max_video_bytes)
+        return await self._run_download(url, options, effective_limit)
 
     async def _download_audio(self, url: str, work_dir: Path) -> Path:
         options = {

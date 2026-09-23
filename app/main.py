@@ -280,6 +280,8 @@ async def run(settings: Settings) -> None:
             delivery_worker = DeliveryWorker(
                 session_factory,
                 bot,
+                youtube_extractor=youtube_extractor,
+                instagram_extractor=instagram_extractor,
                 poll_seconds=settings.processing_poll_seconds,
             )
             delivery_tasks.append(
