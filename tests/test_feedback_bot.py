@@ -431,7 +431,11 @@ async def test_replayed_category_callback_refreshes_latest_value_without_reapply
 async def test_stale_category_callback_cannot_apply_after_category_returns(
     settings, session_factory
 ):
-    item_id = await _create_ready_item(session_factory, category="Programming")
+    await _create_category_item(session_factory, "Other")
+    item_id = await _create_category_item(session_factory, "Programming")
+    async with session_factory() as session:
+        target = await session.get(Item, item_id)
+        assert target.user_id != item_id
     callback = FakeCallback(
         42,
         f"feedback:category:{item_id}:{category_callback_token('AI')}",
