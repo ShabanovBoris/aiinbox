@@ -68,13 +68,18 @@ async def _has_callback_receipt(session: AsyncSession, user_id: int, idempotency
     )
 
 
+async def _callback_was_consumed(session: AsyncSession, user_id: int, idempotency_key: str) -> bool:
+    """Check both semantic Event keys and receipts for no-op/unapplied outcomes."""
+    return await _has_callback_event(
+        session, user_id, idempotency_key
+    ) or await _has_callback_receipt(session, user_id, idempotency_key)
+
+
 async def _claim_feedback_callback_receipt(
     session: AsyncSession, user_id: int, idempotency_key: str
 ) -> bool:
     """Claim a callback inside BEGIN IMMEDIATE, including no-op outcomes."""
-    if await _has_callback_event(session, user_id, idempotency_key) or await _has_callback_receipt(
-        session, user_id, idempotency_key
-    ):
+    if await _callback_was_consumed(session, user_id, idempotency_key):
         return False
     session.add(FeedbackCallbackReceipt(user_id=user_id, idempotency_key=idempotency_key))
     return True
@@ -96,15 +101,15 @@ async def consume_unapplied_feedback_callback(
 
     async with session_factory() as session:
         await session.execute(text("BEGIN IMMEDIATE"))
-        owned_item_id = await session.scalar(
-            select(Item.id)
+        owned_user_id = await session.scalar(
+            select(Item.user_id)
             .join(User, User.id == Item.user_id)
             .where(User.telegram_user_id == telegram_user_id, Item.id == item_id)
         )
-        if owned_item_id is None:
+        if owned_user_id is None:
             await session.rollback()
             return
-        await _claim_feedback_callback_receipt(session, owned_item_id, idempotency_key)
+        await _claim_feedback_callback_receipt(session, owned_user_id, idempotency_key)
         await session.commit()
 
 
@@ -131,7 +136,7 @@ async def record_item_feedback(
         if item is None:
             await session.rollback()
             return None
-        if await _has_callback_event(session, item.user_id, idempotency_key):
+        if await _callback_was_consumed(session, item.user_id, idempotency_key):
             await session.commit()
             return item
 

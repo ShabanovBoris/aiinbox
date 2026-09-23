@@ -5,6 +5,7 @@ from sqlalchemy import select
 
 from app.domain.enums import ItemState, ItemType, ProcessingStatus, SourceType
 from app.services.feedback import (
+    consume_unapplied_feedback_callback,
     correct_item_category,
     correct_item_type,
     record_item_feedback,
@@ -169,6 +170,51 @@ async def test_feedback_is_scoped_to_user_and_ready_items(session_factory):
     )
     assert await _event_rows(session_factory, item_id) == []
     assert await _event_rows(session_factory, queued_id) == []
+
+
+async def test_unapplied_receipt_blocks_event_feedback_after_item_becomes_ready(session_factory):
+    await _create_item(session_factory)
+    queued_id = await _create_item(session_factory, status=ProcessingStatus.QUEUED)
+    await _create_item(session_factory, telegram_user_id=1000)
+    async with session_factory() as session:
+        queued_item = await session.get(Item, queued_id)
+        user_id = queued_item.user_id
+        assert queued_id != user_id
+        other_user = await session.scalar(select(User).where(User.telegram_user_id == 1000))
+        # This catches confusing Item.id with its owner when persisting receipts.
+        assert other_user.id == queued_id
+
+    callback_key = "telegram-callback:temporarily-unavailable"
+    await consume_unapplied_feedback_callback(
+        session_factory, 42, queued_id, idempotency_key=callback_key
+    )
+    await consume_unapplied_feedback_callback(
+        session_factory, 1000, queued_id, idempotency_key="telegram-callback:foreign"
+    )
+    async with session_factory() as session:
+        queued_item = await session.get(Item, queued_id)
+        queued_item.processing_status = ProcessingStatus.READY
+        await session.commit()
+
+    replay = await record_item_feedback(
+        session_factory, 42, queued_id, "USEFUL", idempotency_key=callback_key
+    )
+
+    assert replay is not None
+    assert await _event_rows(session_factory, queued_id) == []
+    async with session_factory() as session:
+        receipt_user_ids = list(
+            (
+                await session.scalars(
+                    select(FeedbackCallbackReceipt.user_id).where(
+                        FeedbackCallbackReceipt.idempotency_key.in_(
+                            [callback_key, "telegram-callback:foreign"]
+                        )
+                    )
+                )
+            ).all()
+        )
+        assert receipt_user_ids == [user_id]
 
 
 async def test_feedback_accepts_ready_done_item_without_changing_lifecycle(session_factory):
