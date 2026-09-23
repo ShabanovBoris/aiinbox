@@ -74,6 +74,17 @@ All post-MVP work must preserve the current architecture:
 | 19 | Android Client | Share Sheet, rich browsing, widgets | PM-18 |
 | 20 | Calendar-aware Attention | Recommend Items using real free-time windows | PM-07, external calendar |
 
+## 3.1 Detailed specifications PM-06…PM-13
+
+- [PM-06 — Behaviour-Aware Ranking](PM-06_BEHAVIOUR_AWARE_RANKING.md)
+- [PM-07 — Attention Ranking Engine](PM-07_ATTENTION_RANKING.md)
+- [PM-08 — Attention Intensity and Proactive Scheduling](PM-08_ATTENTION_INTENSITY.md)
+- [PM-09 — Contextual Attention Hooks](PM-09_CONTEXTUAL_HOOKS.md)
+- [PM-10 — Motivational Nudges](PM-10_MOTIVATIONAL_NUDGES.md)
+- [PM-11 — Reminder Feedback Loop](PM-11_REMINDER_FEEDBACK_LOOP.md)
+- [PM-12 — Weekly Review](PM-12_WEEKLY_REVIEW.md)
+- [PM-13 — Ask My Inbox](PM-13_ASK_MY_INBOX.md)
+
 ## 4. Milestone grouping
 
 ### Milestone A — Capture Intent
