@@ -276,3 +276,45 @@ FAILED.
 
 Consequences: такой сбой может создать до двух дополнительных LLM-запросов;
 текст ответа модели не попадает в ошибки и логи.
+
+## D-026 — Telegram-ограничения принадлежат адаптеру интерфейса
+
+Context: Telegram — текущий интерфейс, но тот же pipeline может получить другой
+вход и иметь другую поверхность выдачи. Сейчас часть ограничений задаётся
+конфигурацией, часть захардкожена; облачный Bot API и локальный Bot API Server
+имеют разные медиа-возможности.
+
+Decision: транспортные лимиты Telegram принадлежат его адаптеру и конфигурации
+выбранного профиля Bot API. Они ограничивают только приём/представление в этом
+интерфейсе и не становятся правилами домена. Настройки не могут превысить
+возможности выбранного Telegram API, но могут отличаться для локального Bot API
+Server или другой конфигурации развёртывания. Будущий интерфейс получает свои
+лимиты и не наследует значения Telegram.
+
+Текущие ограничения, которые adapter должен учитывать:
+
+| Ограничение | Текущее значение или реализация | Почему это принадлежит интерфейсу |
+| --- | --- | --- |
+| Скачивание входящих файлов из Telegram | Облачный `getFile` ограничен 20 MB. `MAX_AUDIO_BYTES`, `MAX_VIDEO_BYTES` и `MAX_DOCUMENT_BYTES` сейчас настраиваются и по умолчанию равны 20 MB. | Это лимит получения байтов через Telegram. Локальный Bot API Server снимает download limit; HTTP/web-клиент может передать те же данные другим способом. |
+| Отправка медиа в Telegram | `sendAudio`, `sendVideo` и `sendDocument` в облачном Bot API ограничены 50 MB. Сейчас `TELEGRAM_MAX_UPLOAD_BYTES` захардкожен в `app/services/delivery.py`. | Лимит определяет возможность доставки файла, а не возможность его скачать, проанализировать или сохранить. Локальный Bot API Server допускает загрузку до 2000 MB. |
+| Текст сообщения | 4096 символов после разбора entities. `app/bot/formatting.py` сейчас фиксирует это в `_TELEGRAM_MAX_MESSAGE_LENGTH`. | Telegram-форматтер должен укладывать ответ в API limit; общий результат приложения нельзя заранее обрезать для всех будущих интерфейсов. |
+| Подпись к медиа | Telegram принимает до 1024 символов после разбора entities. Сейчас captions короткие и отдельного лимита в конфигурации нет. | При появлении динамических подписей их длина должна ограничиваться Telegram presenter-ом, не source/domain content. |
+| `callback_data` inline-кнопки | 1–64 байта. `app/bot/keyboards.py` кодирует тип действия и Item/Source IDs непосредственно в callback. | Ограничение относится к сериализации Telegram-действия. Другой интерфейс сможет использовать собственные URL, формы или action IDs. |
+| Частота отправки сообщений | Ограничения зависят от чата и режима broadcast; Telegram может вернуть `retry_after`. Отдельного Telegram rate limiter сейчас нет. | Delivery adapter должен уважать серверную задержку и иметь свою bounded pacing/retry policy; бизнес-обработка не должна зависеть от квот Telegram. |
+
+Reason: облачный Telegram Bot API ограничивает скачивание через `getFile` до 20 MB,
+загрузку медиа — до 50 MB, `sendMessage` — до 4096 символов, media caption — до
+1024 символов, а callback payload — до 64 байт. Эти значения описывают
+конкретный transport и могут измениться или отличаться у локального Bot API
+Server ([Telegram Bot API](https://core.telegram.org/bots/api), [Bots FAQ](https://core.telegram.org/bots/faq)).
+
+Consequences / future adapter TODO: при добавлении второго интерфейса вынести
+`TELEGRAM_MAX_UPLOAD_BYTES` в настройки Telegram adapter; отделить входные
+transport caps от parser/analysis budgets там, где один параметр сейчас служит
+обоим слоям; ограничивать текст, captions и action payload только при
+формировании Telegram ответа; добавить обработку `retry_after` в Telegram
+delivery policy. `YOUTUBE_MAX_AUDIO_BYTES`, `YOUTUBE_MAX_VIDEO_BYTES`,
+`INSTAGRAM_MAX_AUDIO_BYTES`, `INSTAGRAM_MAX_VIDEO_BYTES` и duration caps являются
+отдельными source/processing budgets: их нельзя автоматически приравнивать к
+лимиту Telegram upload. Например, разрешение анализировать большой ролик не
+означает, что его обязательно можно отправить обратно через Telegram.
