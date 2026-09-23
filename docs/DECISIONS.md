@@ -205,3 +205,19 @@ Reason: сохраняется полезный публичный контек�
 
 Consequences: `DESCRIPTION` и source metadata восстанавливают caption-only Item
 после Retry; пользовательский результат явно помечается `CAPTION_ONLY`.
+
+## D-022 — Killable media subprocesses для Instagram
+
+Context: Python yt-dlp может продолжить блокирующую операцию после отмены
+async-задачи. `asyncio.run()` также ждёт default executor при shutdown, а
+отмена wrapper-задачи `to_thread` не гарантирует, что поток перестал писать.
+
+Decision: выполнять production yt-dlp и ffprobe вызовы в отдельной process
+group с wall-clock timeout. При timeout/shutdown завершать process group и
+удалять download directory только после подтверждённого выхода процессов.
+
+Reason: это сохраняет D-008 bounded processing/shutdown и исключает гонку
+очистки каталога с downloader-ом. Offline test factory остаётся injectable.
+
+Consequences: metadata/download добавляют короткий запуск дочернего Python
+процесса; приложение не ждёт media tools в default executor при завершении.

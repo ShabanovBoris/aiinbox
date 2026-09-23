@@ -405,7 +405,9 @@ Instagram поддерживает только URL вида `https://www.instag
 `https://instagram.com/reel/<id>/`. Один Reel становится одним ItemSource внутри
 исходного Telegram Item. yt-dlp сначала получает metadata, затем скачивает только
 нужное media; длительность и фактический размер файла проверяются до STT/frame
-analysis. Временные файлы удаляются после обработки.
+analysis. yt-dlp и ffprobe работают в изолированной process group: timeout и
+shutdown завершают процессы до очистки частного каталога загрузки. Временные
+файлы удаляются после обработки.
 
 `AUTH_REQUIRED` означает, что Instagram не выдал media без авторизации. Если
 оператор настроил cookie file, проверьте доступность указанного файла и нажмите

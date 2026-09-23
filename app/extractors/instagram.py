@@ -5,10 +5,13 @@ ProcessingPipeline owns persistence, vision, aggregation, and retry state.
 """
 
 import asyncio
+import json
 import math
 import os
 import re
 import shutil
+import signal
+import sys
 from collections.abc import Awaitable, Callable, Mapping
 from pathlib import Path
 from typing import Any
@@ -20,6 +23,7 @@ import yt_dlp
 from app.domain.enums import SourceType
 from app.domain.models import NormalizedContent
 from app.errors import AppError
+from app.extractors.instagram_worker import size_limit_hook
 from app.extractors.video import probe_media_duration
 from app.llm.base import TranscriptionProvider, TranscriptionSegmentCheckpoint
 from app.services.url_parsing import normalize_url
@@ -28,6 +32,8 @@ from app.storage.models import Item, ItemSource
 _INSTAGRAM_HOSTS = {"instagram.com", "www.instagram.com"}
 _REEL_PATH = re.compile(r"^/reel/([^/]+)/?$")
 _DESCRIPTION_LIMIT = 2_000
+_DURATION_PROBE_TIMEOUT_SECONDS = 15.0
+_WORKER_OUTPUT_LIMIT_BYTES = 64_000
 
 
 def is_instagram_reel_url(url: str) -> bool:
@@ -220,7 +226,10 @@ class InstagramExtractor:
             with self._ydl_factory(options) as ydl:
                 return ydl.extract_info(url, download=False)
 
-        info = await self._call_ytdlp(extract)
+        info = await self._call_ytdlp(
+            extract,
+            process_request={"mode": "info", "url": url, "options": options},
+        )
         self._validate_single_media(info)
         return info
 
@@ -239,16 +248,22 @@ class InstagramExtractor:
             format=format_selector,
             max_filesize=byte_limit,
             outtmpl=str(download_dir / f"{stem}.%(ext)s"),
-            progress_hooks=[self._size_limit_hook(byte_limit)],
         )
+        fake_options = {
+            **options,
+            "progress_hooks": [self._size_limit_hook(byte_limit)],
+        }
 
         def download() -> Path:
             download_dir.mkdir(parents=True, exist_ok=True)
-            with self._ydl_factory(options) as ydl:
+            with self._ydl_factory(fake_options) as ydl:
                 info = ydl.extract_info(url, download=True)
                 self._validate_single_media(info)
                 prepared = Path(ydl.prepare_filename(info))
-                if not prepared.is_absolute():
+                if (
+                    not prepared.is_absolute()
+                    and prepared.resolve().parent != download_dir.resolve()
+                ):
                     prepared = download_dir / prepared
                 path = prepared
                 if not path.is_file():
@@ -272,10 +287,20 @@ class InstagramExtractor:
                 # конкурировать с очисткой work_dir.
                 return path
 
-        # Keep the yt-dlp directory alive after the thread ends; promotion
-        # happens on the event loop, where cancellation cannot race a move.
+        # Keep the yt-dlp directory alive until its child exits; promotion
+        # happens only after the process can no longer modify the file.
         downloaded_path = await self._call_ytdlp(
-            download, cleanup_dir=download_dir, retain_on_success=True
+            download,
+            cleanup_dir=download_dir,
+            retain_on_success=True,
+            process_request={
+                "mode": "download",
+                "url": url,
+                "options": options,
+                "byte_limit": byte_limit,
+                "download_dir": str(download_dir),
+                "stem": stem,
+            },
         )
         try:
             destination = work_dir / f"{stem}{downloaded_path.suffix}"
@@ -286,17 +311,9 @@ class InstagramExtractor:
 
     @staticmethod
     def _size_limit_hook(byte_limit: int) -> Callable[[dict], None]:
-        """Stop yt-dlp during transfer when reported bytes or its estimate exceed the cap."""
-
-        def enforce_limit(status: dict) -> None:
-            if status.get("status") != "downloading":
-                return
-            downloaded = status.get("downloaded_bytes") or 0
-            total = status.get("total_bytes") or status.get("total_bytes_estimate")
-            if downloaded > byte_limit or (total is not None and total > byte_limit):
-                raise yt_dlp.utils.DownloadError("Configured media size limit exceeded")
-
-        return enforce_limit
+        """Keep the injected adapter and killable worker on the same transfer cap."""
+        # ❌ Удалена вторая реализация проверки размера: оба пути используют общий hook.
+        return size_limit_hook(byte_limit)
 
     def _base_options(self, **overrides: Any) -> dict:
         """Centralize yt-dlp limits so metadata and media calls share safety flags."""
@@ -319,8 +336,9 @@ class InstagramExtractor:
         *,
         cleanup_dir: Path | None = None,
         retain_on_success: bool = False,
+        process_request: dict | None = None,
     ) -> Any:
-        """Run synchronous yt-dlp with socket timeout and finite transient retries."""
+        """Keep provider retries here while production calls run in killable children."""
         last_error: AppError | None = None
 
         def cleanup_download_dir() -> None:
@@ -331,18 +349,27 @@ class InstagramExtractor:
         for attempt in range(self.max_attempts):
             defer_cleanup = False
             retain_cleanup = False
+            use_child_process = (
+                process_request is not None and self._ydl_factory is default_ydl_factory
+            )
             try:
-                result = await self._run_sync(
-                    operation,
-                    on_cancellation=(cleanup_download_dir if cleanup_dir is not None else None),
-                )
+                if use_child_process:
+                    result = await self._run_ytdlp_process(
+                        process_request, cleanup_dir, retain_on_success
+                    )
+                else:
+                    # Injected factories preserve the deterministic offline test seam.
+                    result = await self._run_sync(
+                        operation,
+                        on_cancellation=(cleanup_download_dir if cleanup_dir is not None else None),
+                    )
                 retain_cleanup = cleanup_dir is not None and retain_on_success
                 return result
             except asyncio.CancelledError:
                 # ❌ Удалено ожидание yt-dlp-потока при отмене: оно могло
                 # удерживать Item в PROCESSING после дедлайна.
-                # Его приватный каталог очищается callback-ом только после завершения потока.
-                defer_cleanup = cleanup_dir is not None
+                # Thread test adapters defer cleanup; production waits for its child process group.
+                defer_cleanup = cleanup_dir is not None and not use_child_process
                 raise
             except AppError as exc:
                 last_error = exc
@@ -351,12 +378,237 @@ class InstagramExtractor:
             except OSError:
                 last_error = AppError("DOWNLOAD_FAILED", "Instagram media file operation failed")
             finally:
-                if cleanup_dir is not None and not defer_cleanup and not retain_cleanup:
+                if (
+                    cleanup_dir is not None
+                    and not use_child_process
+                    and not defer_cleanup
+                    and not retain_cleanup
+                ):
                     shutil.rmtree(cleanup_dir, ignore_errors=True)
             if last_error.permanent or attempt + 1 == self.max_attempts:
                 raise last_error
             await asyncio.sleep(self.backoff_seconds * (2**attempt))
         raise last_error  # pragma: no cover
+
+    async def _run_ytdlp_process(
+        self, request: dict, cleanup_dir: Path | None, retain_on_success: bool
+    ) -> Any:
+        """Run yt-dlp outside the event loop so cancellation can kill its owner process."""
+        payload = json.dumps(request, ensure_ascii=False, allow_nan=False).encode("utf-8")
+        try:
+            output = await self._run_subprocess(
+                [sys.executable, "-m", "app.extractors.instagram_worker"],
+                payload,
+                timeout_seconds=self.timeout_seconds,
+                cleanup_dir=cleanup_dir,
+                retain_dir_on_success=retain_on_success,
+            )
+            try:
+                response = json.loads(output)
+            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                raise AppError(
+                    "DOWNLOAD_FAILED", "Instagram extraction worker returned invalid data"
+                ) from exc
+            if not isinstance(response, dict) or not isinstance(response.get("ok"), bool):
+                raise AppError(
+                    "DOWNLOAD_FAILED", "Instagram extraction worker returned invalid data"
+                )
+            if not response["ok"]:
+                kind = response.get("kind")
+                message = response.get("message")
+                if kind == "app":
+                    raise AppError(
+                        str(response.get("code", "DOWNLOAD_FAILED")),
+                        str(message or "Instagram extraction failed"),
+                        bool(response.get("permanent")),
+                    )
+                if kind == "yt_dlp":
+                    raise yt_dlp.utils.DownloadError(str(message or "Instagram extraction failed"))
+                if kind == "os":
+                    raise OSError(str(message or "Instagram media file operation failed"))
+                raise AppError("DOWNLOAD_FAILED", "Instagram extraction worker failed")
+
+            result = response.get("result")
+            if not isinstance(result, dict):
+                raise AppError(
+                    "DOWNLOAD_FAILED", "Instagram extraction worker returned invalid data"
+                )
+            info = result.get("info")
+            if request["mode"] == "info":
+                self._validate_single_media(info)
+                return info
+
+            self._validate_single_media(info)
+            return self._resolve_download_path(result.get("prepared_path"), request)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # The child exited before response validation, so its private files are safe to remove.
+            if cleanup_dir is not None and "output" in locals():
+                shutil.rmtree(cleanup_dir, ignore_errors=True)
+            raise
+
+    @staticmethod
+    async def _run_subprocess(
+        command: list[str],
+        payload: bytes,
+        *,
+        timeout_seconds: float,
+        cleanup_dir: Path | None = None,
+        retain_dir_on_success: bool = False,
+    ) -> bytes:
+        """Own a killable child through timeout/shutdown before releasing its temp files."""
+        process = await asyncio.create_subprocess_exec(
+            *command,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+            start_new_session=(os.name == "posix"),
+        )
+
+        async def exchange() -> bytes:
+            """Send the small request and cap child output while draining its pipe."""
+            if process.stdin is None or process.stdout is None:
+                raise AppError("DOWNLOAD_FAILED", "Instagram worker pipes are unavailable")
+            process.stdin.write(payload)
+            try:
+                await process.stdin.drain()
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+            process.stdin.close()
+
+            chunks = []
+            size = 0
+            while True:
+                chunk = await process.stdout.read(
+                    min(16_384, _WORKER_OUTPUT_LIMIT_BYTES - size + 1)
+                )
+                if not chunk:
+                    break
+                size += len(chunk)
+                if size > _WORKER_OUTPUT_LIMIT_BYTES:
+                    raise AppError(
+                        "EXTRACTION_FAILED", "Instagram worker response exceeded its limit", True
+                    )
+                chunks.append(chunk)
+            await process.wait()
+            if process.returncode != 0:
+                raise AppError("DOWNLOAD_FAILED", "Instagram worker process failed")
+            return b"".join(chunks)
+
+        communication = asyncio.create_task(exchange())
+        try:
+            stdout = await asyncio.wait_for(asyncio.shield(communication), timeout=timeout_seconds)
+            if cleanup_dir is not None and not retain_dir_on_success:
+                shutil.rmtree(cleanup_dir, ignore_errors=True)
+            return stdout
+        except TimeoutError as exc:
+            stopped = await InstagramExtractor._stop_subprocess(process, communication)
+            if cleanup_dir is not None and stopped:
+                shutil.rmtree(cleanup_dir, ignore_errors=True)
+            raise AppError("TIMEOUT", "Instagram extraction timed out") from exc
+        except asyncio.CancelledError:
+            stopped = await InstagramExtractor._stop_subprocess(process, communication)
+            if cleanup_dir is not None and stopped:
+                shutil.rmtree(cleanup_dir, ignore_errors=True)
+            raise
+        except Exception:
+            stopped = await InstagramExtractor._stop_subprocess(process, communication)
+            if cleanup_dir is not None and stopped:
+                shutil.rmtree(cleanup_dir, ignore_errors=True)
+            raise
+
+    @staticmethod
+    async def _stop_subprocess(
+        process: asyncio.subprocess.Process, communication: asyncio.Task
+    ) -> bool:
+        """Stop yt-dlp and its helper processes before temp cleanup can run."""
+        if os.name == "posix":
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+        elif process.returncode is None:
+            process.terminate()
+
+        try:
+            await asyncio.wait_for(process.wait(), timeout=1.0)
+        except TimeoutError:
+            if os.name == "posix":
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            elif process.returncode is None:
+                process.kill()
+            try:
+                await asyncio.wait_for(process.wait(), timeout=1.0)
+            except TimeoutError:
+                return False
+
+        if not communication.done():
+            try:
+                await asyncio.wait_for(communication, timeout=1.0)
+            except TimeoutError:
+                if os.name == "posix":
+                    try:
+                        os.killpg(process.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                try:
+                    await asyncio.wait_for(communication, timeout=1.0)
+                except (asyncio.CancelledError, Exception, TimeoutError):
+                    return False
+            except (asyncio.CancelledError, Exception):
+                if os.name == "posix":
+                    try:
+                        os.killpg(process.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+        if os.name == "posix":
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                return process.returncode is not None
+            return await InstagramExtractor._wait_for_process_group_exit(process.pid)
+        return process.returncode is not None
+
+    @staticmethod
+    async def _wait_for_process_group_exit(process_group_id: int) -> bool:
+        """Only release files once every process in yt-dlp's isolated group has exited."""
+        deadline = asyncio.get_running_loop().time() + 1.0
+        while True:
+            try:
+                os.killpg(process_group_id, 0)
+            except ProcessLookupError:
+                return True
+            if asyncio.get_running_loop().time() >= deadline:
+                return False
+            await asyncio.sleep(0.01)
+
+    @staticmethod
+    def _resolve_download_path(prepared_path: Any, request: dict) -> Path:
+        """Validate a child result only after the downloader process has exited."""
+        download_dir = Path(request["download_dir"])
+        path = Path(prepared_path) if isinstance(prepared_path, str) else download_dir / ""
+        # A relative prepared path can already include the relative outtmpl directory.
+        if not path.is_absolute() and path.resolve().parent != download_dir.resolve():
+            path = download_dir / path
+        if not path.is_file():
+            stem = request["stem"]
+            candidates = sorted(
+                candidate
+                for candidate in download_dir.glob(f"{stem}.*")
+                if candidate.is_file() and not candidate.name.endswith(".part")
+            )
+            if not candidates:
+                raise AppError("DOWNLOAD_FAILED", "Instagram media file is missing")
+            path = candidates[0]
+        if path.is_symlink() or path.resolve().parent != download_dir.resolve():
+            raise AppError("DOWNLOAD_FAILED", "yt-dlp output escaped its temporary directory")
+        if path.stat().st_size > int(request["byte_limit"]):
+            raise AppError("TOO_LARGE", "Instagram media exceeds the configured byte limit", True)
+        return path
 
     @staticmethod
     async def _run_sync(
@@ -382,7 +634,40 @@ class InstagramExtractor:
 
     async def _probe_duration(self, media_path: Path) -> int:
         """Probe downloaded media off-loop before any unbounded duration can reach STT."""
-        return await self._run_sync(lambda: self._duration_probe(media_path))
+        if self._duration_probe is not probe_media_duration:
+            return await self._run_sync(lambda: self._duration_probe(media_path))
+
+        try:
+            output = await self._run_subprocess(
+                [
+                    "ffprobe",
+                    "-v",
+                    "error",
+                    "-show_entries",
+                    "format=duration",
+                    "-of",
+                    "default=noprint_wrappers=1:nokey=1",
+                    str(media_path.resolve()),
+                ],
+                b"",
+                timeout_seconds=_DURATION_PROBE_TIMEOUT_SECONDS,
+            )
+        except FileNotFoundError as exc:
+            raise AppError(
+                "EXTRACTION_FAILED", "ffprobe is required to validate Instagram duration"
+            ) from exc
+        except AppError as exc:
+            if exc.code == "TIMEOUT":
+                raise AppError("TIMEOUT", "Instagram duration probe timed out") from exc
+            raise
+
+        try:
+            duration = float(output.decode("utf-8").strip())
+        except (UnicodeDecodeError, ValueError) as exc:
+            raise AppError("EXTRACTION_FAILED", "Instagram duration is unavailable") from exc
+        if not math.isfinite(duration) or duration <= 0:
+            raise AppError("EXTRACTION_FAILED", "Instagram duration is unavailable")
+        return math.ceil(duration)
 
     def _validate_duration(self, duration: int) -> None:
         """Stop before STT or frame analysis whenever the configured limit is exceeded."""
@@ -410,6 +695,8 @@ class InstagramExtractor:
     @staticmethod
     def _has_no_audio(info: dict) -> bool:
         """Skip STT only when every reported format explicitly has no audio codec."""
+        if isinstance(info.get("_all_formats_no_audio"), bool):
+            return info["_all_formats_no_audio"]
         formats = info.get("formats")
         return bool(
             isinstance(formats, list)

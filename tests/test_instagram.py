@@ -1,7 +1,10 @@
 """Offline regressions for Instagram URL routing, extraction, and durable resume."""
 
 import asyncio
+import os
+import sys
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -14,6 +17,7 @@ from app.domain.enums import ContentKind, ProcessingStatus, SourceType
 from app.domain.models import NormalizedContent, UserProfile
 from app.domain.priority import PriorityEngine
 from app.errors import AppError
+from app.extractors import instagram_worker
 from app.extractors.instagram import InstagramExtractor, is_instagram_reel_url
 from app.llm.base import TranscriptionSegmentCheckpoint
 from app.llm.openai import build_user_message
@@ -701,3 +705,110 @@ async def test_worker_timeout_does_not_wait_for_yt_dlp_thread_and_defers_cleanup
             break
         await asyncio.sleep(0.01)
     assert list((tmp_path / "instagram").iterdir()) == []
+
+
+def test_child_process_shutdown_kills_writer_before_temp_cleanup(tmp_path):
+    """asyncio.run teardown must stop the child before its leased directory is removed."""
+    download_dir = tmp_path / "ig-ytdlp-child"
+    download_dir.mkdir()
+    started = tmp_path / "child-started"
+    raced = tmp_path / "directory-removed-while-child-running"
+    program = "\n".join(
+        [
+            "import os, pathlib, sys, time",
+            "directory = pathlib.Path(sys.argv[1])",
+            "started = pathlib.Path(sys.argv[2])",
+            "raced = pathlib.Path(sys.argv[3])",
+            "started.write_text(str(os.getpid()))",
+            "while True:",
+            "    if not directory.is_dir():",
+            "        raced.write_text('race')",
+            "        break",
+            "    (directory / 'active').write_text('writing')",
+            "    time.sleep(0.005)",
+        ]
+    )
+
+    async def leave_child_running_at_loop_shutdown():
+        """Leave the writer pending so asyncio.run must cancel and reap it."""
+        asyncio.create_task(
+            InstagramExtractor._run_subprocess(
+                [sys.executable, "-c", program, str(download_dir), str(started), str(raced)],
+                b"",
+                timeout_seconds=60,
+                cleanup_dir=download_dir,
+            )
+        )
+        deadline = asyncio.get_running_loop().time() + 5
+        while not started.exists() and asyncio.get_running_loop().time() < deadline:
+            await asyncio.sleep(0.01)
+        assert started.exists()
+
+    began = time.monotonic()
+    asyncio.run(leave_child_running_at_loop_shutdown())
+
+    assert time.monotonic() - began < 5
+    assert not raced.exists()
+    assert not download_dir.exists()
+    child_pid = int(started.read_text())
+    with pytest.raises(ProcessLookupError):
+        os.kill(child_pid, 0)
+
+
+def test_killable_worker_returns_bounded_metadata(monkeypatch):
+    info = reel_info(description="x" * 5_000)
+
+    class FakeYdl:
+        """Provide deterministic metadata without contacting Instagram."""
+
+        def __init__(self, options):
+            self.options = options
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def extract_info(self, url, download=False):
+            assert url == REEL_A
+            assert download is False
+            return info
+
+    monkeypatch.setattr(instagram_worker.yt_dlp, "YoutubeDL", FakeYdl)
+    result = instagram_worker.execute({"mode": "info", "url": REEL_A, "options": {"quiet": True}})
+
+    assert result["info"]["id"] == "ABC123"
+    assert len(result["info"]["description"]) == 2_000
+    assert result["info"]["_all_formats_no_audio"] is False
+
+
+async def test_production_ytdlp_worker_protocol_rejects_unsupported_url_offline(tmp_path):
+    extractor = InstagramExtractor(FakeTranscriber(), tmp_path, max_attempts=1)
+
+    with pytest.raises(AppError) as exc_info:
+        await extractor._info("not a valid media URL")
+
+    assert exc_info.value.code == "UNSUPPORTED_SOURCE"
+
+
+async def test_relative_temp_path_from_yt_dlp_is_not_joined_twice(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    media = b"fake-media"
+
+    def factory(options):
+        return FakeInstagramYdl(options, reel_info(), [], media)
+
+    extractor = InstagramExtractor(
+        FakeTranscriber(),
+        Path("temp/instagram"),
+        ydl_factory=factory,
+        max_attempts=1,
+    )
+    work_dir = tmp_path / "work"
+    work_dir.mkdir()
+
+    path = await extractor._download_media(REEL_A, work_dir, media_kind="audio", byte_limit=1_000)
+
+    assert path.read_bytes() == media
+    assert list((tmp_path / "temp/instagram").iterdir()) == []
