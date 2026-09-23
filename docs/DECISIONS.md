@@ -190,3 +190,34 @@ Reason: reply preview позволяет перейти к исходной ко
 
 Consequences: если исходное сообщение уже удалено или недоступно, Bot API всё
 равно отправляет результат без reply anchor.
+
+## D-021 — Instagram captions остаются Description
+
+Context: Reel caption может быть единственным доступным текстом, но он не
+подтверждает, что речь в самом видео была распознана.
+
+Decision: хранить bounded caption как `DESCRIPTION`; включать его как source
+context рядом с transcript/visual notes. Если transcript недоступен, vision не
+дал результата, а caption содержит не менее 40 символов, источник может стать
+`CAPTION_ONLY`. Не записывать caption в `TRANSCRIPT`.
+
+Reason: сохраняется полезный публичный контекст без ложного обещания STT.
+
+Consequences: `DESCRIPTION` и source metadata восстанавливают caption-only Item
+после Retry; пользовательский результат явно помечается `CAPTION_ONLY`.
+
+## D-022 — Killable media subprocesses для Instagram
+
+Context: Python yt-dlp может продолжить блокирующую операцию после отмены
+async-задачи. `asyncio.run()` также ждёт default executor при shutdown, а
+отмена wrapper-задачи `to_thread` не гарантирует, что поток перестал писать.
+
+Decision: выполнять production yt-dlp и ffprobe вызовы в отдельной process
+group с wall-clock timeout. При timeout/shutdown завершать process group и
+удалять download directory только после подтверждённого выхода процессов.
+
+Reason: это сохраняет D-008 bounded processing/shutdown и исключает гонку
+очистки каталога с downloader-ом. Offline test factory остаётся injectable.
+
+Consequences: metadata/download добавляют короткий запуск дочернего Python
+процесса; приложение не ждёт media tools в default executor при завершении.

@@ -43,7 +43,7 @@ def normalize_url(url: str) -> str:
     query = [
         (k, v)
         for k, v in parse_qsl(parts.query, keep_blank_values=True)
-        if k.lower() not in TRACKING_PARAMS
+        if k.lower() not in TRACKING_PARAMS and not k.lower().startswith("utm_")
     ]
     return urlunsplit((scheme, netloc, parts.path, urlencode(query), ""))
 

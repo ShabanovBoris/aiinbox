@@ -77,6 +77,20 @@ def test_fresh_database_migrates_to_latest_schema(tmp_path):
         assert conn.execute(
             "SELECT kind, text FROM contents WHERE item_id = ?", (document_item_id,)
         ).fetchone() == ("DOCUMENT_TEXT", "durable document text")
+        instagram_item_id = conn.execute(
+            "INSERT INTO items (user_id, telegram_message_id, source_index, processing_status, "
+            "state, source_type, processing_stage, user_note) "
+            "VALUES (?, 4, 0, 'QUEUED', 'ACTIVE', 'INSTAGRAM', 'INGESTED', '') RETURNING id",
+            (user_id,),
+        ).fetchone()[0]
+        instagram_source_id = conn.execute(
+            "INSERT INTO item_sources (item_id, source_index, source_type, source_url) "
+            "VALUES (?, 0, 'INSTAGRAM', 'https://www.instagram.com/reel/ABC/') RETURNING id",
+            (instagram_item_id,),
+        ).fetchone()[0]
+        assert conn.execute(
+            "SELECT source_type FROM item_sources WHERE id = ?", (instagram_source_id,)
+        ).fetchone() == ("INSTAGRAM",)
         try:
             conn.execute(
                 "INSERT INTO items (user_id, telegram_message_id, source_index,"
@@ -104,6 +118,53 @@ def test_fresh_database_migrates_to_latest_schema(tmp_path):
         )
     finally:
         conn.close()
+
+
+def test_instagram_source_migration_preserves_existing_items_and_sources(tmp_path):
+    db = tmp_path / "instagram-upgrade.db"
+    cfg = Config()
+    cfg.set_main_option("script_location", "migrations")
+    cfg.set_main_option("sqlalchemy.url", f"sqlite+aiosqlite:///{db}")
+    command.upgrade(cfg, "d9f3b1a7c5e2")
+
+    with sqlite3.connect(db) as conn:
+        conn.execute("INSERT INTO users (telegram_user_id) VALUES (42)")
+        user_id = conn.execute("SELECT id FROM users").fetchone()[0]
+        item_id = conn.execute(
+            "INSERT INTO items (user_id, telegram_message_id, source_index, processing_status, "
+            "state, source_type, source_url, processing_stage, user_note) "
+            "VALUES (?, 1, 0, 'READY', 'ACTIVE', 'YOUTUBE', ?, 'READY', '') RETURNING id",
+            (user_id, "https://www.youtube.com/watch?v=old"),
+        ).fetchone()[0]
+        source_id = conn.execute(
+            "INSERT INTO item_sources (item_id, source_index, source_type, source_url, "
+            "extraction_status) VALUES (?, 0, 'YOUTUBE', ?, 'READY') RETURNING id",
+            (item_id, "https://www.youtube.com/watch?v=old"),
+        ).fetchone()[0]
+        conn.commit()
+
+    command.upgrade(cfg, "head")
+
+    with sqlite3.connect(db) as conn:
+        assert conn.execute(
+            "SELECT source_type, source_url FROM items WHERE id = ?", (item_id,)
+        ).fetchone() == ("YOUTUBE", "https://www.youtube.com/watch?v=old")
+        assert conn.execute(
+            "SELECT source_type, source_url, extraction_status FROM item_sources WHERE id = ?",
+            (source_id,),
+        ).fetchone() == ("YOUTUBE", "https://www.youtube.com/watch?v=old", "READY")
+        conn.execute(
+            "INSERT INTO items (user_id, telegram_message_id, source_index, processing_status, "
+            "state, source_type, processing_stage, user_note) "
+            "VALUES (?, 2, 0, 'QUEUED', 'ACTIVE', 'INSTAGRAM', 'INGESTED', '')",
+            (user_id,),
+        )
+        new_item_id = conn.execute("SELECT max(id) FROM items").fetchone()[0]
+        conn.execute(
+            "INSERT INTO item_sources (item_id, source_index, source_type) "
+            "VALUES (?, 0, 'INSTAGRAM')",
+            (new_item_id,),
+        )
 
 
 def test_existing_phase1_db_upgrades_with_data_intact(tmp_path):

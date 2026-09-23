@@ -213,6 +213,13 @@ def test_normalize_url_keeps_meaningful_query():
     )
 
 
+def test_normalize_url_removes_all_utm_parameters_but_keeps_instagram_identity_query():
+    assert (
+        normalize_url("https://instagram.com/reel/ABC/?utm_id=campaign&fbclid=tracking&igsh=share")
+        == "https://instagram.com/reel/ABC/?igsh=share"
+    )
+
+
 def test_parse_message_extracts_note_and_urls():
     note, urls = parse_message("Надо изучить, интересная архитектура https://example.com/a.")
     assert urls == ["https://example.com/a"]

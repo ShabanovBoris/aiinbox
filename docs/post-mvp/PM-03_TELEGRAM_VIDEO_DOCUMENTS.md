@@ -1,7 +1,7 @@
 # PM-03 — Telegram Video & Documents
 
 Type: Post-MVP Epic + Detailed Technical Specification  
-Status: IN_REVIEW
+Status: DONE
 Prerequisites: stabilized MVP; PM-02 recommended for forwarded variants
 
 ## 1. Epic

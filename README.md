@@ -149,6 +149,7 @@ check для защищённой ветки `main`, поэтому merge тре
 - `MAX_DOCUMENT_BYTES`, `MAX_DOCUMENT_TEXT_CHARS` (по умолчанию 20 MB и
   500 000 символов);
 - `YOUTUBE_MAX_*`, `VIDEO_FRAME_INTERVAL_SECONDS`, `VIDEO_MAX_FRAMES`;
+- `INSTAGRAM_MAX_*`, `INSTAGRAM_COOKIES_FILE` (cookie file необязателен и хранится вне Git);
 - `OPENAI_*`, `OPENROUTER_*`, `CONTENT_CHUNK_MAX_CHARS`, `CONTENT_CHUNK_OVERLAP_CHARS`,
   `DEFAULT_TIMEZONE`, `PROFILE_SEED_FILE`.
 

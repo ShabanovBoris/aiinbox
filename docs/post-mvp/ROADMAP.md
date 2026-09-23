@@ -181,7 +181,8 @@ Detailed specification: [PM-02_FORWARDED_MESSAGES.md](PM-02_FORWARDED_MESSAGES.m
 ## 7. PM-03 — Telegram Video & Documents
 
 Current state: Telegram video and PDF/TXT/Markdown/DOCX ingestion use the shared
-composite Item pipeline. PM-03 implementation is awaiting external review.
+composite Item pipeline. PM-03 is implemented and merged; its acceptance status
+is DONE.
 
 Video uses existing STT + representative frames + optional vision with transcript-only
 fallback and source-local retry checkpoints.
@@ -191,6 +192,8 @@ Documents should normalize into text and reuse the existing long-content/chunkin
 Detailed specification: [PM-03_TELEGRAM_VIDEO_DOCUMENTS.md](PM-03_TELEGRAM_VIDEO_DOCUMENTS.md).
 
 ## 8. PM-04 — Instagram Reels
+
+Current state: implementation is IN_PROGRESS on the current main baseline.
 
 Recognize Instagram Reel URLs before generic web routing and process them as media:
 

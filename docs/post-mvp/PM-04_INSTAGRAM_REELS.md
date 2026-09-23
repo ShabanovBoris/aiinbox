@@ -1,7 +1,7 @@
 # PM-04 — Instagram Reels
 
 Type: Post-MVP Epic + Detailed Technical Specification  
-Status: NOT_STARTED  
+Status: DONE
 Prerequisites: existing yt-dlp/media pipeline; PM-03 media reuse preferred
 
 ## 1. Epic
@@ -242,15 +242,12 @@ No collection/profile processing.
 
 ## 16. Subprocess/extractor safety
 
-If yt-dlp Python API is used, keep all untrusted URL data out of shell interpolation.
-
-If subprocess is used:
-
-- argument arrays only;
-- no `shell=True`;
-- timeout;
-- cleanup;
-- bounded output/error handling.
+The yt-dlp Python API runs in an isolated child process. The parent uses a
+structured argument array, never a shell command, and enforces a wall-clock
+timeout. On cancellation or shutdown it terminates the child process group and
+waits for exit before removing the private download directory. Unknown-duration
+ffprobe uses the same cancellable process boundary. Worker metadata returned to
+the parent is bounded.
 
 ## 17. Prompt injection
 

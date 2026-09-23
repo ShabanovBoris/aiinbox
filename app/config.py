@@ -47,6 +47,13 @@ class Settings(BaseSettings):
     youtube_max_subtitle_bytes: int = Field(2_000_000, ge=1)
     subtitle_langs: str = "ru,en"
 
+    # Instagram Reel extraction uses the same yt-dlp boundary with independently
+    # tunable remote-media limits and an optional operator-provided cookie file.
+    instagram_max_duration_seconds: int = Field(7200, ge=1)
+    instagram_max_audio_bytes: int = Field(50_000_000, ge=1)
+    instagram_max_video_bytes: int = Field(50_000_000, ge=1)
+    instagram_cookies_file: str = ""
+
     # Video visual analysis (Phase 7)
     max_video_bytes: int = Field(20_000_000, ge=1)
     max_video_duration_seconds: int = Field(7200, ge=1)
