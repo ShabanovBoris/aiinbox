@@ -276,9 +276,11 @@ Do not globally deduplicate “USEFUL forever” if future semantics need time-s
 
 Canonical corrections serialize writers with SQLite BEGIN IMMEDIATE and store
 a user-scoped row in feedback_callback_receipts for each accepted callback,
-including a no-op selection. A real change commits the Item update, receipt,
-and correction Event together; a no-op commits only the receipt. This keeps a
-late retry from becoming a later mutation without adding a fake Event.
+including a no-op selection. Recognized callbacks whose owned Item or category
+target is stale are also consumed without an Event. A real change commits the
+Item update, receipt, and correction Event together; a no-op or stale action
+commits only the receipt. This keeps a late retry from becoming a later
+mutation without adding a fake Event.
 
 ## 13. Event payload contract
 

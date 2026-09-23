@@ -247,10 +247,10 @@ class Event(Base):
 
 
 class FeedbackCallbackReceipt(Base):
-    """Remember correction callbacks whose no-op must not become a later mutation.
+    """Persist feedback callback identity separately from semantic Event data.
 
-    This transport record stays separate from Event so a user selecting the
-    already-current value does not create a misleading semantic correction.
+    This receipt lets a no-op or stale action stay consumed without adding a
+    misleading Event; changed corrections commit their receipt beside the Event.
     """
 
     __tablename__ = "feedback_callback_receipts"

@@ -56,7 +56,7 @@ async def _has_callback_event(session: AsyncSession, user_id: int, idempotency_k
 
 
 async def _has_callback_receipt(session: AsyncSession, user_id: int, idempotency_key: str) -> bool:
-    """Detect a correction callback already consumed without creating an Event."""
+    """Detect a callback identity already consumed independently of Event history."""
     return (
         await session.scalar(
             select(FeedbackCallbackReceipt.id).where(
@@ -66,6 +66,46 @@ async def _has_callback_receipt(session: AsyncSession, user_id: int, idempotency
         )
         is not None
     )
+
+
+async def _claim_feedback_callback_receipt(
+    session: AsyncSession, user_id: int, idempotency_key: str
+) -> bool:
+    """Claim a callback inside BEGIN IMMEDIATE, including no-op outcomes."""
+    if await _has_callback_event(session, user_id, idempotency_key) or await _has_callback_receipt(
+        session, user_id, idempotency_key
+    ):
+        return False
+    session.add(FeedbackCallbackReceipt(user_id=user_id, idempotency_key=idempotency_key))
+    return True
+
+
+async def consume_unapplied_feedback_callback(
+    session_factory: async_sessionmaker,
+    telegram_user_id: int,
+    item_id: int,
+    *,
+    idempotency_key: str,
+) -> None:
+    """Consume a recognized callback rejected by a stale or unavailable UI.
+
+    The user-scoped receipt prevents the same transport update from becoming a
+    mutation if its target later becomes available again.
+    """
+    _validate_idempotency_key(idempotency_key)
+
+    async with session_factory() as session:
+        await session.execute(text("BEGIN IMMEDIATE"))
+        owned_item_id = await session.scalar(
+            select(Item.id)
+            .join(User, User.id == Item.user_id)
+            .where(User.telegram_user_id == telegram_user_id, Item.id == item_id)
+        )
+        if owned_item_id is None:
+            await session.rollback()
+            return
+        await _claim_feedback_callback_receipt(session, owned_item_id, idempotency_key)
+        await session.commit()
 
 
 async def record_item_feedback(
@@ -135,14 +175,11 @@ async def correct_item_category(
         if item is None:
             await session.rollback()
             return None
-        if await _has_callback_event(
-            session, item.user_id, idempotency_key
-        ) or await _has_callback_receipt(session, item.user_id, idempotency_key):
+        if not await _claim_feedback_callback_receipt(session, item.user_id, idempotency_key):
             await session.commit()
             return item, False
         # Persist the transport outcome even for a canonical no-op. Without
         # this separate receipt, a delayed replay could mutate a later value.
-        session.add(FeedbackCallbackReceipt(user_id=item.user_id, idempotency_key=idempotency_key))
         if item.category == category:
             await session.commit()
             return item, False
@@ -194,14 +231,11 @@ async def correct_item_type(
         if item is None:
             await session.rollback()
             return None
-        if await _has_callback_event(
-            session, item.user_id, idempotency_key
-        ) or await _has_callback_receipt(session, item.user_id, idempotency_key):
+        if not await _claim_feedback_callback_receipt(session, item.user_id, idempotency_key):
             await session.commit()
             return item, False
         # No-op corrections have no semantic Event, so their callback identity
         # needs its own durable row within the same serialized transaction.
-        session.add(FeedbackCallbackReceipt(user_id=item.user_id, idempotency_key=idempotency_key))
         if item.item_type is item_type:
             await session.commit()
             return item, False

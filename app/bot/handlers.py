@@ -23,6 +23,7 @@ from app.extractors.instagram import is_instagram_reel_url
 from app.services.actions import apply_item_action, record_item_events, set_item_interest
 from app.services.delivery import enqueue_item_video_delivery
 from app.services.feedback import (
+    consume_unapplied_feedback_callback,
     correct_item_category,
     correct_item_type,
     record_item_feedback,
@@ -737,6 +738,12 @@ async def on_feedback_callback(
             idempotency_key=idempotency_key,
         )
         if item is None:
+            await consume_unapplied_feedback_callback(
+                session_factory,
+                callback.from_user.id,
+                item_id,
+                idempotency_key=idempotency_key,
+            )
             await callback.answer("Item недоступен")
             return
         if action in {"useful", "not_interesting"}:
@@ -774,6 +781,12 @@ async def on_feedback_callback(
             session_factory, callback.from_user.id, item_id
         )
         if projection is None:
+            await consume_unapplied_feedback_callback(
+                session_factory,
+                callback.from_user.id,
+                item_id,
+                idempotency_key=idempotency_key,
+            )
             await callback.answer("Item недоступен")
             return
         item, _sources = projection
@@ -785,6 +798,12 @@ async def on_feedback_callback(
             if category_callback_token(category) == parts[3]
         ]
         if len(matches) != 1:
+            await consume_unapplied_feedback_callback(
+                session_factory,
+                callback.from_user.id,
+                item_id,
+                idempotency_key=idempotency_key,
+            )
             await callback.answer("Категория больше недоступна")
             return
         try:
@@ -799,6 +818,12 @@ async def on_feedback_callback(
             await callback.answer("Категория не подходит")
             return
         if result is None:
+            await consume_unapplied_feedback_callback(
+                session_factory,
+                callback.from_user.id,
+                item_id,
+                idempotency_key=idempotency_key,
+            )
             await callback.answer("Категория больше недоступна")
             return
         _updated_item, changed = result
@@ -832,6 +857,12 @@ async def on_feedback_callback(
             await callback.answer("Некорректный тип")
             return
         if result is None:
+            await consume_unapplied_feedback_callback(
+                session_factory,
+                callback.from_user.id,
+                item_id,
+                idempotency_key=idempotency_key,
+            )
             await callback.answer("Item недоступен")
             return
         _updated_item, changed = result

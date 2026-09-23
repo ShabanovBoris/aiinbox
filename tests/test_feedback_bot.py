@@ -13,7 +13,7 @@ from app.bot.keyboards import (
 from app.domain.enums import ItemState, ItemType, ProcessingStatus, SourceType
 from app.services.feedback import correct_item_category
 from app.services.retrieval import TodayService
-from app.storage.models import Event, Item, ItemSource, User
+from app.storage.models import Event, FeedbackCallbackReceipt, Item, ItemSource, User
 
 
 class FakeCallbackMessage:
@@ -426,6 +426,44 @@ async def test_replayed_category_callback_refreshes_latest_value_without_reapply
         assert len(corrections) == 2
     assert "Категория: Piano" in message.text
     assert callback.answers == ["Категория без изменений"]
+
+
+async def test_stale_category_callback_cannot_apply_after_category_returns(
+    settings, session_factory
+):
+    item_id = await _create_ready_item(session_factory, category="Programming")
+    callback = FakeCallback(
+        42,
+        f"feedback:category:{item_id}:{category_callback_token('AI')}",
+        "stale-category",
+    )
+
+    await on_feedback_callback(callback, settings, session_factory)
+    await _create_category_item(session_factory, "AI")
+    await on_feedback_callback(callback, settings, session_factory)
+
+    async with session_factory() as session:
+        stored = await session.get(Item, item_id)
+        corrections = list(
+            (
+                await session.scalars(
+                    select(Event).where(
+                        Event.item_id == item_id,
+                        Event.event_type == "CATEGORY_CORRECTED",
+                    )
+                )
+            ).all()
+        )
+        receipt = await session.scalar(
+            select(FeedbackCallbackReceipt).where(
+                FeedbackCallbackReceipt.user_id == stored.user_id,
+                FeedbackCallbackReceipt.idempotency_key == "telegram-callback:stale-category",
+            )
+        )
+        assert stored.category == "Programming"
+        assert corrections == []
+        assert receipt is not None
+    assert callback.answers == ["Категория больше недоступна", "Категория без изменений"]
 
 
 async def test_type_callback_updates_today_and_keeps_priority(settings, session_factory):
