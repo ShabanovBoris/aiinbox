@@ -703,6 +703,42 @@ def test_youtube_worker_uses_python_api_and_checks_result_within_download_dir(
     assert result == {"path": str(tmp_path / "worker" / "abc123.mp4")}
 
 
+def test_youtube_worker_rejects_partial_result_file(monkeypatch, tmp_path):
+    """The child must never report yt-dlp's in-progress .part file as finished media."""
+    partial_path = tmp_path / "worker" / "abc123.mp4.part"
+
+    class PartialYdl:
+        def __init__(self, options):
+            self.options = options
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def extract_info(self, url, download=False):
+            assert url == URL
+            assert download is True
+            partial_path.parent.mkdir(parents=True, exist_ok=True)
+            partial_path.write_bytes(b"unfinished")
+            return {"id": "abc123"}
+
+        def prepare_filename(self, info):
+            return str(partial_path)
+
+    monkeypatch.setattr(youtube_module.yt_dlp, "YoutubeDL", PartialYdl)
+    with pytest.raises(AppError, match="incomplete video file"):
+        execute_youtube_download(
+            {
+                "url": URL,
+                "options": {"outtmpl": str(tmp_path / "worker" / "%(id)s.%(ext)s")},
+                "byte_limit": 100,
+                "download_dir": str(tmp_path / "worker"),
+            }
+        )
+
+
 def patch_youtube_visual(monkeypatch, extractor, tmp_path):
     """Fake only the video/frame boundary while exercising pipeline persistence and Retry."""
     video_downloads: list[str] = []

@@ -802,6 +802,24 @@ async def test_video_download_obeys_narrower_delivery_limit(tmp_path, monkeypatc
     assert "+bestaudio" in calls[-1][2]["format"]
 
 
+def test_instagram_worker_rejects_partial_download_result(tmp_path):
+    """An in-progress yt-dlp file is not a valid Instagram media result."""
+    download_dir = tmp_path / "download"
+    download_dir.mkdir()
+    partial = download_dir / "video.mp4.part"
+    partial.write_bytes(b"unfinished")
+
+    with pytest.raises(AppError, match="incomplete video file"):
+        InstagramExtractor._resolve_download_path(
+            str(partial),
+            {
+                "download_dir": str(download_dir),
+                "stem": "video",
+                "byte_limit": 100,
+            },
+        )
+
+
 async def test_production_ytdlp_worker_protocol_rejects_unsupported_url_offline(tmp_path):
     extractor = InstagramExtractor(FakeTranscriber(), tmp_path, max_attempts=1)
 

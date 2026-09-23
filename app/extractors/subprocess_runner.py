@@ -1,12 +1,33 @@
 """Shared lifecycle boundary for external media workers."""
 
 import asyncio
+import logging
 import os
 import shutil
 import signal
 from pathlib import Path
 
 from app.errors import AppError
+
+log = logging.getLogger(__name__)
+_CLEANUP_LEASE_FILE = ".aiinbox-process-group-lease"
+_DEFERRED_CLEANUP_TASKS: set[asyncio.Task[None]] = set()
+
+
+def cleanup_temporary_directory(directory: Path) -> bool:
+    """Respect a child-process lease so outer finally blocks cannot race its writes."""
+    directory = Path(directory)
+    lease = directory / _CLEANUP_LEASE_FILE
+    if lease.is_file():
+        try:
+            process_group_id = int(lease.read_text(encoding="ascii"))
+        except (OSError, ValueError):
+            # An unreadable lease is safer to retain than to remove under an unknown writer.
+            return False
+        if _process_group_exists(process_group_id):
+            return False
+    shutil.rmtree(directory, ignore_errors=True)
+    return True
 
 
 async def run_killable_subprocess(
@@ -62,24 +83,86 @@ async def run_killable_subprocess(
     try:
         output = await asyncio.wait_for(asyncio.shield(communication), timeout=timeout_seconds)
     except TimeoutError as exc:
-        stopped = await _stop_process(process, communication)
-        if cleanup_dir is not None and stopped:
-            shutil.rmtree(cleanup_dir, ignore_errors=True)
+        await _stop_and_release(process, communication, cleanup_dir, operation_name)
         raise AppError("TIMEOUT", f"{operation_name} timed out") from exc
     except asyncio.CancelledError:
-        stopped = await _stop_process(process, communication)
-        if cleanup_dir is not None and stopped:
-            shutil.rmtree(cleanup_dir, ignore_errors=True)
+        await _stop_and_release(process, communication, cleanup_dir, operation_name)
         raise
     except Exception:
-        stopped = await _stop_process(process, communication)
-        if cleanup_dir is not None and stopped:
-            shutil.rmtree(cleanup_dir, ignore_errors=True)
+        await _stop_and_release(process, communication, cleanup_dir, operation_name)
         raise
 
     if cleanup_dir is not None and not retain_dir_on_success:
-        shutil.rmtree(cleanup_dir, ignore_errors=True)
+        cleanup_temporary_directory(cleanup_dir)
     return output
+
+
+async def _stop_and_release(
+    process: asyncio.subprocess.Process,
+    communication: asyncio.Task,
+    cleanup_dir: Path | None,
+    operation_name: str,
+) -> None:
+    """Transfer directory ownership to a reaper if process-group exit is uncertain."""
+    stopped = await _stop_process(process, communication)
+    if cleanup_dir is None:
+        return
+    if stopped:
+        cleanup_temporary_directory(cleanup_dir)
+        return
+
+    cleanup_dir.mkdir(parents=True, exist_ok=True)
+    lease = cleanup_dir / _CLEANUP_LEASE_FILE
+    lease.write_text(str(process.pid), encoding="ascii")
+    task = asyncio.create_task(
+        _cleanup_after_process_group_exit(process, communication, cleanup_dir)
+    )
+    _DEFERRED_CLEANUP_TASKS.add(task)
+    task.add_done_callback(_forget_cleanup_task)
+    log.error(
+        "%s worker did not stop; preserving temporary directory process_group=%s",
+        operation_name,
+        process.pid,
+    )
+
+
+async def _cleanup_after_process_group_exit(
+    process: asyncio.subprocess.Process,
+    communication: asyncio.Task,
+    cleanup_dir: Path,
+) -> None:
+    """Reap a leased directory asynchronously once no worker can still write to it."""
+    while _process_group_exists(process.pid):
+        await asyncio.sleep(0.05)
+    await process.wait()
+    try:
+        await communication
+    except Exception:
+        pass
+    cleanup_temporary_directory(cleanup_dir)
+
+
+def _forget_cleanup_task(task: asyncio.Task[None]) -> None:
+    """Keep reapers alive until completion and consume their terminal exception."""
+    _DEFERRED_CLEANUP_TASKS.discard(task)
+    if not task.cancelled():
+        error = task.exception()
+        if error is not None:
+            log.error("deferred media cleanup failed: %s", error)
+
+
+def _process_group_exists(process_group_id: int) -> bool:
+    """Return whether a worker group may still own files; permission errors fail closed."""
+    try:
+        if os.name == "posix":
+            os.killpg(process_group_id, 0)
+        else:
+            os.kill(process_group_id, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
 
 
 async def _stop_process(process: asyncio.subprocess.Process, communication: asyncio.Task) -> bool:

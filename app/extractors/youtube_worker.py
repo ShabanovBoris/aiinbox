@@ -21,8 +21,14 @@ def execute(request: dict[str, Any]) -> dict[str, str]:
         if not isinstance(info, dict):
             raise AppError("DOWNLOAD_FAILED", "yt-dlp returned no video data")
         prepared_path = Path(ydl.prepare_filename(info))
+    if prepared_path.name.endswith(".part"):
+        raise AppError("DOWNLOAD_FAILED", "yt-dlp left an incomplete video file")
     if not prepared_path.exists():
-        candidates = list(prepared_path.parent.glob(prepared_path.stem + ".*"))
+        candidates = [
+            candidate
+            for candidate in prepared_path.parent.glob(prepared_path.stem + ".*")
+            if candidate.is_file() and not candidate.name.endswith(".part")
+        ]
         if not candidates:
             raise AppError("DOWNLOAD_FAILED", "video file missing after download")
         prepared_path = candidates[0]

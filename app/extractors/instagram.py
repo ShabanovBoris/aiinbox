@@ -23,7 +23,10 @@ from app.domain.enums import SourceType
 from app.domain.models import NormalizedContent
 from app.errors import AppError
 from app.extractors.instagram_worker import size_limit_hook
-from app.extractors.subprocess_runner import run_killable_subprocess
+from app.extractors.subprocess_runner import (
+    cleanup_temporary_directory,
+    run_killable_subprocess,
+)
 from app.extractors.video import probe_media_duration
 from app.llm.base import TranscriptionProvider, TranscriptionSegmentCheckpoint
 from app.services.url_parsing import normalize_url
@@ -196,7 +199,7 @@ class InstagramExtractor:
             content.metadata["via_stt"] = True
             return content
         finally:
-            shutil.rmtree(work_dir, ignore_errors=True)
+            cleanup_temporary_directory(work_dir)
 
     async def download_video(
         self,
@@ -294,6 +297,8 @@ class InstagramExtractor:
                     and prepared.resolve().parent != download_dir.resolve()
                 ):
                     prepared = download_dir / prepared
+                if prepared.name.endswith(".part"):
+                    raise AppError("DOWNLOAD_FAILED", "yt-dlp left an incomplete video file")
                 path = prepared
                 if not path.is_file():
                     candidates = sorted(
@@ -336,7 +341,7 @@ class InstagramExtractor:
             shutil.move(downloaded_path, destination)
             return destination
         finally:
-            shutil.rmtree(download_dir, ignore_errors=True)
+            cleanup_temporary_directory(download_dir)
 
     @staticmethod
     def _size_limit_hook(byte_limit: int) -> Callable[[dict], None]:
@@ -507,6 +512,8 @@ class InstagramExtractor:
         # A relative prepared path can already include the relative outtmpl directory.
         if not path.is_absolute() and path.resolve().parent != download_dir.resolve():
             path = download_dir / path
+        if path.name.endswith(".part"):
+            raise AppError("DOWNLOAD_FAILED", "yt-dlp left an incomplete video file")
         if not path.is_file():
             stem = request["stem"]
             candidates = sorted(
@@ -564,6 +571,8 @@ class InstagramExtractor:
                 ],
                 b"",
                 timeout_seconds=_DURATION_PROBE_TIMEOUT_SECONDS,
+                cleanup_dir=media_path.parent,
+                retain_dir_on_success=True,
             )
         except FileNotFoundError as exc:
             raise AppError(

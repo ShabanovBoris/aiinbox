@@ -7,7 +7,6 @@ Items or completed profile jobs back to an earlier business state.
 
 import asyncio
 import logging
-import shutil
 from pathlib import Path
 from uuid import uuid4
 
@@ -20,6 +19,7 @@ from sqlalchemy.sql import text
 from app.bot.notify import send_item_failure, send_item_result
 from app.domain.enums import ProcessingStatus, SourceType
 from app.errors import AppError
+from app.extractors.subprocess_runner import cleanup_temporary_directory
 from app.storage.models import Delivery, Item, ItemSource, User
 
 log = logging.getLogger(__name__)
@@ -383,7 +383,7 @@ class DeliveryWorker:
                 chat_id, item, source, FSInputFile(path), media_kind
             )
         finally:
-            shutil.rmtree(work_dir, ignore_errors=True)
+            cleanup_temporary_directory(work_dir)
 
     async def _upload_item_video(
         self,

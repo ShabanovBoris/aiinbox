@@ -1,4 +1,6 @@
+import asyncio
 import os
+import signal
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -10,6 +12,7 @@ from aiogram.types import ReplyParameters
 from sqlalchemy import select
 
 from app.domain.enums import ItemType, ProcessingStatus, SourceType
+from app.extractors import subprocess_runner
 from app.extractors import youtube as youtube_module
 from app.extractors.subprocess_runner import run_killable_subprocess
 from app.extractors.youtube import YoutubeExtractor
@@ -262,6 +265,90 @@ async def test_youtube_download_timeout_kills_worker_before_cleanup_and_advances
     async with session_factory() as session:
         deliveries = list((await session.scalars(select(Delivery).order_by(Delivery.id))).all())
     assert [delivery.status for delivery in deliveries] == ["FAILED", "SENT"]
+
+
+async def test_youtube_delivery_preserves_temp_dir_until_unconfirmed_worker_exits(
+    tmp_path, session_factory, monkeypatch
+):
+    """An unconfirmed process-group stop leases files until the asynchronous reaper can clean."""
+    item_id, source_id, _ = await _make_ready_video_source(session_factory, SourceType.YOUTUBE)
+    await enqueue_item_video_delivery(session_factory, 42, item_id, source_id)
+
+    started = tmp_path / "unconfirmed-download-worker.pid"
+    raced_cleanup = tmp_path / "unconfirmed-cleanup-raced-worker"
+    program = "\n".join(
+        [
+            "import os, pathlib, sys, time",
+            "directory = pathlib.Path(sys.argv[1])",
+            "started = pathlib.Path(sys.argv[2])",
+            "raced = pathlib.Path(sys.argv[3])",
+            "started.write_text(str(os.getpid()))",
+            "while True:",
+            "    if not directory.is_dir():",
+            "        raced.write_text('cleanup raced worker')",
+            "        break",
+            "    (directory / 'active').write_text('writing')",
+            "    time.sleep(0.005)",
+        ]
+    )
+
+    async def run_hanging_download(command, payload, **kwargs):
+        return await run_killable_subprocess(
+            [
+                sys.executable,
+                "-c",
+                program,
+                str(kwargs["cleanup_dir"]),
+                str(started),
+                str(raced_cleanup),
+            ],
+            payload,
+            **kwargs,
+        )
+
+    async def cannot_confirm_stop(process, communication):
+        return False
+
+    monkeypatch.setattr(youtube_module, "run_killable_subprocess", run_hanging_download)
+    monkeypatch.setattr(subprocess_runner, "_stop_process", cannot_confirm_stop)
+    extractor = YoutubeExtractor(
+        transcriber=FakeTranscriber(),
+        temp_dir=tmp_path / "youtube",
+        download_timeout_seconds=0.5,
+    )
+    worker = DeliveryWorker(
+        session_factory,
+        FakeBot(),
+        youtube_extractor=extractor,
+        max_attempts=1,
+        retry_backoff_seconds=0,
+    )
+
+    child_pid = None
+    work_dir = None
+    try:
+        assert await worker.process_one() is True
+        child_pid = int(started.read_text())
+        [work_dir] = list((tmp_path / "youtube").iterdir())
+        assert (work_dir / ".aiinbox-process-group-lease").read_text() == str(child_pid)
+        assert work_dir.is_dir()
+        assert not raced_cleanup.exists()
+        os.kill(child_pid, 0)
+    finally:
+        if child_pid is not None:
+            try:
+                os.killpg(child_pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            deadline = asyncio.get_running_loop().time() + 3
+            while work_dir is not None and work_dir.exists():
+                if asyncio.get_running_loop().time() >= deadline:
+                    break
+                await asyncio.sleep(0.01)
+
+    assert work_dir is not None
+    assert not work_dir.exists()
+    assert not raced_cleanup.exists()
 
 
 async def test_rejected_cached_file_id_falls_back_to_fresh_video_upload(tmp_path, session_factory):
