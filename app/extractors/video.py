@@ -78,7 +78,7 @@ class VideoExtractor:
                 on_segment=on_segment,
             )
             if not transcript:
-                raise AppError("EMPTY_TRANSCRIPT", "empty video transcript", permanent=True)
+                raise AppError("EMPTY_TRANSCRIPT", "empty video transcript")
             return NormalizedContent(
                 source_type=SourceType.VIDEO,
                 text=transcript,

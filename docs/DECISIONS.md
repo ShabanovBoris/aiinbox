@@ -138,6 +138,9 @@ Decision: URL остаётся `SourceType.WEB`. Если защищённый w
 Reason: исходный URL остаётся стабильной identity source, а `Content.kind` уже
 точно описывает фактически извлечённое представление.
 
+Consequences: recovery различает web page и URL PDF по durable content kind;
+оба варианта используют один SSRF/DNS-pinning downloader.
+
 ## D-018 — Silent Telegram videos use visual-only analysis
 
 Context: Some Telegram videos contain useful visual information but have no audio
@@ -152,6 +155,3 @@ must not imply that speech was analyzed.
 
 Consequences: If visual extraction also fails, existing failure/partial-source
 handling remains in effect.
-
-Consequences: recovery различает web page и URL PDF по durable content kind;
-оба варианта используют один SSRF/DNS-pinning downloader.

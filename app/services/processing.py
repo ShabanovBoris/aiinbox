@@ -374,8 +374,20 @@ class ProcessingPipeline:
                         "transcript_error_code": exc.code,
                     },
                 )
-                await self._enrich_source_visual(session, item, source, content, source_id)
+                visual_error = await self._enrich_source_visual(
+                    session, item, source, content, source_id
+                )
                 if not content.metadata.get("visual_notes"):
+                    if visual_error is not None:
+                        source.metadata_json = {
+                            **(source.metadata_json or {}),
+                            "video_transcript_error_code": exc.code,
+                        }
+                        raise AppError(
+                            visual_error.code,
+                            f"visual fallback failed after {exc.code}",
+                            permanent=visual_error.permanent,
+                        ) from visual_error
                     raise
                 source.metadata_json = {
                     **(source.metadata_json or {}),
@@ -400,8 +412,9 @@ class ProcessingPipeline:
                 )
             )
             await self._delete_transcript_checkpoints(session, item.id, source_id)
-            if isinstance(source, ItemSource) and (source.metadata_json or {}).get(
-                "video_visual_only"
+            if isinstance(source, ItemSource) and (
+                (source.metadata_json or {}).get("video_visual_only")
+                or (source.metadata_json or {}).get("video_transcript_error_code")
             ):
                 source_metadata = dict(source.metadata_json or {})
                 source_metadata.pop("video_visual_only", None)
@@ -487,8 +500,8 @@ class ProcessingPipeline:
         source: ItemSource,
         content: NormalizedContent,
         source_id: int | None,
-    ) -> None:
-        """Attach optional visual facts to one video-like source without owning Item failure."""
+    ) -> AppError | None:
+        """Persist optional frame facts and report failure to visual-only callers."""
         if source_id is None:
             return
         existing = await session.scalar(
@@ -530,13 +543,12 @@ class ProcessingPipeline:
                 duration_seconds=content.duration_seconds or source.content_duration_seconds,
             )
             if not frames:
-                return
+                raise AppError("VISUAL_FAILED", "no representative video frames extracted")
             notes = await self.analyzer.provider.describe_images(
                 frames, context=content.text[:1500]
             )
             notes = notes[:800]
             if notes:
-                content.metadata["visual_notes"] = notes
                 session.add(
                     Content(
                         item_id=item.id,
@@ -547,8 +559,19 @@ class ProcessingPipeline:
                     )
                 )
                 await session.commit()
+                content.metadata["visual_notes"] = notes
+                return None
+            raise AppError("VISUAL_FAILED", "vision provider returned no video notes")
         except asyncio.CancelledError:
             raise
+        except AppError as exc:
+            log.warning(
+                "source visual analysis skipped item_id=%s source_id=%s: %s",
+                item.id,
+                source_id,
+                exc,
+            )
+            return exc
         except Exception as exc:
             # Callers decide whether another extracted part keeps the source useful.
             log.warning(
@@ -557,6 +580,7 @@ class ProcessingPipeline:
                 source_id,
                 exc,
             )
+            return AppError("VISUAL_FAILED", "video visual analysis failed")
         finally:
             shutil.rmtree(work_dir, ignore_errors=True)
 
@@ -848,9 +872,7 @@ class ProcessingPipeline:
         )
         row = await session.scalar(query.order_by(Content.id.desc()))
         if row is None:
-            if source.source_type is SourceType.VIDEO and (source.metadata_json or {}).get(
-                "video_visual_only"
-            ):
+            if source.source_type is SourceType.VIDEO:
                 visual_notes = await session.scalar(
                     select(Content.text).where(
                         Content.item_id == item.id,

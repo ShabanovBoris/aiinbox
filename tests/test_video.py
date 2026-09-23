@@ -8,6 +8,7 @@ from sqlalchemy import select
 
 from app.bot.formatting import format_ready_item
 from app.bot.handlers import make_router, on_video
+from app.bot.keyboards import item_keyboard
 from app.domain.enums import ContentKind, ProcessingStatus, SourceType
 from app.domain.models import NormalizedContent
 from app.domain.priority import PriorityEngine
@@ -84,6 +85,28 @@ def test_ffmpeg_missing_audio_stream_has_specific_permanent_error(tmp_path, monk
 
     assert error.value.code == "NO_AUDIO_TRACK"
     assert error.value.permanent is True
+
+
+async def test_empty_video_transcript_remains_retryable(tmp_path):
+    source = ItemSource(
+        item_id=1,
+        source_index=0,
+        source_type=SourceType.VIDEO,
+        source_file_id="video-1",
+        content_duration_seconds=30,
+    )
+    extractor = VideoExtractor(
+        FakeTranscriber(""),
+        FakeDownloader(),
+        tmp_path / "video",
+        audio_converter=_fake_audio_converter,
+    )
+
+    with pytest.raises(AppError) as error:
+        await extractor.extract(source)
+
+    assert error.value.code == "EMPTY_TRANSCRIPT"
+    assert error.value.permanent is False
 
 
 async def test_unknown_document_video_duration_is_probed_before_stt(tmp_path):
@@ -308,7 +331,7 @@ async def test_video_visual_notes_join_transcript_before_single_analysis(
 async def test_video_without_audio_is_analyzed_from_visual_notes_and_restored(
     tmp_path, settings, session_factory, monkeypatch
 ):
-    """Visual-only video content survives analysis checkpoints and restart restoration."""
+    """An unmarked visual note checkpoint restores after interruption before source READY."""
 
     async def fake_answer(self, text, **kwargs):
         return None
@@ -365,12 +388,18 @@ async def test_video_without_audio_is_analyzed_from_visual_notes_and_restored(
             )
             is None
         )
+        source.metadata_json = {
+            key: value
+            for key, value in source.metadata_json.items()
+            if key not in {"video_visual_only", "video_transcript_error_code"}
+        }
+        source.extraction_status = "PENDING"
         restored = await ProcessingPipeline._restored_source_content(session, item, source)
         assert restored is not None
         assert restored.metadata["visual_only"] is True
         assert restored.metadata["visual_notes"] == "На экране текст Works Everywhere"
         item.processing_status = ProcessingStatus.QUEUED
-        item.processing_stage = "ANALYZING"
+        item.processing_stage = "EXTRACTING"
         await session.commit()
 
     assert await worker.process_one() is True
@@ -378,6 +407,71 @@ async def test_video_without_audio_is_analyzed_from_visual_notes_and_restored(
     assert provider.describe_calls == 1
     assert downloader.calls == 2
     assert transcriber.calls == 0
+
+
+@pytest.mark.parametrize("failure_stage", ["no_vision", "frame_extraction", "vision_provider"])
+async def test_video_visual_fallback_failure_preserves_retry_semantics(
+    failure_stage, tmp_path, settings, session_factory, monkeypatch
+):
+    """Missing vision keeps the permanent audio error; transient vision failures stay retryable."""
+
+    async def fake_answer(self, text, **kwargs):
+        return None
+
+    def fake_frames(video, work_dir, **kwargs):
+        if failure_stage == "frame_extraction":
+            raise AppError("VISUAL_FAILED", "temporary frame extraction failure")
+        work_dir.mkdir(parents=True, exist_ok=True)
+        frame = work_dir / "frame.jpg"
+        frame.write_bytes(b"frame")
+        return [frame]
+
+    def no_audio(video_path, audio_path):
+        raise AppError("NO_AUDIO_TRACK", "video has no audio track", permanent=True)
+
+    monkeypatch.setattr(Message, "answer", fake_answer)
+    monkeypatch.setattr("app.services.processing.extract_representative_frames", fake_frames)
+    await on_video(_video_message(caption=None), settings, session_factory)
+    provider = FakeLlmProvider(
+        vision=failure_stage != "no_vision",
+        describe_fail=failure_stage == "vision_provider",
+    )
+    extractor = VideoExtractor(
+        FakeTranscriber("must not run"),
+        FakeDownloader(),
+        tmp_path / "video",
+        audio_converter=no_audio,
+    )
+    worker = ProcessingWorker(
+        session_factory,
+        ProcessingPipeline(Analyzer(provider), PriorityEngine(), video_extractor=extractor),
+        poll_seconds=0.01,
+    )
+
+    assert await worker.process_one() is True
+
+    async with session_factory() as session:
+        item = await session.scalar(select(Item))
+        source = await session.scalar(select(ItemSource).where(ItemSource.item_id == item.id))
+        assert item.processing_status is ProcessingStatus.FAILED
+        assert source.extraction_status == "FAILED"
+        retry_actions = [
+            button.callback_data
+            for row in item_keyboard(item, [source]).inline_keyboard
+            for button in row
+        ]
+        if failure_stage == "no_vision":
+            assert item.error_code == "NO_AUDIO_TRACK"
+            assert source.error_code == "NO_AUDIO_TRACK"
+            assert source.failure_is_permanent is True
+            assert f"item:retry:{item.id}" not in retry_actions
+            assert provider.describe_calls == 0
+        else:
+            assert item.error_code == "VISUAL_FAILED"
+            assert source.error_code == "VISUAL_FAILED"
+            assert source.failure_is_permanent is False
+            assert source.metadata_json["video_transcript_error_code"] == "NO_AUDIO_TRACK"
+            assert f"item:retry:{item.id}" in retry_actions
 
 
 class FailingVideoExtractor:
