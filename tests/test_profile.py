@@ -47,6 +47,7 @@ async def test_profile_persistence_across_sessions(tmp_path, session_factory):
     async with session_factory() as session:
         again = await get_profile(session, 1)
     assert again.profession == "dev"
+    assert again.preferred_language == "ru"
 
 
 async def test_profile_update_merges_without_losing_fields(tmp_path, session_factory):
@@ -72,6 +73,25 @@ async def test_profile_update_merges_without_losing_fields(tmp_path, session_fac
     assert merged.profession == "dev"
     assert merged.interests == ["ai", "piano"]
     assert merged.free_text == "фокус на агентах"
+
+
+async def test_profile_update_changes_response_language(session_factory):
+    """Store response-language preference in the existing JSON profile."""
+    job = await enqueue_profile_update(
+        session_factory,
+        telegram_user_id=42,
+        chat_id=42,
+        instruction="перейти на английский язык ответов",
+    )
+    profile, changed = await update_profile_from_patch(
+        session_factory,
+        FakeLlmProvider(profile_patch={"preferred_language": "en"}),
+        job,
+    )
+
+    assert profile.preferred_language == "en"
+    assert changed == ["preferred_language"]
+    assert "Язык ответа: en" in format_profile(profile)
 
 
 async def test_constraints_entries_merged_into_dict(tmp_path, session_factory):
@@ -134,6 +154,7 @@ def test_format_profile_renders_fields():
     assert "Профессия: dev" in text
     assert "Домены: Android" in text
     assert "Интересы: ai" in text
+    assert "Язык ответа: ru" in text
 
 
 def make_message(user_id: int, text: str = "/profile") -> Message:

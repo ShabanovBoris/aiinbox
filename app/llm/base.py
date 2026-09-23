@@ -74,7 +74,9 @@ class LlmProvider(Protocol):
         """Сжать один bounded fragment перед финальным анализом."""
         ...
 
-    async def describe_images(self, images: list[Path], context: str | None) -> str:
+    async def describe_images(
+        self, images: list[Path], context: str | None, *, preferred_language: str
+    ) -> str:
         """Компактное описание визуального контента кадров (ТЗ §23)."""
         ...
 

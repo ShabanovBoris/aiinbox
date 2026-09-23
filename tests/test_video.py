@@ -17,7 +17,7 @@ from app.extractors.video import VideoExtractor, _extract_audio_track
 from app.services.actions import apply_item_action
 from app.services.analysis import Analyzer
 from app.services.processing import ProcessingPipeline
-from app.storage.models import Content, Item, ItemSource
+from app.storage.models import Content, Item, ItemSource, User
 from app.workers.processing import ProcessingWorker
 from tests.fakes import FakeDownloader, FakeLlmProvider, FakeTranscriber
 
@@ -292,9 +292,13 @@ async def test_video_visual_notes_join_transcript_before_single_analysis(
     monkeypatch.setattr(Message, "answer", fake_answer)
     monkeypatch.setattr("app.services.processing.extract_representative_frames", fake_frames)
     await on_video(_video_message(), settings, session_factory)
+    async with session_factory() as session:
+        user = await session.scalar(select(User))
+        user.profile_json = {"preferred_language": "ru"}
+        await session.commit()
     provider = FakeLlmProvider(vision=True, describe_notes="На экране показана диаграмма")
     extractor = VideoExtractor(
-        FakeTranscriber("Транскрипт видео"),
+        FakeTranscriber("English video transcript"),
         FakeDownloader(),
         tmp_path / "video",
         audio_converter=_fake_audio_converter,
@@ -312,10 +316,12 @@ async def test_video_visual_notes_join_transcript_before_single_analysis(
     assert await worker.process_one() is True
 
     assert provider.describe_calls == 1
+    assert provider.describe_languages == ["ru"]
     assert len(provider.calls) == 1
     content = provider.calls[0][0]
-    assert content.text == "Транскрипт видео"
+    assert content.text == "English video transcript"
     assert content.metadata["visual_notes"] == "На экране показана диаграмма"
+    assert provider.calls[0][1].preferred_language == "ru"
     async with session_factory() as session:
         item = await session.scalar(select(Item))
         assert item.analysis_completeness == "TRANSCRIPT_AND_VISUAL"
