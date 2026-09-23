@@ -13,6 +13,7 @@ from app.domain.models import AnalysisResult, NormalizedContent
 from app.domain.priority import PriorityEngine
 from app.errors import AppError
 from app.extractors.audio import AudioExtractor
+from app.extractors.document import DocumentExtractor
 from app.extractors.text import TextExtractor
 from app.extractors.video import VideoExtractor
 from app.extractors.web import WebPageExtractor
@@ -27,6 +28,7 @@ from app.services.url_parsing import parse_message
 from app.storage.models import Content, Item, ItemSource
 
 log = logging.getLogger(__name__)
+_VISUAL_ONLY_VIDEO_CONTEXT = "Транскрипт видео недоступен; анализ основан на визуальных кадрах."
 
 
 class ProcessingPipeline:
@@ -49,6 +51,7 @@ class ProcessingPipeline:
         visual_frame_interval_seconds: int = 20,
         visual_max_frames: int = 120,
         visual_scene_threshold: float = 0.35,
+        document_extractor: DocumentExtractor | None = None,
     ):
         self.analyzer = analyzer
         self.priority = priority
@@ -56,6 +59,7 @@ class ProcessingPipeline:
         self.audio_extractor = audio_extractor
         self.youtube_extractor = youtube_extractor
         self.video_extractor = video_extractor
+        self.document_extractor = document_extractor
         self.visual_frame_interval_seconds = visual_frame_interval_seconds
         self.visual_max_frames = visual_max_frames
         self.visual_scene_threshold = visual_scene_threshold
@@ -196,6 +200,11 @@ class ProcessingPipeline:
         if content.metadata.get("source_failures"):
             return "PARTIAL"
 
+        visual_only_sources = int(content.metadata.get("visual_only_source_count") or 0)
+        if visual_only_sources:
+            successful_source_count = int(content.metadata.get("successful_source_count") or 0)
+            return "VISUAL_ONLY" if visual_only_sources == successful_source_count else "PARTIAL"
+
         # ❌ Удалена зависимость completeness от parent Item.source_type: composite
         # Item может быть TEXT при реальных child sources WEB + YOUTUBE/VIDEO.
         source_types = set(content.metadata.get("successful_source_types") or [])
@@ -240,6 +249,7 @@ class ProcessingPipeline:
                 failures.append(self._source_failure(source))
                 continue
             content = await self._restored_source_content(session, item, source)
+            restored_checkpoint = content is not None
             if content is None:
                 try:
                     content = await self._extract_source(session, item, source, source.id)
@@ -262,12 +272,16 @@ class ProcessingPipeline:
                         exc.code,
                     )
                     continue
+            if not restored_checkpoint or source.extraction_status == "PENDING":
                 source.extraction_status = "READY"
                 source.error_code = None
                 source.error_message = None
-                # Each successful extraction is a durable checkpoint before the
-                # next independent source starts, so later failures/restart do not
-                # repeat already completed network/STT work.
+                source_metadata = dict(source.metadata_json or {})
+                source_metadata.pop("failure_permanent", None)
+                source.metadata_json = source_metadata or None
+                # Restored durable content is also an extraction checkpoint. Mark
+                # the source READY before analysis so an Analyzer retry restores
+                # the complete Item instead of reopening extraction.
                 await session.commit()
             extracted.append(content)
 
@@ -342,11 +356,57 @@ class ProcessingPipeline:
             completed_segments, on_segment = await self._transcript_checkpoints(
                 session, item, source_id
             )
-            content = await self.video_extractor.extract(
-                source,
-                completed_segments=completed_segments,
-                on_segment=on_segment,
-            )
+            try:
+                content = await self.video_extractor.extract(
+                    source,
+                    completed_segments=completed_segments,
+                    on_segment=on_segment,
+                )
+            except AppError as exc:
+                if (
+                    exc.code not in {"NO_AUDIO_TRACK", "EMPTY_TRANSCRIPT"}
+                    or source_id is None
+                    or not isinstance(source, ItemSource)
+                ):
+                    raise
+                # Without a transcript, durable frame notes become the source checkpoint.
+                content = NormalizedContent(
+                    source_type=SourceType.VIDEO,
+                    text=_VISUAL_ONLY_VIDEO_CONTEXT,
+                    duration_seconds=source.content_duration_seconds,
+                    metadata={
+                        "visual_only": True,
+                        "transcript_error_code": exc.code,
+                    },
+                )
+                visual_error = await self._enrich_source_visual(
+                    session, item, source, content, source_id
+                )
+                if not content.metadata.get("visual_notes"):
+                    if visual_error is not None:
+                        source.metadata_json = {
+                            **(source.metadata_json or {}),
+                            "video_transcript_error_code": exc.code,
+                        }
+                        raise AppError(
+                            visual_error.code,
+                            f"visual fallback failed after {exc.code}",
+                            permanent=visual_error.permanent,
+                        ) from visual_error
+                    raise
+                source.metadata_json = {
+                    **(source.metadata_json or {}),
+                    "video_visual_only": True,
+                    "video_transcript_error_code": exc.code,
+                }
+                log.info(
+                    "video source continues with visual-only content item_id=%s "
+                    "source_id=%s transcript_error_code=%s",
+                    item.id,
+                    source.id,
+                    exc.code,
+                )
+                return content
             session.add(
                 Content(
                     item_id=item.id,
@@ -357,6 +417,14 @@ class ProcessingPipeline:
                 )
             )
             await self._delete_transcript_checkpoints(session, item.id, source_id)
+            if isinstance(source, ItemSource) and (
+                (source.metadata_json or {}).get("video_visual_only")
+                or (source.metadata_json or {}).get("video_transcript_error_code")
+            ):
+                source_metadata = dict(source.metadata_json or {})
+                source_metadata.pop("video_visual_only", None)
+                source_metadata.pop("video_transcript_error_code", None)
+                source.metadata_json = source_metadata
             await self._enrich_source_visual(session, item, source, content, source_id)
             return content
         if source.source_type in (SourceType.VOICE, SourceType.AUDIO):
@@ -384,26 +452,49 @@ class ProcessingPipeline:
             await self._delete_transcript_checkpoints(session, item.id, source_id)
             content.duration_seconds = source.content_duration_seconds
             return content
+        if source.source_type is SourceType.DOCUMENT:
+            if self.document_extractor is None:
+                raise AppError("UNSUPPORTED_SOURCE", "document extractor not wired", permanent=True)
+            content = await self.document_extractor.extract(source)
+            session.add(
+                Content(
+                    item_id=item.id,
+                    source_id=source_id,
+                    kind=ContentKind.DOCUMENT_TEXT,
+                    text=content.text,
+                    metadata_json={**content.metadata, "title": content.title},
+                )
+            )
+            source.metadata_json = {**(source.metadata_json or {}), **content.metadata}
+            return content
         if source.source_type is SourceType.WEB:
             content = await self.web_extractor.extract(source)
             # WEB_TEXT персистится атомарно с checkpoint'ом ANALYZING:
             # переживает restart, retry не перекачивает страницу (ТЗ §46, §59).
             # metadata_json хранит заголовок/автора/язык/заметку — resume
             # восстанавливает эквивалентный NormalizedContent целиком.
+            is_document = content.source_type is SourceType.DOCUMENT
+            content_metadata = (
+                {**content.metadata, "title": content.title}
+                if is_document
+                else {
+                    "title": content.title,
+                    "author": content.author,
+                    "language": content.language,
+                    "user_note": None,
+                }
+            )
             session.add(
                 Content(
                     item_id=item.id,
                     source_id=source_id,
-                    kind=ContentKind.WEB_TEXT,
+                    kind=ContentKind.DOCUMENT_TEXT if is_document else ContentKind.WEB_TEXT,
                     text=content.text,
-                    metadata_json={
-                        "title": content.title,
-                        "author": content.author,
-                        "language": content.language,
-                        "user_note": None,
-                    },
+                    metadata_json=content_metadata,
                 )
             )
+            if is_document and isinstance(source, ItemSource):
+                source.metadata_json = {**(source.metadata_json or {}), **content.metadata}
             return content
         raise AppError("UNSUPPORTED_SOURCE", f"unsupported source type: {source.source_type.value}")
 
@@ -414,10 +505,9 @@ class ProcessingPipeline:
         source: ItemSource,
         content: NormalizedContent,
         source_id: int | None,
-    ) -> None:
-        """Attach optional visual facts to one video-like source without owning Item failure."""
-        capabilities = getattr(self.analyzer.provider, "capabilities", None)
-        if not capabilities or not capabilities.vision or source_id is None:
+    ) -> AppError | None:
+        """Persist optional frame facts and report failure to visual-only callers."""
+        if source_id is None:
             return
         existing = await session.scalar(
             select(Content.text).where(
@@ -428,6 +518,9 @@ class ProcessingPipeline:
         )
         if existing:
             content.metadata["visual_notes"] = existing
+            return
+        capabilities = getattr(self.analyzer.provider, "capabilities", None)
+        if not capabilities or not capabilities.vision:
             return
 
         temp_root = None
@@ -455,13 +548,12 @@ class ProcessingPipeline:
                 duration_seconds=content.duration_seconds or source.content_duration_seconds,
             )
             if not frames:
-                return
+                raise AppError("VISUAL_FAILED", "no representative video frames extracted")
             notes = await self.analyzer.provider.describe_images(
                 frames, context=content.text[:1500]
             )
             notes = notes[:800]
             if notes:
-                content.metadata["visual_notes"] = notes
                 session.add(
                     Content(
                         item_id=item.id,
@@ -472,16 +564,28 @@ class ProcessingPipeline:
                     )
                 )
                 await session.commit()
+                content.metadata["visual_notes"] = notes
+                return None
+            raise AppError("VISUAL_FAILED", "vision provider returned no video notes")
         except asyncio.CancelledError:
             raise
-        except Exception as exc:
-            # Visual enrichment is auxiliary: transcript remains valid source content.
+        except AppError as exc:
             log.warning(
                 "source visual analysis skipped item_id=%s source_id=%s: %s",
                 item.id,
                 source_id,
                 exc,
             )
+            return exc
+        except Exception as exc:
+            # Callers decide whether another extracted part keeps the source useful.
+            log.warning(
+                "source visual analysis skipped item_id=%s source_id=%s: %s",
+                item.id,
+                source_id,
+                exc,
+            )
+            return AppError("VISUAL_FAILED", "video visual analysis failed")
         finally:
             shutil.rmtree(work_dir, ignore_errors=True)
 
@@ -573,6 +677,9 @@ class ProcessingPipeline:
             for content in extracted
             if content.source_type in (SourceType.YOUTUBE, SourceType.VIDEO)
         ]
+        visual_only_source_count = sum(
+            bool(content.metadata.get("visual_only")) for content in visual_sources
+        )
         combined_metadata = dict(single.metadata) if single is not None else {}
         combined_metadata.update(
             {
@@ -581,6 +688,7 @@ class ProcessingPipeline:
                 "successful_source_types": [content.source_type.value for content in extracted],
                 "source_failures": failures,
                 "visual_source_count": len(visual_sources),
+                "visual_only_source_count": visual_only_source_count,
                 "visual_source_count_with_notes": sum(
                     bool(content.metadata.get("visual_notes")) for content in visual_sources
                 ),
@@ -753,26 +861,61 @@ class ProcessingPipeline:
             SourceType.VIDEO,
         ):
             kind = ContentKind.TRANSCRIPT
+        elif source.source_type is SourceType.DOCUMENT:
+            kind = ContentKind.DOCUMENT_TEXT
         elif source.source_type is not SourceType.WEB:
             return None
-        row = await session.scalar(
-            select(Content).where(
-                Content.item_id == item.id,
-                Content.source_id == source.id,
-                Content.kind == kind,
-            )
+        source_content_kind = (
+            Content.kind.in_((ContentKind.WEB_TEXT, ContentKind.DOCUMENT_TEXT))
+            if source.source_type is SourceType.WEB
+            else Content.kind == kind
         )
+        query = select(Content).where(
+            Content.item_id == item.id,
+            Content.source_id == source.id,
+            source_content_kind,
+        )
+        row = await session.scalar(query.order_by(Content.id.desc()))
         if row is None:
+            if source.source_type is SourceType.VIDEO:
+                visual_notes = await session.scalar(
+                    select(Content.text).where(
+                        Content.item_id == item.id,
+                        Content.source_id == source.id,
+                        Content.kind == ContentKind.VISUAL_NOTES,
+                    )
+                )
+                if visual_notes:
+                    return NormalizedContent(
+                        source_type=SourceType.VIDEO,
+                        text=_VISUAL_ONLY_VIDEO_CONTEXT,
+                        duration_seconds=source.content_duration_seconds,
+                        metadata={
+                            "visual_only": True,
+                            "transcript_error_code": (source.metadata_json or {}).get(
+                                "video_transcript_error_code"
+                            ),
+                            "visual_notes": visual_notes,
+                        },
+                    )
             return None
         meta = row.metadata_json or {}
+        restored_source_type = (
+            SourceType.DOCUMENT if row.kind is ContentKind.DOCUMENT_TEXT else source.source_type
+        )
         content = NormalizedContent(
-            source_type=source.source_type,
+            source_type=restored_source_type,
             title=meta.get("title"),
             text=row.text,
             url=source.source_url if source.source_type is SourceType.WEB else None,
             duration_seconds=meta.get("duration_seconds"),
             author=meta.get("author"),
             language=meta.get("language"),
+            metadata=(
+                {key: value for key, value in meta.items() if key != "title"}
+                if row.kind is ContentKind.DOCUMENT_TEXT
+                else {}
+            ),
         )
         if source.source_type is SourceType.YOUTUBE:
             description_row = await session.scalar(

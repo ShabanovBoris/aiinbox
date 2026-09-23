@@ -8,7 +8,7 @@ from app.extractors.audio import AudioExtractor
 from app.services.actions import apply_item_action
 from app.services.analysis import Analyzer
 from app.services.delivery import ITEM_READY
-from app.services.ingestion import ingest_message, ingest_voice
+from app.services.ingestion import ingest_media, ingest_message
 from app.services.processing import ProcessingPipeline
 from app.storage.models import Delivery, Item, ItemSource
 from app.workers.processing import ProcessingWorker
@@ -182,7 +182,7 @@ async def test_retry_partial_item_survives_restart_and_reuses_ready_source(sessi
 
 async def test_permanent_partial_source_failure_is_not_retryable(session_factory):
     item = (
-        await ingest_voice(
+        await ingest_media(
             session_factory,
             telegram_user_id=42,
             chat_id=42,
@@ -312,7 +312,7 @@ async def test_failed_bare_url_without_other_content_fails_item(session_factory)
 
 async def test_audio_caption_and_url_are_combined_into_one_analysis(tmp_path, session_factory):
     item = (
-        await ingest_voice(
+        await ingest_media(
             session_factory,
             telegram_user_id=42,
             chat_id=42,

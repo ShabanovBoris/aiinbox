@@ -1,15 +1,15 @@
 # PM-03 — Telegram Video & Documents
 
 Type: Post-MVP Epic + Detailed Technical Specification  
-Status: IN_PROGRESS
+Status: IN_REVIEW
 Prerequisites: stabilized MVP; PM-02 recommended for forwarded variants
 
 ## 1. Epic
 
 ### Problem
 
-The current bot captures direct Telegram video through the shared composite Item
-pipeline. Common documents are still a gap.
+The bot captures direct Telegram video through the shared composite Item pipeline.
+PM-03 adds common documents to the same source/checkpoint/analysis flow.
 
 Users should not need to upload a file elsewhere and send a URL just to make AIInbox understand it.
 
@@ -67,6 +67,11 @@ No second media-analysis subsystem.
 ### URL PDF
 
 If generic web ingestion receives a response that is clearly a supported document (initially PDF), route it to the document extraction path rather than trying HTML extraction.
+
+URL sources remain `WEB` after fetch. Confirmed PDF bytes produce a document
+`NormalizedContent` and a durable `DOCUMENT_TEXT` checkpoint with response
+metadata. Recovery identifies this path from the persisted content kind, so source
+identity does not change during processing.
 
 ## 3. Out of scope
 
@@ -171,13 +176,15 @@ Use explicit completeness:
 
 - TRANSCRIPT_ONLY when vision is unavailable/fails;
 - TRANSCRIPT_AND_VISUAL when both succeeded.
+- VISUAL_ONLY when the video has no transcript but vision succeeds.
 
 A vision failure with a valid transcript should normally remain a successful Item with honest completeness.
+A video with no transcript and failed vision extraction follows the existing failure/partial-content policy.
 
-A transcription failure with no other meaningful content is a failed Item.
+A transcription and vision failure with no other meaningful content is a failed Item.
 
-A transcription/download failure with meaningful caption text or another successful
-ItemSource is a successful `PARTIAL` Item; the source-local failure remains durable.
+If transcription fails outside the visual-only path, meaningful caption text or
+another successful ItemSource keeps the Item `PARTIAL`; the source-local failure remains durable.
 
 ## 8. Video temp/resource policy
 
@@ -348,6 +355,8 @@ MAX_VIDEO_DURATION_SECONDS
 MAX_DOCUMENT_BYTES
 MAX_DOCUMENT_TEXT_CHARS
 ~~~
+
+Defaults are 20,000,000 source bytes and 500,000 extracted characters.
 
 Reuse existing settings where semantics are identical.
 

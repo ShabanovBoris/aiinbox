@@ -123,3 +123,35 @@ Consequences: replay дедуплицируется по Telegram message identi
 остаётся meaningful text/другой source; Item падает только когда анализировать
 нечего или падает общий analysis. Для длинного multi-source content промежуточное
 chunk summarization также должно сохранять существенную тему каждого source.
+
+## D-017 — URL PDF сохраняет WEB source identity
+
+Context: тип ответа URL становится известен только после secure fetch. Смена
+`ItemSource.source_type` при обработке создала бы отдельный state transition,
+который нужно было бы восстанавливать при crash/retry.
+
+Decision: URL остаётся `SourceType.WEB`. Если защищённый web response подтверждён
+как PDF, парсер возвращает document `NormalizedContent`, а durable checkpoint
+сохраняется как `DOCUMENT_TEXT` с PDF metadata. Telegram file documents используют
+`SourceType.DOCUMENT`.
+
+Reason: исходный URL остаётся стабильной identity source, а `Content.kind` уже
+точно описывает фактически извлечённое представление.
+
+Consequences: recovery различает web page и URL PDF по durable content kind;
+оба варианта используют один SSRF/DNS-pinning downloader.
+
+## D-018 — Silent Telegram videos use visual-only analysis
+
+Context: Some Telegram videos contain useful visual information but have no audio
+stream, so audio extraction cannot produce a transcript.
+
+Decision: When a VIDEO source has no audio stream or an empty transcript, use the
+existing frame/vision path. Mark the Item `VISUAL_ONLY` only after visual notes are
+successfully persisted; restore those notes as the source checkpoint after restart.
+
+Reason: A missing transcript does not make visual content unusable, and the result
+must not imply that speech was analyzed.
+
+Consequences: If visual extraction also fails, existing failure/partial-source
+handling remains in effect.

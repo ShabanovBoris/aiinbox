@@ -12,8 +12,9 @@ from app.bot.keyboards import item_keyboard
 from app.bot.provenance import normalize_forward_origin, text_with_entity_urls
 from app.config import Settings
 from app.domain.enums import ItemState, ProcessingStatus, SourceType
+from app.extractors.document import document_format_hint, safe_document_file_name
 from app.services.actions import apply_item_action, record_item_events, set_item_interest
-from app.services.ingestion import ingest_message, ingest_voice
+from app.services.ingestion import ingest_media, ingest_message
 from app.services.notifications import (
     format_settings,
     get_notification_settings,
@@ -32,7 +33,8 @@ from app.storage.models import Item, ItemSource
 log = logging.getLogger(__name__)
 
 HELP_TEXT = (
-    "Personal AI Inbox — отправь или перешли текст, URL, voice/audio/video или YouTube-ссылку.\n\n"
+    "Personal AI Inbox — отправь или перешли текст, URL, voice/audio/video, документ "
+    "или YouTube-ссылку.\n\n"
     "Команды:\n"
     "/today — приоритетные Items на сегодня\n"
     "/inbox — последние Items\n"
@@ -165,7 +167,7 @@ async def on_voice_audio(
     oversized = (file_size, max_audio_bytes) if file_size > max_audio_bytes else None
     source_metadata = normalize_forward_origin(message.forward_origin)
     source_text = text_with_entity_urls(message.caption, message.caption_entities)
-    result = await ingest_voice(
+    result = await ingest_media(
         session_factory,
         telegram_user_id=user_id,
         chat_id=message.chat.id,
@@ -214,7 +216,7 @@ async def on_video(
         (file_size, settings.max_video_bytes) if file_size > settings.max_video_bytes else None
     )
     source_text = text_with_entity_urls(message.caption, message.caption_entities)
-    result = await ingest_voice(
+    result = await ingest_media(
         session_factory,
         telegram_user_id=user_id,
         chat_id=message.chat.id,
@@ -286,12 +288,81 @@ async def on_forwarded_photo(
         await message.answer("\n".join(ack_lines))
 
 
-async def on_unsupported_forwarded_media(message: Message, settings: Settings) -> None:
-    """Keep unsupported document capture explicit until its extractor is implemented."""
+# ❌ Удалена forwarded-only ветка отказа: документы обоих видов проходят общую проверку и pipeline.
+async def on_unsupported_document(message: Message, settings: Settings) -> None:
+    """Give the same concise format error for unsupported direct and forwarded files."""
     user_id = message.from_user.id if message.from_user else None
     if not settings.is_allowed(user_id):
         return
-    await message.answer("Пересланные документы пока не поддерживаются.")
+    await message.answer("Этот формат документа пока не поддерживается.")
+
+
+async def on_document(
+    message: Message, settings: Settings, session_factory: async_sessionmaker
+) -> None:
+    """Persist supported documents as one file ItemSource; workers do all parsing."""
+    user_id = message.from_user.id if message.from_user else None
+    if not settings.is_allowed(user_id):
+        return
+    document = message.document
+    if document is None:
+        return
+    file_name = safe_document_file_name(document.file_name)
+    document_format = document_format_hint(file_name, document.mime_type)
+    file_size = document.file_size or 0
+    oversized = (
+        (file_size, settings.max_document_bytes)
+        if file_size > settings.max_document_bytes
+        else None
+    )
+    source_text = text_with_entity_urls(message.caption, message.caption_entities)
+    source_details = {
+        key: value
+        for key, value in {
+            "file_name": file_name,
+            "mime_type": (document.mime_type or "").split(";", 1)[0].strip().lower() or None,
+            "document_format": document_format,
+        }.items()
+        if value is not None
+    }
+    result = await ingest_media(
+        session_factory,
+        telegram_user_id=user_id,
+        chat_id=message.chat.id,
+        message_id=message.message_id,
+        file_id=document.file_id,
+        duration_seconds=None,
+        source_type=SourceType.DOCUMENT,
+        too_large=oversized,
+        prechecked_failure=(
+            ("UNSUPPORTED_SOURCE", "document format is unsupported")
+            if document_format is None
+            else None
+        ),
+        source_metadata=normalize_forward_origin(message.forward_origin),
+        source_text=source_text,
+        source_details=source_details,
+        default_timezone=settings.default_timezone,
+    )
+    item = result.items[0]
+    if oversized is not None:
+        if item.processing_status is ProcessingStatus.FAILED:
+            answer = (
+                f"Документ слишком большой ({file_size / 1_000_000:.1f} МБ > лимита "
+                f"{settings.max_document_bytes / 1_000_000:.0f} МБ). Файл не скачан."
+            )
+        else:
+            answer = (
+                f"Документ превышает лимит {settings.max_document_bytes / 1_000_000:.0f} МБ; "
+                "разберу подпись и ссылки из сообщения."
+            )
+        await message.answer(answer)
+        return
+    if document_format is None:
+        await on_unsupported_document(message, settings)
+        return
+    label = file_name or "без имени"
+    await message.answer(f"Принял документ {label}. Разбираю…")
 
 
 def make_router(
@@ -328,8 +399,8 @@ def make_router(
         # Normalize it here so message transport does not change Item semantics.
         if _is_video_document(message):
             await on_video(message, settings, session_factory)
-        elif message.forward_origin:
-            await on_unsupported_forwarded_media(message, settings)
+        else:
+            await on_document(message, settings, session_factory)
 
     # Forwarded slash-prefixed text is captured content, not a command for this bot.
     # This edge rule must run before Command filters to preserve author semantics.

@@ -1,9 +1,9 @@
 # Personal AI Inbox
 
 Personal AI Inbox — личный Telegram-бот, который принимает текст, ссылки,
-голосовые сообщения, аудио и YouTube-видео, сохраняет их в SQLite, извлекает
-содержимое, анализирует его через сменный LLM-провайдер и возвращает компактный
-результат с приоритетом и действиями.
+голосовые сообщения, аудио, видео и PDF/TXT/Markdown/DOCX документы, сохраняет
+их в SQLite, извлекает содержимое, анализирует его через сменный LLM-провайдер и
+возвращает компактный результат с приоритетом и действиями.
 
 Полная пользовательская справка со всеми поддерживаемыми входами, командами,
 кнопками, уведомлениями, примерами и текущими ограничениями:
@@ -146,6 +146,8 @@ check для защищённой ветки `main`, поэтому merge тре
 - `PROCESSING_TIMEOUT_SECONDS`, `SHUTDOWN_TIMEOUT_SECONDS`;
 - `WEB_TIMEOUT_SECONDS`, `MAX_DOWNLOAD_BYTES`, `WEB_MAX_ATTEMPTS`;
 - `MAX_AUDIO_BYTES`, `TRANSCRIPTION_TIMEOUT_SECONDS`;
+- `MAX_DOCUMENT_BYTES`, `MAX_DOCUMENT_TEXT_CHARS` (по умолчанию 20 MB и
+  500 000 символов);
 - `YOUTUBE_MAX_*`, `VIDEO_FRAME_INTERVAL_SECONDS`, `VIDEO_MAX_FRAMES`;
 - `OPENAI_*`, `OPENROUTER_*`, `CONTENT_CHUNK_MAX_CHARS`, `CONTENT_CHUNK_OVERLAP_CHARS`,
   `DEFAULT_TIMEZONE`, `PROFILE_SEED_FILE`.

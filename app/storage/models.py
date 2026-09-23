@@ -79,7 +79,13 @@ class Item(Base):
         SaEnum(ItemState, native_enum=False, length=16), default=ItemState.ACTIVE
     )
     source_type: Mapped[SourceType] = mapped_column(
-        SaEnum(SourceType, native_enum=False, length=16)
+        SaEnum(
+            SourceType,
+            native_enum=False,
+            length=16,
+            create_constraint=True,
+            name="ck_items_source_type",
+        )
     )
     # Совместимая presentation-проекция одиночного URL; canonical набор источников
     # нового Item хранится в item_sources.
@@ -150,7 +156,15 @@ class Content(Base):
     # Extracted content may belong to one concrete source inside a composite Item.
     # NULL means Item-level content such as Telegram message text or LLM chunk summaries.
     source_id: Mapped[int | None] = mapped_column(ForeignKey("item_sources.id"), index=True)
-    kind: Mapped[ContentKind] = mapped_column(SaEnum(ContentKind, native_enum=False, length=16))
+    kind: Mapped[ContentKind] = mapped_column(
+        SaEnum(
+            ContentKind,
+            native_enum=False,
+            length=16,
+            create_constraint=True,
+            name="ck_contents_kind",
+        )
+    )
     text: Mapped[str] = mapped_column(Text)
     metadata_json: Mapped[dict | None] = mapped_column(JSON)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
@@ -177,7 +191,13 @@ class ItemSource(Base):
     item_id: Mapped[int] = mapped_column(ForeignKey("items.id"), index=True)
     source_index: Mapped[int] = mapped_column(Integer)
     source_type: Mapped[SourceType] = mapped_column(
-        SaEnum(SourceType, native_enum=False, length=16)
+        SaEnum(
+            SourceType,
+            native_enum=False,
+            length=16,
+            create_constraint=True,
+            name="ck_item_sources_source_type",
+        )
     )
     source_url: Mapped[str | None] = mapped_column(String(700))
     source_file_id: Mapped[str | None] = mapped_column(String(200))

@@ -78,7 +78,7 @@ class VideoExtractor:
                 on_segment=on_segment,
             )
             if not transcript:
-                raise AppError("TRANSCRIPTION_FAILED", "empty video transcript")
+                raise AppError("EMPTY_TRANSCRIPT", "empty video transcript")
             return NormalizedContent(
                 source_type=SourceType.VIDEO,
                 text=transcript,
@@ -118,6 +118,13 @@ def _extract_audio_track(video_path: Path, audio_path: Path) -> None:
     except subprocess.TimeoutExpired as exc:
         raise AppError("TIMEOUT", "video audio extraction timed out") from exc
     if result.returncode != 0 or not audio_path.exists():
+        stderr = (
+            result.stderr.decode("utf-8", errors="replace")
+            if isinstance(result.stderr, bytes)
+            else str(result.stderr or "")
+        )
+        if "does not contain any stream" in stderr.lower():
+            raise AppError("NO_AUDIO_TRACK", "video has no audio track", permanent=True)
         raise AppError(
             "TRANSCRIPTION_FAILED",
             f"ffmpeg video audio extraction failed: {result.returncode}",

@@ -21,6 +21,11 @@ uv run python -m app.main
 `app.main` автоматически выполняет `alembic upgrade head`.
 Без `TELEGRAM_BOT_TOKEN` Telegram polling отключён, workers остаются активны.
 
+Документы используют `MAX_DOCUMENT_BYTES` (по умолчанию 20 MB) и
+`MAX_DOCUMENT_TEXT_CHARS` (500 000 символов). URL PDF проходит через
+`MAX_DOWNLOAD_BYTES` и существующую SSRF-safe web boundary; отдельный URL
+загрузчик и OCR не используются.
+
 Поддержаны `LLM_PROVIDER=openai` и `LLM_PROVIDER=openrouter`.
 OpenRouter endpoint по умолчанию — `https://openrouter.ai/api/v1`.
 

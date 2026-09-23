@@ -33,7 +33,7 @@ A forwarded message still resolves to its real content source:
 - forwarded voice → VOICE;
 - forwarded audio → AUDIO;
 - forwarded video → VIDEO;
-- forwarded document → DOCUMENT after PM-03.
+- forwarded document → DOCUMENT (implemented by PM-03).
 
 ## 3. In scope
 
