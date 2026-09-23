@@ -155,3 +155,38 @@ must not imply that speech was analyzed.
 
 Consequences: If visual extraction also fails, existing failure/partial-source
 handling remains in effect.
+
+## D-019 — Профиль задаёт язык ответа
+
+Context: язык транскрипта Telegram-видео может отличаться от языка, на котором
+пользователь хочет получать краткие описания; текущий prompt ориентирует модель
+на язык контента.
+
+Decision: добавить `preferred_language` в JSON-профиль пользователя, по умолчанию
+`ru`; использовать его для визуальных заметок и текстовых полей анализа VIDEO/
+YOUTUBE Items. Поле `AnalysisResult.language` остаётся языком исходного материала.
+
+Reason: язык источника — это характеристика сохранённого материала, а не
+предпочтение языка ответа.
+
+Consequences: старые JSON-профили читаются с `ru` без миграции; пользователь
+может изменить значение через `/profile_update`. Остальные типы Items сохраняют
+выбор языка по источнику.
+
+## D-020 — VIDEO result ссылается на сообщение через reply
+
+Context: Telegram message links предназначены для групп и каналов; Bot API не
+даёт permalink для личного чата пользователя с ботом ([message links](https://core.telegram.org/api/links),
+[message IDs](https://core.telegram.org/api/updates)). Для VIDEO Item нужно
+возвращать пользователя к сообщению с вложением.
+
+Decision: READY/FAILED уведомления для Item с VIDEO отправлять reply на исходное
+сообщение в текущем чате через Bot API `ReplyParameters` ([sendMessage](https://core.telegram.org/bots/api#sendmessage)).
+Для forwarded public channel отдельно сохранять кнопку перехода к публичному
+оригиналу.
+
+Reason: reply preview позволяет перейти к исходной копии видео в чате с ботом и
+работает также для direct/forwarded вложений без публичного username.
+
+Consequences: если исходное сообщение уже удалено или недоступно, Bot API всё
+равно отправляет результат без reply anchor.

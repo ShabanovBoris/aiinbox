@@ -37,6 +37,12 @@ class UserProfile(BaseModel):
     """Персональный контекст анализа. В Phase 2 — default-профиль;
     хранение и /profile_update приходят в Phase 8."""
 
+    preferred_language: str = Field(
+        default="ru",
+        min_length=2,
+        max_length=35,
+        pattern=r"^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$",
+    )
     profession: str | None = None
     domains: list[str] = []
     goals: list[UserGoal] = []
@@ -46,6 +52,7 @@ class UserProfile(BaseModel):
 
 
 DEFAULT_PROFILE = UserProfile(
+    preferred_language="ru",
     profession=None,
     domains=[],
     goals=[],
@@ -70,6 +77,12 @@ class ProfilePatch(BaseModel):
 
     model_config = {"extra": "forbid"}
 
+    preferred_language: str | None = Field(
+        default=None,
+        min_length=2,
+        max_length=35,
+        pattern=r"^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$",
+    )
     profession: str | None = None
     domains: list[str] | None = None
     goals: list[UserGoal] | None = None

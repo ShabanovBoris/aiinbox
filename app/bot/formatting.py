@@ -77,6 +77,7 @@ def format_profile(profile: UserProfile) -> str:
         lines.append(f"Заметки: {profile.free_text}")
     if len(lines) == 1:
         lines.append("Профиль пуст — используйте /profile_update <описание>.")
+    lines.append(f"Язык ответа: {profile.preferred_language}")
     return _fit_message(lines)
 
 

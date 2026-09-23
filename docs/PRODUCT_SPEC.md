@@ -290,7 +290,10 @@ Analyzer обязан возвращать schema-validated `AnalysisResult`. П
 
 Структура включает title, summary, category, ItemType, tags, priority factors,
 estimated action, next action, reason, language и confidence. Pydantic валидирует
-shape/types.
+shape/types. Для Item с Telegram VIDEO/YouTube title, summary, next action и
+reason создаются на языке из профиля, даже если transcript на другом языке;
+поле `language` сохраняет язык исходного материала. Для остальных источников
+остаётся правило языка самого контента.
 
 ## 32. Long content
 
@@ -309,7 +312,9 @@ Chunk boundaries paragraph-aware. Durable `CHUNK_SUMMARY` reuse разрешён
 ## 35. UserProfile
 
 Профиль может содержать profession, domains, weighted goals, interests,
-constraints и free text.
+constraints, free text и `preferred_language` в формате BCP-47. По умолчанию
+используется `ru`; `/profile_update` меняет язык, например, на `en`. Параметр
+управляет ответом для видео-Items; язык исходного transcript его не переключает.
 
 ## 36. /profile
 
@@ -526,6 +531,10 @@ Ingestion отвечает быстро. Длинная работа идёт в
 Item с URL-источником получает Telegram `🔗 Открыть`, ведущую на source URL.
 Forwarded public channel message получает отдельную кнопку `↗ Открыть оригинал`
 только если Telegram дал public username канала и original message id.
+READY/FAILED уведомление по Item с VIDEO отправляется ответом на сообщение,
+которое пользователь отправил или переслал боту. Reply preview возвращает к
+копии видео в чате с ботом; для публичного пересланного поста кнопка выше ведёт
+отдельно к исходному посту.
 
 ## 71. Персонализация
 

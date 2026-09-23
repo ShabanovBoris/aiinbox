@@ -56,6 +56,7 @@ class FakeLlmProvider:
         self.describe_notes = describe_notes or "На слайдах диаграмма оркестрации."
         self.describe_fail = describe_fail
         self.describe_calls = 0
+        self.describe_languages: list[str] = []
         self.analyze_failures = analyze_failures
         self.summarize_failures = summarize_failures
         self.profile_patch = profile_patch
@@ -81,8 +82,9 @@ class FakeLlmProvider:
             raise LlmError("LLM_FAILED", "summarize failed")
         return text
 
-    async def describe_images(self, images, context):
+    async def describe_images(self, images, context, *, preferred_language):
         self.describe_calls += 1
+        self.describe_languages.append(preferred_language)
         if self.describe_fail:
             raise LlmError("VISUAL_FAILED", "vision down")
         return self.describe_notes

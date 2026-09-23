@@ -150,6 +150,7 @@ class ProcessingPipeline:
             return None
         if item.source_type is not SourceType.YOUTUBE or self.youtube_extractor is None:
             return None
+        profile = await get_profile(session, item.user_id)
         work_dir = Path(self.youtube_extractor.temp_dir) / f"vis-{uuid4().hex}"
         try:
             # mkdir внутри graceful-границы: FS-ошибка не роняет Item с транскриптом
@@ -168,7 +169,9 @@ class ProcessingPipeline:
             if not frames:
                 return None
             notes = await self.analyzer.provider.describe_images(
-                frames, context=content.text[:1500]
+                frames,
+                context=content.text[:1500],
+                preferred_language=profile.preferred_language,
             )
             # Обрезка до детерминированного лимита: untrusted LLM output
             notes = notes[:800]
@@ -522,6 +525,7 @@ class ProcessingPipeline:
         capabilities = getattr(self.analyzer.provider, "capabilities", None)
         if not capabilities or not capabilities.vision:
             return
+        profile = await get_profile(session, item.user_id)
 
         temp_root = None
         if source.source_type is SourceType.YOUTUBE and self.youtube_extractor is not None:
@@ -550,7 +554,9 @@ class ProcessingPipeline:
             if not frames:
                 raise AppError("VISUAL_FAILED", "no representative video frames extracted")
             notes = await self.analyzer.provider.describe_images(
-                frames, context=content.text[:1500]
+                frames,
+                context=content.text[:1500],
+                preferred_language=profile.preferred_language,
             )
             notes = notes[:800]
             if notes:

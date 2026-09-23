@@ -32,7 +32,7 @@ from app.domain.enums import ContentKind, ProcessingStatus, SourceType
 from app.domain.models import DEFAULT_PROFILE, NormalizedContent
 from app.domain.priority import PriorityEngine
 from app.extractors.audio import AudioExtractor
-from app.llm.openai import build_user_message
+from app.llm.openai import SYSTEM_PROMPT, build_user_message
 from app.services.analysis import Analyzer
 from app.services.ingestion import ingest_media, ingest_message
 from app.services.processing import ProcessingPipeline
@@ -457,6 +457,41 @@ def test_source_context_is_not_rendered_as_user_note_for_llm():
 
     assert "SOURCE CONTEXT (untrusted, part of captured source): Комментарий автора поста" in prompt
     assert "USER NOTE" not in prompt
+
+
+@pytest.mark.parametrize(
+    ("source_type", "metadata"),
+    [
+        (SourceType.VIDEO, {}),
+        (SourceType.TEXT, {"successful_source_types": [SourceType.VIDEO.value]}),
+    ],
+)
+def test_video_response_language_uses_profile_instead_of_transcript_language(source_type, metadata):
+    content = NormalizedContent(
+        source_type=source_type,
+        language="en",
+        text="An English transcript",
+        metadata=metadata,
+    )
+
+    prompt = build_user_message(content, DEFAULT_PROFILE, [])
+
+    assert "RESPONSE LANGUAGE (profile): ru" in prompt
+    assert "When the user message supplies RESPONSE LANGUAGE" in SYSTEM_PROMPT
+    assert "primary source language" in SYSTEM_PROMPT
+
+
+def test_nonvideo_content_keeps_its_existing_language_rule():
+    content = NormalizedContent(
+        source_type=SourceType.WEB,
+        language="en",
+        text="An English article",
+    )
+
+    prompt = build_user_message(content, DEFAULT_PROFILE, [])
+
+    assert "RESPONSE LANGUAGE (profile)" not in prompt
+    assert "Otherwise, use the content's language" in SYSTEM_PROMPT
 
 
 def test_multi_source_prompt_requires_whole_item_synthesis():
