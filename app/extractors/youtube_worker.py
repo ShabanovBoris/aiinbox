@@ -79,6 +79,8 @@ def execute(request: dict[str, Any]) -> dict[str, str]:
     ):
         raise AppError("DOWNLOAD_FAILED", "YouTube worker received invalid stream requirements")
     required = frozenset(required_streams or ())
+    # yt-dlp may silently return on an oversized Content-Length before progress hooks run.
+    options.pop("max_filesize", None)
     options["progress_hooks"] = [_size_limit_hook(byte_limit)]
     download_dir.mkdir(parents=True, exist_ok=True)
     with yt_dlp.YoutubeDL(options) as ydl:

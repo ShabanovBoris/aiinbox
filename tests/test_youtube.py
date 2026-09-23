@@ -1,5 +1,6 @@
 """Тесты YouTube extractor: фейковый yt-dlp + MockTransport, без сети/YouTube."""
 
+import io
 import json
 from pathlib import Path
 
@@ -11,6 +12,7 @@ from app.domain.enums import ContentKind, ProcessingStatus, SourceType
 from app.domain.priority import PriorityEngine
 from app.errors import AppError, MediaTooLargeError
 from app.extractors import youtube as youtube_module
+from app.extractors import youtube_worker as youtube_worker_module
 from app.extractors.youtube import YoutubeExtractor
 from app.extractors.youtube_worker import execute as execute_youtube_download
 from app.services.actions import apply_item_action
@@ -702,6 +704,63 @@ def test_youtube_worker_uses_python_api_and_checks_result_within_download_dir(
     )
 
     assert result == {"path": str(tmp_path / "worker" / "abc123.mp4")}
+
+
+def test_youtube_worker_classifies_oversized_content_length_before_output(monkeypatch, tmp_path):
+    """The worker's hook, rather than yt-dlp max_filesize, owns byte-limit classification."""
+    download_dir = tmp_path / "worker"
+    output = io.StringIO()
+
+    class HeaderOversizeYdl:
+        def __init__(self, options):
+            self.options = options
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def extract_info(self, url, download=False):
+            assert url == URL
+            assert download is True
+            assert "max_filesize" not in self.options
+            self.options["progress_hooks"][0](
+                {"status": "downloading", "downloaded_bytes": 0, "total_bytes": 101}
+            )
+            pytest.fail("the size hook must stop before an output file is created")
+
+        def prepare_filename(self, info):
+            return str(download_dir / "abc123.mp4")
+
+    monkeypatch.setattr(youtube_worker_module.yt_dlp, "YoutubeDL", HeaderOversizeYdl)
+    monkeypatch.setattr(
+        youtube_worker_module.sys,
+        "stdin",
+        io.StringIO(
+            json.dumps(
+                {
+                    "url": URL,
+                    "options": {
+                        "max_filesize": 100,
+                        "outtmpl": str(download_dir / "%(id)s.%(ext)s"),
+                    },
+                    "byte_limit": 100,
+                    "download_dir": str(download_dir),
+                    "required_streams": ["video", "audio"],
+                }
+            )
+        ),
+    )
+    monkeypatch.setattr(youtube_worker_module.sys, "stdout", output)
+
+    youtube_worker_module.main()
+
+    response = json.loads(output.getvalue())
+    assert response["ok"] is False
+    assert response["kind"] == "app"
+    assert response["code"] == "TOO_LARGE"
+    assert list(download_dir.iterdir()) == []
 
 
 def test_youtube_worker_rejects_partial_result_file(monkeypatch, tmp_path):

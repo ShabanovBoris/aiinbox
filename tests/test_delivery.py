@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 import signal
 import sys
@@ -524,6 +525,54 @@ async def test_video_size_failure_sends_audio_fallback(tmp_path, session_factory
         )
         assert delivery.status == "SENT"
         assert "telegram_file_id" not in delivery.payload_json
+
+
+async def test_production_youtube_worker_size_error_reaches_audio_fallback(
+    tmp_path, session_factory, monkeypatch
+):
+    """A worker TOO_LARGE response must survive extractor mapping and reach audio delivery."""
+    item_id, source_id, _ = await _make_ready_video_source(session_factory, SourceType.YOUTUBE)
+    await enqueue_item_video_delivery(session_factory, 42, item_id, source_id)
+    extractor = YoutubeExtractor(FakeTranscriber(), tmp_path / "youtube")
+    worker_requests = []
+
+    async def run_size_limited_worker(command, payload, **kwargs):
+        request = json.loads(payload)
+        worker_requests.append(request)
+        if request["required_streams"] == ["video", "audio"]:
+            return json.dumps(
+                {
+                    "ok": False,
+                    "kind": "app",
+                    "code": "TOO_LARGE",
+                    "message": "YouTube media exceeds its configured byte limit",
+                    "permanent": True,
+                }
+            ).encode()
+
+        audio_path = Path(request["download_dir"]) / "abc123.m4a"
+        audio_path.parent.mkdir(parents=True, exist_ok=True)
+        audio_path.write_bytes(b"bounded-audio")
+        return json.dumps({"ok": True, "result": {"path": str(audio_path)}}).encode()
+
+    monkeypatch.setattr(youtube_module, "run_killable_subprocess", run_size_limited_worker)
+    bot = FakeBot()
+    worker = DeliveryWorker(
+        session_factory,
+        bot,
+        youtube_extractor=extractor,
+        retry_backoff_seconds=0,
+    )
+
+    assert await worker.process_one() is True
+
+    assert [request["required_streams"] for request in worker_requests] == [
+        ["video", "audio"],
+        ["audio"],
+    ]
+    assert [send[1] for send in bot.media_sends] == ["audio"]
+    assert "только аудио" in bot.media_sends[0][3]["caption"]
+    assert Path(bot.media_sends[0][2].path).parent.name == "audio"
 
 
 async def test_telegram_video_upload_size_rejection_sends_audio_fallback(tmp_path, session_factory):

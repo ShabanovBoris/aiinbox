@@ -81,6 +81,8 @@ def execute(request: dict) -> dict:
     mode = request["mode"]
     options = request["options"]
     if mode == "download":
+        # yt-dlp may silently return on an oversized Content-Length before progress hooks run.
+        options.pop("max_filesize", None)
         options["progress_hooks"] = [size_limit_hook(int(request["byte_limit"]))]
     if mode not in {"info", "download"}:
         raise AppError("EXTRACTION_FAILED", "Invalid Instagram extraction operation", True)
