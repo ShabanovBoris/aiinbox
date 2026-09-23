@@ -451,7 +451,8 @@ idempotency_key с уникальностью по паре user_id/idempotency_
 последующего нажатия. Для category/type correction отдельная
 feedback_callback_receipts сохраняет callback receipt даже при no-op, который
 не должен создавать семантический Event; receipt и реальное исправление
-фиксируются одной SQLite-транзакцией. Распознанный callback со stale или
+фиксируются одной SQLite-транзакцией. Проверка READY/category-token и запись
+receipt выполняются в одной транзакции. Распознанный callback со stale или
 временно недоступной целью также потребляется без Event, если Item принадлежит
 пользователю.
 

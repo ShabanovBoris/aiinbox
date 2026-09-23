@@ -173,6 +173,7 @@ Conceptually:
 
 ~~~text
 correct_item_category(user_id, item_id, new_category)
+correct_item_category_by_token(user_id, item_id, category_token)
 ~~~
 
 Requirements:
@@ -180,6 +181,7 @@ Requirements:
 - trim/validate length;
 - user-scoped;
 - Item update + event in same transaction;
+- resolve bounded category tokens and consume stale/unavailable callbacks in that same transaction;
 - no LLM required;
 - search index updated if category participates in searchable/display data.
 
@@ -280,7 +282,9 @@ including a no-op selection. Recognized callbacks whose owned Item or category
 target is stale are also consumed without an Event. A real change commits the
 Item update, receipt, and correction Event together; a no-op or stale action
 commits only the receipt. This keeps a late retry from becoming a later
-mutation without adding a fake Event.
+mutation without adding a fake Event. READY/category-token resolution and the
+receipt decision happen within this same serialized transaction; handlers do
+not split applicability checks from callback consumption.
 
 ## 13. Event payload contract
 

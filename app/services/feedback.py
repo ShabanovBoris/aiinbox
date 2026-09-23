@@ -8,6 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.sql import text
 
+from app.domain.category_tokens import category_token
 from app.domain.enums import ItemType, ProcessingStatus
 from app.storage.models import Event, FeedbackCallbackReceipt, Item, User
 
@@ -85,32 +86,50 @@ async def _claim_feedback_callback_receipt(
     return True
 
 
-async def consume_unapplied_feedback_callback(
-    session_factory: async_sessionmaker,
+async def _claim_unapplied_feedback_callback(
+    session: AsyncSession,
     telegram_user_id: int,
     item_id: int,
-    *,
     idempotency_key: str,
-) -> None:
-    """Consume a recognized callback rejected by a stale or unavailable UI.
+) -> bool:
+    """Claim an unavailable callback for its owner inside the active transaction.
 
-    The user-scoped receipt prevents the same transport update from becoming a
-    mutation if its target later becomes available again.
+    The caller holds BEGIN IMMEDIATE, so the eligibility decision and receipt
+    commit cannot be separated by a retry that observes newer Item state.
     """
-    _validate_idempotency_key(idempotency_key)
+    owner_id = await session.scalar(
+        select(Item.user_id)
+        .join(User, User.id == Item.user_id)
+        .where(User.telegram_user_id == telegram_user_id, Item.id == item_id)
+    )
+    if owner_id is None:
+        return False
+    await _claim_feedback_callback_receipt(session, owner_id, idempotency_key)
+    return True
 
-    async with session_factory() as session:
-        await session.execute(text("BEGIN IMMEDIATE"))
-        owned_user_id = await session.scalar(
-            select(Item.user_id)
-            .join(User, User.id == Item.user_id)
-            .where(User.telegram_user_id == telegram_user_id, Item.id == item_id)
+
+def _apply_category_correction(
+    session: AsyncSession, item: Item, category: str, idempotency_key: str
+) -> bool:
+    """Keep the canonical category change and its transition Event together."""
+    if item.category == category:
+        return False
+    previous = item.category
+    item.category = category
+    session.add(
+        Event(
+            user_id=item.user_id,
+            item_id=item.id,
+            event_type="CATEGORY_CORRECTED",
+            payload_json={
+                "from": previous,
+                "to": category,
+                "source": "telegram",
+            },
+            idempotency_key=idempotency_key,
         )
-        if owned_user_id is None:
-            await session.rollback()
-            return
-        await _claim_feedback_callback_receipt(session, owned_user_id, idempotency_key)
-        await session.commit()
+    )
+    return True
 
 
 async def record_item_feedback(
@@ -134,7 +153,12 @@ async def record_item_feedback(
         await session.execute(text("BEGIN IMMEDIATE"))
         item = await _ready_item(session, telegram_user_id, item_id)
         if item is None:
-            await session.rollback()
+            if await _claim_unapplied_feedback_callback(
+                session, telegram_user_id, item_id, idempotency_key
+            ):
+                await session.commit()
+            else:
+                await session.rollback()
             return None
         if await _callback_was_consumed(session, item.user_id, idempotency_key):
             await session.commit()
@@ -178,7 +202,12 @@ async def correct_item_category(
         await session.execute(text("BEGIN IMMEDIATE"))
         item = await _ready_item(session, telegram_user_id, item_id)
         if item is None:
-            await session.rollback()
+            if await _claim_unapplied_feedback_callback(
+                session, telegram_user_id, item_id, idempotency_key
+            ):
+                await session.commit()
+            else:
+                await session.rollback()
             return None
         if not await _claim_feedback_callback_receipt(session, item.user_id, idempotency_key):
             await session.commit()
@@ -196,23 +225,66 @@ async def correct_item_category(
             await session.commit()
             return None
 
-        previous = item.category
-        item.category = category
-        session.add(
-            Event(
-                user_id=item.user_id,
-                item_id=item.id,
-                event_type="CATEGORY_CORRECTED",
-                payload_json={
-                    "from": previous,
-                    "to": category,
-                    "source": "telegram",
-                },
-                idempotency_key=idempotency_key,
-            )
-        )
+        changed = _apply_category_correction(session, item, category, idempotency_key)
         await session.commit()
-        return item, True
+        return item, changed
+
+
+async def correct_item_category_by_token(
+    session_factory: async_sessionmaker,
+    telegram_user_id: int,
+    item_id: int,
+    selected_category_token: str,
+    *,
+    idempotency_key: str,
+) -> tuple[Item, bool] | None:
+    """Resolve a menu token and apply its category correction in one transaction.
+
+    Resolving inside the writer transaction means a stale menu choice is
+    consumed before that category can disappear and later become applicable.
+    """
+    _validate_idempotency_key(idempotency_key)
+
+    async with session_factory() as session:
+        await session.execute(text("BEGIN IMMEDIATE"))
+        item = await _ready_item(session, telegram_user_id, item_id)
+        if item is None:
+            if await _claim_unapplied_feedback_callback(
+                session, telegram_user_id, item_id, idempotency_key
+            ):
+                await session.commit()
+            else:
+                await session.rollback()
+            return None
+        if not await _claim_feedback_callback_receipt(session, item.user_id, idempotency_key):
+            await session.commit()
+            return item, False
+
+        categories = list(
+            (
+                await session.scalars(
+                    select(Item.category)
+                    .where(Item.user_id == item.user_id, Item.category.is_not(None))
+                    .distinct()
+                )
+            ).all()
+        )
+        matches = [
+            category
+            for category in categories
+            if category_token(category) == selected_category_token
+        ]
+        if len(matches) != 1:
+            await session.commit()
+            return None
+
+        category = matches[0].strip()
+        if not category or len(category) > _MAX_CATEGORY_LENGTH:
+            await session.commit()
+            return None
+        changed = _apply_category_correction(session, item, category, idempotency_key)
+        await session.commit()
+        return item, changed
 
 
 async def correct_item_type(
@@ -234,7 +306,12 @@ async def correct_item_type(
         await session.execute(text("BEGIN IMMEDIATE"))
         item = await _ready_item(session, telegram_user_id, item_id)
         if item is None:
-            await session.rollback()
+            if await _claim_unapplied_feedback_callback(
+                session, telegram_user_id, item_id, idempotency_key
+            ):
+                await session.commit()
+            else:
+                await session.rollback()
             return None
         if not await _claim_feedback_callback_receipt(session, item.user_id, idempotency_key):
             await session.commit()

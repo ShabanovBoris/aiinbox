@@ -1,15 +1,14 @@
 """Small Telegram keyboard projections for the Item action surface."""
 
-import hashlib
 from collections.abc import Sequence
 
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from app.bot.provenance import forward_original_url
+from app.domain.category_tokens import category_token as category_callback_token
 from app.domain.enums import ItemType, ProcessingStatus, SourceType
 from app.storage.models import Item, ItemSource
 
-_CATEGORY_TOKEN_LENGTH = 20
 _MAX_CATEGORY_CHOICES = 20
 _MAX_CATEGORY_LABEL_LENGTH = 64
 
@@ -142,11 +141,6 @@ def feedback_menu_keyboard(item_id: int) -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="← Назад", callback_data=f"feedback:back:{item_id}")],
         ]
     )
-
-
-def category_callback_token(category: str) -> str:
-    """Keep arbitrary UTF-8 category text out of Telegram's 64-byte callback field."""
-    return hashlib.sha256(category.encode("utf-8")).hexdigest()[:_CATEGORY_TOKEN_LENGTH]
 
 
 def _category_button_label(category: str) -> str:

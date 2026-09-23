@@ -329,7 +329,9 @@ user in SQLite. Telegram feedback uses the namespaced CallbackQuery identity.
 Category/type corrections also persist a user-scoped callback receipt in the
 same serialized transaction, including when the selected value is already
 current or a recognized action is rejected by a stale UI target; neither case
-should create a semantic correction Event.
+should create a semantic correction Event. READY/category-token applicability
+and receipt claim are one BEGIN IMMEDIATE operation, so a concurrent retry
+cannot cross from rejected to applied between two transactions.
 
 Reason: transport retry identity is distinct from the meaning or age of a
 feedback event, and application-only existence checks race under concurrent

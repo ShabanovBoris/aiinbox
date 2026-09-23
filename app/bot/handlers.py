@@ -9,7 +9,6 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.bot.formatting import format_ready_item
 from app.bot.keyboards import (
-    category_callback_token,
     feedback_category_keyboard,
     feedback_menu_keyboard,
     feedback_type_keyboard,
@@ -23,8 +22,7 @@ from app.extractors.instagram import is_instagram_reel_url
 from app.services.actions import apply_item_action, record_item_events, set_item_interest
 from app.services.delivery import enqueue_item_video_delivery
 from app.services.feedback import (
-    consume_unapplied_feedback_callback,
-    correct_item_category,
+    correct_item_category_by_token,
     correct_item_type,
     record_item_feedback,
 )
@@ -713,6 +711,8 @@ async def on_feedback_callback(
         return
 
     idempotency_key = f"telegram-callback:{callback.id}"
+    # ❌ Удален handler-level receipt claim в отдельной транзакции: service
+    # теперь связывает eligibility/token resolution и receipt в одной записи.
     if action in {
         "useful",
         "not_interesting",
@@ -738,12 +738,6 @@ async def on_feedback_callback(
             idempotency_key=idempotency_key,
         )
         if item is None:
-            await consume_unapplied_feedback_callback(
-                session_factory,
-                callback.from_user.id,
-                item_id,
-                idempotency_key=idempotency_key,
-            )
             await callback.answer("Item недоступен")
             return
         if action in {"useful", "not_interesting"}:
@@ -777,54 +771,24 @@ async def on_feedback_callback(
         ):
             await callback.answer("Некорректная категория")
             return
-        projection = await _load_ready_feedback_projection(
-            session_factory, callback.from_user.id, item_id
-        )
-        if projection is None:
-            await consume_unapplied_feedback_callback(
-                session_factory,
-                callback.from_user.id,
-                item_id,
-                idempotency_key=idempotency_key,
-            )
-            await callback.answer("Item недоступен")
-            return
-        item, _sources = projection
-        async with session_factory() as session:
-            categories = await list_categories(session, item.user_id)
-        matches = [
-            category
-            for category, _count in categories
-            if category_callback_token(category) == parts[3]
-        ]
-        if len(matches) != 1:
-            await consume_unapplied_feedback_callback(
-                session_factory,
-                callback.from_user.id,
-                item_id,
-                idempotency_key=idempotency_key,
-            )
-            await callback.answer("Категория больше недоступна")
-            return
         try:
-            result = await correct_item_category(
+            result = await correct_item_category_by_token(
                 session_factory,
                 callback.from_user.id,
                 item_id,
-                matches[0],
+                parts[3],
                 idempotency_key=idempotency_key,
             )
         except ValueError:
             await callback.answer("Категория не подходит")
             return
         if result is None:
-            await consume_unapplied_feedback_callback(
-                session_factory,
-                callback.from_user.id,
-                item_id,
-                idempotency_key=idempotency_key,
+            current = await _load_ready_feedback_projection(
+                session_factory, callback.from_user.id, item_id
             )
-            await callback.answer("Категория больше недоступна")
+            await callback.answer(
+                "Категория больше недоступна" if current is not None else "Item недоступен"
+            )
             return
         _updated_item, changed = result
         current = await _load_ready_feedback_projection(
@@ -857,12 +821,6 @@ async def on_feedback_callback(
             await callback.answer("Некорректный тип")
             return
         if result is None:
-            await consume_unapplied_feedback_callback(
-                session_factory,
-                callback.from_user.id,
-                item_id,
-                idempotency_key=idempotency_key,
-            )
             await callback.answer("Item недоступен")
             return
         _updated_item, changed = result

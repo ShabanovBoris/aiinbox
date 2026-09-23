@@ -1,3 +1,4 @@
+import asyncio
 from types import SimpleNamespace
 
 from sqlalchemy import func, select
@@ -11,6 +12,7 @@ from app.bot.keyboards import (
     item_keyboard,
 )
 from app.domain.enums import ItemState, ItemType, ProcessingStatus, SourceType
+from app.services import feedback as feedback_service
 from app.services.feedback import correct_item_category
 from app.services.retrieval import TodayService
 from app.storage.models import Event, FeedbackCallbackReceipt, Item, ItemSource, User
@@ -429,7 +431,7 @@ async def test_replayed_category_callback_refreshes_latest_value_without_reapply
 
 
 async def test_stale_category_callback_cannot_apply_after_category_returns(
-    settings, session_factory
+    settings, session_factory, monkeypatch
 ):
     await _create_category_item(session_factory, "Other")
     item_id = await _create_category_item(session_factory, "Programming")
@@ -442,9 +444,28 @@ async def test_stale_category_callback_cannot_apply_after_category_returns(
         "stale-category",
     )
 
-    await on_feedback_callback(callback, settings, session_factory)
-    await _create_category_item(session_factory, "AI")
-    await on_feedback_callback(callback, settings, session_factory)
+    receipt_claimed = asyncio.Event()
+    release_callback = asyncio.Event()
+    original_claim = feedback_service._claim_feedback_callback_receipt
+    paused = False
+
+    async def pause_after_claim(session, user_id, idempotency_key):
+        nonlocal paused
+        claimed = await original_claim(session, user_id, idempotency_key)
+        if idempotency_key == "telegram-callback:stale-category" and claimed and not paused:
+            paused = True
+            receipt_claimed.set()
+            await release_callback.wait()
+        return claimed
+
+    monkeypatch.setattr(feedback_service, "_claim_feedback_callback_receipt", pause_after_claim)
+    stale_delivery = asyncio.create_task(on_feedback_callback(callback, settings, session_factory))
+    await asyncio.wait_for(receipt_claimed.wait(), timeout=5)
+    category_creation = asyncio.create_task(_create_category_item(session_factory, "AI"))
+    replay = asyncio.create_task(on_feedback_callback(callback, settings, session_factory))
+    await asyncio.sleep(0)
+    release_callback.set()
+    await asyncio.gather(stale_delivery, category_creation, replay)
 
     async with session_factory() as session:
         stored = await session.get(Item, item_id)
@@ -467,7 +488,8 @@ async def test_stale_category_callback_cannot_apply_after_category_returns(
         assert stored.category == "Programming"
         assert corrections == []
         assert receipt is not None
-    assert callback.answers == ["Категория больше недоступна", "Категория без изменений"]
+    assert len(callback.answers) == 2
+    assert set(callback.answers) == {"Категория больше недоступна", "Категория без изменений"}
 
 
 async def test_type_callback_updates_today_and_keeps_priority(settings, session_factory):

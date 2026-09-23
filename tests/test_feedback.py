@@ -4,8 +4,8 @@ import pytest
 from sqlalchemy import select
 
 from app.domain.enums import ItemState, ItemType, ProcessingStatus, SourceType
+from app.services import feedback as feedback_service
 from app.services.feedback import (
-    consume_unapplied_feedback_callback,
     correct_item_category,
     correct_item_type,
     record_item_feedback,
@@ -172,7 +172,9 @@ async def test_feedback_is_scoped_to_user_and_ready_items(session_factory):
     assert await _event_rows(session_factory, queued_id) == []
 
 
-async def test_unapplied_receipt_blocks_event_feedback_after_item_becomes_ready(session_factory):
+async def test_unavailable_feedback_receipt_is_atomic_with_ready_check(
+    session_factory, monkeypatch
+):
     await _create_item(session_factory)
     queued_id = await _create_item(session_factory, status=ProcessingStatus.QUEUED)
     await _create_item(session_factory, telegram_user_id=1000)
@@ -185,24 +187,58 @@ async def test_unapplied_receipt_blocks_event_feedback_after_item_becomes_ready(
         assert other_user.id == queued_id
 
     callback_key = "telegram-callback:temporarily-unavailable"
-    await consume_unapplied_feedback_callback(
-        session_factory, 42, queued_id, idempotency_key=callback_key
-    )
-    await consume_unapplied_feedback_callback(
-        session_factory, 1000, queued_id, idempotency_key="telegram-callback:foreign"
-    )
-    async with session_factory() as session:
-        queued_item = await session.get(Item, queued_id)
-        queued_item.processing_status = ProcessingStatus.READY
-        await session.commit()
+    receipt_claimed = asyncio.Event()
+    release_callback = asyncio.Event()
+    original_claim = feedback_service._claim_feedback_callback_receipt
+    paused = False
 
-    replay = await record_item_feedback(
-        session_factory, 42, queued_id, "USEFUL", idempotency_key=callback_key
+    async def pause_after_claim(session, user_id, idempotency_key):
+        nonlocal paused
+        claimed = await original_claim(session, user_id, idempotency_key)
+        if idempotency_key == callback_key and claimed and not paused:
+            paused = True
+            receipt_claimed.set()
+            await release_callback.wait()
+        return claimed
+
+    monkeypatch.setattr(feedback_service, "_claim_feedback_callback_receipt", pause_after_claim)
+    first_delivery = asyncio.create_task(
+        record_item_feedback(session_factory, 42, queued_id, "USEFUL", idempotency_key=callback_key)
+    )
+    await asyncio.wait_for(receipt_claimed.wait(), timeout=5)
+
+    async def mark_ready():
+        async with session_factory() as session:
+            queued_item = await session.get(Item, queued_id)
+            queued_item.processing_status = ProcessingStatus.READY
+            await session.commit()
+
+    ready_transition = asyncio.create_task(mark_ready())
+    replay = asyncio.create_task(
+        record_item_feedback(session_factory, 42, queued_id, "USEFUL", idempotency_key=callback_key)
+    )
+    foreign = asyncio.create_task(
+        record_item_feedback(
+            session_factory,
+            1000,
+            queued_id,
+            "USEFUL",
+            idempotency_key="telegram-callback:foreign",
+        )
+    )
+    await asyncio.sleep(0)
+    release_callback.set()
+    first_result, _ready, replay_result, foreign_result = await asyncio.gather(
+        first_delivery, ready_transition, replay, foreign
     )
 
-    assert replay is not None
+    assert first_result is None
+    assert foreign_result is None
+    assert replay_result is None or replay_result.processing_status is ProcessingStatus.READY
     assert await _event_rows(session_factory, queued_id) == []
     async with session_factory() as session:
+        queued_item = await session.get(Item, queued_id)
+        assert queued_item.processing_status is ProcessingStatus.READY
         receipt_user_ids = list(
             (
                 await session.scalars(
