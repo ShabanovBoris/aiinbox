@@ -271,7 +271,8 @@ class Reminder(Base):
 
     The row is the restart-safe idempotency key: a digest is identified by its
     user, type and local-day schedule, while a snooze reminder is tied to one
-    Item and its exact ``snoozed_until`` timestamp.
+    Item and its exact ``snoozed_until`` timestamp. Proactive Attention keeps a
+    per-user open claim until delivery is finalized or revalidated on recovery.
     """
 
     __tablename__ = "reminders"
@@ -286,6 +287,12 @@ class Reminder(Base):
             "scheduled_at",
             unique=True,
             sqlite_where=text("type = 'DAILY_DIGEST'"),
+        ),
+        Index(
+            "uq_reminders_open_proactive_user",
+            "user_id",
+            unique=True,
+            sqlite_where=text("type = 'PROACTIVE_ATTENTION' AND status IN ('PENDING', 'CLAIMED')"),
         ),
     )
 

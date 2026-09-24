@@ -3,6 +3,8 @@
 Type: Post-MVP Epic + Detailed Technical Specification  
 Prerequisite: PM-07 Attention Ranking Engine
 
+Status: IN_REVIEW
+
 ## 1. Epic
 
 ### Problem
@@ -294,3 +296,23 @@ Exact each-level cap/gap/cooldown tests.
 - BOT_USAGE/RUNBOOK as needed;
 - no PM-09/10 scope creep;
 - repository review completed.
+
+## 21. Implemented delivery details
+
+- New users default to `attention_enabled=true` and intensity 3. The migration
+  explicitly sets existing users to OFF only when that key is absent, preserving
+  all saved settings and any existing PM-08 values.
+- The local-day cap counts successful `DAILY_DIGEST` and `PROACTIVE_ATTENTION`
+  Reminder rows in the user's current IANA timezone. `SNOOZE_RESURFACE` does not
+  use quota, but it anchors the minimum gap. DST days use their actual UTC span.
+- A five-minute durable `CLAIMED` lease and a partial unique index allow only one
+  open proactive intent per user. Ranking, claim, and final send validation use
+  short database transactions; Telegram I/O runs after commit.
+- Recovery re-ranks through PM-07 and cancels an intent whose Item is no longer
+  actionable or whose current attention score is below 60. `/attention` still
+  uses its existing one-to-five preview limit; scheduling can inspect ten.
+- After Telegram accepts a proactive message, `Reminder.SENT` and the
+  `ATTENTION_SHOWN` exposure Event are committed together. If the process stops
+  after Telegram accepts the message but before this transaction commits, the
+  lease may later retry it; Telegram and SQLite cannot provide exactly-once
+  delivery.

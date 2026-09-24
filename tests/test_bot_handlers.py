@@ -1,12 +1,13 @@
 from datetime import UTC, datetime
 
 import pytest
-from aiogram.types import Chat, Message
+from aiogram.types import CallbackQuery, Chat, Message
 from aiogram.types import User as TgUser
 from sqlalchemy import func, select
 
 from app.bot.handlers import (
     _item_action_label,
+    on_attention_settings_callback,
     on_category,
     on_help,
     on_inbox,
@@ -17,6 +18,7 @@ from app.bot.handlers import (
     on_today,
 )
 from app.domain.enums import ItemState, ItemType, ProcessingStatus, SourceType
+from app.services.notifications import get_notification_settings
 from app.storage.models import Event, Item, User
 
 
@@ -230,6 +232,63 @@ async def test_settings_command_persists_minimal_notification_settings(
         assert user.settings_json["daily_digest_time"] == "08:30"
 
 
+async def test_settings_attention_command_and_callbacks_preserve_current_choice(
+    settings, session_factory, monkeypatch
+):
+    sent = capture_answers(monkeypatch)
+    await on_settings(make_message(42), settings, session_factory, "attention")
+    assert "Attention Manager" in sent[0]
+    assert "Normal" in sent[0]
+
+    answered = []
+    edited = []
+
+    async def answer_callback(self, text=None, **kwargs):
+        answered.append(text)
+
+    async def edit_text(self, text, **kwargs):
+        edited.append((text, kwargs))
+
+    monkeypatch.setattr(CallbackQuery, "answer", answer_callback)
+    monkeypatch.setattr(Message, "edit_text", edit_text)
+    user = TgUser(id=42, is_bot=False, first_name="Test")
+
+    same_level = CallbackQuery(
+        id="same-level",
+        from_user=user,
+        chat_instance="private",
+        message=make_message(42),
+        data="settings:attention:level:3",
+    )
+    await on_attention_settings_callback(same_level, settings, session_factory)
+    assert edited == []
+    assert answered == ["Уже выбран этот уровень"]
+
+    level_change = CallbackQuery(
+        id="level-change",
+        from_user=user,
+        chat_instance="private",
+        message=make_message(42),
+        data="settings:attention:level:5",
+    )
+    await on_attention_settings_callback(level_change, settings, session_factory)
+    assert "Aggressive" in edited[-1][0]
+    updated = await get_notification_settings(session_factory, 42)
+    assert updated[1]["attention_intensity"] == 5
+
+    toggle = CallbackQuery(
+        id="toggle",
+        from_user=user,
+        chat_instance="private",
+        message=make_message(42),
+        data="settings:attention:toggle",
+    )
+    await on_attention_settings_callback(toggle, settings, session_factory)
+    assert "Статус: OFF" in edited[-1][0]
+    updated = await get_notification_settings(session_factory, 42)
+    assert updated[1]["attention_enabled"] is False
+
+
 def test_production_router_composition_builds(settings, session_factory):
     # Регрессия: production-вызов make_router (как в app/main.py) собирается
     # без TypeError — router включает profile-команды.
@@ -243,6 +302,7 @@ def test_production_router_composition_builds(settings, session_factory):
     assert "profile" in names and "profile_update" in names and "settings_command" in names
     assert {"help_command", "today", "attention", "inbox", "category", "search"} <= set(names)
     assert "item_action" in [h.callback.__name__ for h in router.callback_query.handlers]
+    assert "settings_attention" in [h.callback.__name__ for h in router.callback_query.handlers]
 
 
 def test_item_action_label_reports_persisted_winner_not_requested_action():

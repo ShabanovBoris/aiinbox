@@ -110,8 +110,8 @@ Goal: turn user actions into explainable personalization signals.
 
 ### Milestone D — Attention Engine Core
 
-PM-07 Attention Ranking  
-PM-08 Attention Intensity
+- PM-07 Attention Ranking — DONE (PR #36 merged)
+- PM-08 Attention Intensity — IN_REVIEW
 
 Goal: separate semantic priority from “what deserves attention now?” and control reminder pressure.
 

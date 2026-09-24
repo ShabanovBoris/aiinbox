@@ -394,3 +394,23 @@ saw.
 Consequences: PM-06 ignores the exposure Event as a preference signal;
 `priority_score` and `/today`/digest ordering remain unchanged. No schema
 migration is required.
+
+## D-031 — Proactive Attention uses durable Reminder claims
+
+Context: PM-08 must pace proactive delivery across worker restarts and competing
+worker attempts without changing PM-07 ranking or holding SQLite locks during
+Telegram I/O.
+
+Decision: derive the daily budget, minimum gap and same-Item cooldown from
+successful Reminder history. Serialize one open `PROACTIVE_ATTENTION` claim per
+user with a partial unique index, revalidate it before sending, and record
+`ATTENTION_SHOWN` with successful delivery finalization. Existing users receive
+an explicit Attention OFF setting during rollout.
+
+Reason: Reminder rows are durable delivery facts; derived counters and
+duplicated ranking state would drift from actual history.
+
+Consequences: claims are retried after a bounded lease and may duplicate only in
+the unavoidable proactive Telegram-accepted/SQLite-not-finalized crash window.
+Digest and snooze retain their existing no-duplicate behavior; both remain
+`CLAIMED` and do not count as successful until their sends are finalized.

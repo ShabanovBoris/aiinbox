@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.bot.formatting import format_attention_item, format_ready_item
 from app.bot.keyboards import (
+    attention_settings_keyboard,
     feedback_category_keyboard,
     feedback_menu_keyboard,
     feedback_type_keyboard,
@@ -29,6 +30,7 @@ from app.services.feedback import (
 )
 from app.services.ingestion import ingest_media, ingest_message
 from app.services.notifications import (
+    format_attention_settings,
     format_settings,
     get_notification_settings,
     update_notification_settings,
@@ -58,6 +60,7 @@ HELP_TEXT = (
     "/profile — текущий профиль\n"
     "/profile_update <инструкция> — обновить профиль\n"
     "/settings — настройки digest и quiet hours\n"
+    "/settings attention — proactive Attention Manager\n"
     "/help — эта справка"
 )
 
@@ -95,7 +98,20 @@ async def on_settings(
             await session.commit()
     parts = arguments.split(maxsplit=2)
     try:
-        if parts and parts[0] == "timezone" and len(parts) == 2:
+        if parts and parts[0] == "attention" and len(parts) == 1:
+            result = await get_notification_settings(session_factory, user_id)
+            if result is None:
+                return
+            _, attention_settings = result
+            await message.answer(
+                format_attention_settings(attention_settings),
+                reply_markup=attention_settings_keyboard(
+                    attention_settings["attention_enabled"],
+                    attention_settings["attention_intensity"],
+                ),
+            )
+            return
+        elif parts and parts[0] == "timezone" and len(parts) == 2:
             result = await update_notification_settings(session_factory, user_id, timezone=parts[1])
         elif parts and parts[0] == "time" and len(parts) == 2:
             result = await update_notification_settings(
@@ -112,7 +128,9 @@ async def on_settings(
                 quiet_hours_end=quiet_parts[1],
             )
         elif parts:
-            await message.answer("Использование: /settings [timezone|time|quiet] <значение>")
+            await message.answer(
+                "Использование: /settings [timezone|time|quiet] <значение> или /settings attention"
+            )
             return
         else:
             result = await get_notification_settings(session_factory, user_id)
@@ -495,6 +513,10 @@ def make_router(
     @router.callback_query(F.data == "settings:digest")
     async def settings_digest(callback: CallbackQuery) -> None:
         await on_settings_callback(callback, settings, session_factory)
+
+    @router.callback_query(F.data.startswith("settings:attention:"))
+    async def settings_attention(callback: CallbackQuery) -> None:
+        await on_attention_settings_callback(callback, settings, session_factory)
 
     return router
 
@@ -900,6 +922,56 @@ async def on_settings_callback(
         await callback.message.edit_text(
             format_settings(updated_user, updated_values),
             reply_markup=settings_keyboard(updated_values["daily_digest_enabled"]),
+        )
+    await callback.answer()
+
+
+async def on_attention_settings_callback(
+    callback: CallbackQuery, settings: Settings, session_factory: async_sessionmaker
+) -> None:
+    """Persist one allowlisted PM-08 choice and redraw only when it changed."""
+    if not settings.is_allowed(callback.from_user.id) or not callback.data:
+        await callback.answer()
+        return
+    current = await get_notification_settings(session_factory, callback.from_user.id)
+    if current is None:
+        await callback.answer("Пользователь не найден")
+        return
+    _, values = current
+    parts = callback.data.split(":")
+    if parts == ["settings", "attention", "toggle"]:
+        update = {"attention_enabled": values["attention_enabled"] is not True}
+    elif len(parts) == 4 and parts[:3] == ["settings", "attention", "level"]:
+        try:
+            level = int(parts[3])
+        except ValueError:
+            await callback.answer("Некорректный уровень")
+            return
+        if level == values["attention_intensity"]:
+            await callback.answer("Уже выбран этот уровень")
+            return
+        update = {"attention_intensity": level}
+    else:
+        await callback.answer("Неизвестная настройка")
+        return
+
+    try:
+        updated = await update_notification_settings(
+            session_factory, callback.from_user.id, **update
+        )
+    except ValueError as exc:
+        await callback.answer(str(exc))
+        return
+    if updated is None:
+        await callback.answer("Пользователь не найден")
+        return
+    if callback.message:
+        _, updated_values = updated
+        await callback.message.edit_text(
+            format_attention_settings(updated_values),
+            reply_markup=attention_settings_keyboard(
+                updated_values["attention_enabled"], updated_values["attention_intensity"]
+            ),
         )
     await callback.answer()
 

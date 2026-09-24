@@ -96,11 +96,11 @@ Telegram → ingestion → SQLite queue → ProcessingWorker
   единый source content, само изображение не анализируется;
 - `/today`, `/attention`, `/inbox`, `/category`, `/search`;
 - `/profile`, `/profile_update`;
-- `/settings`;
+- `/settings`, `/settings attention`;
 - Done / Later / Archive / Retry;
 - explicit READY Item feedback: Useful, Not interesting, category/type correction,
   priority direction and summary quality;
-- daily digest и snooze resurfacing.
+- daily digest, snooze resurfacing и PM-08 proactive Attention.
 
 Direct Telegram video поддержан. Видео, которое Telegram прислал как `Document`,
 тоже нормализуется в VIDEO по MIME/расширению. PDF, TXT, Markdown и DOCX
@@ -484,7 +484,7 @@ receipt выполняются в одной транзакции. Распоз�
 
 ## 50. reminders
 
-`reminders` хранит daily digest/snooze scheduling.
+`reminders` хранит daily digest, snooze и PM-08 proactive scheduling.
 `deliveries` — отдельный durable outbox для READY/FAILED/profile notifications.
 
 ## 51. Daily digest
@@ -496,6 +496,14 @@ Digest создаётся не чаще одного раза за локаль�
 
 Later предлагает tomorrow/week/month. Item становится SNOOZED.
 При due time возвращается ACTIVE и получает reminder notification вне quiet hours.
+
+PM-08 также может отправить один proactive reminder за worker cycle на основе
+PM-07 ranking. Existing users начинают с Attention OFF; новые users — ON с
+интенсивностью 3. Дневной лимит интенсивности общий для digest и proactive
+уведомлений, а snooze не расходует его, но влияет на минимальный интервал.
+Quiet hours блокируют proactive delivery; после них Items ранжируются заново,
+без догоняющей очереди. Только успешный proactive send создаёт `SENT` Reminder
+и `ATTENTION_SHOWN`; derived `attention_score` не сохраняется.
 
 ## 53. Done
 

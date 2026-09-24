@@ -2,7 +2,7 @@
 
 Type: Post-MVP Epic + Detailed Technical Specification  
 Prerequisites: PM-01 Interest Level; PM-06 Behaviour-Aware Ranking
-Status: IN_REVIEW
+Status: DONE — merged in PR #36
 
 ## 1. Epic
 

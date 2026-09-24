@@ -1,3 +1,4 @@
+import json
 import sqlite3
 
 from alembic import command
@@ -33,6 +34,9 @@ def test_fresh_database_migrates_to_latest_schema(tmp_path):
         ).fetchone()[0]
         assert "fts5" in search_sql
         assert "idempotency_key" in {row[1] for row in conn.execute("PRAGMA table_info(events)")}
+        assert "uq_reminders_open_proactive_user" in {
+            row[1] for row in conn.execute("PRAGMA index_list(reminders)")
+        }
 
         # Идемпотентность Telegram-источника enforced схемой, не логикой:
         # дубль (user_id, telegram_message_id, source_index) запрещён на уровне БД.
@@ -311,3 +315,118 @@ def test_event_idempotency_migration_preserves_history_and_allows_legacy_nulls(t
             "VALUES (?, 'telegram-callback:noop')",
             (second_user_id,),
         )
+
+
+def test_pm08_migration_preserves_settings_and_serializes_open_claims(tmp_path):
+    db = tmp_path / "pm08-upgrade.db"
+    cfg = Config()
+    cfg.set_main_option("script_location", "migrations")
+    cfg.set_main_option("sqlalchemy.url", f"sqlite+aiosqlite:///{db}")
+    command.upgrade(cfg, "f5a7c2d91e06")
+
+    with sqlite3.connect(db) as conn:
+        users = [
+            (
+                42,
+                '{"daily_digest_enabled":false,"attention_intensity":5,'
+                '"quiet_hours_start":"21:00"}',
+            ),
+            (
+                1000,
+                '{"attention_enabled":true,"attention_intensity":4,"daily_digest_enabled":false}',
+            ),
+            (2000, "{}"),
+        ]
+        user_ids = []
+        for telegram_user_id, settings_json in users:
+            user_ids.append(
+                conn.execute(
+                    "INSERT INTO users (telegram_user_id, settings_json) "
+                    "VALUES (?, ?) RETURNING id",
+                    (telegram_user_id, settings_json),
+                ).fetchone()[0]
+            )
+        item_ids = []
+        for user_id in user_ids:
+            item_ids.append(
+                conn.execute(
+                    "INSERT INTO items (user_id, telegram_message_id, source_index, "
+                    "processing_status, state, source_type, processing_stage, user_note) "
+                    "VALUES (?, 1, 0, 'READY', 'ACTIVE', 'TEXT', 'READY', '') RETURNING id",
+                    (user_id,),
+                ).fetchone()[0]
+            )
+        conn.execute(
+            "INSERT INTO reminders (user_id, item_id, type, scheduled_at, status, sent_at) "
+            "VALUES (?, NULL, 'DAILY_DIGEST', '2026-09-24 00:00:00', 'SENT', "
+            "'2026-09-24 09:00:00')",
+            (user_ids[0],),
+        )
+        conn.execute(
+            "INSERT INTO reminders (user_id, item_id, type, scheduled_at, status) "
+            "VALUES (?, ?, 'SNOOZE_RESURFACE', '2026-09-25 00:00:00', 'PENDING')",
+            (user_ids[0], item_ids[0]),
+        )
+
+    command.upgrade(cfg, "head")
+
+    with sqlite3.connect(db) as conn:
+        settings = conn.execute(
+            "SELECT settings_json FROM users ORDER BY telegram_user_id"
+        ).fetchall()
+        assert [json.loads(row[0]) for row in settings] == [
+            {
+                "daily_digest_enabled": False,
+                "attention_intensity": 5,
+                "quiet_hours_start": "21:00",
+                "attention_enabled": False,
+            },
+            {
+                "attention_enabled": True,
+                "attention_intensity": 4,
+                "daily_digest_enabled": False,
+            },
+            {"attention_enabled": False, "attention_intensity": 3},
+        ]
+        assert (
+            conn.execute(
+                "SELECT json_type(settings_json, '$.attention_enabled') FROM users "
+                "WHERE telegram_user_id = 42"
+            ).fetchone()[0]
+            == "false"
+        )
+        assert {
+            row[0]
+            for row in conn.execute("SELECT type FROM reminders WHERE user_id = ?", (user_ids[0],))
+        } == {"DAILY_DIGEST", "SNOOZE_RESURFACE"}
+
+        conn.execute(
+            "INSERT INTO reminders (user_id, item_id, type, scheduled_at, status) "
+            "VALUES (?, ?, 'PROACTIVE_ATTENTION', '2026-09-24 10:00:00', 'CLAIMED')",
+            (user_ids[0], item_ids[0]),
+        )
+        conn.commit()
+        try:
+            conn.execute(
+                "INSERT INTO reminders (user_id, item_id, type, scheduled_at, status) "
+                "VALUES (?, ?, 'PROACTIVE_ATTENTION', '2026-09-24 10:01:00', 'PENDING')",
+                (user_ids[0], item_ids[1]),
+            )
+        except sqlite3.IntegrityError:
+            conn.rollback()
+        else:
+            raise AssertionError("two open proactive claims for one user were allowed")
+
+        conn.execute(
+            "INSERT INTO reminders (user_id, item_id, type, scheduled_at, status, sent_at) "
+            "VALUES (?, ?, 'PROACTIVE_ATTENTION', '2026-09-24 10:02:00', 'SENT', "
+            "'2026-09-24 10:02:00')",
+            (user_ids[0], item_ids[0]),
+        )
+        conn.execute(
+            "INSERT INTO reminders (user_id, item_id, type, scheduled_at, status, sent_at) "
+            "VALUES (?, ?, 'PROACTIVE_ATTENTION', '2026-09-24 10:03:00', 'SENT', "
+            "'2026-09-24 10:03:00')",
+            (user_ids[0], item_ids[1]),
+        )
+        conn.commit()

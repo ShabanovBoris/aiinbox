@@ -217,3 +217,20 @@ def settings_keyboard(enabled: bool) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[[InlineKeyboardButton(text=label, callback_data="settings:digest")]]
     )
+
+
+def attention_settings_keyboard(enabled: bool, level: int) -> InlineKeyboardMarkup:
+    """Project PM-08's five fixed policies into callbacks without exposing tunables."""
+    labels = ("Calm", "Light", "Normal", "Active", "Aggressive")
+    levels = [
+        InlineKeyboardButton(
+            text=f"{number} {label}{' ✓' if number == level else ''}",
+            callback_data=f"settings:attention:level:{number}",
+        )
+        for number, label in enumerate(labels, start=1)
+    ]
+    toggle = InlineKeyboardButton(
+        text="🔕 Attention OFF" if enabled is True else "🔔 Attention ON",
+        callback_data="settings:attention:toggle",
+    )
+    return InlineKeyboardMarkup(inline_keyboard=[levels[:2], levels[2:4], levels[4:], [toggle]])

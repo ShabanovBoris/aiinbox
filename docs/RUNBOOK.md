@@ -397,12 +397,31 @@ YouTube/Reel source. Для Telegram video `file_id` сохраняется в d
 
 ```bash
 sqlite3 data/app.db \
-  "SELECT id, user_id, item_id, type, scheduled_at, status, sent_at
+  "SELECT id, user_id, item_id, type, scheduled_at, status, sent_at, payload_json
    FROM reminders ORDER BY scheduled_at DESC LIMIT 50"
 ```
 
-Digest/snooze используют отдельную reminder semantics. Quiet hours и timezone
-берутся из user settings.
+Digest, snooze и proactive Attention используют разные типы Reminder. PM-08
+настройки находятся в `/settings attention`; существующие пользователи после
+миграции выключены до явного включения, новые получают ON / Normal (3).
+Настройки живут в `users.settings_json`; бюджет, cooldown и minimum gap
+вычисляются из Reminder history и не требуют сбрасываемых счётчиков.
+
+Digest переходит в `CLAIMED` до Telegram-вызова и в `SENT` только после
+успешного ответа. Interrupted `CLAIMED` сохраняет текущую защиту digest от
+повторной отправки, но не считается расходом дневного бюджета.
+
+Snooze Reminder также становится `CLAIMED` до отправки и фиксируется как
+`SENT` только после ответа Telegram. Неудачная доставка получает `FAILED` и
+не запускает PM-08 minimum gap.
+
+`CLAIMED` proactive Reminder — durable intent. Worker проверяет настройки,
+quiet hours, Item lifecycle и актуальный PM-07 rank перед доставкой. Оставленный
+claim повторяется после пяти минут; утративший актуальность получает статус
+`CANCELLED`. Успешная Telegram delivery фиксируется короткой транзакцией как
+`SENT` вместе с `ATTENTION_SHOWN`. Если процесс остановится после принятия
+сообщения Telegram, но до SQLite finalization, повторная попытка после lease
+может отправить дубль: точно объединить транзакции Telegram и SQLite нельзя.
 
 ## Profile updates
 

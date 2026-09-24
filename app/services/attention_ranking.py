@@ -200,11 +200,28 @@ class AttentionRankingService:
         limit: int | None = None,
         now: datetime | None = None,
     ) -> list[tuple[Item, AttentionRank]]:
-        """Load bounded user-scoped inputs, reuse PM-06 once, and return stable top results."""
-        captured_now = _as_utc(now or datetime.now(UTC))
         result_limit = max(0, min(_DEFAULT_LIMIT if limit is None else limit, _MAX_LIMIT))
         if result_limit == 0:
             return []
+
+        return await self.list_candidates(session, user_id, limit=result_limit, now=now)
+
+    async def list_candidates(
+        self,
+        session: AsyncSession,
+        user_id: int,
+        *,
+        limit: int | None = None,
+        now: datetime | None = None,
+    ) -> list[tuple[Item, AttentionRank]]:
+        """Return PM-07's ranked candidates independently of Telegram's five-card limit.
+
+        The scheduler needs a wider shortlist so a cooled-down preview leader does
+        not hide the next eligible Item; `/attention` keeps using `list_ranked`.
+        """
+        if limit is not None and limit <= 0:
+            return []
+        captured_now = _as_utc(now or datetime.now(UTC))
 
         candidates = list(
             (
@@ -258,4 +275,4 @@ class AttentionRankingService:
                 pair[0].id,
             )
         )
-        return ranked[:result_limit]
+        return ranked if limit is None else ranked[:limit]
