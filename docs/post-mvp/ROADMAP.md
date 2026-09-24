@@ -111,13 +111,13 @@ Goal: turn user actions into explainable personalization signals.
 ### Milestone D — Attention Engine Core
 
 - PM-07 Attention Ranking — DONE (PR #36 merged)
-- PM-08 Attention Intensity — IN_REVIEW
+- PM-08 Attention Intensity — DONE (PR #37 merged)
 
 Goal: separate semantic priority from “what deserves attention now?” and control reminder pressure.
 
 ### Milestone E — Engagement
 
-PM-09 Contextual Hooks  
+PM-09 Contextual Hooks — IN_REVIEW
 PM-10 Motivational Nudges  
 PM-11 Reminder Feedback Loop
 
@@ -339,7 +339,9 @@ Candidate hook types:
 
 Hooks must be grounded only in persisted source content. A generated hook should retain evidence/source identity.
 
-Prefer lazy generation only when an Item becomes a real proactive-reminder candidate. Persist 2–3 hooks and reuse them with multiple deterministic phrasing templates rather than calling an LLM for every reminder.
+Generate lazily only after an Item becomes a real proactive-reminder candidate.
+Persist up to three grounded hooks and reuse them with deterministic phrasing
+templates rather than calling an LLM for every reminder.
 
 ## 14. PM-10 — Motivational Nudges
 

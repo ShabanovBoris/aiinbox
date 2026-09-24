@@ -3,6 +3,8 @@
 Type: Post-MVP Epic + Detailed Technical Specification  
 Prerequisites: PM-07 Attention Ranking; PM-08 proactive Item reminders
 
+Status: IN_REVIEW
+
 ## 1. Epic
 
 ### Problem
@@ -314,3 +316,33 @@ Preserve existing Content.
 - tests/docs;
 - no PM-10 implementation;
 - repository review completed.
+
+## 22. Implemented behavior
+
+- Hooks are persisted as `ContentKind.ATTENTION_HOOK`; the migration extends the
+  existing SQLite `contents.kind` check and preserves previous Content rows.
+- The OpenAI-compatible provider returns strict structured candidates with
+  explicit provider/model identity. `AttentionHookService` accepts evidence only
+  from supplied excerpts of `USER_TEXT`, `WEB_TEXT`, `DOCUMENT_TEXT`,
+  `TRANSCRIPT`, `VISUAL_NOTES` or `DESCRIPTION`. It does not use summaries,
+  transcript chunks, generated hooks, Item summaries or new web fetches.
+- Context is limited to 12,000 rendered characters, four representative 1,500
+  character chunks per ItemSource group, with deterministic selection that gives
+  both earlier and later composite sources a place in the bounded context.
+- Generation is lazy after a durable PM-08 claim, uses only the profile response
+  language, makes at most one provider call for an attempt, and runs outside a
+  SQLite transaction. A 15-second timeout reserves the final 30 seconds of the
+  existing two-minute send window; `claimed_at` is never reset.
+- One short `BEGIN IMMEDIATE` transaction revalidates persisted hooks, serializes
+  concurrent generation results, stores at most three valid hooks per Item and
+  generator version, and snapshots the chosen hook/template pair into the
+  current Reminder payload. Successful `SENT` history drives immediate-pair
+  rotation; recovered claims retain their valid pair.
+- Stale or malformed hooks are ignored and left as derived history. Provider,
+  timeout and grounding failures fall back to the existing deterministic PM-07
+  reason. The normal `_prepare_proactive_send` check still runs after hook
+  resolution and before Telegram.
+- The supporting `ItemSource` is placed first in the reminder's source actions
+  when it has an existing open/send action. Normal Item keyboards keep their
+  existing order. `ATTENTION_HOOK` is excluded from FTS while original Content
+  remains searchable.

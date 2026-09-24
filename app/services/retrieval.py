@@ -10,7 +10,7 @@ import re
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.domain.enums import ACTIONABLE_ITEM_TYPES, ItemState, ProcessingStatus
+from app.domain.enums import ACTIONABLE_ITEM_TYPES, ContentKind, ItemState, ProcessingStatus
 from app.storage.models import Content, Item
 
 _FTS_TABLE = "item_search"
@@ -42,7 +42,12 @@ async def sync_item_search(session: AsyncSession, item_id: int) -> None:
         return
     contents = (
         await session.scalars(
-            select(Content).where(Content.item_id == item_id).order_by(Content.id)
+            select(Content)
+            .where(
+                Content.item_id == item_id,
+                Content.kind != ContentKind.ATTENTION_HOOK,
+            )
+            .order_by(Content.id)
         )
     ).all()
     await session.execute(

@@ -426,3 +426,23 @@ their no-replay behavior; their active claims temporarily reserve the user
 against proactive sends. An ambiguous Telegram outcome or process stop after
 acceptance but before SQLite finalization can still cause a duplicate; delivery
 across Telegram and SQLite is not exactly once.
+
+## D-032 — Attention hooks are grounded derived Content
+
+Context: PM-09 needs to explain why a saved Item may be worth revisiting without
+turning generated wording into a new source of factual truth.
+
+Decision: persist hooks as `ContentKind.ATTENTION_HOOK`. Every hook points to an
+allowed original Content row, carries a whitespace-exact evidence excerpt and
+generator version, and inherits `source_id` from that evidence. Revalidate stored
+hooks on reuse and exclude them from FTS. Generate lazily after a durable PM-08
+claim, outside SQLite transactions, under the existing absolute send deadline;
+run PM-08's final revalidation afterward and fall back to its deterministic
+reason on hook/provider failure.
+
+Reason: the `contents` table already owns durable source text and provenance, so
+it can preserve evidence without another table or any repeated web extraction.
+
+Consequences: generated hooks remain presentation derivatives, cannot ground
+later hooks or pollute source search, and are reused across reminders with a
+stable template attribution stored in the Reminder payload.

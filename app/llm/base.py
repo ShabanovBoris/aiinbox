@@ -7,6 +7,7 @@ from pydantic import BaseModel
 
 from app.domain.models import (
     AnalysisResult,
+    AttentionHookGeneration,
     NormalizedContent,
     ProfilePatch,
     UserProfile,
@@ -55,6 +56,15 @@ class TranscriptionSegmentCheckpoint:
         )
 
 
+@dataclass(frozen=True)
+class AttentionHookGenerationResult:
+    """Provider output plus explicit generation identity for durable hook metadata."""
+
+    generation: AttentionHookGeneration
+    provider: str
+    model: str
+
+
 class LlmProvider(Protocol):
     """Граница сменного LLM-анализатора. SDK (OpenAI/Ollama) живёт только в adapter.
 
@@ -82,6 +92,12 @@ class LlmProvider(Protocol):
 
     async def profile_update(self, instruction: str, current: UserProfile) -> ProfilePatch:
         """Natural language → валидированный ProfilePatch (Phase 8)."""
+        ...
+
+    async def generate_attention_hooks(
+        self, source_context: str, *, preferred_language: str
+    ) -> AttentionHookGenerationResult:
+        """Create source-grounded presentation hooks without exposing provider SDK types."""
         ...
 
 

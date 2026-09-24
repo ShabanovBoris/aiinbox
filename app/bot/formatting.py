@@ -170,7 +170,9 @@ def format_attention_item(index: int, count: int, item: Item, rank: AttentionRan
     return _fit_message(lines)
 
 
-def format_proactive_attention_reminder(item: Item, rank: AttentionRank) -> str:
+def format_proactive_attention_reminder(
+    item: Item, rank: AttentionRank, hook_block: str | None = None
+) -> str:
     """Render a scheduled Item with PM-07's existing explainability signals.
 
     Keeping this as a presentation projection prevents PM-08 from inventing a
@@ -179,14 +181,22 @@ def format_proactive_attention_reminder(item: Item, rank: AttentionRank) -> str:
     lines = [
         "⏳ Вернём это в фокус",
         item.title or "Без названия",
-        "",
-        f"Почему сейчас: {format_attention_reason(rank)}",
-        "",
-        f"Внимание: {rank.score}/100",
-        f"Приоритет: {rank.priority_score}/100",
-        f"Интерес: {item.interest_level}/3",
-        f"Сохранён: {int(rank.age_days)} дн. назад",
     ]
+    # ❌ Удалён жёстко заданный блок без hook: он мешал вставить проверенный
+    # контекстный блок; fallback по-прежнему собирает тот же текст ниже.
+    if hook_block:
+        lines.extend(["", hook_block])
+    lines.extend(
+        [
+            "",
+            f"Почему сейчас: {format_attention_reason(rank)}",
+            "",
+            f"Внимание: {rank.score}/100",
+            f"Приоритет: {rank.priority_score}/100",
+            f"Интерес: {item.interest_level}/3",
+            f"Сохранён: {int(rank.age_days)} дн. назад",
+        ]
+    )
     return _fit_message(lines)
 
 

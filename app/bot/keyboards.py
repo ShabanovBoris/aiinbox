@@ -13,7 +13,11 @@ _MAX_CATEGORY_CHOICES = 20
 _MAX_CATEGORY_LABEL_LENGTH = 64
 
 
-def item_keyboard(item: Item, sources: Sequence[ItemSource] | None = None) -> InlineKeyboardMarkup:
+def item_keyboard(
+    item: Item,
+    sources: Sequence[ItemSource] | None = None,
+    focus_source_id: int | None = None,
+) -> InlineKeyboardMarkup:
     """Keep action intent in callback data; lifecycle state stays in SQLite."""
     # ❌ Удалена фиксированная rows-разметка без interest controls: READY-клавиатура
     # теперь должна проецировать canonical interest_level перед lifecycle actions.
@@ -62,11 +66,18 @@ def item_keyboard(item: Item, sources: Sequence[ItemSource] | None = None) -> In
             for source_type in (SourceType.YOUTUBE, SourceType.INSTAGRAM)
         }
         ranks = {SourceType.YOUTUBE: 0, SourceType.INSTAGRAM: 0}
+        source_ranks = {}
         for source in video_sources:
             ranks[source.source_type] += 1
+            source_ranks[id(source)] = ranks[source.source_type]
+        if focus_source_id is not None and any(
+            source.id == focus_source_id for source in video_sources
+        ):
+            video_sources.sort(key=lambda source: source.id != focus_source_id)
+        for source in video_sources:
             label = "YouTube" if source.source_type is SourceType.YOUTUBE else "Instagram Reel"
             if totals[source.source_type] > 1:
-                label += f" {ranks[source.source_type]}"
+                label += f" {source_ranks[id(source)]}"
             # A composite Item may contain several clips; each callback names its
             # exact ItemSource so the delivery worker never guesses which one to send.
             rows.append(
@@ -79,8 +90,13 @@ def item_keyboard(item: Item, sources: Sequence[ItemSource] | None = None) -> In
             )
     source_urls = []
     if sources is not None:
+        ordered_sources = list(sources)
+        if focus_source_id is not None and any(
+            source.id == focus_source_id for source in ordered_sources
+        ):
+            ordered_sources.sort(key=lambda source: source.id != focus_source_id)
         source_urls = list(
-            dict.fromkeys(source.source_url for source in sources if source.source_url)
+            dict.fromkeys(source.source_url for source in ordered_sources if source.source_url)
         )
     # ❌ Удалена проекция ссылки только из parent Item.source_url: canonical URL
     # composite Item принадлежат child ItemSource и должны оставаться открываемыми.

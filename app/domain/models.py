@@ -1,9 +1,10 @@
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
 from pydantic import BaseModel, Field
 
-from app.domain.enums import ItemType, SourceType
+from app.domain.enums import AttentionHookType, ItemType, SourceType
 
 
 class NormalizedContent(BaseModel):
@@ -89,6 +90,39 @@ class ProfilePatch(BaseModel):
     interests: list[str] | None = None
     constraints: list[ConstraintEntry] | None = None
     free_text: str | None = None
+
+
+class AttentionHookCandidate(BaseModel):
+    """Strict provider DTO; persisted-evidence checks belong to the application service."""
+
+    model_config = {"extra": "forbid"}
+
+    hook_type: AttentionHookType
+    text: str = Field(min_length=1, max_length=320)
+    evidence_excerpt: str = Field(min_length=1, max_length=300)
+    source_content_id: int = Field(gt=0)
+
+
+class AttentionHookGeneration(BaseModel):
+    """Bounded structured output used only for one proactive reminder attempt."""
+
+    model_config = {"extra": "forbid"}
+
+    candidates: list[AttentionHookCandidate] = Field(default_factory=list, max_length=3)
+
+
+@dataclass(frozen=True)
+class AttentionHook:
+    """Immutable application projection that keeps ORM rows out of Telegram presentation."""
+
+    content_id: int
+    item_id: int
+    source_id: int | None
+    hook_type: AttentionHookType
+    text: str
+    evidence_content_id: int
+    evidence_excerpt: str
+    generator_version: int
 
 
 class AnalysisResult(BaseModel):

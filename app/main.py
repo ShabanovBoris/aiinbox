@@ -18,6 +18,7 @@ from app.extractors.youtube import YoutubeExtractor
 from app.llm.openai import OpenAiProvider
 from app.llm.transcription import OpenAiTranscriptionProvider, OpenRouterTranscriptionProvider
 from app.services.analysis import Analyzer
+from app.services.attention_hooks import AttentionHookService
 from app.services.delivery import DeliveryWorker, requeue_sending_deliveries
 from app.services.notifications import ReminderWorker
 from app.services.processing import ProcessingPipeline
@@ -50,6 +51,7 @@ def build_provider(settings: Settings) -> OpenAiProvider:
             settings.llm_timeout_seconds,
             vision_model=settings.openrouter_vision_model or None,
             base_url=settings.openrouter_base_url,
+            provider_name=settings.llm_provider,
         )
     if settings.llm_provider != "openai":
         raise SystemExit(f"Unsupported LLM_PROVIDER={settings.llm_provider!r}")
@@ -60,6 +62,7 @@ def build_provider(settings: Settings) -> OpenAiProvider:
         settings.openai_analysis_model,
         settings.llm_timeout_seconds,
         vision_model=settings.openai_vision_model or None,
+        provider_name=settings.llm_provider,
     )
 
 
@@ -213,8 +216,9 @@ async def run(settings: Settings) -> None:
         await apply_profile_seed(session_factory, settings.profile_seed_file)
         configure_profile_seed(settings.profile_seed_file)
 
+        provider = build_provider(settings)
         analyzer = Analyzer(
-            build_provider(settings),
+            provider,
             chunk_size_chars=settings.llm_chunk_size_chars,
             overlap_chars=settings.llm_chunk_overlap_chars,
         )
@@ -293,6 +297,7 @@ async def run(settings: Settings) -> None:
                 bot,
                 default_timezone=settings.default_timezone,
                 poll_seconds=settings.processing_poll_seconds,
+                attention_hook_service=AttentionHookService(session_factory, analyzer.provider),
             )
             reminder_tasks.append(
                 asyncio.create_task(reminder_worker.run_forever(stop), name="reminder-worker")

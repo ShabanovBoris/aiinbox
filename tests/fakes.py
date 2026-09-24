@@ -3,9 +3,14 @@
 from pathlib import Path
 
 from app.domain.enums import ItemType, ProcessingStatus, SourceType
-from app.domain.models import AnalysisResult, NormalizedContent, UserProfile
+from app.domain.models import (
+    AnalysisResult,
+    AttentionHookGeneration,
+    NormalizedContent,
+    UserProfile,
+)
 from app.errors import AppError
-from app.llm.base import LlmError
+from app.llm.base import AttentionHookGenerationResult, LlmError
 
 
 def make_analysis(**overrides) -> AnalysisResult:
@@ -45,6 +50,8 @@ class FakeLlmProvider:
         summarize_failures: int = 0,
         profile_patch: dict | None = None,
         profile_error: LlmError | None = None,
+        attention_hook_generation: AttentionHookGeneration | None = None,
+        attention_hook_error: LlmError | None = None,
     ):
         from app.llm.base import LlmCapabilities
 
@@ -62,6 +69,9 @@ class FakeLlmProvider:
         self.profile_patch = profile_patch
         self.profile_error = profile_error
         self.profile_calls = []
+        self.attention_hook_generation = attention_hook_generation or AttentionHookGeneration()
+        self.attention_hook_error = attention_hook_error
+        self.attention_hook_calls: list[tuple[str, str]] = []
 
     async def analyze(
         self, content: NormalizedContent, profile: UserProfile, categories: list[str]
@@ -98,6 +108,19 @@ class FakeLlmProvider:
             raise self.profile_error
         patch = ProfilePatch(**self.profile_patch) if self.profile_patch else ProfilePatch()
         return patch
+
+    async def generate_attention_hooks(
+        self, source_context: str, *, preferred_language: str
+    ) -> AttentionHookGenerationResult:
+        """Expose deterministic hook requests to tests without a live provider."""
+        self.attention_hook_calls.append((source_context, preferred_language))
+        if self.attention_hook_error is not None:
+            raise self.attention_hook_error
+        return AttentionHookGenerationResult(
+            generation=self.attention_hook_generation,
+            provider="fake",
+            model="fake-model",
+        )
 
 
 class FakePipeline:

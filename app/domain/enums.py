@@ -59,3 +59,14 @@ class ContentKind(enum.Enum):
     CHUNK_SUMMARY = "CHUNK_SUMMARY"
     TRANSCRIPT_CHUNK = "TRANSCRIPT_CHUNK"
     DOCUMENT_TEXT = "DOCUMENT_TEXT"
+    ATTENTION_HOOK = "ATTENTION_HOOK"
+
+
+class AttentionHookType(enum.Enum):
+    """Semantic framing for a hook derived from persisted Item evidence."""
+
+    SURPRISING_FACT = "SURPRISING_FACT"
+    PRACTICAL_VALUE = "PRACTICAL_VALUE"
+    QUESTION = "QUESTION"
+    CHALLENGE = "CHALLENGE"
+    CONTRAST = "CONTRAST"
