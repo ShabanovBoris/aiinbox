@@ -1,10 +1,12 @@
 import asyncio
+from datetime import datetime
 from types import SimpleNamespace
 
+from aiogram.exceptions import TelegramBadRequest
 from sqlalchemy import func, select
 
 from app.bot.formatting import format_ready_item
-from app.bot.handlers import on_feedback_callback
+from app.bot.handlers import on_feedback_callback, on_reminder_callback
 from app.bot.keyboards import (
     category_callback_token,
     feedback_category_keyboard,
@@ -15,25 +17,42 @@ from app.domain.enums import ItemState, ItemType, ProcessingStatus, SourceType
 from app.services import feedback as feedback_service
 from app.services.feedback import correct_item_category
 from app.services.retrieval import TodayService
-from app.storage.models import Event, FeedbackCallbackReceipt, Item, ItemSource, User
+from app.storage.models import (
+    Event,
+    FeedbackCallbackReceipt,
+    Item,
+    ItemSource,
+    Reminder,
+    User,
+)
 
 
 class FakeCallbackMessage:
     """Capture markup-only and canonical correction edits at the Telegram edge."""
 
-    def __init__(self, text=None, reply_markup=None):
+    def __init__(self, text=None, reply_markup=None, *, keep_stale_markup=False):
         self.text = text
         self.reply_markup = reply_markup
+        self.remote_reply_markup = reply_markup
+        self.keep_stale_markup = keep_stale_markup
         self.markup_edits = 0
         self.text_edits = 0
 
     async def edit_reply_markup(self, reply_markup=None):
-        self.reply_markup = reply_markup
         self.markup_edits += 1
+        if self.remote_reply_markup == reply_markup:
+            raise TelegramBadRequest(
+                method=None,
+                message="Bad Request: message is not modified",
+            )
+        self.remote_reply_markup = reply_markup
+        if not self.keep_stale_markup:
+            self.reply_markup = reply_markup
 
     async def edit_text(self, text, reply_markup=None):
         self.text = text
         self.reply_markup = reply_markup
+        self.remote_reply_markup = reply_markup
         self.text_edits += 1
 
 
@@ -116,6 +135,23 @@ async def _create_category_item(session_factory, category: str) -> int:
 async def _event_count(session_factory, item_id: int) -> int:
     async with session_factory() as session:
         return await session.scalar(select(func.count(Event.id)).where(Event.item_id == item_id))
+
+
+async def _create_sent_proactive_reminder(session_factory, item_id: int) -> int:
+    async with session_factory() as session:
+        user = await session.scalar(select(User).where(User.telegram_user_id == 42))
+        reminder = Reminder(
+            user_id=user.id,
+            item_id=item_id,
+            type="PROACTIVE_ATTENTION",
+            status="SENT",
+            scheduled_at=datetime(2026, 9, 20),
+            sent_at=datetime(2026, 9, 20),
+            payload_json={"focus_source_id": None},
+        )
+        session.add(reminder)
+        await session.commit()
+        return reminder.id
 
 
 def _callback_data(markup) -> list[str]:
@@ -330,6 +366,71 @@ async def test_feedback_callback_duplicate_is_durable_and_preserves_interest(
     assert await _event_count(session_factory, item_id) == 1
 
 
+async def test_reminder_terminal_callbacks_are_transport_and_markup_idempotent(
+    settings, session_factory
+):
+    done_item_id = await _create_ready_item(session_factory)
+    done_reminder_id = await _create_sent_proactive_reminder(session_factory, done_item_id)
+    done = FakeCallback(42, f"reminder:done:{done_reminder_id}", "reminder-done-retry")
+    done.message = FakeCallbackMessage(reply_markup="old-keyboard", keep_stale_markup=True)
+
+    await on_reminder_callback(done, settings, session_factory)
+    await on_reminder_callback(done, settings, session_factory)
+
+    assert done.answers == ["Готово", "Уже учтено"]
+    assert done.message.markup_edits == 1
+    assert done.message.remote_reply_markup is None
+
+    # A different Telegram callback can reach an already-applied semantic action;
+    # the stale local markup then hits Telegram's no-op error and remains benign.
+    semantic_retry = FakeCallback(42, f"reminder:done:{done_reminder_id}", "done-new-id")
+    semantic_retry.message = done.message
+    await on_reminder_callback(semantic_retry, settings, session_factory)
+    assert semantic_retry.answers == ["Уже учтено"]
+    assert done.message.markup_edits == 2
+
+    dislike_item_id = await _create_category_item(session_factory, "AI")
+    dislike_reminder_id = await _create_sent_proactive_reminder(session_factory, dislike_item_id)
+    dislike = FakeCallback(42, f"reminder:less:{dislike_reminder_id}", "reminder-dislike-retry")
+    dislike.message = FakeCallbackMessage(reply_markup="old-keyboard", keep_stale_markup=True)
+    await on_reminder_callback(dislike, settings, session_factory)
+    await on_reminder_callback(dislike, settings, session_factory)
+    assert dislike.answers == [
+        "Записал — буду показывать меньше похожих",
+        "Уже учтено",
+    ]
+    assert dislike.message.markup_edits == 1
+
+
+async def test_reminder_later_and_cancel_retries_preserve_current_keyboard(
+    settings, session_factory
+):
+    item_id = await _create_ready_item(session_factory)
+    reminder_id = await _create_sent_proactive_reminder(session_factory, item_id)
+    later = FakeCallback(42, f"reminder:later:{reminder_id}", "reminder-later-retry")
+    later.message = FakeCallbackMessage(reply_markup="proactive", keep_stale_markup=True)
+
+    await on_reminder_callback(later, settings, session_factory)
+    snooze_markup = later.message.remote_reply_markup
+    await on_reminder_callback(later, settings, session_factory)
+
+    assert later.answers == ["Выбери срок", "Уже учтено"]
+    assert later.message.markup_edits == 1
+    assert snooze_markup != "proactive"
+
+    cancel = FakeCallback(42, f"reminder:cancel:{reminder_id}", "reminder-cancel-retry")
+    cancel.message = FakeCallbackMessage(reply_markup=snooze_markup, keep_stale_markup=True)
+    await on_reminder_callback(cancel, settings, session_factory)
+    proactive_markup = cancel.message.remote_reply_markup
+    await on_reminder_callback(cancel, settings, session_factory)
+
+    assert cancel.answers == ["Выбор отменён", "Уже учтено"]
+    assert cancel.message.markup_edits == 1
+    assert proactive_markup != snooze_markup
+    callbacks = _callback_data(proactive_markup)
+    assert f"reminder:done:{reminder_id}" in callbacks
+
+
 async def test_primary_feedback_clicks_with_different_ids_remain_distinct(
     settings, session_factory
 ):
@@ -446,7 +547,7 @@ async def test_stale_category_callback_cannot_apply_after_category_returns(
 
     receipt_claimed = asyncio.Event()
     release_callback = asyncio.Event()
-    original_claim = feedback_service._claim_feedback_callback_receipt
+    original_claim = feedback_service.claim_feedback_callback_receipt
     paused = False
 
     async def pause_after_claim(session, user_id, idempotency_key):
@@ -458,7 +559,7 @@ async def test_stale_category_callback_cannot_apply_after_category_returns(
             await release_callback.wait()
         return claimed
 
-    monkeypatch.setattr(feedback_service, "_claim_feedback_callback_receipt", pause_after_claim)
+    monkeypatch.setattr(feedback_service, "claim_feedback_callback_receipt", pause_after_claim)
     stale_delivery = asyncio.create_task(on_feedback_callback(callback, settings, session_factory))
     await asyncio.wait_for(receipt_claimed.wait(), timeout=5)
     category_creation = asyncio.create_task(_create_category_item(session_factory, "AI"))

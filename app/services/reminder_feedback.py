@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 from sqlalchemy.sql import text
 
 from app.domain.enums import ItemState, ItemType, MotivationKind
+from app.services.feedback import claim_feedback_callback_receipt
 from app.storage.models import Event, Item, ItemSource, Reminder, User
 
 PROACTIVE_ATTENTION = "PROACTIVE_ATTENTION"
@@ -203,6 +204,15 @@ class ReminderFeedbackService:
                 await session.rollback()
                 return "UNAVAILABLE"
 
+            if callback_id is not None:
+                callback_key = f"telegram-callback:{callback_id}"
+                if not callback_id or len(callback_key) > 160:
+                    await session.rollback()
+                    return "UNAVAILABLE"
+                if not await claim_feedback_callback_receipt(session, user_id, callback_key):
+                    await session.commit()
+                    return "DUPLICATE_CALLBACK"
+
             if action in {"later", "cancel", "ok"}:
                 await session.commit()
                 return "APPLIED"
@@ -223,20 +233,6 @@ class ReminderFeedbackService:
 
             if await self._has_event(session, reminder.id, event_type):
                 if action != "open":
-                    await session.commit()
-                    return "ALREADY_RECORDED"
-
-            if callback_id is not None and action != "open":
-                callback_key = f"telegram-callback:{callback_id}"
-                if (
-                    await session.scalar(
-                        select(Event.id).where(
-                            Event.user_id == user_id,
-                            Event.idempotency_key == callback_key,
-                        )
-                    )
-                    is not None
-                ):
                     await session.commit()
                     return "ALREADY_RECORDED"
 

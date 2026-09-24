@@ -388,6 +388,42 @@ async def test_observable_video_open_records_once_and_reuses_delivery(session_fa
             )
         )
         assert delivery is not None and delivery.status == "PENDING"
+        delivery.status = "SENT"
+        delivery.sent_at = _NOW
+        await session.commit()
+
+    # A transport retry after terminal delivery must not reopen the outbox.
+    assert (
+        await service.apply_callback(
+            42, reminder_id, "open", callback_id="open-2", source_id=source_id
+        )
+        == "DUPLICATE_CALLBACK"
+    )
+    async with session_factory() as session:
+        delivery = await session.scalar(
+            select(Delivery).where(
+                Delivery.item_id == item_id,
+                Delivery.type == f"ITEM_VIDEO:{source_id}",
+            )
+        )
+        assert delivery.status == "SENT"
+
+    # A deliberate new tap has a new callback identity and may enqueue a resend.
+    assert (
+        await service.apply_callback(
+            42, reminder_id, "open", callback_id="open-3", source_id=source_id
+        )
+        == "QUEUED"
+    )
+    async with session_factory() as session:
+        delivery = await session.scalar(
+            select(Delivery).where(
+                Delivery.item_id == item_id,
+                Delivery.type == f"ITEM_VIDEO:{source_id}",
+            )
+        )
+        assert delivery.status == "PENDING"
+    assert await _event_count(session_factory, reminder_id, "REMINDER_OPENED") == 1
 
 
 async def test_open_wrong_source_creates_neither_event_nor_delivery(session_factory):

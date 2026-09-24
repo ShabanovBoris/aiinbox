@@ -2,6 +2,7 @@ import logging
 from datetime import UTC, datetime, timedelta
 
 from aiogram import F, Router
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, CommandStart
 from aiogram.types import CallbackQuery, Message
 from sqlalchemy import select
@@ -710,8 +711,8 @@ async def on_reminder_callback(
     )
     if result == "APPLIED" and action == "later":
         if callback.message:
-            await callback.message.edit_reply_markup(
-                reply_markup=reminder_snooze_keyboard(reminder_id)
+            await _edit_reply_markup_if_changed(
+                callback.message, reminder_snooze_keyboard(reminder_id)
             )
         await callback.answer("Выбери срок")
         return
@@ -719,30 +720,31 @@ async def on_reminder_callback(
         projection = await service.item_reminder_projection(callback.from_user.id, reminder_id)
         if callback.message:
             if projection is None:
-                await callback.message.edit_reply_markup(reply_markup=None)
+                await _edit_reply_markup_if_changed(callback.message, None)
             else:
                 reminder, item, sources = projection
                 focus_source_id = (reminder.payload_json or {}).get("focus_source_id")
                 if type(focus_source_id) is not int:
                     focus_source_id = None
-                await callback.message.edit_reply_markup(
-                    reply_markup=proactive_reminder_keyboard(
+                await _edit_reply_markup_if_changed(
+                    callback.message,
+                    proactive_reminder_keyboard(
                         reminder_id,
                         item,
                         sources,
                         focus_source_id=focus_source_id,
-                    )
+                    ),
                 )
         await callback.answer("Выбор отменён")
         return
     if result == "APPLIED" and action == "ok":
         if callback.message:
-            await callback.message.edit_reply_markup(reply_markup=None)
+            await _edit_reply_markup_if_changed(callback.message, None)
         await callback.answer("Ок")
         return
     if result == "APPLIED":
         if action in {"done", "snooze", "dismiss", "dislike"} and callback.message:
-            await callback.message.edit_reply_markup(reply_markup=None)
+            await _edit_reply_markup_if_changed(callback.message, None)
         answers = {
             "done": "Готово",
             "snooze": "Отложил",
@@ -759,12 +761,15 @@ async def on_reminder_callback(
         return
     if result == "ALREADY_DONE":
         if callback.message:
-            await callback.message.edit_reply_markup(reply_markup=None)
+            await _edit_reply_markup_if_changed(callback.message, None)
         await callback.answer("Уже готово")
         return
     if result == "ALREADY_RECORDED":
         if callback.message:
-            await callback.message.edit_reply_markup(reply_markup=None)
+            await _edit_reply_markup_if_changed(callback.message, None)
+        await callback.answer("Уже учтено")
+        return
+    if result == "DUPLICATE_CALLBACK":
         await callback.answer("Уже учтено")
         return
     await callback.answer("Это напоминание сейчас недоступно")
@@ -798,15 +803,24 @@ async def _load_ready_feedback_projection(
         return item, sources
 
 
-async def _edit_feedback_keyboard_if_changed(message, reply_markup) -> None:
-    """Avoid Telegram's message-is-not-modified error on duplicate callbacks."""
+async def _edit_reply_markup_if_changed(message, reply_markup) -> None:
+    """Treat duplicate markup edits as no-ops while preserving other Telegram errors.
+
+    Callback transport retries can arrive after the DB commit and original edit;
+    Telegram's exact "message is not modified" response is the successful
+    idempotent projection in that race, while unrelated errors still propagate.
+    """
     if (
         message is None
         or not hasattr(message, "edit_reply_markup")
         or getattr(message, "reply_markup", None) == reply_markup
     ):
         return
-    await message.edit_reply_markup(reply_markup=reply_markup)
+    try:
+        await message.edit_reply_markup(reply_markup=reply_markup)
+    except TelegramBadRequest as exc:
+        if "message is not modified" not in str(exc).casefold():
+            raise
 
 
 async def _present_corrected_feedback_item(message, item: Item, sources: list[ItemSource]) -> None:
@@ -820,7 +834,7 @@ async def _present_corrected_feedback_item(message, item: Item, sources: list[It
     ):
         await message.edit_text(result_text, reply_markup=markup)
         return
-    await _edit_feedback_keyboard_if_changed(message, markup)
+    await _edit_reply_markup_if_changed(message, markup)
 
 
 async def on_feedback_callback(
@@ -871,7 +885,7 @@ async def on_feedback_callback(
             )
         else:
             markup = item_keyboard(item, sources)
-        await _edit_feedback_keyboard_if_changed(callback.message, markup)
+        await _edit_reply_markup_if_changed(callback.message, markup)
         await callback.answer()
         return
 
@@ -917,7 +931,7 @@ async def on_feedback_callback(
         )
         if projection is not None:
             current_item, sources = projection
-            await _edit_feedback_keyboard_if_changed(
+            await _edit_reply_markup_if_changed(
                 callback.message, item_keyboard(current_item, sources)
             )
         confirmations = {
