@@ -239,6 +239,7 @@ async def test_settings_attention_command_and_callbacks_preserve_current_choice(
     await on_settings(make_message(42), settings, session_factory, "attention")
     assert "Attention Manager" in sent[0]
     assert "Normal" in sent[0]
+    assert "Generic motivation: ON" in sent[0]
 
     answered = []
     edited = []
@@ -286,6 +287,31 @@ async def test_settings_attention_command_and_callbacks_preserve_current_choice(
     await on_attention_settings_callback(toggle, settings, session_factory)
     assert "Статус: OFF" in edited[-1][0]
     updated = await get_notification_settings(session_factory, 42)
+    assert updated[1]["attention_enabled"] is False
+
+    motivation_toggle = CallbackQuery(
+        id="motivation-toggle",
+        from_user=user,
+        chat_instance="private",
+        message=make_message(42),
+        data="settings:attention:motivation",
+    )
+    await on_attention_settings_callback(motivation_toggle, settings, session_factory)
+    assert "Generic motivation: OFF" in edited[-1][0]
+    updated = await get_notification_settings(session_factory, 42)
+    assert updated[1]["attention_enabled"] is False
+    assert updated[1]["generic_motivation_enabled"] is False
+    markup = edited[-1][1]["reply_markup"]
+    buttons = [button for row in markup.inline_keyboard for button in row]
+    assert any(
+        button.callback_data == "settings:attention:motivation"
+        and button.text == "💬 Motivation ON"
+        for button in buttons
+    )
+
+    await on_attention_settings_callback(motivation_toggle, settings, session_factory)
+    updated = await get_notification_settings(session_factory, 42)
+    assert updated[1]["generic_motivation_enabled"] is True
     assert updated[1]["attention_enabled"] is False
 
 

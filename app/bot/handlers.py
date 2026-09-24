@@ -108,6 +108,7 @@ async def on_settings(
                 reply_markup=attention_settings_keyboard(
                     attention_settings["attention_enabled"],
                     attention_settings["attention_intensity"],
+                    attention_settings["generic_motivation_enabled"],
                 ),
             )
             return
@@ -941,6 +942,8 @@ async def on_attention_settings_callback(
     parts = callback.data.split(":")
     if parts == ["settings", "attention", "toggle"]:
         update = {"attention_enabled": values["attention_enabled"] is not True}
+    elif parts == ["settings", "attention", "motivation"]:
+        update = {"generic_motivation_enabled": values["generic_motivation_enabled"] is not True}
     elif len(parts) == 4 and parts[:3] == ["settings", "attention", "level"]:
         try:
             level = int(parts[3])
@@ -970,7 +973,9 @@ async def on_attention_settings_callback(
         await callback.message.edit_text(
             format_attention_settings(updated_values),
             reply_markup=attention_settings_keyboard(
-                updated_values["attention_enabled"], updated_values["attention_intensity"]
+                updated_values["attention_enabled"],
+                updated_values["attention_intensity"],
+                updated_values["generic_motivation_enabled"],
             ),
         )
     await callback.answer()

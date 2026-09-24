@@ -100,7 +100,8 @@ Telegram → ingestion → SQLite queue → ProcessingWorker
 - Done / Later / Archive / Retry;
 - explicit READY Item feedback: Useful, Not interesting, category/type correction,
   priority direction and summary quality;
-- daily digest, snooze resurfacing и PM-08 proactive Attention.
+- daily digest, snooze resurfacing, PM-08 proactive Attention и PM-10 factual
+  motivational nudges.
 
 Direct Telegram video поддержан. Видео, которое Telegram прислал как `Document`,
 тоже нормализуется в VIDEO по MIME/расширению. PDF, TXT, Markdown и DOCX
@@ -489,7 +490,9 @@ receipt выполняются в одной транзакции. Распоз�
 
 ## 50. reminders
 
-`reminders` хранит daily digest, snooze и PM-08 proactive scheduling.
+`reminders` хранит daily digest, snooze, PM-08 proactive scheduling и PM-10
+user-level motivation claims. `MOTIVATION_NUDGE` использует `item_id=NULL` и
+отдельную уникальность локального дневного слота.
 `deliveries` — отдельный durable outbox для READY/FAILED/profile notifications.
 
 ## 51. Daily digest
@@ -518,6 +521,34 @@ Content; она не запускается на ingestion или `/attention` �
 в оставшемся PM-08 send window; затем worker выполняет обычную финальную
 revalidation. Timeout, ошибка provider или отсутствие валидных кандидатов
 сохраняют обычный PM-07 reason и не блокируют reminder.
+
+PM-10 вычисляет только детерминированные факты из actionable Items и lifecycle
+Events; motivational copy — поддерживаемые русские шаблоны без LLM, профиля,
+source content или `ATTENTION_HOOK`. Набор фактов охватывает старые важные и
+интересные Items, quick wins, дневную разницу новых/разрешённых Items, текущую
+DONE-серию и последние семь локальных календарных дней. Календарные границы
+используют `User.timezone` и IANA timezone, включая DST.
+
+`generic_motivation_enabled` независимо выключает generic нуджи, сохраняя
+proactive Attention. Attention Manager OFF блокирует оба автоматических
+intervention. Новые пользователи получают generic motivation ON; migration
+добавляет явный OFF существующим пользователям, у которых ключ отсутствовал.
+
+`MOTIVATION_NUDGE` входит в общий дневной budget и minimum gap, но имеет
+дополнительный предел: Calm — 0, Light/Normal/Active — 1, Aggressive — 2 за
+локальный день. Уровни 1–3 выбирают sendable Item-specific proactive reminder
+перед generic; на уровнях 4–5 proactive и generic чередуются по последней
+успешной Attention-family delivery. Worker выбирает не более одного
+Attention-family intervention за цикл.
+
+Generic intent хранится как Reminder с `item_id=NULL`. `scheduled_at` кодирует
+локальную дату и номер слота, а partial unique indexes защищают слот и один
+открытый claim пользователя от SQLite NULL-уникальности. Claim/final prepare
+короткие и сериализованные: факты, opt-in, тихие часы, общий budget, generic cap,
+интервал и повтор kind перепроверяются до Telegram; сетевой вызов происходит
+после commit. Только успешный возврат Telegram переводит Reminder в `SENT` и
+расходует лимиты. Event для generic nudges не создаётся; delivery сохраняет
+текущую PM-08 at-least-once семантику при сбое между Telegram и SQLite.
 
 ## 53. Done
 

@@ -39,6 +39,10 @@ def test_fresh_database_migrates_to_latest_schema(tmp_path):
         assert "uq_reminders_open_proactive_user" in {
             row[1] for row in conn.execute("PRAGMA index_list(reminders)")
         }
+        assert {
+            "uq_reminders_motivation_slot",
+            "uq_reminders_open_motivation_user",
+        } <= {row[1] for row in conn.execute("PRAGMA index_list(reminders)")}
 
         # Идемпотентность Telegram-источника enforced схемой, не логикой:
         # дубль (user_id, telegram_message_id, source_index) запрещён на уровне БД.
@@ -181,6 +185,103 @@ def test_instagram_source_migration_preserves_existing_items_and_sources(tmp_pat
             "VALUES (?, 0, 'INSTAGRAM')",
             (new_item_id,),
         )
+
+
+def test_motivation_migration_preserves_settings_history_and_unique_slots(tmp_path):
+    db = tmp_path / "motivation-upgrade.db"
+    cfg = Config()
+    cfg.set_main_option("script_location", "migrations")
+    cfg.set_main_option("sqlalchemy.url", f"sqlite+aiosqlite:///{db}")
+    command.upgrade(cfg, "f5a7c2d91e08")
+
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            "INSERT INTO users (telegram_user_id, settings_json) VALUES (?, ?)",
+            (42, '{"attention_enabled":true,"attention_intensity":4}'),
+        )
+        existing_user_id = conn.execute(
+            "SELECT id FROM users WHERE telegram_user_id = 42"
+        ).fetchone()[0]
+        conn.execute(
+            "INSERT INTO users (telegram_user_id, settings_json) VALUES (?, ?)",
+            (1000, '{"generic_motivation_enabled":true,"attention_intensity":2}'),
+        )
+        explicit_user_id = conn.execute(
+            "SELECT id FROM users WHERE telegram_user_id = 1000"
+        ).fetchone()[0]
+        conn.execute(
+            "INSERT INTO reminders (user_id, item_id, type, scheduled_at, status, sent_at) "
+            "VALUES (?, NULL, 'DAILY_DIGEST', '2026-09-23 00:00:00', 'SENT', "
+            "'2026-09-23 09:00:00')",
+            (existing_user_id,),
+        )
+
+    command.upgrade(cfg, "head")
+
+    with sqlite3.connect(db) as conn:
+        existing = json.loads(
+            conn.execute(
+                "SELECT settings_json FROM users WHERE id = ?", (existing_user_id,)
+            ).fetchone()[0]
+        )
+        explicit = json.loads(
+            conn.execute(
+                "SELECT settings_json FROM users WHERE id = ?", (explicit_user_id,)
+            ).fetchone()[0]
+        )
+        assert existing == {
+            "attention_enabled": True,
+            "attention_intensity": 4,
+            "generic_motivation_enabled": False,
+        }
+        assert explicit == {
+            "generic_motivation_enabled": True,
+            "attention_intensity": 2,
+        }
+        assert conn.execute(
+            "SELECT type, status FROM reminders WHERE user_id = ?", (existing_user_id,)
+        ).fetchone() == ("DAILY_DIGEST", "SENT")
+
+        slot = "2026-09-24 00:00:01"
+        conn.execute(
+            "INSERT INTO reminders (user_id, item_id, type, scheduled_at, status) "
+            "VALUES (?, NULL, 'MOTIVATION_NUDGE', ?, 'SENT')",
+            (existing_user_id, slot),
+        )
+        conn.commit()
+        try:
+            conn.execute(
+                "INSERT INTO reminders (user_id, item_id, type, scheduled_at, status) "
+                "VALUES (?, NULL, 'MOTIVATION_NUDGE', ?, 'SENT')",
+                (existing_user_id, slot),
+            )
+        except sqlite3.IntegrityError:
+            pass
+        else:
+            raise AssertionError("duplicate user-level motivation slot was allowed")
+        conn.rollback()
+
+        conn.execute(
+            "INSERT INTO reminders (user_id, item_id, type, scheduled_at, status) "
+            "VALUES (?, NULL, 'MOTIVATION_NUDGE', '2026-09-24 00:00:02', 'SENT')",
+            (existing_user_id,),
+        )
+        conn.execute(
+            "INSERT INTO reminders (user_id, item_id, type, scheduled_at, status) "
+            "VALUES (?, NULL, 'MOTIVATION_NUDGE', '2026-09-24 00:00:03', 'CLAIMED')",
+            (existing_user_id,),
+        )
+        conn.commit()
+        try:
+            conn.execute(
+                "INSERT INTO reminders (user_id, item_id, type, scheduled_at, status) "
+                "VALUES (?, NULL, 'MOTIVATION_NUDGE', '2026-09-24 00:00:04', 'PENDING')",
+                (existing_user_id,),
+            )
+        except sqlite3.IntegrityError:
+            pass
+        else:
+            raise AssertionError("second open motivation claim was allowed")
 
 
 def test_existing_phase1_db_upgrades_with_data_intact(tmp_path):
@@ -442,13 +543,19 @@ def test_pm08_migration_preserves_settings_and_serializes_open_claims(tmp_path):
                 "attention_intensity": 5,
                 "quiet_hours_start": "21:00",
                 "attention_enabled": False,
+                "generic_motivation_enabled": False,
             },
             {
                 "attention_enabled": True,
                 "attention_intensity": 4,
                 "daily_digest_enabled": False,
+                "generic_motivation_enabled": False,
             },
-            {"attention_enabled": False, "attention_intensity": 3},
+            {
+                "attention_enabled": False,
+                "attention_intensity": 3,
+                "generic_motivation_enabled": False,
+            },
         ]
         assert (
             conn.execute(

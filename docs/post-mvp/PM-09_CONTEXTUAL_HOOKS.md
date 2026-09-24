@@ -3,7 +3,7 @@
 Type: Post-MVP Epic + Detailed Technical Specification  
 Prerequisites: PM-07 Attention Ranking; PM-08 proactive Item reminders
 
-Status: IN_REVIEW
+Status: DONE
 
 ## 1. Epic
 

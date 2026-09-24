@@ -48,6 +48,17 @@ class ItemType(enum.Enum):
 ACTIONABLE_ITEM_TYPES = (ItemType.ACTION, ItemType.LEARN, ItemType.READ, ItemType.WATCH)
 
 
+class MotivationKind(enum.Enum):
+    """Stable names for factual backlog-level interventions, independent of Item ranking."""
+
+    STALE_IMPORTANT = "STALE_IMPORTANT"
+    HIGH_INTEREST_STALE = "HIGH_INTEREST_STALE"
+    QUICK_WINS = "QUICK_WINS"
+    INBOX_GROWTH = "INBOX_GROWTH"
+    COMPLETION_STREAK = "COMPLETION_STREAK"
+    WEEKLY_PROGRESS = "WEEKLY_PROGRESS"
+
+
 # Вид содержимого в contents (PRODUCT_SPEC §48): длинный контент хранится
 # отдельно от Item и переживает restart (ТЗ §46).
 class ContentKind(enum.Enum):

@@ -446,3 +446,23 @@ it can preserve evidence without another table or any repeated web extraction.
 Consequences: generated hooks remain presentation derivatives, cannot ground
 later hooks or pollute source search, and are reused across reminders with a
 stable template attribution stored in the Reminder payload.
+
+## D-033 — Generic motivation is a durable PM-08 intervention
+
+Context: backlog-level nudges have no single Item, but remain unsolicited
+notifications subject to the same interruption policy as proactive reminders.
+
+Decision: derive generic candidates only from deterministic Item/Event facts.
+Persist each intent as `MOTIVATION_NUDGE` with `item_id=NULL` and a local-day
+slot identity guarded by partial unique indexes. Share PM-08's daily budget,
+minimum gap, quiet hours and cross-type claim reservation; apply a separate
+intensity-based generic cap. Prefer proactive at levels 1–3 and alternate
+proactive/generic at levels 4–5. Recompute candidate facts at final preparation.
+
+Reason: one durable ReminderWorker arbitration path prevents generic motivation
+from becoming a second scheduler or bypassing notification fatigue controls.
+
+Consequences: only successful delivery consumes budget/gap; generic rows contain
+bounded facts and template identity, do not use PM-09 hooks, and create no PM-11
+feedback Event. The existing Telegram/SQLite at-least-once boundary still allows
+a duplicate after a crash between accepted Telegram send and finalization.

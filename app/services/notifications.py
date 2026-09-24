@@ -25,8 +25,11 @@ from app.bot.formatting import (
 )
 from app.bot.keyboards import item_keyboard
 from app.domain.enums import ACTIONABLE_ITEM_TYPES, ItemState, ProcessingStatus
+from app.domain.models import MotivationCandidate
 from app.services.attention_hooks import AttentionHookService
 from app.services.attention_ranking import AttentionRank, AttentionRankingService
+from app.services.calendar_windows import local_day_window as _shared_local_day_window
+from app.services.motivation import MOTIVATION_NUDGE, MotivationService
 from app.services.retrieval import TodayService
 from app.storage.models import Event, Item, ItemSource, Reminder, User
 
@@ -43,11 +46,15 @@ PROACTIVE_CLAIM_LEASE = timedelta(minutes=5)
 NOTIFICATION_SEND_TIMEOUT = timedelta(minutes=2)
 ATTENTION_HOOK_TIMEOUT_SECONDS = 15.0
 ATTENTION_HOOK_SEND_SAFETY_SECONDS = 30.0
-_BUDGET_REMINDER_TYPES = (DAILY_DIGEST, PROACTIVE_ATTENTION)
-_GAP_REMINDER_TYPES = (DAILY_DIGEST, PROACTIVE_ATTENTION, SNOOZE_RESURFACE)
-_DELIVERY_CLAIM_TYPES = (DAILY_DIGEST, SNOOZE_RESURFACE, PROACTIVE_ATTENTION)
+_BUDGET_REMINDER_TYPES = (DAILY_DIGEST, PROACTIVE_ATTENTION, MOTIVATION_NUDGE)
+_GAP_REMINDER_TYPES = (DAILY_DIGEST, PROACTIVE_ATTENTION, SNOOZE_RESURFACE, MOTIVATION_NUDGE)
+_DELIVERY_CLAIM_TYPES = (DAILY_DIGEST, SNOOZE_RESURFACE, PROACTIVE_ATTENTION, MOTIVATION_NUDGE)
+_INTERRUPTING_REMINDER_TYPES = _GAP_REMINDER_TYPES
+_ATTENTION_FAMILY_TYPES = (PROACTIVE_ATTENTION, MOTIVATION_NUDGE)
 _OPEN_PROACTIVE_STATUSES = ("PENDING", "CLAIMED")
+_OPEN_MOTIVATION_STATUSES = ("PENDING", "CLAIMED")
 _TRANSIENT_ATTENTION_BLOCKS = frozenset({"quiet_hours", "delivery_in_progress"})
+GENERIC_MOTIVATION_DAILY_CAPS: Mapping[int, int] = MappingProxyType({1: 0, 2: 1, 3: 1, 4: 1, 5: 2})
 _DEFAULT_SETTINGS = {
     "daily_digest_enabled": True,
     "daily_digest_time": "09:00",
@@ -55,6 +62,7 @@ _DEFAULT_SETTINGS = {
     "quiet_hours_end": "08:00",
     "attention_enabled": True,
     "attention_intensity": 3,
+    "generic_motivation_enabled": True,
 }
 
 
@@ -95,11 +103,10 @@ def _utc_naive(value: datetime) -> datetime:
 
 
 def _local_day_window(now: datetime, zone: ZoneInfo) -> tuple[date, datetime, datetime]:
-    """Translate the current IANA local calendar day to a half-open UTC interval."""
-    local_date = _utc_naive(now).replace(tzinfo=UTC).astimezone(zone).date()
-    start = datetime.combine(local_date, time.min, tzinfo=zone).astimezone(UTC)
-    end = datetime.combine(local_date + timedelta(days=1), time.min, tzinfo=zone).astimezone(UTC)
-    return local_date, _utc_naive(start), _utc_naive(end)
+    """Keep PM-08's private call sites on the shared DST-safe date projection."""
+    # ❌ Удалена локальная конвертация UTC-полуночей; PM-08 и PM-10 теперь
+    # используют одинаковую DST-семантику из calendar_windows.
+    return _shared_local_day_window(now, zone)
 
 
 def _utc_now() -> datetime:
@@ -170,6 +177,7 @@ async def update_notification_settings(
     quiet_hours_end: str | None = None,
     attention_enabled: bool | None = None,
     attention_intensity: int | None = None,
+    generic_motivation_enabled: bool | None = None,
 ) -> tuple[User, dict] | None:
     """Validate and persist only requested settings in one user-scoped update."""
     if timezone is not None:
@@ -179,6 +187,8 @@ async def update_notification_settings(
             parse_clock(clock)
     if attention_enabled is not None and type(attention_enabled) is not bool:
         raise ValueError("attention_enabled должен быть true или false")
+    if generic_motivation_enabled is not None and type(generic_motivation_enabled) is not bool:
+        raise ValueError("generic_motivation_enabled должен быть true или false")
     if attention_intensity is not None:
         attention_policy(attention_intensity)
     async with session_factory() as session:
@@ -194,6 +204,7 @@ async def update_notification_settings(
             "quiet_hours_end": quiet_hours_end,
             "attention_enabled": attention_enabled,
             "attention_intensity": attention_intensity,
+            "generic_motivation_enabled": generic_motivation_enabled,
         }
         settings_patch = {key: value for key, value in settings_patch.items() if value is not None}
         values = {}
@@ -245,6 +256,7 @@ def format_attention_settings(settings: dict) -> str:
         level = 3
     policy = attention_policy(level)
     status = "ON" if settings.get("attention_enabled") is True else "OFF"
+    motivation_status = "ON" if settings.get("generic_motivation_enabled") is True else "OFF"
     gap_seconds = int(policy.minimum_gap.total_seconds())
     gap = f"{gap_seconds // 3600}h" if gap_seconds % 3600 == 0 else f"{gap_seconds // 60}m"
     cooldown_hours = int(policy.same_item_cooldown.total_seconds() // 3600)
@@ -252,6 +264,7 @@ def format_attention_settings(settings: dict) -> str:
         "🧠 Attention Manager\n\n"
         f"Статус: {status}\n"
         f"Интенсивность: {policy.level} — {policy.label}\n"
+        f"Generic motivation: {motivation_status}\n"
         f"Лимит: до {policy.daily_cap} уведомлений в день, включая digest\n"
         f"Минимальный интервал: {gap}\n"
         f"Повтор того же Item: через {cooldown_hours}h"
@@ -346,14 +359,14 @@ class ReminderWorker:
                 log.exception("digest processing failed user_id=%s", user_id)
         sent += await self._process_snoozes(now)
         # Snooze has no quota cost, but a successful resurfacing anchors the
-        # minimum gap before the scheduler decides whether to interrupt again.
+        # minimum gap before the scheduler decides which Attention intervention to use.
         for user_id in user_ids:
             try:
-                sent += await self._process_proactive_attention(user_id, now)
+                sent += await self._process_attention_intervention(user_id, now)
             except SQLAlchemyError:
                 raise
             except Exception:
-                log.exception("proactive attention failed user_id=%s", user_id)
+                log.exception("attention intervention failed user_id=%s", user_id)
         return sent
 
     async def _process_user(self, user_id: int, now: datetime | None) -> int:
@@ -578,8 +591,11 @@ class ReminderWorker:
         if in_quiet_hours(local_now.time(), quiet_start, quiet_end):
             return policy, zone, local_now.date(), "quiet_hours"
 
+        # Claim leases use fresh wall time; `now` may be a deterministic policy
+        # timestamp supplied by a test or worker replay.
+        lease_now = _utc_now()
         if await self._has_active_notification_claim(
-            session, user.id, now, exclude_reminder_id=exclude_claim_id
+            session, user.id, lease_now, exclude_reminder_id=exclude_claim_id
         ):
             return policy, zone, local_now.date(), "delivery_in_progress"
 
@@ -670,6 +686,552 @@ class ReminderWorker:
             and item.state is ItemState.ACTIVE
             and item.item_type in ACTIONABLE_ITEM_TYPES
         )
+
+    async def _sendable_proactive_candidates(
+        self, session, user_id: int, policy: AttentionIntensityPolicy, now: datetime
+    ) -> list[tuple[int, AttentionRank]]:
+        """Project PM-07's current shortlist through only PM-08 sendability filters."""
+        ranked = await AttentionRankingService().list_candidates(
+            session, user_id, limit=ATTENTION_CANDIDATE_LIMIT, now=now
+        )
+        qualified = [
+            (item, rank)
+            for item, rank in ranked
+            if rank.score >= MIN_PROACTIVE_ATTENTION_SCORE and self._item_is_actionable(item)
+        ]
+        cooldowns = await self._proactive_cooldowns(
+            session, user_id, [item.id for item, _ in qualified]
+        )
+        return [
+            (item.id, rank)
+            for item, rank in qualified
+            if item.id not in cooldowns or now - cooldowns[item.id] >= policy.same_item_cooldown
+        ]
+
+    async def _latest_sent_type(self, session, user_id: int, types: tuple[str, ...]) -> str | None:
+        """Read the latest successful family member for deterministic pacing/arbitration."""
+        return await session.scalar(
+            select(Reminder.type)
+            .where(
+                Reminder.user_id == user_id,
+                Reminder.type.in_(types),
+                Reminder.status == "SENT",
+                Reminder.sent_at.is_not(None),
+            )
+            .order_by(Reminder.sent_at.desc(), Reminder.id.desc())
+            .limit(1)
+        )
+
+    async def _motivation_candidates(
+        self,
+        session,
+        user: User,
+        policy: AttentionIntensityPolicy,
+        zone: ZoneInfo,
+        now: datetime,
+    ):
+        """Apply only the generic opt-in/cap before asking the fact service for candidates."""
+        settings = settings_for(user)
+        if type(settings.get("generic_motivation_enabled")) is not bool:
+            log.warning("invalid generic motivation setting user_id=%s; treating as OFF", user.id)
+            return []
+        generic_cap = GENERIC_MOTIVATION_DAILY_CAPS[policy.level]
+        if not settings["generic_motivation_enabled"] or generic_cap == 0:
+            return []
+        local_date, day_start, day_end = _local_day_window(now, zone)
+        sent_today = await session.scalar(
+            select(func.count(Reminder.id)).where(
+                Reminder.user_id == user.id,
+                Reminder.type == MOTIVATION_NUDGE,
+                Reminder.status == "SENT",
+                Reminder.sent_at.is_not(None),
+                Reminder.sent_at >= day_start,
+                Reminder.sent_at < day_end,
+            )
+        )
+        if sent_today >= generic_cap:
+            return []
+        latest_interrupting = await self._latest_sent_type(
+            session, user.id, _INTERRUPTING_REMINDER_TYPES
+        )
+        if latest_interrupting == MOTIVATION_NUDGE:
+            return []
+        return await MotivationService().candidates(session, user.id, zone=zone, now=now)
+
+    @staticmethod
+    def _choose_attention_intervention(
+        policy: AttentionIntensityPolicy,
+        has_proactive: bool,
+        has_motivation: bool,
+        latest_attention_type: str | None,
+    ) -> str | None:
+        """Apply PM-10 arbitration without changing PM-07 rank or PM-08 eligibility."""
+        if policy.level <= 3:
+            if has_proactive:
+                return PROACTIVE_ATTENTION
+            return MOTIVATION_NUDGE if has_motivation else None
+        preferred = (
+            PROACTIVE_ATTENTION
+            if latest_attention_type != PROACTIVE_ATTENTION
+            else MOTIVATION_NUDGE
+        )
+        if preferred == PROACTIVE_ATTENTION:
+            if has_proactive:
+                return PROACTIVE_ATTENTION
+            return MOTIVATION_NUDGE if has_motivation else None
+        if has_motivation:
+            return MOTIVATION_NUDGE
+        return PROACTIVE_ATTENTION if has_proactive else None
+
+    async def _cancel_stale_open_claim(self, reminder_id: int, type_: str, generation: int) -> None:
+        """Fence cancellation of an obsolete claim against a concurrent recovery owner."""
+        statuses = (
+            _OPEN_MOTIVATION_STATUSES if type_ == MOTIVATION_NUDGE else _OPEN_PROACTIVE_STATUSES
+        )
+        stale_before = _utc_now() - PROACTIVE_CLAIM_LEASE
+        async with self.session_factory() as session:
+            await session.execute(
+                update(Reminder)
+                .where(
+                    Reminder.id == reminder_id,
+                    Reminder.type == type_,
+                    Reminder.status.in_(statuses),
+                    Reminder.claim_generation == generation,
+                    (Reminder.claimed_at.is_(None) | (Reminder.claimed_at <= stale_before)),
+                )
+                .values(status="CANCELLED", claimed_at=None)
+            )
+            await session.commit()
+
+    async def _process_attention_intervention(self, user_id: int, now: datetime | None) -> int:
+        """Choose one current Item or backlog intervention after digest and snooze phases."""
+        evaluation_now = _utc_naive(now) if now is not None else _utc_now()
+        stale_to_cancel: list[tuple[int, str, int]] = []
+        blocked = None
+        selected = None
+        recover_proactive_claim = False
+        async with self.session_factory() as session:
+            user = await session.get(User, user_id)
+            if user is None or user.telegram_chat_id is None:
+                return 0
+            proactive_claim = await session.scalar(
+                select(Reminder)
+                .where(
+                    Reminder.user_id == user_id,
+                    Reminder.type == PROACTIVE_ATTENTION,
+                    Reminder.status.in_(_OPEN_PROACTIVE_STATUSES),
+                )
+                .order_by(Reminder.id)
+                .limit(1)
+            )
+            motivation_claim = await session.scalar(
+                select(Reminder)
+                .where(
+                    Reminder.user_id == user_id,
+                    Reminder.type == MOTIVATION_NUDGE,
+                    Reminder.status.in_(_OPEN_MOTIVATION_STATUSES),
+                )
+                .order_by(Reminder.id)
+                .limit(1)
+            )
+            lease_now = _utc_now()
+            if any(
+                claim is not None and not self._claim_is_stale(claim, lease_now)
+                for claim in (proactive_claim, motivation_claim)
+            ):
+                return 0
+            policy, zone, _, blocked = await self._attention_gate(session, user, evaluation_now)
+            if blocked is not None:
+                if blocked not in _TRANSIENT_ATTENTION_BLOCKS:
+                    for claim in (proactive_claim, motivation_claim):
+                        if claim is not None:
+                            type_ = claim.type
+                            stale_to_cancel.append((claim.id, type_, claim.claim_generation))
+            else:
+                proactive = await self._sendable_proactive_candidates(
+                    session, user_id, policy, evaluation_now
+                )
+                motivation = await self._motivation_candidates(
+                    session, user, policy, zone, evaluation_now
+                )
+                latest_attention = await self._latest_sent_type(
+                    session, user_id, _ATTENTION_FAMILY_TYPES
+                )
+                selected = self._choose_attention_intervention(
+                    policy, bool(proactive), bool(motivation), latest_attention
+                )
+                if motivation_claim is not None and selected != MOTIVATION_NUDGE:
+                    stale_to_cancel.append(
+                        (
+                            motivation_claim.id,
+                            motivation_claim.type,
+                            motivation_claim.claim_generation,
+                        )
+                    )
+                if selected is None and proactive_claim is not None:
+                    recover_proactive_claim = True
+            await session.commit()
+
+        for reminder_id, type_, generation in stale_to_cancel:
+            await self._cancel_stale_open_claim(reminder_id, type_, generation)
+        if blocked is not None:
+            return 0
+
+        if selected == MOTIVATION_NUDGE:
+            return await self._process_motivation_nudge(user_id, now)
+        # ❌ Удален безусловный proactive-вызов: выбор типа перед отправкой
+        # гарантирует не более одного Attention intervention за цикл.
+        if selected == PROACTIVE_ATTENTION or recover_proactive_claim:
+            return await self._process_proactive_attention(user_id, now)
+        return 0
+
+    @staticmethod
+    def _motivation_slot_at(local_date: date, slot: int) -> datetime:
+        """Encode a durable local-day/ordinal identity in the existing schedule column."""
+        # PM-10 scheduled_at is a slot key here, not a due instant; seconds 1..2
+        # distinguish bounded daily slots while preserving the local date identity.
+        return datetime.combine(local_date, time.min) + timedelta(seconds=slot)
+
+    async def _claim_motivation_nudge(
+        self, user_id: int, now: datetime
+    ) -> tuple[int, int, datetime, MotivationCandidate, int, int, datetime, int] | None:
+        """Recompute arbitration and persist one fenced user-level send claim."""
+        async with self.session_factory() as session:
+            await session.execute(text("BEGIN IMMEDIATE"))
+            user = await session.get(User, user_id)
+            if user is None or user.telegram_chat_id is None:
+                await session.commit()
+                return None
+            open_claim = await session.scalar(
+                select(Reminder)
+                .where(
+                    Reminder.user_id == user_id,
+                    Reminder.type == MOTIVATION_NUDGE,
+                    Reminder.status.in_(_OPEN_MOTIVATION_STATUSES),
+                )
+                .order_by(Reminder.id)
+                .limit(1)
+            )
+            lease_now = _utc_now()
+            if open_claim is not None and not self._claim_is_stale(open_claim, lease_now):
+                await session.commit()
+                return None
+            policy, zone, local_date, blocked = await self._attention_gate(
+                session,
+                user,
+                now,
+                exclude_claim_id=open_claim.id if open_claim is not None else None,
+            )
+            if blocked is not None or zone is None or local_date is None:
+                if open_claim is not None and blocked not in _TRANSIENT_ATTENTION_BLOCKS:
+                    open_claim.status = "CANCELLED"
+                    open_claim.claimed_at = None
+                await session.commit()
+                return None
+
+            candidates = await self._motivation_candidates(session, user, policy, zone, now)
+            if not candidates:
+                if open_claim is not None:
+                    open_claim.status = "CANCELLED"
+                    open_claim.claimed_at = None
+                await session.commit()
+                return None
+            proactive = await self._sendable_proactive_candidates(session, user_id, policy, now)
+            latest_attention = await self._latest_sent_type(
+                session, user_id, _ATTENTION_FAMILY_TYPES
+            )
+            selected = self._choose_attention_intervention(
+                policy, bool(proactive), True, latest_attention
+            )
+            if selected != MOTIVATION_NUDGE:
+                if open_claim is not None:
+                    open_claim.status = "CANCELLED"
+                    open_claim.claimed_at = None
+                await session.commit()
+                return None
+
+            _, day_start, day_end = _local_day_window(now, zone)
+            sent_today = int(
+                await session.scalar(
+                    select(func.count(Reminder.id)).where(
+                        Reminder.user_id == user_id,
+                        Reminder.type == MOTIVATION_NUDGE,
+                        Reminder.status == "SENT",
+                        Reminder.sent_at.is_not(None),
+                        Reminder.sent_at >= day_start,
+                        Reminder.sent_at < day_end,
+                    )
+                )
+                or 0
+            )
+            generic_cap = GENERIC_MOTIVATION_DAILY_CAPS[policy.level]
+            slot = sent_today + 1
+            if slot > generic_cap:
+                if open_claim is not None:
+                    open_claim.status = "CANCELLED"
+                    open_claim.claimed_at = None
+                await session.commit()
+                return None
+
+            candidate = candidates[0]
+            scheduled_at = self._motivation_slot_at(local_date, slot)
+            if open_claim is not None and open_claim.scheduled_at != scheduled_at:
+                # A claim from a previous local day is cancelled; current-day
+                # work is a fresh fact evaluation, never a queued catch-up.
+                open_claim.status = "CANCELLED"
+                open_claim.claimed_at = None
+                open_claim = None
+            reminder = await session.scalar(
+                select(Reminder).where(
+                    Reminder.user_id == user_id,
+                    Reminder.type == MOTIVATION_NUDGE,
+                    Reminder.item_id.is_(None),
+                    Reminder.scheduled_at == scheduled_at,
+                )
+            )
+            if reminder is not None and reminder.status == "SENT":
+                await session.commit()
+                return None
+            if reminder is not None and reminder.status in _OPEN_MOTIVATION_STATUSES:
+                if not self._claim_is_stale(reminder, lease_now):
+                    await session.commit()
+                    return None
+            claimed_at = _utc_now()
+            payload = {
+                "kind": candidate.kind.value,
+                "facts": dict(candidate.facts),
+                "template_id": candidate.template_id,
+                "policy_level": policy.level,
+                "local_date": local_date.isoformat(),
+                "slot": slot,
+            }
+            if reminder is None:
+                reminder = Reminder(
+                    user_id=user_id,
+                    item_id=None,
+                    type=MOTIVATION_NUDGE,
+                    scheduled_at=scheduled_at,
+                    status="CLAIMED",
+                    payload_json=payload,
+                    created_at=now,
+                    claimed_at=claimed_at,
+                    claim_generation=1,
+                )
+                session.add(reminder)
+            else:
+                reminder.status = "CLAIMED"
+                reminder.claimed_at = claimed_at
+                reminder.claim_generation = (reminder.claim_generation or 0) + 1
+                reminder.sent_at = None
+                reminder.payload_json = payload
+            await session.flush()
+            result = (
+                reminder.id,
+                reminder.claim_generation,
+                reminder.scheduled_at,
+                candidate,
+                policy.level,
+                user.telegram_chat_id,
+                claimed_at,
+                slot,
+            )
+            await session.commit()
+            return result
+
+    async def _prepare_motivation_send(
+        self,
+        reminder_id: int,
+        user_id: int,
+        claim_generation: int,
+        now: datetime | None,
+    ) -> tuple[MotivationCandidate, int, int, datetime, int, int] | None:
+        """Refresh facts and every live PM-08 condition before releasing SQLite for Telegram."""
+        async with self.session_factory() as session:
+            await session.execute(text("BEGIN IMMEDIATE"))
+            prepare_now = _utc_naive(now) if now is not None else _utc_now()
+            reminder = await session.get(Reminder, reminder_id)
+            user = await session.get(User, user_id)
+            if (
+                reminder is None
+                or reminder.user_id != user_id
+                or reminder.type != MOTIVATION_NUDGE
+                or reminder.item_id is not None
+                or reminder.status != "CLAIMED"
+                or reminder.claim_generation != claim_generation
+                or user is None
+                or user.telegram_chat_id is None
+            ):
+                await session.commit()
+                return None
+            if self._claim_is_stale(reminder, prepare_now):
+                await session.commit()
+                return None
+            policy, zone, local_date, blocked = await self._attention_gate(
+                session, user, prepare_now, exclude_claim_id=reminder_id
+            )
+            if blocked is not None or zone is None or local_date is None:
+                if blocked not in _TRANSIENT_ATTENTION_BLOCKS:
+                    reminder.status = "CANCELLED"
+                    reminder.claimed_at = None
+                await session.commit()
+                return None
+            claim_payload = reminder.payload_json or {}
+            if claim_payload.get("local_date") != local_date.isoformat():
+                reminder.status = "CANCELLED"
+                reminder.claimed_at = None
+                await session.commit()
+                return None
+
+            candidates = await self._motivation_candidates(session, user, policy, zone, prepare_now)
+            if not candidates:
+                reminder.status = "CANCELLED"
+                reminder.claimed_at = None
+                await session.commit()
+                return None
+            proactive = await self._sendable_proactive_candidates(
+                session, user_id, policy, prepare_now
+            )
+            latest_attention = await self._latest_sent_type(
+                session, user_id, _ATTENTION_FAMILY_TYPES
+            )
+            selected = self._choose_attention_intervention(
+                policy, bool(proactive), True, latest_attention
+            )
+            if selected != MOTIVATION_NUDGE:
+                reminder.status = "CANCELLED"
+                reminder.claimed_at = None
+                await session.commit()
+                return None
+
+            _, day_start, day_end = _local_day_window(prepare_now, zone)
+            sent_today = int(
+                await session.scalar(
+                    select(func.count(Reminder.id)).where(
+                        Reminder.user_id == user_id,
+                        Reminder.type == MOTIVATION_NUDGE,
+                        Reminder.status == "SENT",
+                        Reminder.sent_at.is_not(None),
+                        Reminder.sent_at >= day_start,
+                        Reminder.sent_at < day_end,
+                    )
+                )
+                or 0
+            )
+            generic_cap = GENERIC_MOTIVATION_DAILY_CAPS[policy.level]
+            if sent_today >= generic_cap:
+                reminder.status = "CANCELLED"
+                reminder.claimed_at = None
+                await session.commit()
+                return None
+
+            candidate = candidates[0]
+            slot = claim_payload.get("slot")
+            if (
+                type(slot) is not int
+                or not 1 <= slot <= generic_cap
+                or slot != sent_today + 1
+                or reminder.scheduled_at != self._motivation_slot_at(local_date, slot)
+            ):
+                reminder.status = "CANCELLED"
+                reminder.claimed_at = None
+                await session.commit()
+                return None
+            reminder.payload_json = {
+                "kind": candidate.kind.value,
+                "facts": dict(candidate.facts),
+                "template_id": candidate.template_id,
+                "policy_level": policy.level,
+                "local_date": local_date.isoformat(),
+                "slot": slot,
+            }
+            await session.commit()
+            return (
+                candidate,
+                user.telegram_chat_id,
+                claim_generation,
+                reminder.claimed_at,
+                slot,
+                policy.level,
+            )
+
+    async def _finalize_motivation_send(
+        self, reminder_id: int, user_id: int, claim_generation: int, sent_at: datetime
+    ) -> None:
+        """Record only successful Telegram delivery as PM-10 budget and pacing history."""
+        async with self.session_factory() as session:
+            result = await session.execute(
+                update(Reminder)
+                .where(
+                    Reminder.id == reminder_id,
+                    Reminder.user_id == user_id,
+                    Reminder.type == MOTIVATION_NUDGE,
+                    Reminder.item_id.is_(None),
+                    Reminder.status == "CLAIMED",
+                    Reminder.claim_generation == claim_generation,
+                )
+                .values(status="SENT", sent_at=sent_at, claimed_at=None)
+            )
+            if result.rowcount != 1:
+                log.warning(
+                    "motivation finalization ignored after claim recovery reminder_id=%s",
+                    reminder_id,
+                )
+            await session.commit()
+
+    async def _process_motivation_nudge(self, user_id: int, now: datetime | None) -> int:
+        """Run one durable PM-10 claim, final revalidation, Telegram send, and fencing step."""
+        sent_at_override = now
+        claim_now = _utc_naive(now) if now is not None else _utc_now()
+        claimed = await self._claim_motivation_nudge(user_id, claim_now)
+        if claimed is None:
+            return 0
+        (
+            reminder_id,
+            generation,
+            scheduled_at,
+            candidate,
+            policy_level,
+            chat_id,
+            claimed_at,
+            slot,
+        ) = claimed
+        prepared = await self._prepare_motivation_send(
+            reminder_id, user_id, generation, sent_at_override
+        )
+        if prepared is None:
+            return 0
+        candidate, chat_id, generation, claimed_at, slot, policy_level = prepared
+        try:
+            await self._send_with_retry(
+                chat_id,
+                candidate.rendered_text,
+                claimed_at=claimed_at,
+            )
+        except Exception:
+            log.exception(
+                "motivation delivery failed user_id=%s reminder_id=%s kind=%s",
+                user_id,
+                reminder_id,
+                candidate.kind.value,
+            )
+            await self._mark_failed(user_id, None, MOTIVATION_NUDGE, scheduled_at, generation)
+            return 0
+        sent_at = self._delivery_timestamp(sent_at_override)
+        await self._finalize_motivation_send(reminder_id, user_id, generation, sent_at)
+        log.info(
+            "motivation nudge sent user_id=%s reminder_id=%s kind=%s template_id=%s "
+            "policy_level=%s slot=%s",
+            user_id,
+            reminder_id,
+            candidate.kind.value,
+            candidate.template_id,
+            policy_level,
+            slot,
+        )
+        return 1
+
+    # ❌ Удален дополнительный post-send запрос слота: значение уже захвачено
+    # вместе с claim, и чтение после Telegram могло бы исказить успех доставки.
 
     async def _process_proactive_attention(self, user_id: int, now: datetime | None) -> int:
         """Rank only when policy allows, then create or recover one durable claim."""
