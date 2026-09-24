@@ -122,6 +122,10 @@ Derive last shown from the latest user-scoped `TODAY_SHOWN` or
 delivery are not exposure. SQLite naive timestamps are interpreted as UTC; all
 intervals use elapsed UTC time.
 
+Both exposure Events represent a successfully delivered Telegram response.
+`/today` records its selected Items after the combined list is sent; `/attention`
+records each Item after its card is sent.
+
 Derived value:
 
 ~~~text
@@ -278,7 +282,8 @@ PM-06 ignores it as a preference signal. The command sends one card per Item
 with the existing `item_keyboard` and ItemSource-aware actions. It records one
 `ATTENTION_SHOWN` only after that card was accepted by Telegram. Each Event
 commits independently, and the SQLite read transaction is closed before any
-Telegram send.
+Telegram send. `/today` likewise records `TODAY_SHOWN` only after its combined
+message was accepted, without changing TodayService selection or ordering.
 
 ## 19. TodayService
 

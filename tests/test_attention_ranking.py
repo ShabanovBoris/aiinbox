@@ -770,6 +770,27 @@ def test_attention_reason_is_deterministic_and_grounded_in_score_components():
     assert reason in formatted
 
 
+# The fallback must identify a calculated score without claiming it is high.
+def test_attention_reason_fallback_describes_the_actual_calculated_score():
+    rank = AttentionRank(
+        item_id=1,
+        score=20,
+        priority_score=20,
+        behaviour_rank=_neutral_behaviour(20),
+        interest_adjustment=0,
+        age_bonus=0.0,
+        neglect_bonus=0,
+        due_bonus=0,
+        stale_important_bonus=0,
+        recent_show_penalty=0,
+        last_shown_at=None,
+        age_days=1.0,
+        days_since_shown=None,
+    )
+
+    assert format_attention_reason(rank) == "По рассчитанному рейтингу"
+
+
 async def test_attention_does_not_change_today_or_semantic_item_fields(
     settings, session_factory, monkeypatch
 ):

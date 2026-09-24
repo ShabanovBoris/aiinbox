@@ -965,10 +965,18 @@ async def on_today(message: Message, settings: Settings, session_factory) -> Non
             chat_id=message.chat.id,
             timezone=settings.default_timezone,
         )
+        user_id = user.id
         items = await TodayService().list_items(session, user.id)
-        await record_item_events(session, user.id, [item.id for item in items], "TODAY_SHOWN")
+        response = format_today(items)
         await session.commit()
-    await message.answer(format_today(items))
+    await message.answer(response)
+
+    # PM-07 treats this history as exposure, so a failed Telegram send must not
+    # suppress these Items in a later attention preview.
+    if items:
+        async with session_factory() as session:
+            await record_item_events(session, user_id, [item.id for item in items], "TODAY_SHOWN")
+            await session.commit()
 
 
 async def on_attention(

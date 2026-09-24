@@ -386,8 +386,9 @@ PM-07 вычисляет on demand отдельный `attention_score` из PM-
 `personal_rank`, ручного интереса, возраста Item, suggested due date и истории
 показов. Он не хранится и не меняет `priority_score`, `interest_level`, due date
 или lifecycle. История показов использует user-scoped `TODAY_SHOWN` и
-`ATTENTION_SHOWN`; PM-06 продолжает игнорировать `ATTENTION_SHOWN` как сигнал
-предпочтений.
+`ATTENTION_SHOWN`, записываемые только после успешной отправки соответствующего
+списка или карточки в Telegram; PM-06 продолжает игнорировать `ATTENTION_SHOWN`
+как сигнал предпочтений.
 
 ## 41. Today selection
 

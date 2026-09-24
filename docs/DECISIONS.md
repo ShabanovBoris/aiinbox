@@ -383,11 +383,13 @@ the user sees previews.
 
 Decision: compute `attention_score` on demand from canonical Item facts and
 user-scoped `TODAY_SHOWN` / `ATTENTION_SHOWN` Events. Persist
-`ATTENTION_SHOWN` only after each separate preview card is delivered, with its
-own short transaction.
+`TODAY_SHOWN` only after the `/today` list is delivered and `ATTENTION_SHOWN`
+only after each separate preview card is delivered, outside the Telegram send
+and in short write transactions.
 
 Reason: storing a derived, changing score would create stale ranking state, and
-recording a card before Telegram delivery would misrepresent what the user saw.
+recording an exposure before Telegram delivery would misrepresent what the user
+saw.
 
 Consequences: PM-06 ignores the exposure Event as a preference signal;
 `priority_score` and `/today`/digest ordering remain unchanged. No schema

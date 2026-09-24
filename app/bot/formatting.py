@@ -153,7 +153,7 @@ def format_attention_reason(rank: AttentionRank) -> str:
         reasons.append("Давно сохранён")
     if rank.recent_show_penalty < 0:
         reasons.append("Показан недавно")
-    return "; ".join(reasons[:3]) or "Высокий текущий рейтинг"
+    return "; ".join(reasons[:3]) or "По рассчитанному рейтингу"
 
 
 def format_attention_item(index: int, count: int, item: Item, rank: AttentionRank) -> str:

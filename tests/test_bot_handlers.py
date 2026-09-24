@@ -117,8 +117,11 @@ async def test_no_success_ack_when_persistence_fails(settings, session_factory, 
     assert sent == []
 
 
-async def test_today_records_shown_event(settings, session_factory, monkeypatch):
-    sent = capture_answers(monkeypatch)
+# Pin the delivery boundary that /attention consumes as recent-exposure history.
+async def test_today_records_shown_event_after_successful_send(
+    settings, session_factory, monkeypatch
+):
+    sent = []
     async with session_factory() as session:
         user = User(telegram_user_id=42, telegram_chat_id=42)
         session.add(user)
@@ -138,12 +141,57 @@ async def test_today_records_shown_event(settings, session_factory, monkeypatch)
         )
         await session.commit()
 
+    async def answer_after_send(self, text, **kwargs):
+        async with session_factory() as session:
+            assert (
+                await session.scalar(select(Event.id).where(Event.event_type == "TODAY_SHOWN"))
+                is None
+            )
+        sent.append(text)
+
+    monkeypatch.setattr(Message, "answer", answer_after_send)
     await on_today(make_message(42), settings, session_factory)
     assert sent == ["Сегодня:\n1. Do it — 80/100"]
     async with session_factory() as session:
         assert (
             await session.scalar(select(Event.event_type).where(Event.event_type == "TODAY_SHOWN"))
             == "TODAY_SHOWN"
+        )
+
+
+# Failed transport must leave no persisted exposure for a later ranking request.
+async def test_today_send_failure_does_not_record_shown_event(
+    settings, session_factory, monkeypatch
+):
+    async with session_factory() as session:
+        user = User(telegram_user_id=42, telegram_chat_id=42)
+        session.add(user)
+        await session.flush()
+        session.add(
+            Item(
+                user_id=user.id,
+                processing_status=ProcessingStatus.READY,
+                state=ItemState.ACTIVE,
+                source_type=SourceType.TEXT,
+                processing_stage="READY",
+                user_note="today",
+                item_type=ItemType.ACTION,
+                title="Do it",
+                priority_score=80,
+            )
+        )
+        await session.commit()
+
+    async def fail_answer(self, text, **kwargs):
+        raise RuntimeError("Telegram send failed")
+
+    monkeypatch.setattr(Message, "answer", fail_answer)
+    with pytest.raises(RuntimeError, match="Telegram send failed"):
+        await on_today(make_message(42), settings, session_factory)
+
+    async with session_factory() as session:
+        assert (
+            await session.scalar(select(Event.id).where(Event.event_type == "TODAY_SHOWN")) is None
         )
 
 
