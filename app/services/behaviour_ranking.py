@@ -90,8 +90,6 @@ class _DimensionAccumulator:
         if count == 0:
             return DimensionAffinity(affinity=0.0, confidence=0.0, informative_event_count=0)
 
-        # ❌ Удалена нормализация по сумме модулей: она стирала силу сигналов и recency.
-        # Среднее по числу событий сохраняет policy weights; K отдельно сглаживает редкую историю.
         raw = self.weighted_signal_sum / count
         confidence = count / (count + SPARSE_HISTORY_K)
         affinity = max(MIN_AFFINITY, min(MAX_AFFINITY, raw * confidence))
