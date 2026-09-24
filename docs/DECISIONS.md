@@ -341,3 +341,20 @@ Consequences: legacy and non-callback Events keep a NULL key; later feedback
 with a new callback identity remains append-only history. The separate receipt
 preserves no-op/stale callback idempotency without adding synthetic Events to
 the behavioural history.
+
+## D-028 — Behaviour rank is a derived projection over current Item metadata
+
+Context: PM-06 must personalize candidate scores from sparse user feedback while
+preserving semantic priority, manual interest and the current `/today` order.
+
+Decision: derive category/type affinity on demand from current Item metadata and
+the owner's informative Events. Reload candidate facts and read matching history
+with two bounded user-scoped queries, smooth each dimension independently, and
+keep every component in an immutable result value. Round half points away from zero.
+
+Reason: the existing Item + Event data is sufficient at personal scale; a cache
+or persisted score would add stale state and could overwrite semantic meaning.
+
+Consequences: `personal_rank` is explainable and bounded but is not persisted or
+used by `/today`; callers can adopt it in a later ranking phase without changing
+`priority_score` or `interest_level`.

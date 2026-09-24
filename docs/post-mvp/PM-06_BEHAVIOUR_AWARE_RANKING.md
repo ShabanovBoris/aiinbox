@@ -2,6 +2,7 @@
 
 Type: Post-MVP Epic + Detailed Technical Specification  
 Prerequisite: PM-05 Explicit Feedback merged and its event contract stable
+Status: IN_REVIEW
 
 ## 1. Epic
 
@@ -231,6 +232,9 @@ combined_affinity =
 
 Missing dimension history contributes 0.
 
+Overall confidence is the same weighted projection of the two dimension
+confidences. A missing dimension has zero affinity and zero confidence.
+
 ## 12. Behaviour adjustment
 
 ~~~text
@@ -242,6 +246,9 @@ personal_rank =
 ~~~
 
 priority_score remains unchanged.
+
+PM-06 resolves half-point ties by rounding away from zero, so positive and
+negative adjustments use symmetric deterministic boundaries.
 
 ## 13. Explainability object
 
