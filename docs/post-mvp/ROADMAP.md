@@ -117,9 +117,9 @@ Goal: separate semantic priority from “what deserves attention now?” and con
 
 ### Milestone E — Engagement
 
-PM-09 Contextual Hooks — IN_REVIEW
-PM-10 Motivational Nudges  
-PM-11 Reminder Feedback Loop
+- PM-09 Contextual Hooks — DONE
+- PM-10 Motivational Nudges — IN_REVIEW
+- PM-11 Reminder Feedback Loop
 
 Goal: make resurfacing useful and engaging rather than repetitive.
 
@@ -273,7 +273,8 @@ No ML until event volume justifies it.
 
 ## 11. PM-07 — Attention Ranking Engine
 
-Current state: IN_REVIEW. The deterministic manual `/attention` preview uses
+Current state: DONE. PM-07 Attention Ranking was merged in PR #36.
+The deterministic manual `/attention` preview uses
 PM-06 `personal_rank`, manual interest, age, due date and durable exposure.
 `/today` and the digest keep their existing semantic-priority ordering.
 
@@ -357,6 +358,9 @@ Examples must be based on real computed facts:
 First version should be template-based. An LLM may later rewrite already-computed facts but must not invent metrics.
 
 Provide `generic_motivation_enabled`.
+
+Current state: IN_REVIEW. Nudges use deterministic Item/Event facts and share
+PM-08 budget, quiet hours, minimum gap and durable claims.
 
 ## 15. PM-11 — Reminder Feedback Loop
 

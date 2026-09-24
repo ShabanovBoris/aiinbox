@@ -1,10 +1,29 @@
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any
+from types import MappingProxyType
+from typing import Any, Mapping
 
 from pydantic import BaseModel, Field
 
-from app.domain.enums import AttentionHookType, ItemType, SourceType
+from app.domain.enums import AttentionHookType, ItemType, MotivationKind, SourceType
+
+
+@dataclass(frozen=True, slots=True)
+class MotivationCandidate:
+    """Immutable projection of a verified backlog fact into one short nudge.
+
+    MotivationService owns this domain result; policy and delivery stay in
+    ReminderWorker, so the facts cannot accidentally affect Item ranking.
+    """
+
+    kind: MotivationKind
+    score: int
+    facts: Mapping[str, int]
+    template_id: str
+    rendered_text: str
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "facts", MappingProxyType(dict(self.facts)))
 
 
 class NormalizedContent(BaseModel):

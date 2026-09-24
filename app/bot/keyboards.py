@@ -235,8 +235,10 @@ def settings_keyboard(enabled: bool) -> InlineKeyboardMarkup:
     )
 
 
-def attention_settings_keyboard(enabled: bool, level: int) -> InlineKeyboardMarkup:
-    """Project PM-08's five fixed policies into callbacks without exposing tunables."""
+def attention_settings_keyboard(
+    enabled: bool, level: int, motivation_enabled: bool = True
+) -> InlineKeyboardMarkup:
+    """Project PM-08 intensity and the independent PM-10 toggle into Telegram controls."""
     labels = ("Calm", "Light", "Normal", "Active", "Aggressive")
     levels = [
         InlineKeyboardButton(
@@ -249,4 +251,10 @@ def attention_settings_keyboard(enabled: bool, level: int) -> InlineKeyboardMark
         text="🔕 Attention OFF" if enabled is True else "🔔 Attention ON",
         callback_data="settings:attention:toggle",
     )
-    return InlineKeyboardMarkup(inline_keyboard=[levels[:2], levels[2:4], levels[4:], [toggle]])
+    motivation_toggle = InlineKeyboardButton(
+        text="💬 Motivation OFF" if motivation_enabled is True else "💬 Motivation ON",
+        callback_data="settings:attention:motivation",
+    )
+    return InlineKeyboardMarkup(
+        inline_keyboard=[levels[:2], levels[2:4], levels[4:], [toggle], [motivation_toggle]]
+    )

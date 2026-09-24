@@ -296,6 +296,20 @@ class Reminder(Base):
             unique=True,
             sqlite_where=text("type = 'PROACTIVE_ATTENTION' AND status IN ('PENDING', 'CLAIMED')"),
         ),
+        Index(
+            "uq_reminders_motivation_slot",
+            "user_id",
+            "type",
+            "scheduled_at",
+            unique=True,
+            sqlite_where=text("type = 'MOTIVATION_NUDGE' AND item_id IS NULL"),
+        ),
+        Index(
+            "uq_reminders_open_motivation_user",
+            "user_id",
+            unique=True,
+            sqlite_where=text("type = 'MOTIVATION_NUDGE' AND status IN ('PENDING', 'CLAIMED')"),
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)

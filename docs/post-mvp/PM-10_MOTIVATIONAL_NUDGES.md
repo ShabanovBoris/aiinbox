@@ -3,6 +3,8 @@
 Type: Post-MVP Epic + Detailed Technical Specification  
 Prerequisites: PM-08 Attention Intensity; PM-07 Attention Ranking
 
+Status: IN_REVIEW
+
 ## 1. Epic
 
 ### Problem
@@ -60,6 +62,10 @@ Extend settings_json:
 The user can disable generic nudges while keeping Item-specific proactive attention enabled.
 
 Expose in /settings attention.
+
+Rollout: application defaults enable generic motivation for new users. Migration
+adds an explicit `false` for existing users only when the key is absent, and
+preserves any existing explicit value.
 
 ## 5. Nudge types
 
@@ -233,6 +239,12 @@ Additional rules:
 - Item-specific reminder wins at levels 1–3 when a candidate >= PM-08 threshold exists;
 - at levels 4–5, a nudge may consume an available slot but still cannot exceed generic cap.
 
+Arbitration is deterministic: at levels 1–3 a sendable proactive candidate
+wins; at levels 4–5 proactive and generic sends alternate according to the last
+successful Attention-family Reminder, falling back to the other candidate only
+when the preferred type is unavailable. After digest and snooze phases, no more
+than one Attention-family attempt is made for a user in one worker cycle.
+
 ## 12. Reminder type
 
 Add:
@@ -260,6 +272,10 @@ If necessary, add a SQLite partial unique index for user/type/scheduled slot whe
 
 Do not rely on SQL UNIQUE semantics with NULL unless tested.
 
+The implementation uses a local-day + ordinal slot encoded in `scheduled_at`
+(local midnight plus slot seconds) and partial unique indexes for the slot and
+the user's single open motivation claim.
+
 ## 13. Scheduling slot identity
 
 To prevent duplicate generic nudges during repeated worker polls, create a deterministic slot identity per local day.
@@ -280,6 +296,14 @@ Generic nudges obey:
 - daily budget.
 
 No catch-up nudge queue after quiet hours.
+
+Only `SENT` reminders consume the shared PM-08 budget/minimum gap and separate
+generic cap. Claims are committed before Telegram I/O. Final preparation
+revalidates settings, pacing and current facts, updates the bounded payload/text
+to the current candidate or cancels the claim, then releases SQLite before send.
+Recovery increments claim generation; a stale owner cannot finalize a newer
+claim. Telegram and SQLite cannot provide exactly-once delivery, so the
+existing bounded at-least-once crash window remains.
 
 ## 15. Nudge repetition
 

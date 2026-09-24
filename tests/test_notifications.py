@@ -14,6 +14,7 @@ from app.services.attention_ranking import AttentionRankingService
 from app.services.notifications import (
     ATTENTION_POLICIES,
     DAILY_DIGEST,
+    GENERIC_MOTIVATION_DAILY_CAPS,
     MIN_PROACTIVE_ATTENTION_SCORE,
     NOTIFICATION_SEND_TIMEOUT,
     PROACTIVE_ATTENTION,
@@ -482,12 +483,14 @@ async def test_concurrent_disjoint_settings_updates_are_merged(session_factory):
         update_notification_settings(
             session_factory, 42, attention_enabled=True, attention_intensity=4
         ),
+        update_notification_settings(session_factory, 42, generic_motivation_enabled=False),
     )
     current = await get_notification_settings(session_factory, 42)
     assert current[1]["daily_digest_time"] == "08:30"
     assert current[1]["quiet_hours_start"] == "20:00"
     assert current[1]["attention_enabled"] is True
     assert current[1]["attention_intensity"] == 4
+    assert current[1]["generic_motivation_enabled"] is False
 
 
 async def test_transient_notification_failure_retries_before_terminal_failure(session_factory):
@@ -671,6 +674,7 @@ async def test_attention_defaults_and_settings_validation(session_factory):
     current = await get_notification_settings(session_factory, 42)
     assert current[1]["attention_enabled"] is True
     assert current[1]["attention_intensity"] == 3
+    assert current[1]["generic_motivation_enabled"] is True
 
     updated = await update_notification_settings(
         session_factory, 42, attention_enabled=False, attention_intensity=5
@@ -690,6 +694,29 @@ async def test_attention_defaults_and_settings_validation(session_factory):
             "attention_intensity": 5,
         }
     assert settings_for(User(settings_json={}))["attention_enabled"] is True
+    assert settings_for(User(settings_json={}))["generic_motivation_enabled"] is True
+
+
+async def test_generic_motivation_setting_is_strict_and_independent(session_factory):
+    await make_ready_item(session_factory)
+    current = await get_notification_settings(session_factory, 42)
+    assert current[1]["generic_motivation_enabled"] is True
+
+    updated = await update_notification_settings(
+        session_factory, 42, generic_motivation_enabled=False
+    )
+    assert updated[1]["generic_motivation_enabled"] is False
+    assert updated[1]["attention_enabled"] is False
+    for value in (1, 0, "true"):
+        with pytest.raises(ValueError):
+            await update_notification_settings(
+                session_factory, 42, generic_motivation_enabled=value
+            )
+    unchanged = await update_notification_settings(
+        session_factory, 42, generic_motivation_enabled=None
+    )
+    assert unchanged[1]["generic_motivation_enabled"] is False
+    assert dict(GENERIC_MOTIVATION_DAILY_CAPS) == {1: 0, 2: 1, 3: 1, 4: 1, 5: 2}
 
 
 async def test_proactive_delivery_persists_reminder_and_exposure(session_factory):

@@ -401,9 +401,11 @@ sqlite3 data/app.db \
    FROM reminders ORDER BY scheduled_at DESC LIMIT 50"
 ```
 
-Digest, snooze и proactive Attention используют разные типы Reminder. PM-08
-настройки находятся в `/settings attention`; существующие пользователи после
-миграции выключены до явного включения, новые получают ON / Normal (3).
+Digest, snooze, proactive Attention и motivation nudge используют разные типы
+Reminder. PM-08/PM-10 настройки находятся в `/settings attention`;
+существующие пользователи после PM-08 получают Attention OFF, а после PM-10 —
+Generic motivation OFF, если ключ отсутствовал. Новые пользователи получают
+Attention ON / Normal (3) и Generic motivation ON.
 Настройки живут в `users.settings_json`; бюджет, cooldown и minimum gap
 вычисляются из Reminder history и не требуют сбрасываемых счётчиков.
 
@@ -425,6 +427,24 @@ Telegram и служит временем для локального дневн
 hours, PM-07 rank и same-Item cooldown. Если процесс остановится после принятия
 сообщения Telegram, но до SQLite finalization, повторная попытка после lease
 может отправить дубль: точно объединить транзакции Telegram и SQLite нельзя.
+
+`MOTIVATION_NUDGE` хранит только bounded snapshot `kind`, integer `facts`,
+`template_id`, `policy_level`, `local_date` и `slot`; `item_id` всегда NULL.
+Посмотреть слоты и claims можно тем же запросом выше. `scheduled_at` у этого
+типа — identity локального дня + ordinal слота, а не время будущей доставки.
+Partial indexes `uq_reminders_motivation_slot` и
+`uq_reminders_open_motivation_user` обеспечивают slot idempotency при NULL
+`item_id` и максимум один открытый claim на пользователя.
+
+Worker разделяет commit claim, Telegram send и финальный commit; SQLite write
+lock не удерживается на сетевом вызове. Перед отправкой он заново вычисляет
+факты и проверяет настройки, quiet hours, общий дневной budget, отдельный
+generic cap, minimum gap и kind/template history. Только успешный Telegram
+ответ становится `SENT`; `FAILED`/`CANCELLED` не расходуют budget или gap.
+После recovery generation fencing не позволяет старому владельцу изменить
+новый claim. Между принятым Telegram сообщением и SQLite финализацией остаётся
+узкое at-least-once окно с возможным дублем; exactly-once не гарантируется.
+Generic nudge не пишет `ATTENTION_SHOWN` и не создаёт PM-11 Event.
 
 PM-09 hooks хранятся в `contents` как `ATTENTION_HOOK`. Проверить attribution
 можно без вывода полного исходного текста:
