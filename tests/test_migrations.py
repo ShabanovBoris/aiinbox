@@ -34,6 +34,20 @@ def test_fresh_database_migrates_to_latest_schema(tmp_path):
         ).fetchone()[0]
         assert "fts5" in search_sql
         assert "idempotency_key" in {row[1] for row in conn.execute("PRAGMA table_info(events)")}
+        event_columns = {row[1]: row for row in conn.execute("PRAGMA table_info(events)")}
+        assert event_columns["item_id"][3] == 0
+        assert event_columns["reminder_id"][3] == 0
+        assert {
+            "ix_events_reminder_id",
+            "uq_events_user_idempotency_key",
+            "uq_events_reminder_event_type",
+        } <= {row[1] for row in conn.execute("PRAGMA index_list(events)")}
+        assert {
+            (row[2], row[3], row[4]) for row in conn.execute("PRAGMA foreign_key_list(events)")
+        } >= {
+            ("items", "item_id", "id"),
+            ("reminders", "reminder_id", "id"),
+        }
         reminder_columns = {row[1] for row in conn.execute("PRAGMA table_info(reminders)")}
         assert {"claimed_at", "claim_generation"} <= reminder_columns
         assert "uq_reminders_open_proactive_user" in {
@@ -138,6 +152,120 @@ def test_fresh_database_migrates_to_latest_schema(tmp_path):
         )
     finally:
         conn.close()
+
+
+def test_reminder_feedback_migration_preserves_events_and_enforces_references(tmp_path):
+    db = tmp_path / "reminder-feedback-upgrade.db"
+    cfg = Config()
+    cfg.set_main_option("script_location", "migrations")
+    cfg.set_main_option("sqlalchemy.url", f"sqlite+aiosqlite:///{db}")
+    command.upgrade(cfg, "f5a7c2d91e09")
+
+    with sqlite3.connect(db) as conn:
+        user_id = conn.execute(
+            "INSERT INTO users (telegram_user_id) VALUES (42) RETURNING id"
+        ).fetchone()[0]
+        item_id = conn.execute(
+            "INSERT INTO items (user_id, source_index, processing_status, state, source_type, "
+            "processing_stage, user_note, category, item_type) "
+            "VALUES (?, 0, 'READY', 'ACTIVE', 'TEXT', 'READY', '', 'AI', 'READ') RETURNING id",
+            (user_id,),
+        ).fetchone()[0]
+        conn.execute(
+            "INSERT INTO events (user_id, item_id, event_type, payload_json, idempotency_key, "
+            "created_at) VALUES (?, ?, 'USEFUL', '{}', 'telegram-callback:old', "
+            "'2026-09-20 12:34:56')",
+            (user_id, item_id),
+        )
+        reminder_id = conn.execute(
+            "INSERT INTO reminders (user_id, item_id, type, scheduled_at, status, sent_at) "
+            "VALUES (?, NULL, 'MOTIVATION_NUDGE', '2026-09-24 00:00:01', 'SENT', "
+            "'2026-09-24 09:00:00') RETURNING id",
+            (user_id,),
+        ).fetchone()[0]
+        conn.commit()
+
+    command.upgrade(cfg, "head")
+
+    with sqlite3.connect(db) as conn:
+        conn.execute("PRAGMA foreign_keys=ON")
+        assert conn.execute(
+            "SELECT item_id, reminder_id, created_at FROM events WHERE event_type='USEFUL'"
+        ).fetchone() == (item_id, None, "2026-09-20 12:34:56")
+        assert (
+            conn.execute("SELECT COUNT(*) FROM events WHERE event_type='REMINDER_SENT'").fetchone()[
+                0
+            ]
+            == 0
+        )  # No fabricated historical delivery events.
+
+        conn.execute(
+            "INSERT INTO events (user_id, item_id, reminder_id, event_type, payload_json) "
+            "VALUES (?, NULL, ?, 'REMINDER_DISLIKED', '{}')",
+            (user_id, reminder_id),
+        )
+        conn.commit()
+        for sql, values, reason in (
+            (
+                "INSERT INTO events (user_id, item_id, reminder_id, event_type) "
+                "VALUES (?, NULL, NULL, 'CUSTOM')",
+                (user_id,),
+                "both Event references NULL",
+            ),
+            (
+                "INSERT INTO events (user_id, item_id, reminder_id, event_type) "
+                "VALUES (?, 999999, NULL, 'CUSTOM')",
+                (user_id,),
+                "unknown Item foreign key",
+            ),
+            (
+                "INSERT INTO events (user_id, item_id, reminder_id, event_type) "
+                "VALUES (?, NULL, 999999, 'CUSTOM')",
+                (user_id,),
+                "unknown Reminder foreign key",
+            ),
+        ):
+            try:
+                conn.execute(sql, values)
+            except sqlite3.IntegrityError:
+                conn.rollback()
+            else:
+                raise AssertionError(f"migration allowed {reason}")
+
+        conn.execute(
+            "INSERT INTO events (user_id, item_id, reminder_id, event_type) "
+            "VALUES (?, NULL, ?, 'REMINDER_DONE')",
+            (user_id, reminder_id),
+        )
+        conn.commit()
+        try:
+            conn.execute(
+                "INSERT INTO events (user_id, item_id, reminder_id, event_type) "
+                "VALUES (?, NULL, ?, 'REMINDER_DISLIKED')",
+                (user_id, reminder_id),
+            )
+        except sqlite3.IntegrityError:
+            conn.rollback()
+        else:
+            raise AssertionError("duplicate reminder/event type was allowed")
+
+        # A distinct PM-11 outcome for the same Reminder remains valid.
+        conn.execute(
+            "INSERT INTO events (user_id, item_id, reminder_id, event_type) "
+            "VALUES (?, NULL, ?, 'REMINDER_OPENED')",
+            (user_id, reminder_id),
+        )
+        conn.commit()
+        try:
+            conn.execute(
+                "INSERT INTO events (user_id, item_id, event_type, idempotency_key) "
+                "VALUES (?, ?, 'ARCHIVED', 'telegram-callback:old')",
+                (user_id, item_id),
+            )
+        except sqlite3.IntegrityError:
+            conn.rollback()
+        else:
+            raise AssertionError("existing PM-05 Event idempotency was not preserved")
 
 
 def test_instagram_source_migration_preserves_existing_items_and_sources(tmp_path):

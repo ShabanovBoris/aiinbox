@@ -27,6 +27,7 @@ from app.services.notifications import (
     settings_for,
     update_notification_settings,
 )
+from app.services.reminder_feedback import ReminderFeedbackService
 from app.storage.models import Content, Event, Item, ItemSource, Reminder, User
 from tests.fakes import FakeLlmProvider
 
@@ -244,6 +245,16 @@ async def test_successful_delivery_timestamp_uses_telegram_completion_time(
         )
         assert reminder.status == "SENT"
         assert reminder.sent_at == completed_at
+        sent_event = await session.scalar(
+            select(Event).where(
+                Event.reminder_id == reminder.id,
+                Event.event_type == "REMINDER_SENT",
+            )
+        )
+        assert sent_event is not None
+        assert sent_event.item_id == reminder.item_id
+        assert sent_event.created_at == completed_at
+        assert sent_event.payload_json["reminder_type"] == notification_type
 
 
 async def test_delivery_crossing_local_midnight_counts_on_completion_day(
@@ -734,7 +745,6 @@ async def test_proactive_delivery_persists_reminder_and_exposure(session_factory
         )
         session.add(source)
         await session.commit()
-        source_id = source.id
     bot = FakeBot()
     now = datetime(2026, 9, 14, 6, 30)
 
@@ -748,15 +758,21 @@ async def test_proactive_delivery_persists_reminder_and_exposure(session_factory
     assert "Интерес:" in message
     assert "Сохранён:" in message
     callbacks = {
-        button.callback_data for row in kwargs["reply_markup"].inline_keyboard for button in row
+        button.callback_data
+        for row in kwargs["reply_markup"].inline_keyboard
+        for button in row
+        if button.callback_data is not None
     }
     urls = {
         button.url for row in kwargs["reply_markup"].inline_keyboard for button in row if button.url
     }
-    assert f"item:done:{item_id}" in callbacks
-    assert f"item:later:{item_id}" in callbacks
-    assert f"item:archive:{item_id}" in callbacks
-    assert f"item:video:{item_id}:{source_id}" in callbacks
+    assert any(value.startswith("reminder:done:") for value in callbacks)
+    assert any(value.startswith("reminder:later:") for value in callbacks)
+    assert any(value.startswith("reminder:dismiss:") for value in callbacks)
+    assert any(value.startswith("reminder:less:") for value in callbacks)
+    assert any(value.startswith("reminder:open:") for value in callbacks)
+    assert not any(value.startswith("item:done:") for value in callbacks)
+    assert not any(value.startswith("item:archive:") for value in callbacks)
     assert "https://www.youtube.com/watch?v=example" in urls
 
     async with session_factory() as session:
@@ -764,6 +780,12 @@ async def test_proactive_delivery_persists_reminder_and_exposure(session_factory
             select(Reminder).where(Reminder.type == PROACTIVE_ATTENTION)
         )
         event = await session.scalar(select(Event).where(Event.event_type == "ATTENTION_SHOWN"))
+        sent_event = await session.scalar(
+            select(Event).where(
+                Event.reminder_id == reminder.id,
+                Event.event_type == "REMINDER_SENT",
+            )
+        )
         assert reminder.user_id == user_id
         assert reminder.item_id == item_id
         assert reminder.status == "SENT"
@@ -778,6 +800,11 @@ async def test_proactive_delivery_persists_reminder_and_exposure(session_factory
         }
         assert event.idempotency_key == f"reminder:{reminder.id}:attention_shown"
         assert event.created_at == now
+        assert sent_event.item_id == item_id
+        assert sent_event.payload_json.get("category") == reminder.payload_json.get("category")
+        assert sent_event.payload_json["item_type"] == reminder.payload_json["item_type"]
+        assert sent_event.created_at == now
+        assert sent_event.idempotency_key == f"reminder:{reminder.id}:sent"
         ranked = await AttentionRankingService().list_candidates(session, user_id, now=now)
         assert ranked[0][0].id == item_id
         assert ranked[0][1].recent_show_penalty == -25
@@ -1223,6 +1250,190 @@ async def test_same_item_cooldown_exact_boundary_and_restart(session_factory):
     assert len(recovered_bot.messages) == 1
 
 
+async def test_dismissal_cooldown_boundary_and_pm08_longer_delay(session_factory):
+    user_id, item_id = await make_ready_item(session_factory, attention_enabled=True)
+    now = datetime(2026, 9, 24, 12)
+    async with session_factory() as session:
+        old_reminder = Reminder(
+            user_id=user_id,
+            item_id=item_id,
+            type=PROACTIVE_ATTENTION,
+            scheduled_at=now - timedelta(days=3),
+            status="SENT",
+            sent_at=now - timedelta(days=3),
+            payload_json={"reminder_type": PROACTIVE_ATTENTION},
+        )
+        session.add(old_reminder)
+        await session.flush()
+        recent_dismissal = Event(
+            user_id=user_id,
+            item_id=item_id,
+            reminder_id=old_reminder.id,
+            event_type="REMINDER_DISMISSED",
+            payload_json={"reminder_type": PROACTIVE_ATTENTION},
+            created_at=now - timedelta(hours=23, minutes=59),
+        )
+        session.add(recent_dismissal)
+        await session.commit()
+        latest = await ReminderFeedbackService.latest_dismissals(
+            session, user_id, [item_id], now=now
+        )
+        assert ReminderWorker._proactive_cooldown_active(
+            item_id, now, attention_policy(5), {}, latest
+        )
+        assert not ReminderWorker._proactive_cooldown_active(
+            item_id,
+            now,
+            attention_policy(5),
+            {},
+            {item_id: now - timedelta(hours=24)},
+        )
+        assert ReminderWorker._proactive_cooldown_active(
+            item_id,
+            now,
+            attention_policy(1),
+            {item_id: now - timedelta(hours=24)},
+            {item_id: now - timedelta(hours=25)},
+        )
+
+
+async def test_dismissed_top_candidate_falls_through_to_next(session_factory):
+    user_id, dismissed_item_id = await make_ready_item(session_factory, attention_enabled=True)
+    next_item_id = await add_ready_item(session_factory, user_id, title="Next task", priority=85)
+    await update_notification_settings(
+        session_factory,
+        42,
+        daily_digest_enabled=False,
+        attention_enabled=True,
+        attention_intensity=5,
+        generic_motivation_enabled=False,
+    )
+    now = datetime(2026, 9, 24, 12)
+    async with session_factory() as session:
+        for item_id, priority, interest in (
+            (dismissed_item_id, 100, 3),
+            (next_item_id, 85, 2),
+        ):
+            item = await session.get(Item, item_id)
+            item.priority_score = priority
+            item.interest_level = interest
+            item.category = "AI"
+            item.created_at = now - timedelta(days=120)
+        prior = Reminder(
+            user_id=user_id,
+            item_id=dismissed_item_id,
+            type=PROACTIVE_ATTENTION,
+            scheduled_at=now - timedelta(days=3),
+            status="SENT",
+            sent_at=now - timedelta(days=3),
+            payload_json={"reminder_type": PROACTIVE_ATTENTION},
+        )
+        session.add(prior)
+        await session.flush()
+        session.add(
+            Event(
+                user_id=user_id,
+                item_id=dismissed_item_id,
+                reminder_id=prior.id,
+                event_type="REMINDER_DISMISSED",
+                payload_json={
+                    "reminder_type": PROACTIVE_ATTENTION,
+                    "category": "AI",
+                    "item_type": "ACTION",
+                },
+                created_at=now - timedelta(hours=23, minutes=59),
+            )
+        )
+        await session.commit()
+        ranked = await AttentionRankingService().list_candidates(session, user_id, now=now)
+        assert ranked[0][0].id == dismissed_item_id
+
+    bot = FakeBot()
+    assert await ReminderWorker(session_factory, bot).process_once(now) == 1
+    async with session_factory() as session:
+        sent = await session.scalar(
+            select(Reminder).where(
+                Reminder.type == PROACTIVE_ATTENTION,
+                Reminder.status == "SENT",
+                Reminder.sent_at == now,
+            )
+        )
+        assert sent.item_id == next_item_id
+
+
+async def test_dismissal_is_rechecked_inside_final_proactive_prepare(session_factory):
+    user_id, item_id = await make_ready_item(session_factory, attention_enabled=True)
+    await update_notification_settings(
+        session_factory,
+        42,
+        daily_digest_enabled=False,
+        attention_enabled=True,
+        attention_intensity=5,
+        generic_motivation_enabled=False,
+    )
+    now = datetime(2026, 9, 24, 12)
+    async with session_factory() as session:
+        item = await session.get(Item, item_id)
+        item.priority_score = 100
+        item.interest_level = 3
+        item.category = "AI"
+        item.created_at = now - timedelta(days=120)
+        prior = Reminder(
+            user_id=user_id,
+            item_id=item_id,
+            type=PROACTIVE_ATTENTION,
+            scheduled_at=now - timedelta(days=3),
+            status="SENT",
+            sent_at=now - timedelta(days=3),
+            payload_json={"reminder_type": PROACTIVE_ATTENTION},
+        )
+        session.add(prior)
+        await session.commit()
+        prior_id = prior.id
+
+    bot = FakeBot()
+    worker = ReminderWorker(session_factory, bot)
+    prepare = worker._prepare_proactive_send
+
+    async def dismiss_after_claim(reminder_id, current_user_id, current_item_id, generation, clock):
+        async with session_factory() as session:
+            session.add(
+                Event(
+                    user_id=user_id,
+                    item_id=item_id,
+                    reminder_id=prior_id,
+                    event_type="REMINDER_DISMISSED",
+                    payload_json={"reminder_type": PROACTIVE_ATTENTION},
+                    created_at=clock,
+                )
+            )
+            await session.commit()
+        return await prepare(reminder_id, current_user_id, current_item_id, generation, clock)
+
+    worker._prepare_proactive_send = dismiss_after_claim
+    assert await worker.process_once(now) == 0
+    assert bot.messages == []
+    async with session_factory() as session:
+        claimed = await session.scalar(
+            select(Reminder)
+            .where(
+                Reminder.type == PROACTIVE_ATTENTION,
+                Reminder.id != prior_id,
+            )
+            .order_by(Reminder.id.desc())
+        )
+        assert claimed.status == "CANCELLED"
+        assert (
+            await session.scalar(
+                select(Event.id).where(
+                    Event.reminder_id == claimed.id,
+                    Event.event_type == "REMINDER_SENT",
+                )
+            )
+            is None
+        )
+
+
 async def test_unfinalized_digest_claim_does_not_consume_budget(session_factory):
     user_id, _ = await make_ready_item(session_factory, attention_enabled=True)
     await update_notification_settings(
@@ -1548,6 +1759,10 @@ async def test_failed_proactive_send_has_no_budget_gap_or_cooldown_cost(session_
         assert failed.sent_at is None
         assert (
             await session.scalar(select(Event.id).where(Event.event_type == "ATTENTION_SHOWN"))
+            is None
+        )
+        assert (
+            await session.scalar(select(Event.id).where(Event.event_type == "REMINDER_SENT"))
             is None
         )
 

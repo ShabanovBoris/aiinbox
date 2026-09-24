@@ -463,6 +463,28 @@ Reason: one durable ReminderWorker arbitration path prevents generic motivation
 from becoming a second scheduler or bypassing notification fatigue controls.
 
 Consequences: only successful delivery consumes budget/gap; generic rows contain
-bounded facts and template identity, do not use PM-09 hooks, and create no PM-11
-feedback Event. The existing Telegram/SQLite at-least-once boundary still allows
-a duplicate after a crash between accepted Telegram send and finalization.
+bounded facts and template identity and do not use PM-09 hooks. PM-11 records
+delivery and explicit reminder feedback independently. The existing
+Telegram/SQLite at-least-once boundary still allows a duplicate after a crash
+between accepted Telegram send and finalization.
+
+## D-034 — Reminder Events carry explicit delivery identity
+
+Context: Item Events alone cannot distinguish an Item's ordinary lifecycle from
+the outcome of one specific reminder, and generic motivation has no Item.
+
+Decision: Reminder Events store `reminder_id` explicitly; Item reminders also
+store `item_id`, while generic nudge events may rely on Reminder alone. Record
+`REMINDER_SENT` with the successful Reminder finalization. Derive bounded
+preference and fatigue adjustments from Event history rather than mutable Item
+fields or persisted counters. Record `REMINDER_OPENED` only for bot-mediated
+actions with an observable callback.
+
+Reason: reminder attribution remains stable across mutable Item changes, generic
+notifications fit the same event model, and Telegram URL clicks cannot be
+observed by the bot.
+
+Consequences: Event history is the source for feedback projections; the
+database enforces one PM-11 event of each type per Reminder. Historical sends
+are not synthesized during migration, and URL-button clicks do not affect
+feedback calculations.

@@ -104,52 +104,68 @@ async def enqueue_item_video_delivery(
         if user_id is None:
             await session.rollback()
             return None
-        item = await session.scalar(
-            select(Item).where(
-                Item.id == item_id,
-                Item.user_id == user_id,
-                Item.processing_status == ProcessingStatus.READY,
-            )
-        )
-        source = await session.get(ItemSource, source_id)
-        if (
-            item is None
-            or source is None
-            or source.item_id != item_id
-            or source.extraction_status != "READY"
-            or source.source_type not in {SourceType.YOUTUBE, SourceType.INSTAGRAM}
-            or not source.source_url
-        ):
+        result = await enqueue_item_video_delivery_in_session(session, user_id, item_id, source_id)
+        if result is None:
             await session.rollback()
             return None
-
-        delivery_type = f"{ITEM_VIDEO_PREFIX}{source.id}"
-        existing = await session.scalar(
-            select(Delivery).where(
-                Delivery.item_id == item.id,
-                Delivery.type == delivery_type,
-            )
-        )
-        if existing is not None and existing.status in {"PENDING", "SENDING"}:
+        if result == "IN_PROGRESS":
             await session.rollback()
-            return "IN_PROGRESS"
-
-        payload = dict(existing.payload_json or {}) if existing is not None else {}
-        if payload.get("telegram_media_kind") != "video":
-            # ❌ Удален кэш generic document file_id: Telegram не сообщает, что это видео,
-            # поэтому старый audio/document id мог повторяться по кнопке отправки видео.
-            payload.pop("telegram_file_id", None)
-            payload.pop("telegram_media_kind", None)
-        payload["source_id"] = source.id
-        await enqueue_item_delivery(
-            session,
-            item,
-            delivery_type,
-            payload=payload,
-            reopen=existing is not None,
-        )
+            return result
         await session.commit()
-        return "QUEUED"
+        return result
+
+
+async def enqueue_item_video_delivery_in_session(
+    session, user_id: int, item_id: int, source_id: int
+) -> str | None:
+    """Reuse the existing media eligibility/outbox rules inside a caller-owned transaction.
+
+    Reminder source callbacks compose this intent with REMINDER_OPENED atomically;
+    the actual download and Telegram send remain owned by DeliveryWorker.
+    """
+    item = await session.scalar(
+        select(Item).where(
+            Item.id == item_id,
+            Item.user_id == user_id,
+            Item.processing_status == ProcessingStatus.READY,
+        )
+    )
+    source = await session.get(ItemSource, source_id)
+    if (
+        item is None
+        or source is None
+        or source.item_id != item_id
+        or source.extraction_status != "READY"
+        or source.source_type not in {SourceType.YOUTUBE, SourceType.INSTAGRAM}
+        or not source.source_url
+    ):
+        return None
+
+    delivery_type = f"{ITEM_VIDEO_PREFIX}{source.id}"
+    existing = await session.scalar(
+        select(Delivery).where(
+            Delivery.item_id == item.id,
+            Delivery.type == delivery_type,
+        )
+    )
+    if existing is not None and existing.status in {"PENDING", "SENDING"}:
+        return "IN_PROGRESS"
+
+    payload = dict(existing.payload_json or {}) if existing is not None else {}
+    if payload.get("telegram_media_kind") != "video":
+        # ❌ Удален кэш generic document file_id: Telegram не сообщает, что это видео,
+        # поэтому старый audio/document id мог повторяться по кнопке отправки видео.
+        payload.pop("telegram_file_id", None)
+        payload.pop("telegram_media_kind", None)
+    payload["source_id"] = source.id
+    await enqueue_item_delivery(
+        session,
+        item,
+        delivery_type,
+        payload=payload,
+        reopen=existing is not None,
+    )
+    return "QUEUED"
 
 
 async def enqueue_profile_delivery(

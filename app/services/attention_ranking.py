@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.enums import ACTIONABLE_ITEM_TYPES, ItemState, ProcessingStatus
 from app.services.behaviour_ranking import BehaviourAffinityService, BehaviourRank
+from app.services.reminder_feedback import ReminderFeedbackService
 from app.storage.models import Event, Item
 
 _DAY = timedelta(days=1)
@@ -34,6 +35,8 @@ class AttentionRank:
     last_shown_at: datetime | None
     age_days: float
     days_since_shown: float | None
+    reminder_preference_penalty: int = 0
+    notification_fatigue_penalty: int = 0
 
     @property
     def personal_rank(self) -> int:
@@ -142,8 +145,11 @@ def calculate_attention_rank(
     behaviour_rank: BehaviourRank,
     last_shown_at: datetime | None,
     now: datetime,
+    *,
+    reminder_preference_penalty: int = 0,
+    notification_fatigue_penalty: int = 0,
 ) -> AttentionRank:
-    """Project a persisted candidate into a score without mutating canonical Item data."""
+    """Project canonical facts and bounded Reminder reactions into a derived score."""
     if item.id is None or item.priority_score is None or item.created_at is None:
         raise ValueError("candidate must be persisted with created_at and priority_score")
 
@@ -167,6 +173,8 @@ def calculate_attention_rank(
         + due_points
         + stale_points
         + recent_penalty
+        + reminder_preference_penalty
+        + notification_fatigue_penalty
     )
     return AttentionRank(
         item_id=item.id,
@@ -186,6 +194,8 @@ def calculate_attention_rank(
             if since_last_shown is not None
             else None
         ),
+        reminder_preference_penalty=reminder_preference_penalty,
+        notification_fatigue_penalty=notification_fatigue_penalty,
     )
 
 
@@ -254,6 +264,9 @@ class AttentionRankingService:
         last_shown_by_item = {
             item_id: _as_utc(created_at) for item_id, created_at in exposures.all()
         }
+        preference_penalties, fatigue_penalty = await ReminderFeedbackService.attention_adjustments(
+            session, user_id, candidates, now=captured_now
+        )
 
         ranked = [
             (
@@ -263,6 +276,8 @@ class AttentionRankingService:
                     behaviour_ranks[item.id],
                     last_shown_by_item.get(item.id),
                     captured_now,
+                    reminder_preference_penalty=preference_penalties.get(item.id, 0),
+                    notification_fatigue_penalty=fatigue_penalty,
                 ),
             )
             for item in candidates
@@ -314,5 +329,15 @@ class AttentionRankingService:
                 Event.event_type.in_(_EXPOSURE_EVENT_TYPES),
             )
         )
-        rank = calculate_attention_rank(item, behaviour_rank, last_shown_at, captured_now)
+        preference_penalties, fatigue_penalty = await ReminderFeedbackService.attention_adjustments(
+            session, user_id, [item], now=captured_now
+        )
+        rank = calculate_attention_rank(
+            item,
+            behaviour_rank,
+            last_shown_at,
+            captured_now,
+            reminder_preference_penalty=preference_penalties.get(item.id, 0),
+            notification_fatigue_penalty=fatigue_penalty,
+        )
         return item, rank

@@ -229,17 +229,33 @@ class Event(Base):
 
     __tablename__ = "events"
     __table_args__ = (
+        CheckConstraint(
+            "item_id IS NOT NULL OR reminder_id IS NOT NULL",
+            name="ck_events_item_or_reminder_ref",
+        ),
         Index(
             "uq_events_user_idempotency_key",
             "user_id",
             "idempotency_key",
             unique=True,
         ),
+        Index(
+            "uq_events_reminder_event_type",
+            "reminder_id",
+            "event_type",
+            unique=True,
+            sqlite_where=text(
+                "reminder_id IS NOT NULL AND event_type IN "
+                "('REMINDER_SENT', 'REMINDER_OPENED', 'REMINDER_SNOOZED', "
+                "'REMINDER_DONE', 'REMINDER_DISMISSED', 'REMINDER_DISLIKED')"
+            ),
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
-    item_id: Mapped[int] = mapped_column(ForeignKey("items.id"), index=True)
+    item_id: Mapped[int | None] = mapped_column(ForeignKey("items.id"), index=True)
+    reminder_id: Mapped[int | None] = mapped_column(ForeignKey("reminders.id"), index=True)
     event_type: Mapped[str] = mapped_column(String(32), index=True)
     payload_json: Mapped[dict | None] = mapped_column(JSON)
     idempotency_key: Mapped[str | None] = mapped_column(String(160))

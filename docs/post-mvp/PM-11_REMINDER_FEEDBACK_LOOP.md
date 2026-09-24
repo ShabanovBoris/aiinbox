@@ -3,6 +3,8 @@
 Type: Post-MVP Epic + Detailed Technical Specification  
 Prerequisites: PM-08 proactive reminders; PM-09 hooks; PM-10 nudges
 
+Status: IN_REVIEW
+
 ## 1. Epic
 
 ### Problem

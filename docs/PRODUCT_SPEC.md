@@ -488,11 +488,21 @@ receipt выполняются в одной транзакции. Распоз�
 временно недоступной целью также потребляется без Event, если Item принадлежит
 пользователю.
 
+PM-11 reminder Events (`REMINDER_SENT`, `REMINDER_OPENED`, `REMINDER_SNOOZED`,
+`REMINDER_DONE`, `REMINDER_DISMISSED`, `REMINDER_DISLIKED`) ссылаются на
+конкретный `reminder_id`; Item-specific события также сохраняют `item_id`, а
+generic nudge может иметь только Reminder. Normal `DONE`, `SNOOZED`, `ARCHIVED`
+и PM-05 feedback не выводятся из reminder reactions и остаются отдельными
+сигналами. Для успешной доставки `REMINDER_SENT` фиксируется в той же
+транзакции, что и `Reminder.SENT`; исторические SENT rows не backfill-ятся.
+
 ## 50. reminders
 
 `reminders` хранит daily digest, snooze, PM-08 proactive scheduling и PM-10
 user-level motivation claims. `MOTIVATION_NUDGE` использует `item_id=NULL` и
-отдельную уникальность локального дневного слота.
+отдельную уникальность локального дневного слота. Events могут независимо
+указывать Item и Reminder, но хотя бы одна ссылка обязательна; один Reminder
+может иметь не более одного Event каждого PM-11 типа.
 `deliveries` — отдельный durable outbox для READY/FAILED/profile notifications.
 
 ## 51. Daily digest
@@ -547,8 +557,25 @@ Generic intent хранится как Reminder с `item_id=NULL`. `scheduled_at
 короткие и сериализованные: факты, opt-in, тихие часы, общий budget, generic cap,
 интервал и повтор kind перепроверяются до Telegram; сетевой вызов происходит
 после commit. Только успешный возврат Telegram переводит Reminder в `SENT` и
-расходует лимиты. Event для generic nudges не создаётся; delivery сохраняет
+расходует лимиты. PM-11 добавляет `REMINDER_SENT` для всех четырёх типов
+успешных delivery: digest, snooze resurfacing, proactive Attention и motivation.
+Event хранит bounded snapshot отправки, а не source content. Delivery сохраняет
 текущую PM-08 at-least-once семантику при сбое между Telegram и SQLite.
+
+Proactive reminder позволяет Done, Later, Not now и Fewer like this; generic
+nudge — OK и Fewer like this. Reminder Done/Snooze фиксируют дополнительный
+outcome в транзакции с canonical lifecycle event; normal Item Done/Snooze не
+приписываются задним числом к напоминанию. Не наблюдаемый Telegram URL-click не
+создаёт `REMINDER_OPENED`; этот Event означает только наблюдаемый bot-mediated
+source action.
+
+`REMINDER_DISMISSED` добавляет 24-часовой scheduler cooldown, не меняя Item
+state или attention score; действует более длинный PM-08 same-Item cooldown.
+Item-specific `REMINDER_DISLIKED` даёт ограниченную, не накапливающуюся
+категорийную/типовую поправку из send-time snapshot. Outcome history за
+последние семь суток даёт user-level fatigue penalty от 0 до -10; положительное
+взаимодействие не повышает score. Dislike generic reminder подавляет только ту
+же MotivationKind семь elapsed дней и не меняет настройки пользователя.
 
 ## 53. Done
 

@@ -624,8 +624,8 @@ async def test_attention_uses_constant_number_of_candidate_and_event_queries(
             sqlalchemy_event.remove(engine.sync_engine, "before_cursor_execute", count_selects)
 
     assert len(ranked) == 3
-    assert len(selects) == 4
-    assert sum("from events" in statement for statement in selects) == 2
+    assert len(selects) == 6
+    assert sum("from events" in statement for statement in selects) == 4
     exposure_query = next(
         statement for statement in selects if "max(events.created_at)" in statement
     )

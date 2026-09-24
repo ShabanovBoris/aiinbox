@@ -23,13 +23,18 @@ from app.bot.formatting import (
     format_proactive_attention_reminder,
     format_today,
 )
-from app.bot.keyboards import item_keyboard
+from app.bot.keyboards import motivation_reminder_keyboard, proactive_reminder_keyboard
 from app.domain.enums import ACTIONABLE_ITEM_TYPES, ItemState, ProcessingStatus
 from app.domain.models import MotivationCandidate
 from app.services.attention_hooks import AttentionHookService
 from app.services.attention_ranking import AttentionRank, AttentionRankingService
 from app.services.calendar_windows import local_day_window as _shared_local_day_window
 from app.services.motivation import MOTIVATION_NUDGE, MotivationService
+from app.services.reminder_feedback import (
+    REMINDER_DISMISSAL_COOLDOWN,
+    ReminderFeedbackService,
+    record_reminder_event,
+)
 from app.services.retrieval import TodayService
 from app.storage.models import Event, Item, ItemSource, Reminder, User
 
@@ -550,6 +555,19 @@ class ReminderWorker:
                 )
                 .values(status="SENT", sent_at=sent_at, claimed_at=None)
             )
+            if result.rowcount == 1:
+                reminder = await session.scalar(
+                    select(Reminder)
+                    .where(
+                        Reminder.user_id == user_id,
+                        Reminder.type == DAILY_DIGEST,
+                        Reminder.scheduled_at == scheduled_at,
+                        Reminder.status == "SENT",
+                    )
+                    .execution_options(populate_existing=True)
+                )
+                if reminder is not None:
+                    record_reminder_event(session, reminder, "REMINDER_SENT", created_at=sent_at)
             if result.rowcount != 1:
                 log.warning("digest finalization ignored after claim recovery user_id=%s", user_id)
             await session.commit()
@@ -669,6 +687,28 @@ class ReminderWorker:
         )
         return {item_id: _utc_naive(sent_at) for item_id, sent_at in result.all()}
 
+    async def _dismissal_cooldowns(
+        self, session, user_id: int, item_ids: list[int], now: datetime
+    ) -> dict[int, datetime]:
+        """Use recent Reminder feedback as a scheduler-only 24-hour timing block."""
+        return await ReminderFeedbackService.latest_dismissals(session, user_id, item_ids, now=now)
+
+    @staticmethod
+    def _proactive_cooldown_active(
+        item_id: int,
+        now: datetime,
+        policy: AttentionIntensityPolicy,
+        proactive_sent: Mapping[int, datetime],
+        dismissed_at: Mapping[int, datetime],
+    ) -> bool:
+        """Apply max(PM-08 same-Item delay, PM-11 dismissal delay) without ranking effects."""
+        instant = _utc_naive(now)
+        last_sent = proactive_sent.get(item_id)
+        if last_sent is not None and instant - last_sent < policy.same_item_cooldown:
+            return True
+        dismissal = dismissed_at.get(item_id)
+        return dismissal is not None and instant - dismissal < REMINDER_DISMISSAL_COOLDOWN
+
     @staticmethod
     def _claim_is_stale(reminder: Reminder, now: datetime) -> bool:
         # ❌ Удален расчет lease по created_at: recovery не должен менять время
@@ -702,10 +742,12 @@ class ReminderWorker:
         cooldowns = await self._proactive_cooldowns(
             session, user_id, [item.id for item, _ in qualified]
         )
+        item_ids = [item.id for item, _ in qualified]
+        dismissals = await self._dismissal_cooldowns(session, user_id, item_ids, now)
         return [
             (item.id, rank)
             for item, rank in qualified
-            if item.id not in cooldowns or now - cooldowns[item.id] >= policy.same_item_cooldown
+            if not self._proactive_cooldown_active(item.id, now, policy, cooldowns, dismissals)
         ]
 
     async def _latest_sent_type(self, session, user_id: int, types: tuple[str, ...]) -> str | None:
@@ -756,7 +798,11 @@ class ReminderWorker:
         )
         if latest_interrupting == MOTIVATION_NUDGE:
             return []
-        return await MotivationService().candidates(session, user.id, zone=zone, now=now)
+        candidates = await MotivationService().candidates(session, user.id, zone=zone, now=now)
+        suppressed = await ReminderFeedbackService.suppressed_motivation_kinds(
+            session, user.id, now=now
+        )
+        return [candidate for candidate in candidates if candidate.kind not in suppressed]
 
     @staticmethod
     def _choose_attention_intervention(
@@ -1171,6 +1217,14 @@ class ReminderWorker:
                 )
                 .values(status="SENT", sent_at=sent_at, claimed_at=None)
             )
+            if result.rowcount == 1:
+                reminder = await session.scalar(
+                    select(Reminder)
+                    .where(Reminder.id == reminder_id, Reminder.status == "SENT")
+                    .execution_options(populate_existing=True)
+                )
+                if reminder is not None:
+                    record_reminder_event(session, reminder, "REMINDER_SENT", created_at=sent_at)
             if result.rowcount != 1:
                 log.warning(
                     "motivation finalization ignored after claim recovery reminder_id=%s",
@@ -1206,6 +1260,7 @@ class ReminderWorker:
                 chat_id,
                 candidate.rendered_text,
                 claimed_at=claimed_at,
+                reply_markup=motivation_reminder_keyboard(reminder_id),
             )
         except Exception:
             log.exception(
@@ -1305,6 +1360,9 @@ class ReminderWorker:
                 claim_generation=claim_generation,
                 timeout_seconds=hook_timeout,
             )
+        focus_source_id = (
+            hook_presentation.hook.source_id if hook_presentation is not None else None
+        )
         prepared = await self._prepare_proactive_send(
             reminder_id, user_id, item_id, claim_generation, sent_at_override
         )
@@ -1322,12 +1380,11 @@ class ReminderWorker:
                     ),
                 ),
                 claimed_at=claimed_at,
-                reply_markup=item_keyboard(
+                reply_markup=proactive_reminder_keyboard(
+                    reminder_id,
                     item,
                     sources,
-                    focus_source_id=(
-                        hook_presentation.hook.source_id if hook_presentation is not None else None
-                    ),
+                    focus_source_id=focus_source_id,
                 ),
             )
         except Exception:
@@ -1413,6 +1470,7 @@ class ReminderWorker:
                     ).all()
                 )
             cooldowns = await self._proactive_cooldowns(session, user_id, item_ids)
+            dismissals = await self._dismissal_cooldowns(session, user_id, item_ids, now)
 
             chosen: tuple[int, AttentionRank] | None = None
             if open_claim is not None and open_claim.item_id is not None:
@@ -1420,11 +1478,12 @@ class ReminderWorker:
                     (rank for item_id, rank in qualified if item_id == open_claim.item_id),
                     None,
                 )
-                old_last_sent = cooldowns.get(open_claim.item_id)
                 if (
                     old_rank is not None
                     and open_claim.item_id in eligible_ids
-                    and (old_last_sent is None or now - old_last_sent >= policy.same_item_cooldown)
+                    and not self._proactive_cooldown_active(
+                        open_claim.item_id, now, policy, cooldowns, dismissals
+                    )
                 ):
                     chosen = (open_claim.item_id, old_rank)
                 else:
@@ -1437,9 +1496,8 @@ class ReminderWorker:
                         (item_id, rank)
                         for item_id, rank in qualified
                         if item_id in eligible_ids
-                        and (
-                            item_id not in cooldowns
-                            or now - cooldowns[item_id] >= policy.same_item_cooldown
+                        and not self._proactive_cooldown_active(
+                            item_id, now, policy, cooldowns, dismissals
                         )
                     ),
                     None,
@@ -1460,6 +1518,8 @@ class ReminderWorker:
                 "attention_score": rank.score,
                 "priority_score": rank.priority_score,
                 "interest_level": item.interest_level,
+                "category": item.category,
+                "item_type": item.item_type.value if item.item_type is not None else None,
                 "policy_level": policy.level,
                 "reason": format_attention_reason(rank)[:240],
                 "budget_local_date": local_date.isoformat(),
@@ -1592,8 +1652,8 @@ class ReminderWorker:
                 return None
             item, current_rank = current_candidate
             cooldowns = await self._proactive_cooldowns(session, user_id, [item_id])
-            last_sent = cooldowns.get(item_id)
-            if last_sent is not None and prepare_now - last_sent < policy.same_item_cooldown:
+            dismissals = await self._dismissal_cooldowns(session, user_id, [item_id], prepare_now)
+            if self._proactive_cooldown_active(item_id, prepare_now, policy, cooldowns, dismissals):
                 reminder.status = "CANCELLED"
                 reminder.claimed_at = None
                 await session.commit()
@@ -1614,6 +1674,8 @@ class ReminderWorker:
                     "attention_score": current_rank.score,
                     "priority_score": current_rank.priority_score,
                     "interest_level": item.interest_level,
+                    "category": item.category,
+                    "item_type": item.item_type.value if item.item_type is not None else None,
                     "policy_level": policy.level,
                     "reason": format_attention_reason(current_rank)[:240],
                 }
@@ -1677,6 +1739,13 @@ class ReminderWorker:
                         created_at=sent_at,
                     )
                 )
+                reminder = await session.scalar(
+                    select(Reminder)
+                    .where(Reminder.id == reminder_id, Reminder.status == "SENT")
+                    .execution_options(populate_existing=True)
+                )
+                if reminder is not None:
+                    record_reminder_event(session, reminder, "REMINDER_SENT", created_at=sent_at)
             await session.commit()
 
     async def _process_snoozes(self, now: datetime | None) -> int:
@@ -1813,6 +1882,20 @@ class ReminderWorker:
                 )
                 .values(status="SENT", sent_at=sent_at, claimed_at=None)
             )
+            if result.rowcount == 1:
+                reminder = await session.scalar(
+                    select(Reminder)
+                    .where(
+                        Reminder.user_id == user_id,
+                        Reminder.item_id == item_id,
+                        Reminder.type == SNOOZE_RESURFACE,
+                        Reminder.scheduled_at == scheduled_at,
+                        Reminder.status == "SENT",
+                    )
+                    .execution_options(populate_existing=True)
+                )
+                if reminder is not None:
+                    record_reminder_event(session, reminder, "REMINDER_SENT", created_at=sent_at)
             if result.rowcount != 1:
                 log.warning("snooze finalization ignored after claim recovery item_id=%s", item_id)
             await session.commit()

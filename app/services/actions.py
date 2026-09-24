@@ -36,174 +36,194 @@ async def apply_item_action(
         if user_id is None:
             return None
 
-        # ❌ Удален ORM read-modify-write lifecycle block: concurrent callbacks
-        # могли оба записать state и продублировать Event; transition теперь CAS.
-        transition = None
-        event_type: str | None = None
-        if action == "done":
-            transition = (
-                update(Item)
-                .where(
-                    Item.id == item_id,
-                    Item.user_id == user_id,
-                    Item.state.in_((ItemState.ACTIVE, ItemState.SNOOZED)),
-                )
-                .values(
-                    state=ItemState.DONE,
-                    completed_at=_utc_now(),
-                    snoozed_until=None,
-                )
-                .returning(Item.id)
+        item, _transitioned = await _apply_item_action_in_session(
+            session, user_id, item_id, action, snoozed_until=snoozed_until
+        )
+        await session.commit()
+        return item
+
+
+async def _apply_item_action_in_session(
+    session: AsyncSession,
+    user_id: int,
+    item_id: int,
+    action: str,
+    snoozed_until: datetime | None = None,
+) -> tuple[Item | None, bool]:
+    """Own the canonical CAS so normal and Reminder actions share one transaction core.
+
+    ReminderFeedbackService composes the returned transition with its causal
+    reminder Event; this function deliberately never commits the caller's work.
+    """
+
+    # ❌ Удалено отдельное копирование lifecycle CAS из reminder callbacks:
+    # один session-level core сохраняет те же transition guards и side effects.
+    transition = None
+    event_type: str | None = None
+    if action == "done":
+        transition = (
+            update(Item)
+            .where(
+                Item.id == item_id,
+                Item.user_id == user_id,
+                Item.state.in_((ItemState.ACTIVE, ItemState.SNOOZED)),
             )
-            event_type = "DONE"
-        elif action == "archive":
-            transition = (
-                update(Item)
-                .where(
-                    Item.id == item_id,
-                    Item.user_id == user_id,
-                    Item.state.in_((ItemState.ACTIVE, ItemState.SNOOZED)),
-                )
-                .values(
-                    state=ItemState.ARCHIVED,
-                    archived_at=_utc_now(),
-                    snoozed_until=None,
-                )
-                .returning(Item.id)
+            .values(
+                state=ItemState.DONE,
+                completed_at=_utc_now(),
+                snoozed_until=None,
             )
-            event_type = "ARCHIVED"
-        elif action == "snooze" and snoozed_until is not None:
-            transition = (
-                update(Item)
-                .where(
-                    Item.id == item_id,
-                    Item.user_id == user_id,
-                    Item.state.in_((ItemState.ACTIVE, ItemState.SNOOZED)),
-                    or_(
-                        Item.state != ItemState.SNOOZED,
-                        Item.snoozed_until.is_distinct_from(snoozed_until),
-                    ),
-                )
-                .values(state=ItemState.SNOOZED, snoozed_until=snoozed_until)
-                .returning(Item.id)
+            .returning(Item.id)
+        )
+        event_type = "DONE"
+    elif action == "archive":
+        transition = (
+            update(Item)
+            .where(
+                Item.id == item_id,
+                Item.user_id == user_id,
+                Item.state.in_((ItemState.ACTIVE, ItemState.SNOOZED)),
             )
-            event_type = "SNOOZED"
-        elif action == "cancel_snooze":
-            transition = (
-                update(Item)
-                .where(
-                    Item.id == item_id,
-                    Item.user_id == user_id,
-                    Item.state == ItemState.SNOOZED,
-                )
-                .values(state=ItemState.ACTIVE, snoozed_until=None)
-                .returning(Item.id)
+            .values(
+                state=ItemState.ARCHIVED,
+                archived_at=_utc_now(),
+                snoozed_until=None,
             )
-        elif action == "retry":
-            failed_sources = list(
-                (
-                    await session.scalars(
-                        select(ItemSource).where(
-                            ItemSource.item_id == item_id,
-                            ItemSource.extraction_status == "FAILED",
-                        )
-                    )
-                ).all()
-            )
-            retryable_source_ids = [
-                source.id for source in failed_sources if not source.failure_is_permanent
-            ]
-            # ❌ Удалено правило «любой FAILED child можно retry»: permanent source
-            # failures должны оставаться durable FAILED и не запускать заведомо
-            # бесполезную повторную extraction после restart.
-            retryable_partial = (
-                and_(
-                    Item.processing_status == ProcessingStatus.READY,
-                    Item.analysis_completeness == "PARTIAL",
-                )
-                if retryable_source_ids
-                else false()
-            )
-            failed_item_retryable_at_extraction = not failed_sources or bool(retryable_source_ids)
-            retryable_failed = and_(
-                Item.processing_status == ProcessingStatus.FAILED,
+            .returning(Item.id)
+        )
+        event_type = "ARCHIVED"
+    elif action == "snooze" and snoozed_until is not None:
+        transition = (
+            update(Item)
+            .where(
+                Item.id == item_id,
+                Item.user_id == user_id,
+                Item.state.in_((ItemState.ACTIVE, ItemState.SNOOZED)),
                 or_(
-                    Item.processing_stage != "EXTRACTING",
-                    failed_item_retryable_at_extraction,
+                    Item.state != ItemState.SNOOZED,
+                    Item.snoozed_until.is_distinct_from(snoozed_until),
                 ),
             )
-            transition = (
-                update(Item)
-                .where(
-                    Item.id == item_id,
-                    Item.user_id == user_id,
-                    or_(retryable_failed, retryable_partial),
-                )
-                .values(
-                    processing_status=ProcessingStatus.QUEUED,
-                    # A partial READY result already has a final analysis checkpoint.
-                    # Re-enter extraction so only failed child sources reopen, while
-                    # READY source checkpoints are restored and the Item is reanalyzed.
-                    processing_stage=case(
-                        (retryable_partial, "EXTRACTING"),
-                        else_=Item.processing_stage,
-                    ),
-                    error_code=None,
-                    error_message=None,
-                )
-                .returning(Item.id)
+            .values(state=ItemState.SNOOZED, snoozed_until=snoozed_until)
+            .returning(Item.id)
+        )
+        event_type = "SNOOZED"
+    elif action == "cancel_snooze":
+        transition = (
+            update(Item)
+            .where(
+                Item.id == item_id,
+                Item.user_id == user_id,
+                Item.state == ItemState.SNOOZED,
             )
-            event_type = "RETRIED"
-        else:
-            return await session.scalar(
-                select(Item).where(Item.id == item_id, Item.user_id == user_id)
-            )
-
-        # The conditional UPDATE is the compare-and-set boundary. Only the
-        # request that actually wins the transition may create side effects.
-        transitioned_item_id = await session.scalar(transition)
-        if transitioned_item_id is not None:
-            if action in {"done", "archive", "cancel_snooze", "snooze"}:
-                await cancel_snooze_reminders(session, user_id, item_id)
-            if action == "snooze":
-                await add_snooze_reminder(session, user_id, item_id, snoozed_until)
-            if action == "retry":
-                # Failure delivery belongs to the FAILED state being left. Marking
-                # it terminal in the same transaction prevents the outbox from
-                # announcing an obsolete failure after the user has already retried.
-                if retryable_source_ids:
-                    await session.execute(
-                        update(ItemSource)
-                        .where(ItemSource.id.in_(retryable_source_ids))
-                        .values(
-                            extraction_status="PENDING",
-                            error_code=None,
-                            error_message=None,
-                        )
+            .values(state=ItemState.ACTIVE, snoozed_until=None)
+            .returning(Item.id)
+        )
+    elif action == "retry":
+        failed_sources = list(
+            (
+                await session.scalars(
+                    select(ItemSource).where(
+                        ItemSource.item_id == item_id,
+                        ItemSource.extraction_status == "FAILED",
                     )
+                )
+            ).all()
+        )
+        retryable_source_ids = [
+            source.id for source in failed_sources if not source.failure_is_permanent
+        ]
+        # ❌ Удалено правило «любой FAILED child можно retry»: permanent source
+        # failures должны оставаться durable FAILED и не запускать заведомо
+        # бесполезную повторную extraction после restart.
+        retryable_partial = (
+            and_(
+                Item.processing_status == ProcessingStatus.READY,
+                Item.analysis_completeness == "PARTIAL",
+            )
+            if retryable_source_ids
+            else false()
+        )
+        failed_item_retryable_at_extraction = not failed_sources or bool(retryable_source_ids)
+        retryable_failed = and_(
+            Item.processing_status == ProcessingStatus.FAILED,
+            or_(
+                Item.processing_stage != "EXTRACTING",
+                failed_item_retryable_at_extraction,
+            ),
+        )
+        transition = (
+            update(Item)
+            .where(
+                Item.id == item_id,
+                Item.user_id == user_id,
+                or_(retryable_failed, retryable_partial),
+            )
+            .values(
+                processing_status=ProcessingStatus.QUEUED,
+                # A partial READY result already has a final analysis checkpoint.
+                # Re-enter extraction so only failed child sources reopen, while
+                # READY source checkpoints are restored and the Item is reanalyzed.
+                processing_stage=case(
+                    (retryable_partial, "EXTRACTING"),
+                    else_=Item.processing_stage,
+                ),
+                error_code=None,
+                error_message=None,
+            )
+            .returning(Item.id)
+        )
+        event_type = "RETRIED"
+    else:
+        return await session.scalar(
+            select(Item).where(Item.id == item_id, Item.user_id == user_id)
+        ), False
+
+    # The conditional UPDATE is the compare-and-set boundary. Only the
+    # request that actually wins the transition may create side effects.
+    transitioned_item_id = await session.scalar(transition)
+    if transitioned_item_id is not None:
+        if action in {"done", "archive", "cancel_snooze", "snooze"}:
+            await cancel_snooze_reminders(session, user_id, item_id)
+        if action == "snooze":
+            await add_snooze_reminder(session, user_id, item_id, snoozed_until)
+        if action == "retry":
+            # Failure delivery belongs to the FAILED state being left. Marking
+            # it terminal in the same transaction prevents the outbox from
+            # announcing an obsolete failure after the user has already retried.
+            if retryable_source_ids:
                 await session.execute(
-                    update(Delivery)
-                    .where(
-                        Delivery.item_id == item_id,
-                        Delivery.type == ITEM_FAILED,
-                        Delivery.status.in_(("PENDING", "SENDING")),
+                    update(ItemSource)
+                    .where(ItemSource.id.in_(retryable_source_ids))
+                    .values(
+                        extraction_status="PENDING",
+                        error_code=None,
+                        error_message=None,
                     )
-                    .values(status="CANCELLED", last_error=None)
                 )
-
-        if transitioned_item_id is not None and event_type is not None:
-            session.add(
-                Event(
-                    user_id=user_id,
-                    item_id=item_id,
-                    event_type=event_type,
-                    payload_json={"snoozed_until": snoozed_until.isoformat()}
-                    if snoozed_until is not None
-                    else None,
+            await session.execute(
+                update(Delivery)
+                .where(
+                    Delivery.item_id == item_id,
+                    Delivery.type == ITEM_FAILED,
+                    Delivery.status.in_(("PENDING", "SENDING")),
                 )
+                .values(status="CANCELLED", last_error=None)
             )
-        await session.commit()
-        return await session.scalar(select(Item).where(Item.id == item_id, Item.user_id == user_id))
+
+    if transitioned_item_id is not None and event_type is not None:
+        session.add(
+            Event(
+                user_id=user_id,
+                item_id=item_id,
+                event_type=event_type,
+                payload_json={"snoozed_until": snoozed_until.isoformat()}
+                if snoozed_until is not None
+                else None,
+            )
+        )
+    item = await session.scalar(select(Item).where(Item.id == item_id, Item.user_id == user_id))
+    return item, transitioned_item_id is not None
 
 
 async def set_item_interest(
