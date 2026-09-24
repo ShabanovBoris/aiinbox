@@ -94,7 +94,7 @@ Telegram → ingestion → SQLite queue → ProcessingWorker
   provenance;
 - forwarded photo-post с URL в caption/text_link: caption и ссылки сохраняются как
   единый source content, само изображение не анализируется;
-- `/today`, `/inbox`, `/category`, `/search`;
+- `/today`, `/attention`, `/inbox`, `/category`, `/search`;
 - `/profile`, `/profile_update`;
 - `/settings`;
 - Done / Later / Archive / Retry;
@@ -382,6 +382,13 @@ PM-06 добавляет вычисляемый по текущим category/typ
 `priority_score`; `interest_level` остаётся отдельным сигналом для будущего
 Attention Ranking.
 
+PM-07 вычисляет on demand отдельный `attention_score` из PM-06
+`personal_rank`, ручного интереса, возраста Item, suggested due date и истории
+показов. Он не хранится и не меняет `priority_score`, `interest_level`, due date
+или lifecycle. История показов использует user-scoped `TODAY_SHOWN` и
+`ATTENTION_SHOWN`; PM-06 продолжает игнорировать `ATTENTION_SHOWN` как сигнал
+предпочтений.
+
 ## 41. Today selection
 
 `TodayService` выбирает только READY + ACTIVE Items типов ACTION/LEARN/READ/WATCH,
@@ -391,6 +398,17 @@ Attention Ranking.
 ## 42. /today
 
 По умолчанию возвращает 3 Items, hard max — 5.
+
+### `/attention [1-5]`
+
+Отдельная ручная preview-команда ранжирует READY + ACTIVE Items типов
+ACTION/LEARN/READ/WATCH по текущему attention score. По умолчанию показывает до
+3 карточек, абсолютный максимум — 5. Рейтинг учитывает PM-06 `personal_rank`,
+ручной интерес, возраст, neglect, persisted suggested due date, важные старые
+Items и подавление недавно показанных Items. Каждая карточка сохраняет
+существующие Item/ItemSource actions. После успешной отправки карточки
+записывается `ATTENTION_SHOWN`; автоматических сообщений команда не планирует.
+`/today` и daily digest остаются основаны на `priority_score`.
 
 ## 43. /inbox
 

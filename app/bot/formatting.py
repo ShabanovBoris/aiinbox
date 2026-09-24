@@ -3,6 +3,7 @@ from collections.abc import Sequence
 from app.bot.provenance import forward_source_label
 from app.domain.enums import SourceType
 from app.domain.models import UserProfile
+from app.services.attention_ranking import AttentionRank
 from app.storage.models import Item, ItemSource
 
 _TELEGRAM_MAX_MESSAGE_LENGTH = 4096
@@ -124,6 +125,48 @@ def format_today(items: list[Item]) -> str:
             lines.append(f"   ~{item.estimated_action_minutes} мин")
         if item.next_action:
             lines.append(f"   {item.next_action}")
+    return _fit_message(lines)
+
+
+def format_attention_reason(rank: AttentionRank) -> str:
+    """Explain only persisted ranking signals; generated prose never invents context."""
+    reasons = []
+    if rank.due_bonus:
+        reasons.append("Срок прошёл" if rank.due_bonus == 10 else "Срок близко")
+    if rank.stale_important_bonus:
+        reasons.append("Важный Item давно не возвращался")
+    elif rank.neglect_bonus:
+        if rank.last_shown_at is None:
+            reasons.append("Ещё не показывался")
+        else:
+            days = int(rank.days_since_shown or 0)
+            reasons.append(f"Не показывался {days} дн.")
+    if rank.priority_score >= 75:
+        reasons.append("Высокий приоритет")
+    if rank.interest_adjustment > 0:
+        reasons.append("Высокий интерес")
+    elif rank.interest_adjustment < 0:
+        reasons.append("Низкий интерес")
+    if rank.behaviour_rank.adjustment_points > 0:
+        reasons.append("Подходит по вашим реакциям")
+    elif rank.age_bonus > 0 and not rank.neglect_bonus:
+        reasons.append("Давно сохранён")
+    if rank.recent_show_penalty < 0:
+        reasons.append("Показан недавно")
+    return "; ".join(reasons[:3]) or "Высокий текущий рейтинг"
+
+
+def format_attention_item(index: int, count: int, item: Item, rank: AttentionRank) -> str:
+    """Project one ranked Item into its own Telegram card, preserving room for actions."""
+    lines = [
+        f"{index}/{count} — {item.title or 'Без названия'}",
+        f"Внимание: {rank.score}/100",
+        f"Приоритет: {rank.priority_score}/100",
+        f"Интерес: {item.interest_level}/3",
+        f"Возраст: {int(rank.age_days)} дн.",
+        "",
+        f"Почему сейчас: {format_attention_reason(rank)}",
+    ]
     return _fit_message(lines)
 
 

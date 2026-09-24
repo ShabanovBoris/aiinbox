@@ -374,3 +374,21 @@ events must outweigh older events even when the user's history is one-sided.
 Consequences: policy weights and recency affect both one-sided and mixed
 history; each event remains bounded to [-1, +1], and sparse histories remain
 smoothed toward neutral by K.
+
+## D-030 — Attention score is a time-dependent projection
+
+Context: PM-07 combines semantic priority, PM-06 behaviour, manual interest,
+Item age, due date and recent exposure; the result changes as time passes and
+the user sees previews.
+
+Decision: compute `attention_score` on demand from canonical Item facts and
+user-scoped `TODAY_SHOWN` / `ATTENTION_SHOWN` Events. Persist
+`ATTENTION_SHOWN` only after each separate preview card is delivered, with its
+own short transaction.
+
+Reason: storing a derived, changing score would create stale ranking state, and
+recording a card before Telegram delivery would misrepresent what the user saw.
+
+Consequences: PM-06 ignores the exposure Event as a preference signal;
+`priority_score` and `/today`/digest ordering remain unchanged. No schema
+migration is required.

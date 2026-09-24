@@ -2,6 +2,7 @@
 
 Type: Post-MVP Epic + Detailed Technical Specification  
 Prerequisites: PM-01 Interest Level; PM-06 Behaviour-Aware Ranking
+Status: IN_REVIEW
 
 ## 1. Epic
 
@@ -116,9 +117,10 @@ Implement interpolation as a pure tested function.
 
 ## 9. Attention history
 
-For PM-07, derive last shown primarily from durable TODAY_SHOWN events.
-
-After PM-11, reminder events may extend this.
+Derive last shown from the latest user-scoped `TODAY_SHOWN` or
+`ATTENTION_SHOWN` Event for the Item. `CREATED` and the initial READY result
+delivery are not exposure. SQLite naive timestamps are interpreted as UTC; all
+intervals use elapsed UTC time.
 
 Derived value:
 
@@ -133,8 +135,8 @@ Never shown remains NULL/unknown.
 | Time since last shown | Bonus |
 |---|---:|
 | shown <7 days ago | 0 |
-| 7–14 days | +3 |
-| 14–30 days | +6 |
+| 7 days <= elapsed <14 days | +3 |
+| 14 days <= elapsed <=30 days | +6 |
 | >30 days | +10 |
 | never shown and Item age >=14 days | +8 |
 
@@ -145,10 +147,10 @@ Never shown + age <14 days -> 0.
 | Last shown | Penalty |
 |---|---:|
 | <24h | -25 |
-| 1–3 days | -15 |
-| 3–7 days | -8 |
-| 7–14 days | -3 |
-| >14 days / never | 0 |
+| 1 day <= elapsed <3 days | -15 |
+| 3 days <= elapsed <7 days | -8 |
+| 7 days <= elapsed <14 days | -3 |
+| >=14 days / never | 0 |
 
 Recent suppression should normally dominate age bonus.
 
@@ -159,8 +161,8 @@ Use persisted suggested_due_at only.
 | Due relation | Bonus |
 |---|---:|
 | overdue | +10 |
-| within 3 days | +7 |
-| within 7 days | +4 |
+| now <= due_at <= now +3 days | +7 |
+| now +3 days < due_at <= now +7 days | +4 |
 | later / none | 0 |
 
 Do not infer new dates here.
@@ -197,8 +199,11 @@ attention_score =
 Final:
 
 ~~~text
-clamp(round(attention_score), 0, 100)
+clamp(round-half-away-from-zero(attention_score), 0, 100)
 ~~~
+
+Age and exposure elapsed time cannot be negative. The public ranking call accepts
+an injectable UTC `now`; production captures it once per ranking operation.
 
 ## 15. Ordering
 
@@ -269,7 +274,11 @@ ATTENTION_SHOWN
 
 This distinguishes attention preview from TODAY_SHOWN.
 
-PM-06 ignores it initially.
+PM-06 ignores it as a preference signal. The command sends one card per Item
+with the existing `item_keyboard` and ItemSource-aware actions. It records one
+`ATTENTION_SHOWN` only after that card was accepted by Telegram. Each Event
+commits independently, and the SQLite read transaction is closed before any
+Telegram send.
 
 ## 19. TodayService
 

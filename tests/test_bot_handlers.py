@@ -85,6 +85,7 @@ async def test_help_lists_mvp_commands(settings, monkeypatch):
     sent = capture_answers(monkeypatch)
     await on_help(make_message(42), settings)
     assert "/today" in sent[0]
+    assert "/attention [1-5]" in sent[0]
     assert "/settings" in sent[0]
     assert "/help" in sent[0]
     assert "YouTube-ссылку" in sent[0]
@@ -192,7 +193,7 @@ def test_production_router_composition_builds(settings, session_factory):
     assert isinstance(router, Router)
     names = [h.callback.__name__ for h in router.message.handlers]
     assert "profile" in names and "profile_update" in names and "settings_command" in names
-    assert {"help_command", "today", "inbox", "category", "search"} <= set(names)
+    assert {"help_command", "today", "attention", "inbox", "category", "search"} <= set(names)
     assert "item_action" in [h.callback.__name__ for h in router.callback_query.handlers]
 
 

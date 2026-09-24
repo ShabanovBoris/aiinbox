@@ -2,7 +2,7 @@
 
 Type: Post-MVP Epic + Detailed Technical Specification  
 Prerequisite: PM-05 Explicit Feedback merged and its event contract stable
-Status: IN_REVIEW
+Status: DONE
 
 ## 1. Epic
 

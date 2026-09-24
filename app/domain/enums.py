@@ -43,6 +43,11 @@ class ItemType(enum.Enum):
     SOMEDAY = "SOMEDAY"
 
 
+# /today and /attention share one domain policy so both surfaces keep the same
+# definition of actionable Items while applying independent ranking semantics.
+ACTIONABLE_ITEM_TYPES = (ItemType.ACTION, ItemType.LEARN, ItemType.READ, ItemType.WATCH)
+
+
 # Вид содержимого в contents (PRODUCT_SPEC §48): длинный контент хранится
 # отдельно от Item и переживает restart (ТЗ §46).
 class ContentKind(enum.Enum):
