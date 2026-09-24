@@ -419,7 +419,10 @@ Snooze Reminder также становится `CLAIMED` до отправки 
 quiet hours, Item lifecycle и актуальный PM-07 rank перед доставкой. Оставленный
 claim повторяется после пяти минут; утративший актуальность получает статус
 `CANCELLED`. Успешная Telegram delivery фиксируется короткой транзакцией как
-`SENT` вместе с `ATTENTION_SHOWN`. Если процесс остановится после принятия
+`SENT` вместе с `ATTENTION_SHOWN`; `sent_at` фиксируется по успешному возврату
+Telegram и служит временем для локального дневного бюджета и minimum gap. Перед
+отправкой worker под SQLite write-lock заново проверяет текущее время, quiet
+hours, PM-07 rank и same-Item cooldown. Если процесс остановится после принятия
 сообщения Telegram, но до SQLite finalization, повторная попытка после lease
 может отправить дубль: точно объединить транзакции Telegram и SQLite нельзя.
 

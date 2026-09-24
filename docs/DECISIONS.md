@@ -410,8 +410,12 @@ updates by generation. The two-minute send deadline starts at `claimed_at`, so
 pre-send delay consumes the window instead of extending a live sender past
 lease recovery. Re-run PM-07 under the serialized prepare transaction so a
 stale candidate cannot pass the threshold using an old rank. Record
-`ATTENTION_SHOWN` with successful delivery finalization. Existing users receive
-an explicit Attention OFF setting during rollout.
+`ATTENTION_SHOWN` with successful delivery finalization. Capture the prepare
+timestamp under the same writer lock for quiet hours, ranking and cooldown, and
+record successful `sent_at` when Telegram returns; PM-08 local-day budgets and
+gaps therefore follow delivery completion across scheduler and timezone
+boundaries. Existing users receive an explicit Attention OFF setting during
+rollout.
 
 Reason: Reminder rows are durable delivery facts; derived counters and
 duplicated ranking state would drift from actual history.

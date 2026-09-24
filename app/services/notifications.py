@@ -325,7 +325,8 @@ class ReminderWorker:
                 pass
 
     async def process_once(self, now: datetime | None = None) -> int:
-        now = _utc_naive(now or _utc_now())
+        if now is not None:
+            now = _utc_naive(now)
         sent = 0
         async with self.session_factory() as session:
             user_ids = list((await session.scalars(select(User.id))).all())
@@ -350,11 +351,13 @@ class ReminderWorker:
                 log.exception("proactive attention failed user_id=%s", user_id)
         return sent
 
-    async def _process_user(self, user_id: int, now: datetime) -> int:
+    async def _process_user(self, user_id: int, now: datetime | None) -> int:
+        sent_at_override = now
         async with self.session_factory() as session:
             # Digest claim acquisition serializes with snooze/proactive claims;
             # the transaction ends before the Telegram request below.
             await session.execute(text("BEGIN IMMEDIATE"))
+            now = _utc_naive(now) if now is not None else _utc_now()
             user = await session.get(User, user_id)
             if user is None or user.telegram_chat_id is None:
                 return 0
@@ -445,8 +448,14 @@ class ReminderWorker:
             log.exception("daily digest delivery failed user_id=%s", user_id)
             await self._mark_failed(user_id, None, DAILY_DIGEST, scheduled_at, claim_generation)
             return 0
-        await self._mark_digest_sent(user_id, scheduled_at, now, claim_generation)
+        sent_at = self._delivery_timestamp(sent_at_override)
+        await self._mark_digest_sent(user_id, scheduled_at, sent_at, claim_generation)
         return 1
+
+    @staticmethod
+    def _delivery_timestamp(clock_override: datetime | None) -> datetime:
+        """Record Telegram acceptance time while keeping explicit worker clocks deterministic."""
+        return _utc_naive(clock_override) if clock_override is not None else _utc_now()
 
     async def _claim_digest(
         self, session, user_id: int, scheduled_at: datetime, now: datetime
@@ -565,7 +574,7 @@ class ReminderWorker:
             return policy, zone, local_now.date(), "quiet_hours"
 
         if await self._has_active_notification_claim(
-            session, user.id, _utc_now(), exclude_reminder_id=exclude_claim_id
+            session, user.id, now, exclude_reminder_id=exclude_claim_id
         ):
             return policy, zone, local_now.date(), "delivery_in_progress"
 
@@ -657,8 +666,10 @@ class ReminderWorker:
             and item.item_type in ACTIONABLE_ITEM_TYPES
         )
 
-    async def _process_proactive_attention(self, user_id: int, now: datetime) -> int:
+    async def _process_proactive_attention(self, user_id: int, now: datetime | None) -> int:
         """Rank only when policy allows, then create or recover one durable claim."""
+        sent_at_override = now
+        now = _utc_naive(now) if now is not None else _utc_now()
         async with self.session_factory() as session:
             user = await session.get(User, user_id)
             if user is None or user.telegram_chat_id is None:
@@ -709,7 +720,7 @@ class ReminderWorker:
             return 0
         reminder_id, item_id, rank, policy_level, claim_generation, claimed_at = claimed
         prepared = await self._prepare_proactive_send(
-            reminder_id, user_id, item_id, claim_generation, now
+            reminder_id, user_id, item_id, claim_generation, sent_at_override
         )
         if prepared is None:
             return 0
@@ -730,7 +741,10 @@ class ReminderWorker:
             )
             await self._set_proactive_status(reminder_id, claim_generation, "FAILED")
             return 0
-        await self._finalize_proactive_send(reminder_id, user_id, item_id, claim_generation, now)
+        sent_at = self._delivery_timestamp(sent_at_override)
+        await self._finalize_proactive_send(
+            reminder_id, user_id, item_id, claim_generation, sent_at
+        )
         log.info(
             "proactive reminder sent user_id=%s item_id=%s reminder_id=%s "
             "policy_level=%s attention_score=%s",
@@ -919,11 +933,14 @@ class ReminderWorker:
         user_id: int,
         item_id: int,
         claim_generation: int,
-        now: datetime,
+        now: datetime | None,
     ) -> tuple[Item, list[ItemSource], int, AttentionRank, int] | None:
         """Revalidate current PM-07 rank and live claim before releasing SQLite for I/O."""
         async with self.session_factory() as session:
             await session.execute(text("BEGIN IMMEDIATE"))
+            # This serialized snapshot governs every time-sensitive send decision;
+            # the worker-cycle timestamp may have crossed quiet hours or a PM-08 boundary.
+            prepare_now = _utc_naive(now) if now is not None else _utc_now()
             reminder = await session.get(Reminder, reminder_id)
             user = await session.get(User, user_id)
             item = await session.get(Item, item_id)
@@ -940,13 +957,13 @@ class ReminderWorker:
             ):
                 await session.commit()
                 return None
-            if self._claim_is_stale(reminder, _utc_now()):
+            if self._claim_is_stale(reminder, prepare_now):
                 # Leave ownership untouched: the next cycle can recover this
                 # generation after the writer lock is released.
                 await session.commit()
                 return None
             policy, _, _, blocked = await self._attention_gate(
-                session, user, now, exclude_claim_id=reminder_id
+                session, user, prepare_now, exclude_claim_id=reminder_id
             )
             if blocked is not None:
                 if blocked not in _TRANSIENT_ATTENTION_BLOCKS:
@@ -960,7 +977,7 @@ class ReminderWorker:
                 await session.commit()
                 return None
             current_candidate = await AttentionRankingService().rank_item(
-                session, user_id, item_id, now=now
+                session, user_id, item_id, now=prepare_now
             )
             if (
                 current_candidate is None
@@ -973,7 +990,7 @@ class ReminderWorker:
             item, current_rank = current_candidate
             cooldowns = await self._proactive_cooldowns(session, user_id, [item_id])
             last_sent = cooldowns.get(item_id)
-            if last_sent is not None and now - last_sent < policy.same_item_cooldown:
+            if last_sent is not None and prepare_now - last_sent < policy.same_item_cooldown:
                 reminder.status = "CANCELLED"
                 reminder.claimed_at = None
                 await session.commit()
@@ -999,7 +1016,7 @@ class ReminderWorker:
                 }
             )
             reminder.payload_json = payload
-            if self._claim_is_stale(reminder, _utc_now()):
+            if self._claim_is_stale(reminder, prepare_now):
                 await session.commit()
                 return None
             await session.commit()
@@ -1059,7 +1076,9 @@ class ReminderWorker:
                 )
             await session.commit()
 
-    async def _process_snoozes(self, now: datetime) -> int:
+    async def _process_snoozes(self, now: datetime | None) -> int:
+        sent_at_override = now
+        now = _utc_naive(now) if now is not None else _utc_now()
         async with self.session_factory() as session:
             reminder_ids = list(
                 (
@@ -1095,7 +1114,10 @@ class ReminderWorker:
                     user_id, item_id, SNOOZE_RESURFACE, scheduled_at, claim_generation
                 )
             else:
-                await self._mark_snooze_sent(user_id, item_id, scheduled_at, now, claim_generation)
+                sent_at = self._delivery_timestamp(sent_at_override)
+                await self._mark_snooze_sent(
+                    user_id, item_id, scheduled_at, sent_at, claim_generation
+                )
                 delivered += 1
         return delivered
 
