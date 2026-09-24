@@ -402,15 +402,20 @@ worker attempts without changing PM-07 ranking or holding SQLite locks during
 Telegram I/O.
 
 Decision: derive the daily budget, minimum gap and same-Item cooldown from
-successful Reminder history. Serialize one open `PROACTIVE_ATTENTION` claim per
-user with a partial unique index, revalidate it before sending, and record
-`ATTENTION_SHOWN` with successful delivery finalization. Existing users receive
-an explicit Attention OFF setting during rollout.
+successful Reminder history. Serialize per-user digest, snooze and proactive
+send claims with short `BEGIN IMMEDIATE` transactions; a partial unique index
+also enforces one open `PROACTIVE_ATTENTION` claim. Store a claim timestamp and
+generation, bound Telegram retries below the lease, and fence recovery/finalize
+updates by generation. Record `ATTENTION_SHOWN` with successful delivery
+finalization. Existing users receive an explicit Attention OFF setting during
+rollout.
 
 Reason: Reminder rows are durable delivery facts; derived counters and
 duplicated ranking state would drift from actual history.
 
-Consequences: claims are retried after a bounded lease and may duplicate only in
-the unavoidable proactive Telegram-accepted/SQLite-not-finalized crash window.
-Digest and snooze retain their existing no-duplicate behavior; both remain
-`CLAIMED` and do not count as successful until their sends are finalized.
+Consequences: proactive claims can be re-evaluated after a bounded lease, and
+an expired owner cannot alter the recovered claim. Digest and snooze retain
+their no-replay behavior; their active claims temporarily reserve the user
+against proactive sends. An ambiguous Telegram outcome or process stop after
+acceptance but before SQLite finalization can still cause a duplicate; delivery
+across Telegram and SQLite is not exactly once.

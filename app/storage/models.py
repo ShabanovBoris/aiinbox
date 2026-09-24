@@ -273,6 +273,8 @@ class Reminder(Base):
     user, type and local-day schedule, while a snooze reminder is tied to one
     Item and its exact ``snoozed_until`` timestamp. Proactive Attention keeps a
     per-user open claim until delivery is finalized or revalidated on recovery.
+    ``claimed_at`` identifies the active send lease, and ``claim_generation``
+    fences a recovered worker from changing a newer owner's result.
     """
 
     __tablename__ = "reminders"
@@ -304,6 +306,10 @@ class Reminder(Base):
     status: Mapped[str] = mapped_column(String(16), default="PENDING", index=True)
     payload_json: Mapped[dict | None] = mapped_column(JSON)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    # A lease timestamp plus a monotonically increasing owner generation lets
+    # senders be fenced after a stale proactive claim is recovered.
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime)
+    claim_generation: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     sent_at: Mapped[datetime | None] = mapped_column(DateTime)
 
 

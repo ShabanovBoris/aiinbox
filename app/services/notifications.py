@@ -37,9 +37,14 @@ PROACTIVE_ATTENTION = "PROACTIVE_ATTENTION"
 MIN_PROACTIVE_ATTENTION_SCORE = 60
 ATTENTION_CANDIDATE_LIMIT = 10
 PROACTIVE_CLAIM_LEASE = timedelta(minutes=5)
+# The complete retry sequence is bounded below the durable lease. Recovery can
+# therefore fence an abandoned sender without overlapping a live Telegram call.
+NOTIFICATION_SEND_TIMEOUT = timedelta(minutes=2)
 _BUDGET_REMINDER_TYPES = (DAILY_DIGEST, PROACTIVE_ATTENTION)
 _GAP_REMINDER_TYPES = (DAILY_DIGEST, PROACTIVE_ATTENTION, SNOOZE_RESURFACE)
+_DELIVERY_CLAIM_TYPES = (DAILY_DIGEST, SNOOZE_RESURFACE, PROACTIVE_ATTENTION)
 _OPEN_PROACTIVE_STATUSES = ("PENDING", "CLAIMED")
+_TRANSIENT_ATTENTION_BLOCKS = frozenset({"quiet_hours", "delivery_in_progress"})
 _DEFAULT_SETTINGS = {
     "daily_digest_enabled": True,
     "daily_digest_time": "09:00",
@@ -347,6 +352,9 @@ class ReminderWorker:
 
     async def _process_user(self, user_id: int, now: datetime) -> int:
         async with self.session_factory() as session:
+            # Digest claim acquisition serializes with snooze/proactive claims;
+            # the transaction ends before the Telegram request below.
+            await session.execute(text("BEGIN IMMEDIATE"))
             user = await session.get(User, user_id)
             if user is None or user.telegram_chat_id is None:
                 return 0
@@ -418,8 +426,12 @@ class ReminderWorker:
             # For a digest, scheduled_at is a local-calendar-day identity,
             # not a UTC instant; this survives a timezone change within that day.
             scheduled_at = datetime.combine(target_date, time.min)
-            claimed = await self._claim_digest(session, user.id, scheduled_at)
-            if not claimed:
+            lease_now = _utc_now()
+            if await self._has_active_notification_claim(session, user.id, lease_now):
+                await session.commit()
+                return 0
+            claim_generation = await self._claim_digest(session, user.id, scheduled_at, lease_now)
+            if claim_generation is None:
                 return 0
             items = await TodayService().list_items(session, user.id)
             await session.commit()
@@ -427,12 +439,15 @@ class ReminderWorker:
             await self._send_with_retry(user.telegram_chat_id, format_today(items))
         except Exception:
             log.exception("daily digest delivery failed user_id=%s", user_id)
-            await self._mark_failed(user_id, None, DAILY_DIGEST, scheduled_at)
+            await self._mark_failed(user_id, None, DAILY_DIGEST, scheduled_at, claim_generation)
             return 0
-        await self._mark_digest_sent(user_id, scheduled_at, now)
+        await self._mark_digest_sent(user_id, scheduled_at, now, claim_generation)
         return 1
 
-    async def _claim_digest(self, session, user_id: int, scheduled_at: datetime) -> bool:
+    async def _claim_digest(
+        self, session, user_id: int, scheduled_at: datetime, now: datetime
+    ) -> int | None:
+        """Persist the digest's per-user send reservation before network I/O."""
         statement = (
             sqlite_insert(Reminder)
             .values(
@@ -441,15 +456,19 @@ class ReminderWorker:
                 type=DAILY_DIGEST,
                 scheduled_at=scheduled_at,
                 status="CLAIMED",
+                claimed_at=now,
+                claim_generation=1,
                 payload_json={"local_date": scheduled_at.date().isoformat()},
             )
             # item_id is NULL for a digest, so the table's general UNIQUE
             # constraint cannot identify it; the partial daily index does.
             .on_conflict_do_nothing()
+            .returning(Reminder.claim_generation)
         )
         result = await session.execute(statement)
-        if result.rowcount == 1:
-            return True
+        generation = result.scalar_one_or_none()
+        if generation is not None:
+            return generation
         result = await session.execute(
             update(Reminder)
             .where(
@@ -460,10 +479,13 @@ class ReminderWorker:
             )
             .values(
                 status="CLAIMED",
+                claimed_at=now,
+                claim_generation=Reminder.claim_generation + 1,
                 payload_json={"local_date": scheduled_at.date().isoformat()},
             )
+            .returning(Reminder.claim_generation)
         )
-        return result.rowcount == 1
+        return result.scalar_one_or_none()
 
     async def _defer_digest(self, session, user_id: int, scheduled_at: datetime) -> None:
         """Persist a quiet-hours deferral so recovery has explicit evidence."""
@@ -481,7 +503,7 @@ class ReminderWorker:
         )
 
     async def _mark_digest_sent(
-        self, user_id: int, scheduled_at: datetime, sent_at: datetime
+        self, user_id: int, scheduled_at: datetime, sent_at: datetime, claim_generation: int
     ) -> None:
         """Count a digest only after Telegram accepts it, retaining its prior claim."""
         async with self.session_factory() as session:
@@ -493,15 +515,21 @@ class ReminderWorker:
                     Reminder.type == DAILY_DIGEST,
                     Reminder.scheduled_at == scheduled_at,
                     Reminder.status == "CLAIMED",
+                    Reminder.claim_generation == claim_generation,
                 )
-                .values(status="SENT", sent_at=sent_at)
+                .values(status="SENT", sent_at=sent_at, claimed_at=None)
             )
             if result.rowcount != 1:
-                raise RuntimeError("digest claim changed before successful-send finalization")
+                log.warning("digest finalization ignored after claim recovery user_id=%s", user_id)
             await session.commit()
 
     async def _attention_gate(
-        self, session, user: User, now: datetime
+        self,
+        session,
+        user: User,
+        now: datetime,
+        *,
+        exclude_claim_id: int | None = None,
     ) -> tuple[AttentionIntensityPolicy, ZoneInfo | None, date | None, str | None]:
         """Apply interruption-only rules before any PM-07 ranking work."""
         settings = settings_for(user)
@@ -532,6 +560,11 @@ class ReminderWorker:
         if in_quiet_hours(local_now.time(), quiet_start, quiet_end):
             return policy, zone, local_now.date(), "quiet_hours"
 
+        if await self._has_active_notification_claim(
+            session, user.id, _utc_now(), exclude_reminder_id=exclude_claim_id
+        ):
+            return policy, zone, local_now.date(), "delivery_in_progress"
+
         local_date, day_start, next_day_start = _local_day_window(now, zone)
         budget_used = await session.scalar(
             select(func.count(Reminder.id)).where(
@@ -558,6 +591,31 @@ class ReminderWorker:
             return policy, zone, local_date, "minimum_gap"
         return policy, zone, local_date, None
 
+    async def _has_active_notification_claim(
+        self,
+        session,
+        user_id: int,
+        now: datetime,
+        *,
+        exclude_reminder_id: int | None = None,
+    ) -> bool:
+        """Read the durable cross-type reservation used to serialize interruptions.
+
+        SQLite claim writers run under BEGIN IMMEDIATE, so this read and their
+        subsequent CLAIMED transition form one serialized send-intent boundary.
+        Expired digest/snooze claims remain no-replay records but stop blocking.
+        """
+        statement = select(Reminder.id).where(
+            Reminder.user_id == user_id,
+            Reminder.type.in_(_DELIVERY_CLAIM_TYPES),
+            Reminder.status == "CLAIMED",
+            Reminder.claimed_at.is_not(None),
+            Reminder.claimed_at > _utc_naive(now) - PROACTIVE_CLAIM_LEASE,
+        )
+        if exclude_reminder_id is not None:
+            statement = statement.where(Reminder.id != exclude_reminder_id)
+        return await session.scalar(statement.limit(1)) is not None
+
     async def _proactive_cooldowns(
         self, session, user_id: int, item_ids: list[int]
     ) -> dict[int, datetime]:
@@ -579,8 +637,12 @@ class ReminderWorker:
 
     @staticmethod
     def _claim_is_stale(reminder: Reminder, now: datetime) -> bool:
-        created_at = reminder.created_at
-        return created_at is None or now - _utc_naive(created_at) >= PROACTIVE_CLAIM_LEASE
+        # ❌ Удален расчет lease по created_at: recovery не должен менять время
+        # создания Reminder; claimed_at и generation отвечают за lease и owner.
+        claimed_at = reminder.claimed_at
+        return (
+            claimed_at is None or _utc_naive(now) - _utc_naive(claimed_at) >= PROACTIVE_CLAIM_LEASE
+        )
 
     @staticmethod
     def _item_is_actionable(item: Item | None) -> bool:
@@ -607,18 +669,26 @@ class ReminderWorker:
                 .order_by(Reminder.id)
                 .limit(1)
             )
-            _, _, _, blocked = await self._attention_gate(session, user, now)
-            if open_claim is not None and not self._claim_is_stale(open_claim, now):
+            _, _, _, blocked = await self._attention_gate(
+                session,
+                user,
+                now,
+                exclude_claim_id=open_claim.id if open_claim is not None else None,
+            )
+            lease_now = _utc_now()
+            if open_claim is not None and not self._claim_is_stale(open_claim, lease_now):
                 item = await session.get(Item, open_claim.item_id)
                 if blocked == "disabled" or not self._item_is_actionable(item):
                     open_claim.status = "CANCELLED"
+                    open_claim.claimed_at = None
                     await session.commit()
                 return 0
             if blocked is not None:
-                # Quiet-hour claims remain durable until the next allowed window;
-                # changed settings or exhausted pacing make a claim obsolete.
-                if open_claim is not None and blocked != "quiet_hours":
+                # Quiet-hours and cross-type reservations are transient; a
+                # changed setting or exhausted pacing invalidates the old claim.
+                if open_claim is not None and blocked not in _TRANSIENT_ATTENTION_BLOCKS:
                     open_claim.status = "CANCELLED"
+                    open_claim.claimed_at = None
                     await session.commit()
                 return 0
 
@@ -633,8 +703,10 @@ class ReminderWorker:
         claimed = await self._claim_proactive_attention(user_id, ranked_ids, now)
         if claimed is None:
             return 0
-        reminder_id, item_id, rank, policy_level = claimed
-        prepared = await self._prepare_proactive_send(reminder_id, user_id, item_id, now)
+        reminder_id, item_id, rank, policy_level, claim_generation = claimed
+        prepared = await self._prepare_proactive_send(
+            reminder_id, user_id, item_id, claim_generation, now
+        )
         if prepared is None:
             return 0
         item, sources, chat_id = prepared
@@ -651,9 +723,9 @@ class ReminderWorker:
                 item_id,
                 reminder_id,
             )
-            await self._set_proactive_status(reminder_id, "FAILED")
+            await self._set_proactive_status(reminder_id, claim_generation, "FAILED")
             return 0
-        await self._finalize_proactive_send(reminder_id, user_id, item_id, now)
+        await self._finalize_proactive_send(reminder_id, user_id, item_id, claim_generation, now)
         log.info(
             "proactive reminder sent user_id=%s item_id=%s reminder_id=%s "
             "policy_level=%s attention_score=%s",
@@ -667,7 +739,7 @@ class ReminderWorker:
 
     async def _claim_proactive_attention(
         self, user_id: int, ranked: list[tuple[int, AttentionRank]], now: datetime
-    ) -> tuple[int, int, AttentionRank, int] | None:
+    ) -> tuple[int, int, AttentionRank, int, int] | None:
         """Serialize current settings, pacing facts, cooldowns, and one durable claim."""
         async with self.session_factory() as session:
             await session.execute(text("BEGIN IMMEDIATE"))
@@ -675,7 +747,6 @@ class ReminderWorker:
             if user is None or user.telegram_chat_id is None:
                 await session.commit()
                 return None
-            policy, _, local_date, blocked = await self._attention_gate(session, user, now)
             open_claim = await session.scalar(
                 select(Reminder)
                 .where(
@@ -686,12 +757,20 @@ class ReminderWorker:
                 .order_by(Reminder.id)
                 .limit(1)
             )
+            policy, _, local_date, blocked = await self._attention_gate(
+                session,
+                user,
+                now,
+                exclude_claim_id=open_claim.id if open_claim is not None else None,
+            )
             if blocked is not None:
-                if open_claim is not None and blocked != "quiet_hours":
+                if open_claim is not None and blocked not in _TRANSIENT_ATTENTION_BLOCKS:
                     open_claim.status = "CANCELLED"
+                    open_claim.claimed_at = None
                 await session.commit()
                 return None
-            if open_claim is not None and not self._claim_is_stale(open_claim, now):
+            lease_now = _utc_now()
+            if open_claim is not None and not self._claim_is_stale(open_claim, lease_now):
                 await session.commit()
                 return None
 
@@ -733,6 +812,7 @@ class ReminderWorker:
                     chosen = (open_claim.item_id, old_rank)
                 else:
                     open_claim.status = "CANCELLED"
+                    open_claim.claimed_at = None
 
             if chosen is None:
                 chosen = next(
@@ -756,6 +836,7 @@ class ReminderWorker:
             if not self._item_is_actionable(item):
                 if open_claim is not None:
                     open_claim.status = "CANCELLED"
+                    open_claim.claimed_at = None
                 await session.commit()
                 return None
             payload = {
@@ -775,7 +856,8 @@ class ReminderWorker:
             if open_claim is not None and open_claim.item_id == item_id:
                 open_claim.status = "CLAIMED"
                 open_claim.scheduled_at = scheduled_at
-                open_claim.created_at = now
+                open_claim.claim_generation = (open_claim.claim_generation or 0) + 1
+                open_claim.claimed_at = lease_now
                 open_claim.sent_at = None
                 open_claim.payload_json = payload
                 reminder = open_claim
@@ -788,10 +870,12 @@ class ReminderWorker:
                     status="CLAIMED",
                     payload_json=payload,
                     created_at=now,
+                    claimed_at=lease_now,
+                    claim_generation=1,
                 )
                 session.add(reminder)
             await session.flush()
-            result = (reminder.id, item_id, rank, policy.level)
+            result = (reminder.id, item_id, rank, policy.level, reminder.claim_generation)
             await session.commit()
             return result
 
@@ -817,7 +901,12 @@ class ReminderWorker:
         return now
 
     async def _prepare_proactive_send(
-        self, reminder_id: int, user_id: int, item_id: int, now: datetime
+        self,
+        reminder_id: int,
+        user_id: int,
+        item_id: int,
+        claim_generation: int,
+        now: datetime,
     ) -> tuple[Item, list[ItemSource], int] | None:
         """Recheck the claim immediately before Telegram I/O, then close SQLite first."""
         async with self.session_factory() as session:
@@ -831,25 +920,32 @@ class ReminderWorker:
                 or reminder.user_id != user_id
                 or reminder.type != PROACTIVE_ATTENTION
                 or reminder.item_id != item_id
+                or reminder.status != "CLAIMED"
+                or reminder.claim_generation != claim_generation
                 or user is None
                 or user.telegram_chat_id is None
             ):
                 await session.commit()
                 return None
-            policy, _, _, blocked = await self._attention_gate(session, user, now)
+            policy, _, _, blocked = await self._attention_gate(
+                session, user, now, exclude_claim_id=reminder_id
+            )
             if blocked is not None:
-                if blocked != "quiet_hours":
+                if blocked not in _TRANSIENT_ATTENTION_BLOCKS:
                     reminder.status = "CANCELLED"
+                    reminder.claimed_at = None
                 await session.commit()
                 return None
             if not self._item_is_actionable(item):
                 reminder.status = "CANCELLED"
+                reminder.claimed_at = None
                 await session.commit()
                 return None
             cooldowns = await self._proactive_cooldowns(session, user_id, [item_id])
             last_sent = cooldowns.get(item_id)
             if last_sent is not None and now - last_sent < policy.same_item_cooldown:
                 reminder.status = "CANCELLED"
+                reminder.claimed_at = None
                 await session.commit()
                 return None
             sources = list(
@@ -865,21 +961,33 @@ class ReminderWorker:
             await session.commit()
             return item, sources, chat_id
 
-    async def _set_proactive_status(self, reminder_id: int, status: str) -> None:
+    async def _set_proactive_status(
+        self, reminder_id: int, claim_generation: int, status: str
+    ) -> None:
         async with self.session_factory() as session:
-            await session.execute(
+            result = await session.execute(
                 update(Reminder)
                 .where(
                     Reminder.id == reminder_id,
                     Reminder.type == PROACTIVE_ATTENTION,
-                    Reminder.status.in_(_OPEN_PROACTIVE_STATUSES),
+                    Reminder.status == "CLAIMED",
+                    Reminder.claim_generation == claim_generation,
                 )
-                .values(status=status)
+                .values(status=status, claimed_at=None)
             )
+            if result.rowcount != 1:
+                log.info(
+                    "proactive claim status ignored after recovery reminder_id=%s", reminder_id
+                )
             await session.commit()
 
     async def _finalize_proactive_send(
-        self, reminder_id: int, user_id: int, item_id: int, sent_at: datetime
+        self,
+        reminder_id: int,
+        user_id: int,
+        item_id: int,
+        claim_generation: int,
+        sent_at: datetime,
     ) -> None:
         """Commit delivery history and PM-07 exposure as one idempotent fact."""
         async with self.session_factory() as session:
@@ -889,9 +997,10 @@ class ReminderWorker:
                     Reminder.id == reminder_id,
                     Reminder.user_id == user_id,
                     Reminder.type == PROACTIVE_ATTENTION,
-                    Reminder.status.in_(_OPEN_PROACTIVE_STATUSES),
+                    Reminder.status == "CLAIMED",
+                    Reminder.claim_generation == claim_generation,
                 )
-                .values(status="SENT", sent_at=sent_at)
+                .values(status="SENT", sent_at=sent_at, claimed_at=None)
             )
             if result.rowcount == 1:
                 session.add(
@@ -908,67 +1017,112 @@ class ReminderWorker:
 
     async def _process_snoozes(self, now: datetime) -> int:
         async with self.session_factory() as session:
-            reminders = (
-                await session.scalars(
-                    select(Reminder).where(
-                        Reminder.type == SNOOZE_RESURFACE,
-                        Reminder.status == "PENDING",
-                        Reminder.scheduled_at <= now,
+            reminder_ids = list(
+                (
+                    await session.scalars(
+                        select(Reminder.id)
+                        .where(
+                            Reminder.type == SNOOZE_RESURFACE,
+                            Reminder.status == "PENDING",
+                            Reminder.scheduled_at <= now,
+                        )
+                        .order_by(Reminder.scheduled_at, Reminder.id)
                     )
-                )
-            ).all()
-            processed: list[tuple[Reminder, Item, int]] = []
-            for reminder in reminders:
-                item = await session.get(Item, reminder.item_id)
-                user = await session.get(User, reminder.user_id)
-                if item is None or user is None or user.telegram_chat_id is None:
-                    reminder.status = "CANCELLED"
-                    continue
-                try:
-                    zone = parse_timezone(user.timezone or self.default_timezone)
-                    local_now = now.replace(tzinfo=UTC).astimezone(zone)
-                    settings = settings_for(user)
-                    quiet = in_quiet_hours(
-                        local_now.time(),
-                        parse_clock(settings["quiet_hours_start"]),
-                        parse_clock(settings["quiet_hours_end"]),
-                    )
-                except ValueError:
-                    quiet = False
-                if quiet:
-                    continue
-                if (
-                    item.state is not ItemState.SNOOZED
-                    or item.snoozed_until is None
-                    or item.snoozed_until > now
-                ):
-                    reminder.status = "CANCELLED"
-                    continue
-                reminder.status = "CLAIMED"
-                reminder.sent_at = None
-                item.state = ItemState.ACTIVE
-                item.snoozed_until = None
-                await session.flush()
-                processed.append((reminder, item, user.telegram_chat_id))
+                ).all()
+            )
             await session.commit()
         delivered = 0
-        for reminder, item, chat_id in processed:
+        # ❌ Удален пакетный захват всех due snooze: отдельная транзакция на
+        # отправку сериализует её с digest/proactive и не открывает окно обхода пауз.
+        for reminder_id in reminder_ids:
+            claimed = await self._claim_snooze(reminder_id, now)
+            if claimed is None:
+                continue
+            user_id, item_id, scheduled_at, claim_generation, title, chat_id = claimed
             try:
-                await self._send_with_retry(
-                    chat_id, f"⏰ Вернулся отложенный Item: {item.title or 'Без названия'}"
-                )
+                await self._send_with_retry(chat_id, f"⏰ Вернулся отложенный Item: {title}")
             except Exception:
-                log.exception("snooze notification failed item_id=%s", item.id)
+                log.exception("snooze notification failed item_id=%s", item_id)
                 await self._mark_failed(
-                    item.user_id, item.id, SNOOZE_RESURFACE, reminder.scheduled_at
+                    user_id, item_id, SNOOZE_RESURFACE, scheduled_at, claim_generation
                 )
             else:
-                await self._mark_snooze_sent(item.user_id, item.id, reminder.scheduled_at, now)
+                await self._mark_snooze_sent(user_id, item_id, scheduled_at, now, claim_generation)
                 delivered += 1
         return delivered
 
+    async def _claim_snooze(
+        self, reminder_id: int, now: datetime
+    ) -> tuple[int, int, datetime, int, str, int] | None:
+        """Claim one due snooze under the same per-user reservation as proactive sends."""
+        async with self.session_factory() as session:
+            await session.execute(text("BEGIN IMMEDIATE"))
+            reminder = await session.get(Reminder, reminder_id)
+            if (
+                reminder is None
+                or reminder.type != SNOOZE_RESURFACE
+                or reminder.status != "PENDING"
+                or reminder.scheduled_at > now
+            ):
+                await session.commit()
+                return None
+            user = await session.get(User, reminder.user_id)
+            item = await session.get(Item, reminder.item_id)
+            if user is None or user.telegram_chat_id is None or item is None:
+                reminder.status = "CANCELLED"
+                await session.commit()
+                return None
+            lease_now = _utc_now()
+            if await self._has_active_notification_claim(session, user.id, lease_now):
+                await session.commit()
+                return None
+            try:
+                zone = parse_timezone(user.timezone or self.default_timezone)
+                local_now = _utc_naive(now).replace(tzinfo=UTC).astimezone(zone)
+                settings = settings_for(user)
+                quiet = in_quiet_hours(
+                    local_now.time(),
+                    parse_clock(settings["quiet_hours_start"]),
+                    parse_clock(settings["quiet_hours_end"]),
+                )
+            except ValueError:
+                quiet = False
+            if quiet:
+                await session.commit()
+                return None
+            if (
+                item.state is not ItemState.SNOOZED
+                or item.snoozed_until is None
+                or item.snoozed_until > now
+            ):
+                reminder.status = "CANCELLED"
+                await session.commit()
+                return None
+            reminder.status = "CLAIMED"
+            reminder.claimed_at = lease_now
+            reminder.claim_generation = (reminder.claim_generation or 0) + 1
+            reminder.sent_at = None
+            item.state = ItemState.ACTIVE
+            item.snoozed_until = None
+            await session.flush()
+            claimed = (
+                user.id,
+                item.id,
+                reminder.scheduled_at,
+                reminder.claim_generation,
+                item.title or "Без названия",
+                user.telegram_chat_id,
+            )
+            await session.commit()
+            return claimed
+
     async def _mark_snooze_sent(
-        self, user_id: int, item_id: int, scheduled_at: datetime, sent_at: datetime
+        self,
+        user_id: int,
+        item_id: int,
+        scheduled_at: datetime,
+        sent_at: datetime,
+        claim_generation: int,
     ) -> None:
         """Make a snooze reminder a gap anchor only after Telegram accepts it."""
         async with self.session_factory() as session:
@@ -980,36 +1134,47 @@ class ReminderWorker:
                     Reminder.type == SNOOZE_RESURFACE,
                     Reminder.scheduled_at == scheduled_at,
                     Reminder.status == "CLAIMED",
+                    Reminder.claim_generation == claim_generation,
                 )
-                .values(status="SENT", sent_at=sent_at)
+                .values(status="SENT", sent_at=sent_at, claimed_at=None)
             )
             if result.rowcount != 1:
-                raise RuntimeError("snooze claim changed before successful-send finalization")
+                log.warning("snooze finalization ignored after claim recovery item_id=%s", item_id)
             await session.commit()
 
     async def _mark_failed(
-        self, user_id: int, item_id: int | None, type_: str, scheduled_at: datetime
+        self,
+        user_id: int,
+        item_id: int | None,
+        type_: str,
+        scheduled_at: datetime,
+        claim_generation: int,
     ) -> None:
         async with self.session_factory() as session:
-            await session.execute(
+            result = await session.execute(
                 update(Reminder)
                 .where(
                     Reminder.user_id == user_id,
                     Reminder.item_id == item_id,
                     Reminder.type == type_,
                     Reminder.scheduled_at == scheduled_at,
+                    Reminder.status == "CLAIMED",
+                    Reminder.claim_generation == claim_generation,
                 )
-                .values(status="FAILED")
+                .values(status="FAILED", claimed_at=None)
             )
+            if result.rowcount != 1:
+                log.info("notification failure ignored after claim recovery type=%s", type_)
             await session.commit()
 
     async def _send_with_retry(self, chat_id: int, text: str, **send_kwargs) -> None:
-        """Retry an unknown Telegram failure finitely before terminal FAILED."""
-        for attempt in range(self.max_send_attempts):
-            try:
-                await self.bot.send_message(chat_id, text, **send_kwargs)
-                return
-            except Exception:
-                if attempt + 1 == self.max_send_attempts:
-                    raise
-                await asyncio.sleep(self.retry_backoff_seconds * (2**attempt))
+        """Bound the whole retry sequence below the claim lease before FAILED."""
+        async with asyncio.timeout(NOTIFICATION_SEND_TIMEOUT.total_seconds()):
+            for attempt in range(self.max_send_attempts):
+                try:
+                    await self.bot.send_message(chat_id, text, **send_kwargs)
+                    return
+                except Exception:
+                    if attempt + 1 == self.max_send_attempts:
+                        raise
+                    await asyncio.sleep(self.retry_backoff_seconds * (2**attempt))

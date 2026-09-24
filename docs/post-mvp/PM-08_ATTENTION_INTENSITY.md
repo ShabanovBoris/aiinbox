@@ -138,9 +138,16 @@ After quiet hours, choose the best current candidate under normal policy.
 
 ## 9. Minimum gap
 
-Measure from latest successfully sent budget-consuming notification:
+Measure from the latest successfully sent notification that interrupts the
+user:
 - DAILY_DIGEST;
-- PROACTIVE_ATTENTION.
+- PROACTIVE_ATTENTION;
+- SNOOZE_RESURFACE.
+
+Only DAILY_DIGEST and PROACTIVE_ATTENTION consume the daily budget. An active
+CLAIMED delivery of any of these three types is a cross-worker reservation:
+proactive scheduling waits for it to resolve before checking the successful
+send history again.
 
 Failed delivery does not count as successful-send gap, but retries remain bounded.
 
@@ -305,14 +312,20 @@ Exact each-level cap/gap/cooldown tests.
 - The local-day cap counts successful `DAILY_DIGEST` and `PROACTIVE_ATTENTION`
   Reminder rows in the user's current IANA timezone. `SNOOZE_RESURFACE` does not
   use quota, but it anchors the minimum gap. DST days use their actual UTC span.
-- A five-minute durable `CLAIMED` lease and a partial unique index allow only one
-  open proactive intent per user. Ranking, claim, and final send validation use
-  short database transactions; Telegram I/O runs after commit.
+- A five-minute durable lease and partial unique index allow only one open
+  proactive intent per user. Digest, snooze, and proactive claim transactions
+  serialize per-user send intents under SQLite `BEGIN IMMEDIATE`. Every claim
+  records `claimed_at` and a generation; recovered proactive work increments
+  the generation so a stale sender cannot finalize the new owner's claim.
+- Telegram retries have a two-minute total timeout, shorter than the lease, so
+  a live send attempt ends before another worker can recover its claim. All
+  network I/O runs after the claim transaction commits.
 - Recovery re-ranks through PM-07 and cancels an intent whose Item is no longer
   actionable or whose current attention score is below 60. `/attention` still
   uses its existing one-to-five preview limit; scheduling can inspect ten.
-- After Telegram accepts a proactive message, `Reminder.SENT` and the
-  `ATTENTION_SHOWN` exposure Event are committed together. If the process stops
-  after Telegram accepts the message but before this transaction commits, the
-  lease may later retry it; Telegram and SQLite cannot provide exactly-once
-  delivery.
+- After Telegram confirms a proactive message, `Reminder.SENT` and the
+  `ATTENTION_SHOWN` exposure Event are committed together. If Telegram accepts
+  a message but its response is lost, or the process stops before this
+  transaction commits, recovery may retry it: Telegram and SQLite cannot
+  provide exactly-once delivery across that boundary. A stale generation cannot
+  overwrite a claim already recovered by another worker.

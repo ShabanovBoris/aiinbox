@@ -34,6 +34,8 @@ def test_fresh_database_migrates_to_latest_schema(tmp_path):
         ).fetchone()[0]
         assert "fts5" in search_sql
         assert "idempotency_key" in {row[1] for row in conn.execute("PRAGMA table_info(events)")}
+        reminder_columns = {row[1] for row in conn.execute("PRAGMA table_info(reminders)")}
+        assert {"claimed_at", "claim_generation"} <= reminder_columns
         assert "uq_reminders_open_proactive_user" in {
             row[1] for row in conn.execute("PRAGMA index_list(reminders)")
         }
@@ -367,6 +369,7 @@ def test_pm08_migration_preserves_settings_and_serializes_open_claims(tmp_path):
             "VALUES (?, ?, 'SNOOZE_RESURFACE', '2026-09-25 00:00:00', 'PENDING')",
             (user_ids[0], item_ids[0]),
         )
+        conn.commit()
 
     command.upgrade(cfg, "head")
 
@@ -399,6 +402,10 @@ def test_pm08_migration_preserves_settings_and_serializes_open_claims(tmp_path):
             row[0]
             for row in conn.execute("SELECT type FROM reminders WHERE user_id = ?", (user_ids[0],))
         } == {"DAILY_DIGEST", "SNOOZE_RESURFACE"}
+        assert {row[1] for row in conn.execute("PRAGMA table_info(reminders)")} >= {
+            "claimed_at",
+            "claim_generation",
+        }
 
         conn.execute(
             "INSERT INTO reminders (user_id, item_id, type, scheduled_at, status) "

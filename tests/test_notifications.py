@@ -12,7 +12,9 @@ from app.services.notifications import (
     ATTENTION_POLICIES,
     DAILY_DIGEST,
     MIN_PROACTIVE_ATTENTION_SCORE,
+    NOTIFICATION_SEND_TIMEOUT,
     PROACTIVE_ATTENTION,
+    PROACTIVE_CLAIM_LEASE,
     SNOOZE_RESURFACE,
     ReminderWorker,
     _local_day_window,
@@ -35,6 +37,43 @@ class FakeBot:
             self.failures = max(0, self.failures - 1)
             raise RuntimeError("telegram unavailable")
         self.messages.append((chat_id, text, kwargs))
+
+
+class BarrierBot(FakeBot):
+    """Hold the first delivery so tests can inspect a durable in-flight claim."""
+
+    def __init__(self, *, fail_first=False):
+        super().__init__()
+        self.fail_first = fail_first
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+        self.finished_first = asyncio.Event()
+        self.calls = 0
+        self.active_calls = 0
+        self.max_active_calls = 0
+
+    async def send_message(self, chat_id, text, **kwargs):
+        """Expose an in-flight send window without timing-dependent sleeps."""
+        self.calls += 1
+        self.active_calls += 1
+        self.max_active_calls = max(self.max_active_calls, self.active_calls)
+        try:
+            if self.calls == 1:
+                self.started.set()
+                try:
+                    await self.release.wait()
+                except asyncio.CancelledError:
+                    self.finished_first.set()
+                    raise
+                if self.fail_first:
+                    raise RuntimeError("first Telegram delivery failed")
+                self.messages.append((chat_id, text, kwargs))
+            else:
+                self.messages.append((chat_id, text, kwargs))
+        finally:
+            self.active_calls -= 1
+            if self.calls == 1:
+                self.finished_first.set()
 
 
 async def make_ready_item(
@@ -955,7 +994,9 @@ async def test_claim_is_revalidated_before_telegram_send(session_factory, action
     worker = ReminderWorker(session_factory, bot)
     prepare = worker._prepare_proactive_send
 
-    async def mutate_before_send(reminder_id, current_user_id, current_item_id, current_now):
+    async def mutate_before_send(
+        reminder_id, current_user_id, current_item_id, claim_generation, current_now
+    ):
         if action == "disable":
             await update_notification_settings(session_factory, 42, attention_enabled=False)
         else:
@@ -966,7 +1007,13 @@ async def test_claim_is_revalidated_before_telegram_send(session_factory, action
                 action,
                 now + timedelta(days=1) if action == "snooze" else None,
             )
-        return await prepare(reminder_id, current_user_id, current_item_id, current_now)
+        return await prepare(
+            reminder_id,
+            current_user_id,
+            current_item_id,
+            claim_generation,
+            current_now,
+        )
 
     worker._prepare_proactive_send = mutate_before_send
     assert await worker.process_once(now) == 0
@@ -1012,6 +1059,122 @@ async def test_failed_proactive_send_has_no_budget_gap_or_cooldown_cost(session_
         == 1
     )
     assert len(succeeding.messages) == 1
+
+
+@pytest.mark.parametrize("notification_type", [DAILY_DIGEST, SNOOZE_RESURFACE])
+@pytest.mark.parametrize("first_send_fails", [False, True])
+async def test_in_flight_digest_or_snooze_reserves_user_from_proactive_send(
+    session_factory, notification_type, first_send_fails
+):
+    """Prove another worker waits for cross-type delivery to resolve before pacing."""
+    user_id, item_id = await make_ready_item(session_factory, attention_enabled=True)
+    now = datetime(2026, 9, 14, 6, 30)
+    await update_notification_settings(
+        session_factory,
+        42,
+        daily_digest_enabled=notification_type == DAILY_DIGEST,
+        attention_enabled=True,
+        attention_intensity=1,
+    )
+    if notification_type == SNOOZE_RESURFACE:
+        await apply_item_action(session_factory, 42, item_id, "snooze", now - timedelta(minutes=1))
+
+    first_bot = BarrierBot(fail_first=first_send_fails)
+    first_worker = ReminderWorker(
+        session_factory, first_bot, max_send_attempts=1, retry_backoff_seconds=0
+    )
+    first_cycle = asyncio.create_task(first_worker.process_once(now))
+    await asyncio.wait_for(first_bot.started.wait(), timeout=1)
+
+    second_bot = FakeBot()
+    second_cycle = await ReminderWorker(session_factory, second_bot).process_once(
+        now + timedelta(seconds=1)
+    )
+    assert second_cycle == 0
+    assert second_bot.messages == []
+
+    first_bot.release.set()
+    assert await asyncio.wait_for(first_cycle, timeout=1) == 1
+    assert first_bot.max_active_calls == 1
+    assert len(first_bot.messages) == 1
+    async with session_factory() as session:
+        first_reminder = await session.scalar(
+            select(Reminder).where(Reminder.type == notification_type)
+        )
+        assert first_reminder.status == ("FAILED" if first_send_fails else "SENT")
+        proactive = await session.scalar(
+            select(Reminder).where(Reminder.type == PROACTIVE_ATTENTION)
+        )
+        if first_send_fails:
+            assert proactive is not None and proactive.status == "SENT"
+        else:
+            assert proactive is None
+
+
+async def test_send_timeout_precedes_lease_recovery_and_generation_fences_old_owner(
+    session_factory, monkeypatch
+):
+    """Verify timeout ends a sender before recovery and stale writes are fenced."""
+    assert NOTIFICATION_SEND_TIMEOUT < PROACTIVE_CLAIM_LEASE
+    lease = timedelta(milliseconds=120)
+    timeout = timedelta(milliseconds=60)
+    monkeypatch.setattr("app.services.notifications.PROACTIVE_CLAIM_LEASE", lease)
+    monkeypatch.setattr("app.services.notifications.NOTIFICATION_SEND_TIMEOUT", timeout)
+    assert timeout < lease
+
+    user_id, item_id = await make_ready_item(session_factory, attention_enabled=True)
+    await update_notification_settings(
+        session_factory, 42, daily_digest_enabled=False, attention_enabled=True
+    )
+    now = datetime(2026, 9, 14, 6, 30)
+    lease_clock = [now]
+    monkeypatch.setattr("app.services.notifications._utc_now", lambda: lease_clock[0])
+    first_bot = BarrierBot()
+    first_worker = ReminderWorker(session_factory, first_bot, retry_backoff_seconds=0)
+
+    # Model process loss after the bounded Telegram call has timed out but
+    # before the old owner can persist its terminal state.
+    async def leave_claim_for_recovery(reminder_id, claim_generation, status):
+        return None
+
+    first_worker._set_proactive_status = leave_claim_for_recovery
+    first_cycle = asyncio.create_task(first_worker.process_once(now))
+    await asyncio.wait_for(first_bot.started.wait(), timeout=1)
+    assert await asyncio.wait_for(first_bot.finished_first.wait(), timeout=1)
+    assert await asyncio.wait_for(first_cycle, timeout=1) == 0
+    assert first_bot.active_calls == 0
+
+    async with session_factory() as session:
+        reminder = await session.scalar(
+            select(Reminder).where(Reminder.type == PROACTIVE_ATTENTION)
+        )
+        assert reminder.status == "CLAIMED"
+        old_generation = reminder.claim_generation
+        reminder_id = reminder.id
+
+    recovered_bot = FakeBot()
+    recovered_at = now + lease + timedelta(milliseconds=1)
+    lease_clock[0] = recovered_at
+    assert await ReminderWorker(session_factory, recovered_bot).process_once(recovered_at) == 1
+    assert len(recovered_bot.messages) == 1
+
+    # A delayed completion from the expired owner must not finalize or fail
+    # the claim now owned by the recovery worker.
+    await first_worker._set_proactive_status(reminder_id, old_generation, "FAILED")
+    await first_worker._finalize_proactive_send(
+        reminder_id, user_id, item_id, old_generation, recovered_at
+    )
+    async with session_factory() as session:
+        reminder = await session.get(Reminder, reminder_id)
+        assert reminder.status == "SENT"
+        assert reminder.claim_generation == old_generation + 1
+        assert reminder.sent_at == recovered_at
+        assert (
+            await session.scalar(
+                select(func.count(Event.id)).where(Event.event_type == "ATTENTION_SHOWN")
+            )
+            == 1
+        )
 
 
 async def test_two_workers_create_only_one_open_proactive_claim(session_factory):

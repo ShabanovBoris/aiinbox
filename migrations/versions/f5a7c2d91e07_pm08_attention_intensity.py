@@ -1,4 +1,4 @@
-"""add PM-08 rollout settings and serialize open proactive reminders
+"""add PM-08 rollout settings and fence reminder delivery claims
 
 Revision ID: f5a7c2d91e07
 Revises: f5a7c2d91e06
@@ -39,6 +39,11 @@ def upgrade() -> None:
         )
         """
     )
+    op.add_column("reminders", sa.Column("claimed_at", sa.DateTime(), nullable=True))
+    op.add_column(
+        "reminders",
+        sa.Column("claim_generation", sa.Integer(), server_default="0", nullable=False),
+    )
     op.create_index(
         "uq_reminders_open_proactive_user",
         "reminders",
@@ -50,5 +55,8 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.drop_index("uq_reminders_open_proactive_user", table_name="reminders")
+    with op.batch_alter_table("reminders") as batch_op:
+        batch_op.drop_column("claim_generation")
+        batch_op.drop_column("claimed_at")
     # Leave the two JSON keys in place: removing them could erase settings the
     # user changed after upgrade, while older application versions ignore them.
