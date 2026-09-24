@@ -36,7 +36,6 @@ MIN_AFFINITY = -1.0
 MAX_AFFINITY = 1.0
 MIN_PERSONAL_RANK = 0
 MAX_PERSONAL_RANK = 100
-WEIGHT_EPSILON = 1e-12
 MAX_SNOOZE_EVENTS_PER_ITEM = 3
 
 _INFORMATIVE_EVENT_TYPES = tuple(
@@ -78,13 +77,11 @@ class _DimensionAccumulator:
     """Collect weighted evidence for one current category or ItemType."""
 
     weighted_signal_sum: float = 0.0
-    total_absolute_weight: float = 0.0
     event_ids: set[int] = field(default_factory=set)
 
     def add(self, event_id: int, effective_weight: float) -> None:
-        """Keep sum, denominator and distinct evidence together for one dimension."""
+        """Keep weighted evidence and distinct informative Events together."""
         self.weighted_signal_sum += effective_weight
-        self.total_absolute_weight += abs(effective_weight)
         self.event_ids.add(event_id)
 
     def result(self) -> DimensionAffinity:
@@ -93,7 +90,9 @@ class _DimensionAccumulator:
         if count == 0:
             return DimensionAffinity(affinity=0.0, confidence=0.0, informative_event_count=0)
 
-        raw = self.weighted_signal_sum / max(self.total_absolute_weight, WEIGHT_EPSILON)
+        # ❌ Удалена нормализация по сумме модулей: она стирала силу сигналов и recency.
+        # Среднее по числу событий сохраняет policy weights; K отдельно сглаживает редкую историю.
+        raw = self.weighted_signal_sum / count
         confidence = count / (count + SPARSE_HISTORY_K)
         affinity = max(MIN_AFFINITY, min(MAX_AFFINITY, raw * confidence))
         return DimensionAffinity(

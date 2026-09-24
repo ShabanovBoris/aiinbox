@@ -150,6 +150,73 @@ async def test_one_explicit_event_is_strongly_smoothed(session_factory, event_ty
     assert result.informative_event_count == 1
 
 
+async def test_single_event_signal_weights_preserve_magnitude(session_factory):
+    """Protect the policy boundary between explicit feedback and lifecycle inference."""
+    user_id = await _create_user(session_factory)
+    signal_types = [
+        "USEFUL",
+        "PRIORITY_HIGHER",
+        "DONE",
+        "NOT_INTERESTING",
+        "SNOOZED",
+        "ARCHIVED",
+    ]
+    candidate_ids = []
+    event_rows = []
+    for signal_type in signal_types:
+        category = f"Signal {signal_type}"
+        candidate_ids.append(
+            (await _create_items(session_factory, user_id, 1, category=category, item_type=None))[0]
+        )
+        history_id = (
+            await _create_items(session_factory, user_id, 1, category=category, item_type=None)
+        )[0]
+        event_rows.append((history_id, signal_type, _NOW))
+    await _add_events(session_factory, event_rows)
+
+    ranks = await _rank_items(session_factory, user_id, candidate_ids)
+    affinities = [ranks[item_id].category_affinity for item_id in candidate_ids]
+
+    assert affinities[0] > affinities[1] > affinities[2] > 0
+    assert abs(affinities[3]) > abs(affinities[4]) > abs(affinities[5])
+    assert affinities == pytest.approx([1 / 9, 0.60 / 9, 0.35 / 9, -1 / 9, -0.15 / 9, -0.10 / 9])
+
+
+async def test_recency_and_mixed_positive_weights_keep_their_magnitude(session_factory):
+    """Ensure recency and weak positive signals retain magnitude under one-sided history."""
+    user_id = await _create_user(session_factory)
+    signal_groups = {
+        "fresh": [("USEFUL", 0)],
+        "sixty_days": [("USEFUL", 60)],
+        "one_twenty_days": [("USEFUL", 120)],
+        "mixed_positive": [("USEFUL", 0), ("DONE", 60), ("PRIORITY_HIGHER", 120)],
+    }
+    candidate_ids = {}
+    event_rows = []
+    for name, signals in signal_groups.items():
+        category = f"Recency {name}"
+        candidate_ids[name] = (
+            await _create_items(session_factory, user_id, 1, category=category, item_type=None)
+        )[0]
+        for index, (signal_type, age_days) in enumerate(signals):
+            history_id = (
+                await _create_items(session_factory, user_id, 1, category=category, item_type=None)
+            )[0]
+            created_at = _NOW - timedelta(days=age_days, minutes=index)
+            event_rows.append((history_id, signal_type, created_at))
+    await _add_events(session_factory, event_rows)
+
+    ranks = await _rank_items(session_factory, user_id, list(candidate_ids.values()))
+    fresh = ranks[candidate_ids["fresh"]].category_affinity
+    sixty_days = ranks[candidate_ids["sixty_days"]].category_affinity
+    one_twenty_days = ranks[candidate_ids["one_twenty_days"]].category_affinity
+    mixed_positive = ranks[candidate_ids["mixed_positive"]].category_affinity
+
+    assert fresh > sixty_days > one_twenty_days
+    assert [fresh, sixty_days, one_twenty_days] == pytest.approx([1 / 9, 0.75 / 9, 0.50 / 9])
+    assert mixed_positive == pytest.approx((1.0 + 0.35 * 0.75 + 0.60 * 0.50) / 11)
+
+
 @pytest.mark.parametrize("sign", [1, -1])
 async def test_sparse_smoothing_grows_with_distinct_items(session_factory, sign):
     user_id = await _create_user(session_factory)
@@ -180,8 +247,7 @@ async def test_mixed_signals_follow_weighted_formula(session_factory):
 
     result = await _rank_item(session_factory, user_id, candidate_id)
 
-    raw = (1.0 - 1.0 + 0.35 - 0.15) / (1.0 + 1.0 + 0.35 + 0.15)
-    assert result.category_affinity == pytest.approx(raw * (4 / 12))
+    assert result.category_affinity == pytest.approx((1.0 - 1.0 + 0.35 - 0.15) / 12)
     assert result.category_informative_event_count == 4
 
 
@@ -248,7 +314,7 @@ async def test_latest_family_signals_use_event_id_as_equal_time_tiebreak(session
     result = await _rank_item(session_factory, user_id, candidate_id)
 
     assert result.category_informative_event_count == 2
-    assert result.category_affinity == pytest.approx(-0.05)
+    assert result.category_affinity == pytest.approx(-0.04)
 
 
 async def test_signal_families_are_independent_terminal_is_collapsed_and_snoozes_capped(
@@ -273,11 +339,9 @@ async def test_signal_families_are_independent_terminal_is_collapsed_and_snoozes
 
     result = await _rank_item(session_factory, user_id, candidate_id)
 
-    expected_raw = (1.0 + 0.60 - 0.10 - 0.15 * (1.0 + 0.75 + 0.50)) / (
-        1.0 + 0.60 + 0.10 + 0.15 * (1.0 + 0.75 + 0.50)
-    )
+    expected_weighted_sum = 1.0 + 0.60 - 0.10 - 0.15 * (1.0 + 0.75 + 0.50)
     assert result.category_informative_event_count == 6
-    assert result.category_affinity == pytest.approx(expected_raw * (6 / 14))
+    assert result.category_affinity == pytest.approx(expected_weighted_sum / 14)
 
 
 @pytest.mark.parametrize(
@@ -298,8 +362,7 @@ async def test_recency_bucket_boundaries_are_exact(session_factory, negative_age
 
     result = await _rank_item(session_factory, user_id, candidate_id)
 
-    raw = (1.0 - recency) / (1.0 + recency)
-    assert result.category_affinity == pytest.approx(raw * (2 / 10))
+    assert result.category_affinity == pytest.approx((1.0 - recency) / 10)
     if negative_age_days == 91:
         assert result.category_affinity > 0.0
 

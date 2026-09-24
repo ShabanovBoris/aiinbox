@@ -207,7 +207,7 @@ If PM-05 corrected category/type, aggregate history using the current canonical 
 For each dimension:
 
 ~~~text
-raw = weighted_signal_sum / max(total_absolute_weight, epsilon)
+raw = weighted_signal_sum / informative_event_count
 
 confidence = informative_event_count / (informative_event_count + K)
 
@@ -221,6 +221,10 @@ K = 8
 ~~~
 
 Informative events are events with non-zero signal weight after per-Item collapsing.
+The mean is over event count rather than total absolute weight so the signal's
+policy weight and recency multiplier retain their magnitude even when all
+signals point in the same direction. Sparse-history confidence supplies the
+separate prior toward neutral affinity.
 
 ## 11. Combining dimensions
 

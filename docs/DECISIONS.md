@@ -358,3 +358,19 @@ or persisted score would add stale state and could overwrite semantic meaning.
 Consequences: `personal_rank` is explainable and bounded but is not persisted or
 used by `/today`; callers can adopt it in a later ranking phase without changing
 `priority_score` or `interest_level`.
+
+## D-029 — Preserve signal magnitude in behaviour affinity
+
+Context: PM-06 signal weights and recency buckets express different strengths,
+but dividing their weighted sum by the sum of absolute weights cancels those
+differences whenever the evidence has one sign.
+
+Decision: calculate raw affinity as the mean of effective signal weights by
+informative Event count, then apply the separate sparse-history confidence.
+
+Reason: explicit feedback must outweigh weak lifecycle inference, and recent
+events must outweigh older events even when the user's history is one-sided.
+
+Consequences: policy weights and recency affect both one-sided and mixed
+history; each event remains bounded to [-1, +1], and sparse histories remain
+smoothed toward neutral by K.
