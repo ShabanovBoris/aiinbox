@@ -25,6 +25,7 @@ from app.bot.formatting import (
 )
 from app.bot.keyboards import item_keyboard
 from app.domain.enums import ACTIONABLE_ITEM_TYPES, ItemState, ProcessingStatus
+from app.services.attention_hooks import AttentionHookService
 from app.services.attention_ranking import AttentionRank, AttentionRankingService
 from app.services.retrieval import TodayService
 from app.storage.models import Event, Item, ItemSource, Reminder, User
@@ -40,6 +41,8 @@ PROACTIVE_CLAIM_LEASE = timedelta(minutes=5)
 # This absolute send window starts at claim creation, leaving recovery time in
 # the longer lease even if a worker pauses before Telegram I/O.
 NOTIFICATION_SEND_TIMEOUT = timedelta(minutes=2)
+ATTENTION_HOOK_TIMEOUT_SECONDS = 15.0
+ATTENTION_HOOK_SEND_SAFETY_SECONDS = 30.0
 _BUDGET_REMINDER_TYPES = (DAILY_DIGEST, PROACTIVE_ATTENTION)
 _GAP_REMINDER_TYPES = (DAILY_DIGEST, PROACTIVE_ATTENTION, SNOOZE_RESURFACE)
 _DELIVERY_CLAIM_TYPES = (DAILY_DIGEST, SNOOZE_RESURFACE, PROACTIVE_ATTENTION)
@@ -308,6 +311,7 @@ class ReminderWorker:
         poll_seconds: float = 60.0,
         max_send_attempts: int = 3,
         retry_backoff_seconds: float = 0.1,
+        attention_hook_service: AttentionHookService | None = None,
     ):
         self.session_factory = session_factory
         self.bot = bot
@@ -315,6 +319,7 @@ class ReminderWorker:
         self.poll_seconds = poll_seconds
         self.max_send_attempts = max(1, max_send_attempts)
         self.retry_backoff_seconds = max(0.0, retry_backoff_seconds)
+        self.attention_hook_service = attention_hook_service
 
     async def run_forever(self, stop: asyncio.Event) -> None:
         while not stop.is_set():
@@ -719,6 +724,25 @@ class ReminderWorker:
         if claimed is None:
             return 0
         reminder_id, item_id, rank, policy_level, claim_generation, claimed_at = claimed
+        hook_presentation = None
+        if self.attention_hook_service is not None:
+            remaining_seconds = (
+                claimed_at + NOTIFICATION_SEND_TIMEOUT - _utc_now()
+            ).total_seconds()
+            hook_timeout = max(
+                0.0,
+                min(
+                    ATTENTION_HOOK_TIMEOUT_SECONDS,
+                    remaining_seconds - ATTENTION_HOOK_SEND_SAFETY_SECONDS,
+                ),
+            )
+            hook_presentation = await self.attention_hook_service.for_reminder(
+                item_id=item_id,
+                user_id=user_id,
+                reminder_id=reminder_id,
+                claim_generation=claim_generation,
+                timeout_seconds=hook_timeout,
+            )
         prepared = await self._prepare_proactive_send(
             reminder_id, user_id, item_id, claim_generation, sent_at_override
         )
@@ -728,9 +752,21 @@ class ReminderWorker:
         try:
             await self._send_with_retry(
                 chat_id,
-                format_proactive_attention_reminder(item, rank),
+                format_proactive_attention_reminder(
+                    item,
+                    rank,
+                    hook_block=(
+                        hook_presentation.rendered_text if hook_presentation is not None else None
+                    ),
+                ),
                 claimed_at=claimed_at,
-                reply_markup=item_keyboard(item, sources),
+                reply_markup=item_keyboard(
+                    item,
+                    sources,
+                    focus_source_id=(
+                        hook_presentation.hook.source_id if hook_presentation is not None else None
+                    ),
+                ),
             )
         except Exception:
             log.exception(
@@ -866,6 +902,11 @@ class ReminderWorker:
                 "reason": format_attention_reason(rank)[:240],
                 "budget_local_date": local_date.isoformat(),
             }
+            if open_claim is not None and open_claim.item_id == item_id:
+                old_payload = open_claim.payload_json or {}
+                for key in ("hook_content_id", "template_id"):
+                    if key in old_payload:
+                        payload[key] = old_payload[key]
             recovered_id = (
                 open_claim.id if open_claim is not None and open_claim.item_id == item_id else None
             )

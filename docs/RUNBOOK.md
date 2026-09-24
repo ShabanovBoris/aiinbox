@@ -426,6 +426,26 @@ hours, PM-07 rank и same-Item cooldown. Если процесс останов�
 сообщения Telegram, но до SQLite finalization, повторная попытка после lease
 может отправить дубль: точно объединить транзакции Telegram и SQLite нельзя.
 
+PM-09 hooks хранятся в `contents` как `ATTENTION_HOOK`. Проверить attribution
+можно без вывода полного исходного текста:
+
+```sql
+SELECT id, item_id, source_id, metadata_json
+FROM contents
+WHERE kind = 'ATTENTION_HOOK'
+ORDER BY id DESC
+LIMIT 50;
+```
+
+Generation выполняется только после proactive claim и не делает web fetch.
+Provider/model, evidence Content ID и excerpt находятся в metadata hook; для
+hook attribution Reminder payload добавляет только `hook_content_id` и
+`template_id` к существующим PM-08 полям. Ошибка/timeout видны в log по
+`item_id`, `reminder_id` и fallback reason; полный source context не логируется.
+FTS исключает эти derived rows и продолжает индексировать исходный Content.
+Migration `f5a7c2d91e08` добавляет kind через SQLite check rebuild; downgrade
+останавливается, пока в базе остаются derived hook rows, чтобы не потерять их.
+
 ## Profile updates
 
 ```bash

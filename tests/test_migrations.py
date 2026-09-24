@@ -63,6 +63,14 @@ def test_fresh_database_migrates_to_latest_schema(tmp_path):
             "SELECT kind, text FROM contents WHERE item_id = ?",
             (item_id,),
         ).fetchone() == ("TRANSCRIPT_CHUNK", "part")
+        conn.execute(
+            "INSERT INTO contents (item_id, kind, text) VALUES (?, 'ATTENTION_HOOK', 'hook')",
+            (item_id,),
+        )
+        assert conn.execute(
+            "SELECT kind, text FROM contents WHERE item_id = ? AND kind = 'ATTENTION_HOOK'",
+            (item_id,),
+        ).fetchone() == ("ATTENTION_HOOK", "hook")
         document_item_id = conn.execute(
             "INSERT INTO items (user_id, telegram_message_id, source_index, processing_status, "
             "state, source_type, processing_stage, user_note) "
@@ -317,6 +325,57 @@ def test_event_idempotency_migration_preserves_history_and_allows_legacy_nulls(t
             "VALUES (?, 'telegram-callback:noop')",
             (second_user_id,),
         )
+
+
+def test_attention_hook_migration_preserves_existing_content(tmp_path):
+    """Upgrade a PM-08 database without rewriting or invalidating original Content rows."""
+    db = tmp_path / "attention-hooks-upgrade.db"
+    cfg = Config()
+    cfg.set_main_option("script_location", "migrations")
+    cfg.set_main_option("sqlalchemy.url", f"sqlite+aiosqlite:///{db}")
+    command.upgrade(cfg, "f5a7c2d91e07")
+
+    previous_kinds = (
+        "USER_TEXT",
+        "WEB_TEXT",
+        "TRANSCRIPT",
+        "VISUAL_NOTES",
+        "DESCRIPTION",
+        "CHUNK_SUMMARY",
+        "TRANSCRIPT_CHUNK",
+        "DOCUMENT_TEXT",
+    )
+    with sqlite3.connect(db) as conn:
+        user_id = conn.execute(
+            "INSERT INTO users (telegram_user_id) VALUES (42) RETURNING id"
+        ).fetchone()[0]
+        item_id = conn.execute(
+            "INSERT INTO items (user_id, telegram_message_id, source_index, processing_status, "
+            "state, source_type, processing_stage, user_note) "
+            "VALUES (?, 1, 0, 'READY', 'ACTIVE', 'WEB', 'READY', '') RETURNING id",
+            (user_id,),
+        ).fetchone()[0]
+        conn.executemany(
+            "INSERT INTO contents (item_id, kind, text) VALUES (?, ?, ?)",
+            [(item_id, kind, f"existing {kind}") for kind in previous_kinds],
+        )
+        conn.commit()
+
+    command.upgrade(cfg, "head")
+
+    with sqlite3.connect(db) as conn:
+        assert conn.execute(
+            "SELECT kind, text FROM contents WHERE item_id = ? ORDER BY id", (item_id,)
+        ).fetchall() == [(kind, f"existing {kind}") for kind in previous_kinds]
+        conn.execute(
+            "INSERT INTO contents (item_id, kind, text) VALUES (?, 'ATTENTION_HOOK', 'grounded')",
+            (item_id,),
+        )
+        conn.commit()
+        check_sql = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='contents'"
+        ).fetchone()[0]
+        assert "ATTENTION_HOOK" in check_sql
 
 
 def test_pm08_migration_preserves_settings_and_serializes_open_claims(tmp_path):

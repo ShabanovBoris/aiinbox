@@ -128,11 +128,19 @@ async def test_fts_finds_title_transcript_web_text_and_archived(session_factory)
             )
         )
         session.add(Content(item_id=web_item.id, kind=ContentKind.WEB_TEXT, text="SSRF protection"))
+        session.add(
+            Content(
+                item_id=web_item.id,
+                kind=ContentKind.ATTENTION_HOOK,
+                text="purple-saturn-hook-word",
+            )
+        )
         await session.commit()
 
         assert (await search_items(session, user_id, "Compose"))[0].id == title_item.id
         assert (await search_items(session, user_id, "coroutines"))[0].id == transcript_item.id
         assert (await search_items(session, user_id, "SSRF"))[0].id == web_item.id
+        assert await search_items(session, user_id, "purple-saturn-hook-word") == []
         assert (await search_items(session, user_id, "decision"))[0].id == archived_item.id
 
 

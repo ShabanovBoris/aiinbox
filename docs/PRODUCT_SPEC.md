@@ -421,7 +421,8 @@ Items и подавление недавно показанных Items. Каж�
 
 ## 45. /search
 
-SQLite FTS5 ищет title, summary, user note, tags и persisted content.
+SQLite FTS5 ищет title, summary, user note, tags и persisted original source
+content. Derived `ATTENTION_HOOK` text не индексируется.
 DONE/ARCHIVED остаются searchable. Default limit — 10.
 
 ## 46. Почему хранить extracted content
@@ -459,9 +460,13 @@ Schema changes — только Alembic migrations.
 Поддерживаемые kinds:
 
 `USER_TEXT`, `WEB_TEXT`, `TRANSCRIPT`, `TRANSCRIPT_CHUNK`,
-`VISUAL_NOTES`, `DESCRIPTION`, `CHUNK_SUMMARY`.
+`VISUAL_NOTES`, `DESCRIPTION`, `CHUNK_SUMMARY`, `DOCUMENT_TEXT`,
+`ATTENTION_HOOK`.
 
 `TRANSCRIPT_CHUNK` — retry checkpoint и удаляется после успешной сборки final transcript.
+`ATTENTION_HOOK` — производный presentation-контент с metadata, указывающей на
+проверенный исходный `Content`; `source_id` наследуется от supporting Content.
+Hooks не являются доказательством для других hooks и исключены из FTS.
 
 ## 49. events
 
@@ -504,6 +509,15 @@ PM-07 ranking. Existing users начинают с Attention OFF; новые user
 Quiet hours блокируют proactive delivery; после них Items ранжируются заново,
 без догоняющей очереди. Только успешный proactive send создаёт `SENT` Reminder
 и `ATTENTION_SHOWN`; derived `attention_score` не сохраняется.
+
+PM-09 может дополнить такой reminder сохранённым contextual hook. Генерация
+выполняется лениво после durable claim, только по уже сохранённым исходным
+Content; она не запускается на ingestion или `/attention` и не загружает URL
+повторно. Evidence валидируется как точный source excerpt, а `source_id` берётся
+из подтверждающего Content. Hook generation выполняется вне SQLite-транзакции
+в оставшемся PM-08 send window; затем worker выполняет обычную финальную
+revalidation. Timeout, ошибка provider или отсутствие валидных кандидатов
+сохраняют обычный PM-07 reason и не блокируют reminder.
 
 ## 53. Done
 
