@@ -2,6 +2,7 @@
 
 Type: Post-MVP Epic + Detailed Technical Specification  
 Prerequisite: PM-05 Explicit Feedback merged and its event contract stable
+Status: IN_REVIEW
 
 ## 1. Epic
 
@@ -206,7 +207,7 @@ If PM-05 corrected category/type, aggregate history using the current canonical 
 For each dimension:
 
 ~~~text
-raw = weighted_signal_sum / max(total_absolute_weight, epsilon)
+raw = weighted_signal_sum / informative_event_count
 
 confidence = informative_event_count / (informative_event_count + K)
 
@@ -220,6 +221,10 @@ K = 8
 ~~~
 
 Informative events are events with non-zero signal weight after per-Item collapsing.
+The mean is over event count rather than total absolute weight so the signal's
+policy weight and recency multiplier retain their magnitude even when all
+signals point in the same direction. Sparse-history confidence supplies the
+separate prior toward neutral affinity.
 
 ## 11. Combining dimensions
 
@@ -230,6 +235,9 @@ combined_affinity =
 ~~~
 
 Missing dimension history contributes 0.
+
+Overall confidence is the same weighted projection of the two dimension
+confidences. A missing dimension has zero affinity and zero confidence.
 
 ## 12. Behaviour adjustment
 
@@ -242,6 +250,9 @@ personal_rank =
 ~~~
 
 priority_score remains unchanged.
+
+PM-06 resolves half-point ties by rounding away from zero, so positive and
+negative adjustments use symmetric deterministic boundaries.
 
 ## 13. Explainability object
 

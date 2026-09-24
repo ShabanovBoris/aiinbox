@@ -1,12 +1,13 @@
 # PM-05 — Explicit Feedback
 
 Type: Post-MVP Epic + Detailed Technical Specification
-Status: IN_REVIEW
+Status: DONE
 Prerequisite: PM-01 recommended; existing durable Event log required
 
 Current implementation: Telegram feedback controls and transactional canonical
-corrections are implemented on the scoped PM-05 branch and submitted for external
-review. No ranking, retraining, or automatic re-analysis is included.
+corrections are part of the current main baseline. PM-05 records feedback and
+canonical corrections; ranking, retraining, and automatic re-analysis are not
+part of this phase.
 
 ## 1. Epic
 

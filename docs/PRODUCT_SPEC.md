@@ -376,10 +376,17 @@ quick_win       0.10
 ItemType описывает характер материала; priority — персональную полезность/срочность.
 Они не заменяют друг друга.
 
+PM-06 добавляет вычисляемый по текущим category/type и Event-истории
+`personal_rank`: сглаженная поведенческая affinity может изменить semantic
+`priority_score` не более чем на 15 пунктов. Результат не хранится и не меняет
+`priority_score`; `interest_level` остаётся отдельным сигналом для будущего
+Attention Ranking.
+
 ## 41. Today selection
 
 `TodayService` выбирает только READY + ACTIVE Items типов ACTION/LEARN/READ/WATCH,
-сортирует по priority desc и ограничивает результат.
+сортирует по `priority_score` desc и ограничивает результат. PM-06 не меняет
+порядок `/today`.
 
 ## 42. /today
 

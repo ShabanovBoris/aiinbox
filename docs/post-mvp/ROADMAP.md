@@ -224,7 +224,8 @@ Detailed specification: [PM-04_INSTAGRAM_REELS.md](PM-04_INSTAGRAM_REELS.md).
 
 ## 9. PM-05 — Explicit Feedback
 
-Current state: IN_REVIEW on branch codex/pm-05-explicit-feedback.
+Current state: DONE. Feedback controls and transactional corrections are part
+of the current main baseline.
 
 Add explicit user feedback in addition to implicit lifecycle events.
 
@@ -245,6 +246,9 @@ It does not immediately introduce ML.
 Detailed specification: [PM-05_EXPLICIT_FEEDBACK.md](PM-05_EXPLICIT_FEEDBACK.md).
 
 ## 10. PM-06 — Behaviour-Aware Ranking
+
+Current state: IN_REVIEW. The backend calculation and local verification are
+complete; `/today` continues to use `priority_score`.
 
 Do not alter `priority_score`.
 
