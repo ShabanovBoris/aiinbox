@@ -406,9 +406,12 @@ successful Reminder history. Serialize per-user digest, snooze and proactive
 send claims with short `BEGIN IMMEDIATE` transactions; a partial unique index
 also enforces one open `PROACTIVE_ATTENTION` claim. Store a claim timestamp and
 generation, bound Telegram retries below the lease, and fence recovery/finalize
-updates by generation. Record `ATTENTION_SHOWN` with successful delivery
-finalization. Existing users receive an explicit Attention OFF setting during
-rollout.
+updates by generation. The two-minute send deadline starts at `claimed_at`, so
+pre-send delay consumes the window instead of extending a live sender past
+lease recovery. Re-run PM-07 under the serialized prepare transaction so a
+stale candidate cannot pass the threshold using an old rank. Record
+`ATTENTION_SHOWN` with successful delivery finalization. Existing users receive
+an explicit Attention OFF setting during rollout.
 
 Reason: Reminder rows are durable delivery facts; derived counters and
 duplicated ranking state would drift from actual history.

@@ -276,3 +276,43 @@ class AttentionRankingService:
             )
         )
         return ranked if limit is None else ranked[:limit]
+
+    async def rank_item(
+        self,
+        session: AsyncSession,
+        user_id: int,
+        item_id: int,
+        *,
+        now: datetime | None = None,
+    ) -> tuple[Item, AttentionRank] | None:
+        """Recompute one actionable Item's live rank for a serialized send check.
+
+        PM-08 uses this after acquiring its short prepare transaction: a single
+        current candidate check avoids ranking every Item while SQLite writers
+        are paused, while the same PM-06 and PM-07 calculations remain canonical.
+        """
+        captured_now = _as_utc(now or datetime.now(UTC))
+        item = await session.scalar(
+            select(Item).where(
+                Item.id == item_id,
+                Item.user_id == user_id,
+                Item.processing_status == ProcessingStatus.READY,
+                Item.state == ItemState.ACTIVE,
+                Item.item_type.in_(ACTIONABLE_ITEM_TYPES),
+            )
+        )
+        if item is None:
+            return None
+
+        behaviour_rank = await BehaviourAffinityService().rank_item(
+            session, user_id, item, now=captured_now
+        )
+        last_shown_at = await session.scalar(
+            select(func.max(Event.created_at)).where(
+                Event.user_id == user_id,
+                Event.item_id == item_id,
+                Event.event_type.in_(_EXPOSURE_EVENT_TYPES),
+            )
+        )
+        rank = calculate_attention_rank(item, behaviour_rank, last_shown_at, captured_now)
+        return item, rank

@@ -381,6 +381,37 @@ async def test_no_behaviour_history_uses_priority_as_personal_rank(session_facto
     assert rank.score == 73
 
 
+async def test_rank_item_matches_batch_candidate_projection(session_factory):
+    """The PM-08 point revalidation path uses the same PM-07 projection as batch ranking."""
+    user_id = await _create_user(session_factory)
+    item_id = await _create_item(session_factory, user_id, priority_score=74)
+    async with session_factory() as session:
+        session.add_all(
+            [
+                Event(
+                    user_id=user_id,
+                    item_id=item_id,
+                    event_type="USEFUL",
+                    created_at=_NOW - timedelta(days=20),
+                ),
+                Event(
+                    user_id=user_id,
+                    item_id=item_id,
+                    event_type="ATTENTION_SHOWN",
+                    created_at=_NOW - timedelta(days=3),
+                ),
+            ]
+        )
+        await session.commit()
+
+    async with session_factory() as session:
+        batch = await _SERVICE.list_candidates(session, user_id, now=_NOW)
+        single = await _SERVICE.rank_item(session, user_id, item_id, now=_NOW)
+
+    assert single is not None
+    assert single == batch[0]
+
+
 async def test_pm06_canonical_corrections_feed_attention_without_double_counting(
     session_factory,
 ):

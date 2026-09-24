@@ -317,9 +317,14 @@ Exact each-level cap/gap/cooldown tests.
   serialize per-user send intents under SQLite `BEGIN IMMEDIATE`. Every claim
   records `claimed_at` and a generation; recovered proactive work increments
   the generation so a stale sender cannot finalize the new owner's claim.
-- Telegram retries have a two-minute total timeout, shorter than the lease, so
-  a live send attempt ends before another worker can recover its claim. All
-  network I/O runs after the claim transaction commits.
+- The two-minute Telegram deadline is anchored to `claimed_at`, leaving three
+  minutes before lease recovery. A worker delayed past that deadline marks its
+  claim failed without entering Telegram; retries cannot restart the window.
+  All network I/O runs after the claim transaction commits.
+- Immediately before proactive delivery, the worker recomputes the selected
+  actionable Item's PM-07 rank under the serialized prepare transaction. It
+  cancels a claim if the Item is no longer eligible or its current score is
+  below 60, and snapshots the validated score/reason into the Reminder.
 - Recovery re-ranks through PM-07 and cancels an intent whose Item is no longer
   actionable or whose current attention score is below 60. `/attention` still
   uses its existing one-to-five preview limit; scheduling can inspect ten.

@@ -1033,6 +1033,50 @@ async def test_claim_is_revalidated_before_telegram_send(session_factory, action
             assert item.state is expected
 
 
+async def test_current_pm07_score_is_revalidated_before_telegram_send(session_factory):
+    """A new exposure penalty can invalidate a previously qualified score."""
+    user_id, item_id = await make_ready_item(session_factory, attention_enabled=True)
+    await update_notification_settings(
+        session_factory, 42, daily_digest_enabled=False, attention_enabled=True
+    )
+    now = datetime(2026, 9, 14, 6, 30)
+    bot = FakeBot()
+    worker = ReminderWorker(session_factory, bot)
+    prepare = worker._prepare_proactive_send
+
+    async def record_manual_exposure_before_send(
+        reminder_id, current_user_id, current_item_id, claim_generation, current_now
+    ):
+        async with session_factory() as session:
+            session.add(
+                Event(
+                    user_id=user_id,
+                    item_id=item_id,
+                    event_type="ATTENTION_SHOWN",
+                    created_at=now,
+                )
+            )
+            await session.commit()
+        return await prepare(
+            reminder_id,
+            current_user_id,
+            current_item_id,
+            claim_generation,
+            current_now,
+        )
+
+    worker._prepare_proactive_send = record_manual_exposure_before_send
+    assert await worker.process_once(now) == 0
+    assert bot.messages == []
+    async with session_factory() as session:
+        current_ranked = await AttentionRankingService().list_candidates(session, user_id, now=now)
+        assert current_ranked[0][1].score < MIN_PROACTIVE_ATTENTION_SCORE
+        reminder = await session.scalar(
+            select(Reminder).where(Reminder.type == PROACTIVE_ATTENTION)
+        )
+        assert reminder.status == "CANCELLED"
+
+
 async def test_failed_proactive_send_has_no_budget_gap_or_cooldown_cost(session_factory):
     await make_ready_item(session_factory, attention_enabled=True)
     await update_notification_settings(
@@ -1175,6 +1219,129 @@ async def test_send_timeout_precedes_lease_recovery_and_generation_fences_old_ow
             )
             == 1
         )
+
+
+async def test_recovered_claim_owner_does_not_start_telegram_after_claim_deadline(
+    session_factory, monkeypatch
+):
+    """An owner delayed after prepare must not send after recovery takes its generation."""
+    lease = timedelta(milliseconds=120)
+    timeout = timedelta(milliseconds=60)
+    monkeypatch.setattr("app.services.notifications.PROACTIVE_CLAIM_LEASE", lease)
+    monkeypatch.setattr("app.services.notifications.NOTIFICATION_SEND_TIMEOUT", timeout)
+
+    user_id, item_id = await make_ready_item(session_factory, attention_enabled=True)
+    await update_notification_settings(
+        session_factory, 42, daily_digest_enabled=False, attention_enabled=True
+    )
+    now = datetime(2026, 9, 14, 6, 30)
+    lease_clock = [now]
+    monkeypatch.setattr("app.services.notifications._utc_now", lambda: lease_clock[0])
+
+    first_bot = BarrierBot()
+    first_worker = ReminderWorker(session_factory, first_bot, retry_backoff_seconds=0)
+    prepare = first_worker._prepare_proactive_send
+    prepared = asyncio.Event()
+    resume_old_owner = asyncio.Event()
+
+    async def pause_after_prepare(
+        reminder_id, current_user_id, current_item_id, claim_generation, current_now
+    ):
+        result = await prepare(
+            reminder_id,
+            current_user_id,
+            current_item_id,
+            claim_generation,
+            current_now,
+        )
+        prepared.set()
+        await resume_old_owner.wait()
+        return result
+
+    first_worker._prepare_proactive_send = pause_after_prepare
+    first_cycle = asyncio.create_task(first_worker.process_once(now))
+    await asyncio.wait_for(prepared.wait(), timeout=1)
+
+    recovered_at = now + lease + timedelta(milliseconds=1)
+    lease_clock[0] = recovered_at
+    recovered_bot = FakeBot()
+    assert await ReminderWorker(session_factory, recovered_bot).process_once(recovered_at) == 1
+    assert len(recovered_bot.messages) == 1
+
+    resume_old_owner.set()
+    assert await asyncio.wait_for(first_cycle, timeout=1) == 0
+    assert first_bot.calls == 0
+
+    async with session_factory() as session:
+        reminder = await session.scalar(
+            select(Reminder).where(Reminder.type == PROACTIVE_ATTENTION)
+        )
+        assert reminder.status == "SENT"
+        assert reminder.claim_generation == 2
+        assert reminder.sent_at == recovered_at
+        assert (
+            await session.scalar(
+                select(func.count(Event.id)).where(Event.event_type == "ATTENTION_SHOWN")
+            )
+            == 1
+        )
+
+
+async def test_expired_claim_is_rejected_before_preparation_and_then_recovered(
+    session_factory, monkeypatch
+):
+    """A paused owner cannot prepare an expired claim; the next owner can recover it."""
+    lease = timedelta(milliseconds=120)
+    timeout = timedelta(milliseconds=60)
+    monkeypatch.setattr("app.services.notifications.PROACTIVE_CLAIM_LEASE", lease)
+    monkeypatch.setattr("app.services.notifications.NOTIFICATION_SEND_TIMEOUT", timeout)
+
+    await make_ready_item(session_factory, attention_enabled=True)
+    await update_notification_settings(
+        session_factory, 42, daily_digest_enabled=False, attention_enabled=True
+    )
+    now = datetime(2026, 9, 14, 6, 30)
+    lease_clock = [now]
+    monkeypatch.setattr("app.services.notifications._utc_now", lambda: lease_clock[0])
+
+    first_bot = FakeBot()
+    first_worker = ReminderWorker(session_factory, first_bot)
+    prepare = first_worker._prepare_proactive_send
+    claimed = asyncio.Event()
+    resume_old_owner = asyncio.Event()
+
+    async def pause_before_prepare(
+        reminder_id, current_user_id, current_item_id, claim_generation, current_now
+    ):
+        claimed.set()
+        await resume_old_owner.wait()
+        return await prepare(
+            reminder_id,
+            current_user_id,
+            current_item_id,
+            claim_generation,
+            current_now,
+        )
+
+    first_worker._prepare_proactive_send = pause_before_prepare
+    first_cycle = asyncio.create_task(first_worker.process_once(now))
+    await asyncio.wait_for(claimed.wait(), timeout=1)
+
+    recovered_at = now + lease + timedelta(milliseconds=1)
+    lease_clock[0] = recovered_at
+    resume_old_owner.set()
+    assert await asyncio.wait_for(first_cycle, timeout=1) == 0
+    assert first_bot.messages == []
+
+    recovered_bot = FakeBot()
+    assert await ReminderWorker(session_factory, recovered_bot).process_once(recovered_at) == 1
+    assert len(recovered_bot.messages) == 1
+    async with session_factory() as session:
+        reminder = await session.scalar(
+            select(Reminder).where(Reminder.type == PROACTIVE_ATTENTION)
+        )
+        assert reminder.status == "SENT"
+        assert reminder.claim_generation == 2
 
 
 async def test_two_workers_create_only_one_open_proactive_claim(session_factory):
