@@ -3,6 +3,8 @@
 Type: Post-MVP Epic + Detailed Technical Specification  
 Prerequisites: PM-06 Behaviour Ranking; PM-11 Reminder Feedback Loop
 
+Status: IN_REVIEW
+
 ## 1. Epic
 
 ### Problem
@@ -263,17 +265,12 @@ If content is too large:
 
 ## 14. Exposure side effects
 
-/weekly should not mark every mentioned Item as TODAY_SHOWN.
+/weekly v1 is an on-demand analytical report, not an Attention exposure. It
+does not write any Event for Items mentioned in its metrics or recommendations,
+including `TODAY_SHOWN`, `ATTENTION_SHOWN`, or `WEEKLY_SHOWN`.
 
-If recommendations are considered attention exposures, use a dedicated event only for recommended Item ids, e.g.:
-
-~~~text
-WEEKLY_SHOWN
-~~~
-
-PM-06 ignores it initially.
-
-This preserves semantics.
+The next `/attention` preview therefore continues to use only actual PM-07/11
+exposure history. No schema change is required for PM-12.
 
 ## 15. Tests
 

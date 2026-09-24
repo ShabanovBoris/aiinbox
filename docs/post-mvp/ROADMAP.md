@@ -119,13 +119,13 @@ Goal: separate semantic priority from “what deserves attention now?” and con
 
 - PM-09 Contextual Hooks — DONE
 - PM-10 Motivational Nudges — DONE
-- PM-11 Reminder Feedback Loop — IN_REVIEW
+- PM-11 Reminder Feedback Loop — DONE (PR #40 merged)
 
 Goal: make resurfacing useful and engaging rather than repetitive.
 
 ### Milestone F — Reflection
 
-PM-12 Weekly Review
+- PM-12 Weekly Review — IN_REVIEW
 
 Goal: expose trends in attention, backlog growth, completion, neglect and category balance.
 
@@ -390,7 +390,7 @@ attention ranking
 
 ## 16. PM-12 — Weekly Review
 
-Add `/weekly` and optionally a weekly scheduled review.
+Add on-demand `/weekly`; scheduled weekly delivery is out of scope for v1.
 
 Show:
 

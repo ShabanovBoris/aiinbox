@@ -488,3 +488,18 @@ Consequences: Event history is the source for feedback projections; the
 database enforces one PM-11 event of each type per Reminder. Historical sends
 are not synthesized during migration, and URL-button clicks do not affect
 feedback calculations.
+
+## D-035 — Weekly review is an on-demand read projection
+
+Context: weekly reflection combines Item, Event, and Reminder facts but does not
+own canonical user state.
+
+Decision: compute `/weekly` on demand over the user's last seven local calendar
+dates and current backlog. Reuse the existing calendar-window helper and PM-07
+ranking, and emit no exposure Events or persisted report.
+
+Reason: reflection stays deterministic and read-only without creating a second
+analytics state model or changing future Attention selection.
+
+Consequences: category history reflects current `Item.category`; v1 has no
+scheduled weekly push or report snapshot.
