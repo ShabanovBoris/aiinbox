@@ -444,7 +444,30 @@ generic cap, minimum gap и kind/template history. Только успешный
 После recovery generation fencing не позволяет старому владельцу изменить
 новый claim. Между принятым Telegram сообщением и SQLite финализацией остаётся
 узкое at-least-once окно с возможным дублем; exactly-once не гарантируется.
-Generic nudge не пишет `ATTENTION_SHOWN` и не создаёт PM-11 Event.
+Generic nudge не пишет `ATTENTION_SHOWN`. Успешная доставка создаёт
+`REMINDER_SENT` в той же транзакции, которая фиксирует `SENT`; реакции
+`Ок` не создаёт outcome Event, а `Меньше таких` ссылается на этот Reminder.
+Proactive reminder, digest и snooze resurfacing также получают
+`REMINDER_SENT` только после успешного ответа Telegram. У Telegram URL-кнопки
+нет наблюдаемого callback, поэтому она не создаёт `REMINDER_OPENED`.
+
+Проверить отправки и реакции без чтения содержимого Item можно так:
+
+```sql
+SELECT id, user_id, item_id, reminder_id, event_type, created_at, payload_json
+FROM events
+WHERE event_type LIKE 'REMINDER_%'
+ORDER BY created_at DESC
+LIMIT 100;
+```
+
+`payload_json` содержит только bounded snapshot Reminder (например, тип,
+категорию, Item type или MotivationKind), без исходного текста. Dismissal даёт
+дополнительные 24 часа scheduler cooldown; PM-08 same-Item cooldown продолжает
+действовать, выбирается более позднее время. Item-specific dislike и недельная
+fatigue поправка вычисляются из Event history при ranking/send preparation, не
+хранятся отдельными счётчиками. Generic dislike подавляет тот же MotivationKind
+семь суток.
 
 PM-09 hooks хранятся в `contents` как `ATTENTION_HOOK`. Проверить attribution
 можно без вывода полного исходного текста:

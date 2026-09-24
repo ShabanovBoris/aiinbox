@@ -3,7 +3,7 @@
 Type: Post-MVP Epic + Detailed Technical Specification  
 Prerequisites: PM-08 Attention Intensity; PM-07 Attention Ranking
 
-Status: IN_REVIEW
+Status: DONE
 
 ## 1. Epic
 

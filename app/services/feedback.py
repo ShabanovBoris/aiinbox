@@ -76,10 +76,15 @@ async def _callback_was_consumed(session: AsyncSession, user_id: int, idempotenc
     ) or await _has_callback_receipt(session, user_id, idempotency_key)
 
 
-async def _claim_feedback_callback_receipt(
+async def claim_feedback_callback_receipt(
     session: AsyncSession, user_id: int, idempotency_key: str
 ) -> bool:
-    """Claim a callback inside BEGIN IMMEDIATE, including no-op outcomes."""
+    """Claim transport identity inside BEGIN IMMEDIATE, including no-op outcomes.
+
+    The receipt is separate from semantic Events so one durable outcome may
+    safely support multiple distinct user actions while each callback retry is
+    still consumed exactly once.
+    """
     if await _callback_was_consumed(session, user_id, idempotency_key):
         return False
     session.add(FeedbackCallbackReceipt(user_id=user_id, idempotency_key=idempotency_key))
@@ -104,7 +109,7 @@ async def _claim_unapplied_feedback_callback(
     )
     if owner_id is None:
         return False
-    await _claim_feedback_callback_receipt(session, owner_id, idempotency_key)
+    await claim_feedback_callback_receipt(session, owner_id, idempotency_key)
     return True
 
 
@@ -209,7 +214,7 @@ async def correct_item_category(
             else:
                 await session.rollback()
             return None
-        if not await _claim_feedback_callback_receipt(session, item.user_id, idempotency_key):
+        if not await claim_feedback_callback_receipt(session, item.user_id, idempotency_key):
             await session.commit()
             return item, False
         # Persist the transport outcome even for a canonical no-op. Without
@@ -256,7 +261,7 @@ async def correct_item_category_by_token(
             else:
                 await session.rollback()
             return None
-        if not await _claim_feedback_callback_receipt(session, item.user_id, idempotency_key):
+        if not await claim_feedback_callback_receipt(session, item.user_id, idempotency_key):
             await session.commit()
             return item, False
 
@@ -313,7 +318,7 @@ async def correct_item_type(
             else:
                 await session.rollback()
             return None
-        if not await _claim_feedback_callback_receipt(session, item.user_id, idempotency_key):
+        if not await claim_feedback_callback_receipt(session, item.user_id, idempotency_key):
             await session.commit()
             return item, False
         # No-op corrections have no semantic Event, so their callback identity

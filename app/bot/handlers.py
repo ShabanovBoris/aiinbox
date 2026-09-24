@@ -2,6 +2,7 @@ import logging
 from datetime import UTC, datetime, timedelta
 
 from aiogram import F, Router
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, CommandStart
 from aiogram.types import CallbackQuery, Message
 from sqlalchemy import select
@@ -14,6 +15,8 @@ from app.bot.keyboards import (
     feedback_menu_keyboard,
     feedback_type_keyboard,
     item_keyboard,
+    proactive_reminder_keyboard,
+    reminder_snooze_keyboard,
 )
 from app.bot.provenance import normalize_forward_origin, text_with_entity_urls
 from app.config import Settings
@@ -36,6 +39,7 @@ from app.services.notifications import (
     update_notification_settings,
 )
 from app.services.profile import enqueue_profile_update
+from app.services.reminder_feedback import ReminderFeedbackService
 from app.services.retrieval import (
     TodayService,
     list_categories,
@@ -507,6 +511,10 @@ def make_router(
     async def item_action(callback: CallbackQuery) -> None:
         await on_item_callback(callback, settings, session_factory)
 
+    @router.callback_query(F.data.startswith("reminder:"))
+    async def reminder_action(callback: CallbackQuery) -> None:
+        await on_reminder_callback(callback, settings, session_factory)
+
     @router.callback_query(F.data.startswith("feedback:"))
     async def item_feedback(callback: CallbackQuery) -> None:
         await on_feedback_callback(callback, settings, session_factory)
@@ -637,6 +645,136 @@ async def on_item_callback(
     await callback.answer()
 
 
+async def on_reminder_callback(
+    callback: CallbackQuery, settings: Settings, session_factory: async_sessionmaker
+) -> None:
+    """Translate reminder identity/actions into the ReminderFeedbackService boundary."""
+    if not settings.is_allowed(callback.from_user.id) or not callback.data:
+        await callback.answer()
+        return
+    parts = callback.data.split(":")
+    if len(parts) not in {3, 4} or parts[0] != "reminder":
+        await callback.answer("Некорректное действие")
+        return
+    try:
+        reminder_id = int(parts[2])
+    except ValueError:
+        await callback.answer("Некорректное напоминание")
+        return
+    if reminder_id < 1:
+        await callback.answer("Некорректное напоминание")
+        return
+
+    callback_action = parts[1]
+    service = ReminderFeedbackService(session_factory)
+    kwargs = {"callback_id": callback.id}
+    if callback_action == "snooze" and len(parts) == 4:
+        durations = {
+            "tomorrow": timedelta(days=1),
+            "week": timedelta(days=7),
+            "month": timedelta(days=30),
+        }
+        duration = durations.get(parts[3])
+        if duration is None:
+            await callback.answer("Некорректный срок")
+            return
+        action = "snooze"
+        kwargs["snoozed_until"] = datetime.now(UTC).replace(tzinfo=None) + duration
+    elif callback_action == "open" and len(parts) == 4:
+        try:
+            kwargs["source_id"] = int(parts[3])
+        except ValueError:
+            await callback.answer("Некорректный источник")
+            return
+        action = "open"
+    elif len(parts) == 3:
+        action = {
+            "later": "later",
+            "cancel": "cancel",
+            "done": "done",
+            "dismiss": "dismiss",
+            "less": "dislike",
+            "ok": "ok",
+        }.get(callback_action)
+        if action is None:
+            await callback.answer("Неизвестное действие")
+            return
+    else:
+        await callback.answer("Некорректное действие")
+        return
+
+    result = await service.apply_callback(
+        callback.from_user.id,
+        reminder_id,
+        action,
+        **kwargs,
+    )
+    if result == "APPLIED" and action == "later":
+        if callback.message:
+            await _edit_reply_markup_if_changed(
+                callback.message, reminder_snooze_keyboard(reminder_id)
+            )
+        await callback.answer("Выбери срок")
+        return
+    if result == "APPLIED" and action == "cancel":
+        projection = await service.item_reminder_projection(callback.from_user.id, reminder_id)
+        if callback.message:
+            if projection is None:
+                await _edit_reply_markup_if_changed(callback.message, None)
+            else:
+                reminder, item, sources = projection
+                focus_source_id = (reminder.payload_json or {}).get("focus_source_id")
+                if type(focus_source_id) is not int:
+                    focus_source_id = None
+                await _edit_reply_markup_if_changed(
+                    callback.message,
+                    proactive_reminder_keyboard(
+                        reminder_id,
+                        item,
+                        sources,
+                        focus_source_id=focus_source_id,
+                    ),
+                )
+        await callback.answer("Выбор отменён")
+        return
+    if result == "APPLIED" and action == "ok":
+        if callback.message:
+            await _edit_reply_markup_if_changed(callback.message, None)
+        await callback.answer("Ок")
+        return
+    if result == "APPLIED":
+        if action in {"done", "snooze", "dismiss", "dislike"} and callback.message:
+            await _edit_reply_markup_if_changed(callback.message, None)
+        answers = {
+            "done": "Готово",
+            "snooze": "Отложил",
+            "dismiss": "Учту время",
+            "dislike": "Записал — буду показывать меньше похожих",
+        }
+        await callback.answer(answers.get(action, "Записал"))
+        return
+    if result == "QUEUED":
+        await callback.answer("Поставил видео в очередь")
+        return
+    if result == "IN_PROGRESS":
+        await callback.answer("Видео уже готовится")
+        return
+    if result == "ALREADY_DONE":
+        if callback.message:
+            await _edit_reply_markup_if_changed(callback.message, None)
+        await callback.answer("Уже готово")
+        return
+    if result == "ALREADY_RECORDED":
+        if callback.message:
+            await _edit_reply_markup_if_changed(callback.message, None)
+        await callback.answer("Уже учтено")
+        return
+    if result == "DUPLICATE_CALLBACK":
+        await callback.answer("Уже учтено")
+        return
+    await callback.answer("Это напоминание сейчас недоступно")
+
+
 async def _load_ready_feedback_projection(
     session_factory: async_sessionmaker, telegram_user_id: int, item_id: int
 ) -> tuple[Item, list[ItemSource]] | None:
@@ -665,15 +803,24 @@ async def _load_ready_feedback_projection(
         return item, sources
 
 
-async def _edit_feedback_keyboard_if_changed(message, reply_markup) -> None:
-    """Avoid Telegram's message-is-not-modified error on duplicate callbacks."""
+async def _edit_reply_markup_if_changed(message, reply_markup) -> None:
+    """Treat duplicate markup edits as no-ops while preserving other Telegram errors.
+
+    Callback transport retries can arrive after the DB commit and original edit;
+    Telegram's exact "message is not modified" response is the successful
+    idempotent projection in that race, while unrelated errors still propagate.
+    """
     if (
         message is None
         or not hasattr(message, "edit_reply_markup")
         or getattr(message, "reply_markup", None) == reply_markup
     ):
         return
-    await message.edit_reply_markup(reply_markup=reply_markup)
+    try:
+        await message.edit_reply_markup(reply_markup=reply_markup)
+    except TelegramBadRequest as exc:
+        if "message is not modified" not in str(exc).casefold():
+            raise
 
 
 async def _present_corrected_feedback_item(message, item: Item, sources: list[ItemSource]) -> None:
@@ -687,7 +834,7 @@ async def _present_corrected_feedback_item(message, item: Item, sources: list[It
     ):
         await message.edit_text(result_text, reply_markup=markup)
         return
-    await _edit_feedback_keyboard_if_changed(message, markup)
+    await _edit_reply_markup_if_changed(message, markup)
 
 
 async def on_feedback_callback(
@@ -738,7 +885,7 @@ async def on_feedback_callback(
             )
         else:
             markup = item_keyboard(item, sources)
-        await _edit_feedback_keyboard_if_changed(callback.message, markup)
+        await _edit_reply_markup_if_changed(callback.message, markup)
         await callback.answer()
         return
 
@@ -784,7 +931,7 @@ async def on_feedback_callback(
         )
         if projection is not None:
             current_item, sources = projection
-            await _edit_feedback_keyboard_if_changed(
+            await _edit_reply_markup_if_changed(
                 callback.message, item_keyboard(current_item, sources)
             )
         confirmations = {

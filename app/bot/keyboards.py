@@ -52,6 +52,45 @@ def item_keyboard(
             [InlineKeyboardButton(text="🗄 Archive", callback_data=f"item:archive:{item.id}")],
         ]
     )
+    rows.extend(
+        _source_action_rows(
+            item,
+            sources,
+            focus_source_id,
+            video_callback_prefix=f"item:video:{item.id}:",
+        )
+    )
+    failed_sources = [source for source in sources or () if source.extraction_status == "FAILED"]
+    has_retryable_source_failure = any(not source.failure_is_permanent for source in failed_sources)
+    # ❌ Удалено дублирующее построение source actions из этого метода: общий
+    # projection сохраняет обычный Item UI и позволяет reminder заменить callback identity.
+    # ❌ Удалено безусловное Retry для PARTIAL/FAILED: permanent extraction failure
+    # нельзя исправить повтором, но более поздний LLM/priority failure retryable.
+    failed_item_retryable = (
+        sources is None
+        or item.processing_stage != "EXTRACTING"
+        or not failed_sources
+        or has_retryable_source_failure
+    )
+    partial_item_retryable = sources is None or has_retryable_source_failure
+    if (item.processing_status is ProcessingStatus.FAILED and failed_item_retryable) or (
+        item.processing_status is ProcessingStatus.READY
+        and item.analysis_completeness == "PARTIAL"
+        and partial_item_retryable
+    ):
+        rows.append([InlineKeyboardButton(text="🔁 Retry", callback_data=f"item:retry:{item.id}")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _source_action_rows(
+    item: Item,
+    sources: Sequence[ItemSource] | None,
+    focus_source_id: int | None,
+    *,
+    video_callback_prefix: str,
+) -> list[list[InlineKeyboardButton]]:
+    """Share source actions while keeping URL clicks distinct from observable callbacks."""
+    rows = []
     if item.processing_status is ProcessingStatus.READY:
         video_sources = [
             source
@@ -84,7 +123,7 @@ def item_keyboard(
                 [
                     InlineKeyboardButton(
                         text=f"📹 Отправить {label}",
-                        callback_data=f"item:video:{item.id}:{source.id}",
+                        callback_data=f"{video_callback_prefix}{source.id}",
                     )
                 ]
             )
@@ -108,24 +147,85 @@ def item_keyboard(
     original_url = forward_original_url(item.source_metadata_json)
     if original_url:
         rows.append([InlineKeyboardButton(text="↗ Открыть оригинал", url=original_url)])
-    failed_sources = [source for source in sources or () if source.extraction_status == "FAILED"]
-    has_retryable_source_failure = any(not source.failure_is_permanent for source in failed_sources)
-    # ❌ Удалено безусловное Retry для PARTIAL/FAILED: permanent extraction failure
-    # нельзя исправить повтором, но более поздний LLM/priority failure retryable.
-    failed_item_retryable = (
-        sources is None
-        or item.processing_stage != "EXTRACTING"
-        or not failed_sources
-        or has_retryable_source_failure
+    return rows
+
+
+def proactive_reminder_keyboard(
+    reminder_id: int,
+    item: Item,
+    sources: Sequence[ItemSource] | None = None,
+    *,
+    focus_source_id: int | None = None,
+) -> InlineKeyboardMarkup:
+    """Project a focused reaction surface whose callbacks retain Reminder identity."""
+    rows = _source_action_rows(
+        item,
+        sources,
+        focus_source_id,
+        video_callback_prefix=f"reminder:open:{reminder_id}:",
     )
-    partial_item_retryable = sources is None or has_retryable_source_failure
-    if (item.processing_status is ProcessingStatus.FAILED and failed_item_retryable) or (
-        item.processing_status is ProcessingStatus.READY
-        and item.analysis_completeness == "PARTIAL"
-        and partial_item_retryable
-    ):
-        rows.append([InlineKeyboardButton(text="🔁 Retry", callback_data=f"item:retry:{item.id}")])
+    rows.extend(
+        [
+            [
+                InlineKeyboardButton(
+                    text="⏰ Позже", callback_data=f"reminder:later:{reminder_id}"
+                ),
+                InlineKeyboardButton(
+                    text="✅ Готово", callback_data=f"reminder:done:{reminder_id}"
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🙈 Не сейчас", callback_data=f"reminder:dismiss:{reminder_id}"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="👎 Меньше таких", callback_data=f"reminder:less:{reminder_id}"
+                )
+            ],
+        ]
+    )
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def motivation_reminder_keyboard(reminder_id: int) -> InlineKeyboardMarkup:
+    """Expose only the two factual nudge reactions; OK intentionally records no positive Event."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="👍 Ок", callback_data=f"reminder:ok:{reminder_id}"),
+                InlineKeyboardButton(
+                    text="👎 Меньше таких", callback_data=f"reminder:less:{reminder_id}"
+                ),
+            ]
+        ]
+    )
+
+
+def reminder_snooze_keyboard(reminder_id: int) -> InlineKeyboardMarkup:
+    """Keep the originating Reminder id through every explicit snooze choice."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="Завтра",
+                    callback_data=f"reminder:snooze:{reminder_id}:tomorrow",
+                ),
+                InlineKeyboardButton(
+                    text="Через неделю",
+                    callback_data=f"reminder:snooze:{reminder_id}:week",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="Через месяц",
+                    callback_data=f"reminder:snooze:{reminder_id}:month",
+                ),
+                InlineKeyboardButton(text="Отмена", callback_data=f"reminder:cancel:{reminder_id}"),
+            ],
+        ]
+    )
 
 
 def feedback_menu_keyboard(item_id: int) -> InlineKeyboardMarkup:

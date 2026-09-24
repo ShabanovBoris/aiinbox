@@ -306,9 +306,16 @@ class AttentionHookService:
             if presentation is None:
                 payload.pop("hook_content_id", None)
                 payload.pop("template_id", None)
+                payload.pop("focus_source_id", None)
             else:
                 payload["hook_content_id"] = presentation.hook.content_id
                 payload["template_id"] = presentation.template_id
+                if presentation.hook.source_id is None:
+                    payload.pop("focus_source_id", None)
+                else:
+                    # PM-11 restores the same relevant-source-first keyboard if
+                    # the user opens and then cancels reminder snooze selection.
+                    payload["focus_source_id"] = presentation.hook.source_id
             if payload != (reminder.payload_json or {}):
                 reminder.payload_json = payload
             await session.commit()

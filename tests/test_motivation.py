@@ -457,7 +457,9 @@ async def test_streak_must_be_current_and_templates_rotate_from_sent_history(ses
     assert MotivationKind.QUICK_WINS not in {candidate.kind for candidate in same_day}
 
 
-async def test_worker_sends_one_generic_claim_without_item_actions_or_events(session_factory):
+async def test_worker_sends_generic_claim_with_feedback_controls_and_send_attribution(
+    session_factory,
+):
     now = datetime(2026, 9, 24, 12)
     user_id = await make_worker_user(session_factory)
     await add_growth_items(session_factory, user_id, now)
@@ -471,7 +473,11 @@ async def test_worker_sends_one_generic_claim_without_item_actions_or_events(ses
     assert chat_id == 42
     assert "добавлено 3" in text
     assert "Разница" in text
-    assert kwargs == {}
+    callbacks = {
+        button.callback_data for row in kwargs["reply_markup"].inline_keyboard for button in row
+    }
+    assert any(value.startswith("reminder:ok:") for value in callbacks)
+    assert any(value.startswith("reminder:less:") for value in callbacks)
     assert hooks.calls == 0
 
     async with session_factory() as session:
@@ -490,10 +496,108 @@ async def test_worker_sends_one_generic_claim_without_item_actions_or_events(ses
             "local_date": "2026-09-24",
             "slot": 1,
         }
-        assert await session.scalar(select(Event.id)) is None
+        sent_event = await session.scalar(
+            select(Event).where(
+                Event.reminder_id == reminder.id,
+                Event.event_type == "REMINDER_SENT",
+            )
+        )
+        assert sent_event.item_id is None
+        assert sent_event.payload_json == {
+            "reminder_type": "MOTIVATION_NUDGE",
+            "policy_level": 3,
+            "motivation_kind": "INBOX_GROWTH",
+            "template_id": "inbox_growth_v1",
+            "local_date": "2026-09-24",
+            "slot": 1,
+        }
+        assert await session.scalar(select(func.count(Event.id))) == 1
 
     assert await worker.process_once(now + timedelta(minutes=1)) == 0
     assert len(bot.messages) == 1
+
+
+async def test_disliked_nudge_kind_is_filtered_before_and_during_arbitration(session_factory):
+    now = datetime(2026, 9, 24, 12)
+    user_id = await make_worker_user(session_factory, level=5)
+    stale_item_id = await add_item(
+        session_factory,
+        user_id,
+        created_at=now - timedelta(days=45),
+        priority=80,
+        title="Old important item",
+    )
+    for index in range(3):
+        await add_item(
+            session_factory,
+            user_id,
+            created_at=now - timedelta(days=1),
+            priority=60,
+            minutes=20,
+            title=f"Quick task {index}",
+        )
+    async with session_factory() as session:
+        # The last successful Attention-family delivery makes PM-10 prefer a
+        # nudge at level 5, so this exercises suppression before arbitration.
+        session.add(
+            Reminder(
+                user_id=user_id,
+                item_id=stale_item_id,
+                type=PROACTIVE_ATTENTION,
+                scheduled_at=now - timedelta(days=3),
+                status="SENT",
+                sent_at=now - timedelta(days=3),
+                payload_json={"reminder_type": PROACTIVE_ATTENTION},
+            )
+        )
+        disliked = Reminder(
+            user_id=user_id,
+            item_id=None,
+            type=MOTIVATION_NUDGE,
+            scheduled_at=now - timedelta(days=6),
+            status="SENT",
+            sent_at=now - timedelta(days=6),
+            payload_json={
+                "kind": "QUICK_WINS",
+                "template_id": "quick_wins_v1",
+                "policy_level": 5,
+            },
+        )
+        session.add(disliked)
+        await session.flush()
+        session.add(
+            Event(
+                user_id=user_id,
+                item_id=None,
+                reminder_id=disliked.id,
+                event_type="REMINDER_DISLIKED",
+                payload_json={
+                    "reminder_type": MOTIVATION_NUDGE,
+                    "motivation_kind": "QUICK_WINS",
+                    "template_id": "quick_wins_v1",
+                    "policy_level": 5,
+                },
+                created_at=now - timedelta(days=6, hours=23, minutes=59),
+            )
+        )
+        await session.commit()
+
+    bot = RecordingBot()
+    worker = ReminderWorker(session_factory, bot)
+    assert await worker.process_once(now) == 1
+    assert len(bot.messages) == 1
+    assert "важных Item" in bot.messages[0][1]
+    async with session_factory() as session:
+        sent = await session.scalar(
+            select(Reminder).where(
+                Reminder.type == MOTIVATION_NUDGE,
+                Reminder.status == "SENT",
+                Reminder.sent_at == now,
+            )
+        )
+        assert sent.payload_json["kind"] == "STALE_IMPORTANT"
+        user = await session.get(User, user_id)
+        assert user.settings_json["generic_motivation_enabled"] is True
 
 
 @pytest.mark.parametrize(
@@ -532,6 +636,7 @@ async def test_failed_generic_delivery_reuses_slot_without_spending_budget(sessi
         assert failed.sent_at is None
         assert failed.claim_generation == 1
         reminder_id = failed.id
+        assert await session.scalar(select(Event.id)) is None
 
     succeeding_bot = RecordingBot()
     assert (
@@ -550,6 +655,15 @@ async def test_failed_generic_delivery_reuses_slot_without_spending_budget(sessi
         assert sent.sent_at == now + timedelta(seconds=1)
         assert sent.claim_generation == 2
         assert sent.scheduled_at == datetime(2026, 9, 24, 0, 0, 1)
+        assert (
+            await session.scalar(
+                select(func.count(Event.id)).where(
+                    Event.reminder_id == reminder_id,
+                    Event.event_type == "REMINDER_SENT",
+                )
+            )
+            == 1
+        )
 
 
 async def test_stale_generic_claim_recovers_same_slot_with_current_facts_and_fences_old_owner(

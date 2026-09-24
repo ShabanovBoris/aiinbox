@@ -189,7 +189,7 @@ async def test_unavailable_feedback_receipt_is_atomic_with_ready_check(
     callback_key = "telegram-callback:temporarily-unavailable"
     receipt_claimed = asyncio.Event()
     release_callback = asyncio.Event()
-    original_claim = feedback_service._claim_feedback_callback_receipt
+    original_claim = feedback_service.claim_feedback_callback_receipt
     paused = False
 
     async def pause_after_claim(session, user_id, idempotency_key):
@@ -201,7 +201,7 @@ async def test_unavailable_feedback_receipt_is_atomic_with_ready_check(
             await release_callback.wait()
         return claimed
 
-    monkeypatch.setattr(feedback_service, "_claim_feedback_callback_receipt", pause_after_claim)
+    monkeypatch.setattr(feedback_service, "claim_feedback_callback_receipt", pause_after_claim)
     first_delivery = asyncio.create_task(
         record_item_feedback(session_factory, 42, queued_id, "USEFUL", idempotency_key=callback_key)
     )

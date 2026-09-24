@@ -118,8 +118,8 @@ Goal: separate semantic priority from “what deserves attention now?” and con
 ### Milestone E — Engagement
 
 - PM-09 Contextual Hooks — DONE
-- PM-10 Motivational Nudges — IN_REVIEW
-- PM-11 Reminder Feedback Loop
+- PM-10 Motivational Nudges — DONE
+- PM-11 Reminder Feedback Loop — IN_REVIEW
 
 Goal: make resurfacing useful and engaging rather than repetitive.
 
@@ -359,7 +359,7 @@ First version should be template-based. An LLM may later rewrite already-compute
 
 Provide `generic_motivation_enabled`.
 
-Current state: IN_REVIEW. Nudges use deterministic Item/Event facts and share
+Current state: DONE. Nudges use deterministic Item/Event facts and share
 PM-08 budget, quiet hours, minimum gap and durable claims.
 
 ## 15. PM-11 — Reminder Feedback Loop
@@ -374,6 +374,9 @@ Record reminder-specific outcomes:
 - REMINDER_DISLIKED.
 
 Reminder UI should allow a quick negative signal such as “Fewer like this”.
+
+Current state: IN_REVIEW. Reminder-attributed outcomes feed bounded deterministic
+ranking and scheduling adjustments; normal Item lifecycle Events remain canonical.
 
 This closes:
 
