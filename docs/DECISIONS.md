@@ -318,3 +318,26 @@ delivery policy. `YOUTUBE_MAX_AUDIO_BYTES`, `YOUTUBE_MAX_VIDEO_BYTES`,
 отдельными source/processing budgets: их нельзя автоматически приравнивать к
 лимиту Telegram upload. Например, разрешение анализировать большой ролик не
 означает, что его обязательно можно отправить обратно через Telegram.
+
+## D-027 — Durable idempotency for explicit feedback callbacks
+
+Context: Telegram may redeliver one callback, while a later intentional click
+must remain a new feedback signal for future analysis.
+
+Decision: store a nullable idempotency key on Event and enforce uniqueness per
+user in SQLite. Telegram feedback uses the namespaced CallbackQuery identity.
+Category/type corrections also persist a user-scoped callback receipt in the
+same serialized transaction, including when the selected value is already
+current or a recognized action is rejected by a stale UI target; neither case
+should create a semantic correction Event. READY/category-token applicability
+and receipt claim are one BEGIN IMMEDIATE operation, so a concurrent retry
+cannot cross from rejected to applied between two transactions.
+
+Reason: transport retry identity is distinct from the meaning or age of a
+feedback event, and application-only existence checks race under concurrent
+callbacks.
+
+Consequences: legacy and non-callback Events keep a NULL key; later feedback
+with a new callback identity remains append-only history. The separate receipt
+preserves no-op/stale callback idempotency without adding synthetic Events to
+the behavioural history.

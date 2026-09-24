@@ -225,15 +225,44 @@ class ItemSource(Base):
 
 
 class Event(Base):
-    """Durable feedback log; it is auxiliary to Item's canonical lifecycle state."""
+    """Auxiliary history; nullable callback keys deduplicate transport retries."""
 
     __tablename__ = "events"
+    __table_args__ = (
+        Index(
+            "uq_events_user_idempotency_key",
+            "user_id",
+            "idempotency_key",
+            unique=True,
+        ),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
     item_id: Mapped[int] = mapped_column(ForeignKey("items.id"), index=True)
     event_type: Mapped[str] = mapped_column(String(32), index=True)
     payload_json: Mapped[dict | None] = mapped_column(JSON)
+    idempotency_key: Mapped[str | None] = mapped_column(String(160))
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class FeedbackCallbackReceipt(Base):
+    """Persist feedback callback identity separately from semantic Event data.
+
+    This receipt lets a no-op or stale action stay consumed without adding a
+    misleading Event; changed corrections commit their receipt beside the Event.
+    """
+
+    __tablename__ = "feedback_callback_receipts"
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id", "idempotency_key", name="uq_feedback_callback_receipts_user_key"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(160), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 

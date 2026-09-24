@@ -8,14 +8,24 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.bot.formatting import format_ready_item
-from app.bot.keyboards import item_keyboard
+from app.bot.keyboards import (
+    feedback_category_keyboard,
+    feedback_menu_keyboard,
+    feedback_type_keyboard,
+    item_keyboard,
+)
 from app.bot.provenance import normalize_forward_origin, text_with_entity_urls
 from app.config import Settings
-from app.domain.enums import ItemState, ProcessingStatus, SourceType
+from app.domain.enums import ItemState, ItemType, ProcessingStatus, SourceType
 from app.extractors.document import document_format_hint, safe_document_file_name
 from app.extractors.instagram import is_instagram_reel_url
 from app.services.actions import apply_item_action, record_item_events, set_item_interest
 from app.services.delivery import enqueue_item_video_delivery
+from app.services.feedback import (
+    correct_item_category_by_token,
+    correct_item_type,
+    record_item_feedback,
+)
 from app.services.ingestion import ingest_media, ingest_message
 from app.services.notifications import (
     format_settings,
@@ -31,7 +41,7 @@ from app.services.retrieval import (
     search_items,
 )
 from app.services.url_parsing import find_urls
-from app.storage.models import Item, ItemSource
+from app.storage.models import Item, ItemSource, User
 
 log = logging.getLogger(__name__)
 
@@ -469,6 +479,10 @@ def make_router(
     async def item_action(callback: CallbackQuery) -> None:
         await on_item_callback(callback, settings, session_factory)
 
+    @router.callback_query(F.data.startswith("feedback:"))
+    async def item_feedback(callback: CallbackQuery) -> None:
+        await on_feedback_callback(callback, settings, session_factory)
+
     @router.callback_query(F.data == "settings:digest")
     async def settings_digest(callback: CallbackQuery) -> None:
         await on_settings_callback(callback, settings, session_factory)
@@ -589,6 +603,237 @@ async def on_item_callback(
     if callback.message:
         await callback.message.edit_text(_item_action_label(item, action_name), reply_markup=None)
     await callback.answer()
+
+
+async def _load_ready_feedback_projection(
+    session_factory: async_sessionmaker, telegram_user_id: int, item_id: int
+) -> tuple[Item, list[ItemSource]] | None:
+    """Build a source-aware keyboard projection after checking Item ownership."""
+    async with session_factory() as session:
+        item = await session.scalar(
+            select(Item)
+            .join(User, User.id == Item.user_id)
+            .where(
+                User.telegram_user_id == telegram_user_id,
+                Item.id == item_id,
+                Item.processing_status == ProcessingStatus.READY,
+            )
+        )
+        if item is None:
+            return None
+        sources = list(
+            (
+                await session.scalars(
+                    select(ItemSource)
+                    .where(ItemSource.item_id == item.id)
+                    .order_by(ItemSource.source_index, ItemSource.id)
+                )
+            ).all()
+        )
+        return item, sources
+
+
+async def _edit_feedback_keyboard_if_changed(message, reply_markup) -> None:
+    """Avoid Telegram's message-is-not-modified error on duplicate callbacks."""
+    if (
+        message is None
+        or not hasattr(message, "edit_reply_markup")
+        or getattr(message, "reply_markup", None) == reply_markup
+    ):
+        return
+    await message.edit_reply_markup(reply_markup=reply_markup)
+
+
+async def _present_corrected_feedback_item(message, item: Item, sources: list[ItemSource]) -> None:
+    """Refresh only stale result text; duplicate/no-op callbacks update markup alone."""
+    markup = item_keyboard(item, sources)
+    result_text = format_ready_item(item, sources)
+    if (
+        message is not None
+        and hasattr(message, "edit_text")
+        and getattr(message, "text", None) != result_text
+    ):
+        await message.edit_text(result_text, reply_markup=markup)
+        return
+    await _edit_feedback_keyboard_if_changed(message, markup)
+
+
+async def on_feedback_callback(
+    callback: CallbackQuery, settings: Settings, session_factory: async_sessionmaker
+) -> None:
+    """Translate feedback callbacks into scoped service calls and UI projections."""
+    if not settings.is_allowed(callback.from_user.id) or not callback.data:
+        await callback.answer()
+        return
+
+    parts = callback.data.split(":")
+    if len(parts) < 3 or parts[0] != "feedback":
+        await callback.answer("Некорректное действие")
+        return
+    action, raw_item_id = parts[1], parts[2]
+    try:
+        item_id = int(raw_item_id)
+    except ValueError:
+        await callback.answer("Некорректный Item")
+        return
+    if item_id < 1:
+        await callback.answer("Некорректный Item")
+        return
+
+    if action in {"menu", "category_menu", "type_menu", "back"}:
+        if len(parts) != 3:
+            await callback.answer("Некорректное действие")
+            return
+        projection = await _load_ready_feedback_projection(
+            session_factory, callback.from_user.id, item_id
+        )
+        if projection is None:
+            await callback.answer("Item недоступен")
+            return
+        item, sources = projection
+        if action == "menu":
+            markup = feedback_menu_keyboard(item_id)
+        elif action == "type_menu":
+            markup = feedback_type_keyboard(item_id)
+        elif action == "category_menu":
+            async with session_factory() as session:
+                categories = await list_categories(session, item.user_id)
+            # Frequency order keeps the keyboard's bounded choices useful without
+            # introducing pagination state or callback payloads containing text.
+            categories = sorted(categories, key=lambda row: (-row[1], row[0].casefold()))
+            markup = feedback_category_keyboard(
+                item_id, [category for category, _count in categories]
+            )
+        else:
+            markup = item_keyboard(item, sources)
+        await _edit_feedback_keyboard_if_changed(callback.message, markup)
+        await callback.answer()
+        return
+
+    idempotency_key = f"telegram-callback:{callback.id}"
+    # ❌ Удален handler-level receipt claim в отдельной транзакции: service
+    # теперь связывает eligibility/token resolution и receipt в одной записи.
+    if action in {
+        "useful",
+        "not_interesting",
+        "priority_higher",
+        "priority_lower",
+        "summary_wrong",
+    }:
+        if len(parts) != 3:
+            await callback.answer("Некорректное действие")
+            return
+        event_types = {
+            "useful": "USEFUL",
+            "not_interesting": "NOT_INTERESTING",
+            "priority_higher": "PRIORITY_HIGHER",
+            "priority_lower": "PRIORITY_LOWER",
+            "summary_wrong": "SUMMARY_REPORTED_WRONG",
+        }
+        item = await record_item_feedback(
+            session_factory,
+            callback.from_user.id,
+            item_id,
+            event_types[action],
+            idempotency_key=idempotency_key,
+        )
+        if item is None:
+            await callback.answer("Item недоступен")
+            return
+        if action in {"useful", "not_interesting"}:
+            confirmations = {
+                "useful": "Записал 👍",
+                "not_interesting": "Записал — буду учитывать",
+            }
+            await callback.answer(confirmations[action])
+            return
+        projection = await _load_ready_feedback_projection(
+            session_factory, callback.from_user.id, item_id
+        )
+        if projection is not None:
+            current_item, sources = projection
+            await _edit_feedback_keyboard_if_changed(
+                callback.message, item_keyboard(current_item, sources)
+            )
+        confirmations = {
+            "priority_higher": "Записал сигнал о приоритете",
+            "priority_lower": "Записал сигнал о приоритете",
+            "summary_wrong": "Отметил summary как неверный",
+        }
+        await callback.answer(confirmations[action])
+        return
+
+    if action == "category":
+        if (
+            len(parts) != 4
+            or len(parts[3]) != 20
+            or any(character not in "0123456789abcdef" for character in parts[3])
+        ):
+            await callback.answer("Некорректная категория")
+            return
+        try:
+            result = await correct_item_category_by_token(
+                session_factory,
+                callback.from_user.id,
+                item_id,
+                parts[3],
+                idempotency_key=idempotency_key,
+            )
+        except ValueError:
+            await callback.answer("Категория не подходит")
+            return
+        if result is None:
+            current = await _load_ready_feedback_projection(
+                session_factory, callback.from_user.id, item_id
+            )
+            await callback.answer(
+                "Категория больше недоступна" if current is not None else "Item недоступен"
+            )
+            return
+        _updated_item, changed = result
+        current = await _load_ready_feedback_projection(
+            session_factory, callback.from_user.id, item_id
+        )
+        if current is not None:
+            current_item, sources = current
+            await _present_corrected_feedback_item(callback.message, current_item, sources)
+        await callback.answer("Категория изменена" if changed else "Категория без изменений")
+        return
+
+    if action == "type":
+        if len(parts) != 4:
+            await callback.answer("Некорректный тип")
+            return
+        try:
+            item_type = ItemType(parts[3])
+        except ValueError:
+            await callback.answer("Некорректный тип")
+            return
+        try:
+            result = await correct_item_type(
+                session_factory,
+                callback.from_user.id,
+                item_id,
+                item_type,
+                idempotency_key=idempotency_key,
+            )
+        except ValueError:
+            await callback.answer("Некорректный тип")
+            return
+        if result is None:
+            await callback.answer("Item недоступен")
+            return
+        _updated_item, changed = result
+        current = await _load_ready_feedback_projection(
+            session_factory, callback.from_user.id, item_id
+        )
+        if current is not None:
+            current_item, sources = current
+            await _present_corrected_feedback_item(callback.message, current_item, sources)
+        await callback.answer("Тип изменён" if changed else "Тип без изменений")
+        return
+
+    await callback.answer("Неизвестное действие")
 
 
 # Callback text is derived from canonical persisted state, not requested input:

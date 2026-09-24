@@ -204,7 +204,7 @@ Detailed specification: [PM-03_TELEGRAM_VIDEO_DOCUMENTS.md](PM-03_TELEGRAM_VIDEO
 
 ## 8. PM-04 — Instagram Reels
 
-Current state: implementation is IN_PROGRESS on the current main baseline.
+Current state: DONE. PM-04 was implemented and merged to main in PR #31.
 
 Recognize Instagram Reel URLs before generic web routing and process them as media:
 
@@ -223,6 +223,8 @@ Integration is best-effort. Auth-required, rate-limit and extraction failures ar
 Detailed specification: [PM-04_INSTAGRAM_REELS.md](PM-04_INSTAGRAM_REELS.md).
 
 ## 9. PM-05 — Explicit Feedback
+
+Current state: IN_REVIEW on branch codex/pm-05-explicit-feedback.
 
 Add explicit user feedback in addition to implicit lifecycle events.
 

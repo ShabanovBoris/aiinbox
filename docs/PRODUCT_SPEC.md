@@ -98,6 +98,8 @@ Telegram → ingestion → SQLite queue → ProcessingWorker
 - `/profile`, `/profile_update`;
 - `/settings`;
 - Done / Later / Archive / Retry;
+- explicit READY Item feedback: Useful, Not interesting, category/type correction,
+  priority direction and summary quality;
 - daily digest и snooze resurfacing.
 
 Direct Telegram video поддержан. Видео, которое Telegram прислал как `Document`,
@@ -439,6 +441,20 @@ Schema changes — только Alembic migrations.
 
 Lifecycle/user feedback events пишутся в той же транзакции, что выигравший state
 transition. Повторный callback не должен создавать второй event.
+
+PM-05 добавляет USEFUL, NOT_INTERESTING, CATEGORY_CORRECTED, TYPE_CORRECTED,
+PRIORITY_HIGHER, PRIORITY_LOWER и SUMMARY_REPORTED_WRONG. Event остаётся
+auxiliary history; исправления категории и типа меняют canonical Item вместе с
+Event в одной транзакции, остальные сигналы Item не меняют. Nullable
+idempotency_key с уникальностью по паре user_id/idempotency_key схлопывает
+повторную доставку Telegram callback, сохраняя возможность нового события от
+последующего нажатия. Для category/type correction отдельная
+feedback_callback_receipts сохраняет callback receipt даже при no-op, который
+не должен создавать семантический Event; receipt и реальное исправление
+фиксируются одной SQLite-транзакцией. Проверка READY/category-token и запись
+receipt выполняются в одной транзакции. Распознанный callback со stale или
+временно недоступной целью также потребляется без Event, если Item принадлежит
+пользователю.
 
 ## 50. reminders
 

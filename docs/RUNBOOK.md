@@ -351,6 +351,25 @@ WHERE id=<id> AND processing_status='FAILED';
 Не очищать `processing_stage`/contents и не переводить `READY` ItemSource обратно
 в `PENDING`: это resume checkpoints уже успешно извлечённых частей сообщения.
 
+## Event history and explicit feedback
+
+Events remain auxiliary history; inspect a single Item without changing its
+canonical state:
+
+~~~sql
+SELECT event_type, payload_json, idempotency_key, created_at
+FROM events
+WHERE item_id = <id>
+ORDER BY id;
+~~~
+
+Telegram callback retries reuse the same namespaced idempotency key. Later user
+clicks have a different key and remain separate history entries.
+No-op category/type corrections create no Event; their consumed callback keys
+are stored in `feedback_callback_receipts` so a delayed replay cannot become a
+later change. Recognized feedback callbacks rejected because an owned Item or
+category target is stale are also recorded there without adding Event history.
+
 ## Immediate deliveries
 
 ```bash

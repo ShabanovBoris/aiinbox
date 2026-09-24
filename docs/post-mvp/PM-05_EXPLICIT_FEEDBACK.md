@@ -1,8 +1,12 @@
 # PM-05 — Explicit Feedback
 
-Type: Post-MVP Epic + Detailed Technical Specification  
-Status: NOT_STARTED  
+Type: Post-MVP Epic + Detailed Technical Specification
+Status: IN_REVIEW
 Prerequisite: PM-01 recommended; existing durable Event log required
+
+Current implementation: Telegram feedback controls and transactional canonical
+corrections are implemented on the scoped PM-05 branch and submitted for external
+review. No ranking, retraining, or automatic re-analysis is included.
 
 ## 1. Epic
 
@@ -125,6 +129,11 @@ Keep PM-01 interest buttons separate conceptually:
 
 “High interest” is not the same as “Useful”.
 
+The controls are shown only for READY Items, including READY/PARTIAL results.
+The category picker is bounded to the 20 most frequently used existing user
+categories. Category names travel through short opaque callback tokens rather
+than raw callback data.
+
 ## 7. Useful / Not interesting
 
 ### USEFUL
@@ -164,6 +173,7 @@ Conceptually:
 
 ~~~text
 correct_item_category(user_id, item_id, new_category)
+correct_item_category_by_token(user_id, item_id, category_token)
 ~~~
 
 Requirements:
@@ -171,6 +181,7 @@ Requirements:
 - trim/validate length;
 - user-scoped;
 - Item update + event in same transaction;
+- resolve bounded category tokens and consume stale/unavailable callbacks in that same transaction;
 - no LLM required;
 - search index updated if category participates in searchable/display data.
 
@@ -255,13 +266,25 @@ Telegram callbacks can repeat.
 
 For toggle-like one-off feedback:
 
-- avoid uncontrolled duplicate identical events from the same callback/update;
-- use a reasonable idempotency key if existing architecture supports it;
-- otherwise conditional service logic must ensure repeated callback is harmless.
+- Event has a nullable 160-character idempotency_key and a unique
+  (user_id, idempotency_key) database index;
+- Telegram stores telegram-callback:<CallbackQuery.id> as the key;
+- repeated delivery of that callback is a no-op, while a later user click has a
+  new key and remains a distinct Event.
 
 For feedback that may be intentionally repeated across time, preserve legitimate later events.
 
 Do not globally deduplicate “USEFUL forever” if future semantics need time-series feedback.
+
+Canonical corrections serialize writers with SQLite BEGIN IMMEDIATE and store
+a user-scoped row in feedback_callback_receipts for each accepted callback,
+including a no-op selection. Recognized callbacks whose owned Item or category
+target is stale are also consumed without an Event. A real change commits the
+Item update, receipt, and correction Event together; a no-op or stale action
+commits only the receipt. This keeps a late retry from becoming a later
+mutation without adding a fake Event. READY/category-token resolution and the
+receipt decision happen within this same serialized transaction; handlers do
+not split applicability checks from callback consumption.
 
 ## 13. Event payload contract
 
@@ -365,7 +388,9 @@ Requirements:
 - malformed/stale callback handled;
 - deleted/missing Item handled;
 - unauthorized user cannot modify;
-- after correction show canonical persisted value.
+- after correction show canonical persisted value;
+- Back from the correction menu restores the current source-aware Item keyboard;
+- category/type menu navigation creates no Event.
 
 If free-text category correction requires conversational state, keep state minimal and bounded. Do not add a large workflow framework.
 
@@ -413,11 +438,15 @@ If free-text category correction requires conversational state, keep state minim
 
 ## 21. Migration
 
-If the existing Event table can represent all new events, no schema migration is required.
+Migrations add nullable Event.idempotency_key with a unique
+(user_id, idempotency_key) index, plus feedback_callback_receipts with a unique
+(user_id, idempotency_key) constraint. Existing Events remain intact with a
+NULL key; SQLite permits multiple NULL keys, and the same non-NULL key may be
+used by different users. The receipt table stores transport outcomes that do
+not correspond to semantic Event rows.
 
-Do not create a new feedback table merely for these event types.
-
-If callback idempotency needs a new durable key, justify the schema change separately.
+Do not create a new feedback event table merely for these event types;
+feedback_callback_receipts stores transport identities only, not feedback data.
 
 ## 22. Acceptance criteria
 

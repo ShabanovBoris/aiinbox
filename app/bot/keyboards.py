@@ -5,8 +5,12 @@ from collections.abc import Sequence
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from app.bot.provenance import forward_original_url
-from app.domain.enums import ProcessingStatus, SourceType
+from app.domain.category_tokens import category_token as category_callback_token
+from app.domain.enums import ItemType, ProcessingStatus, SourceType
 from app.storage.models import Item, ItemSource
+
+_MAX_CATEGORY_CHOICES = 20
+_MAX_CATEGORY_LABEL_LENGTH = 64
 
 
 def item_keyboard(item: Item, sources: Sequence[ItemSource] | None = None) -> InlineKeyboardMarkup:
@@ -24,6 +28,15 @@ def item_keyboard(item: Item, sources: Sequence[ItemSource] | None = None) -> In
                     callback_data=f"item:interest:{item.id}:{level}",
                 )
                 for level in (1, 2, 3)
+            ]
+        )
+        rows.append(
+            [
+                InlineKeyboardButton(text="👍 Полезно", callback_data=f"feedback:useful:{item.id}"),
+                InlineKeyboardButton(
+                    text="👎 Не моё", callback_data=f"feedback:not_interesting:{item.id}"
+                ),
+                InlineKeyboardButton(text="⚙ Исправить", callback_data=f"feedback:menu:{item.id}"),
             ]
         )
     rows.extend(
@@ -96,6 +109,83 @@ def item_keyboard(item: Item, sources: Sequence[ItemSource] | None = None) -> In
         and partial_item_retryable
     ):
         rows.append([InlineKeyboardButton(text="🔁 Retry", callback_data=f"item:retry:{item.id}")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def feedback_menu_keyboard(item_id: int) -> InlineKeyboardMarkup:
+    """Project secondary correction intents without changing Item state."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="Категория", callback_data=f"feedback:category_menu:{item_id}"
+                ),
+                InlineKeyboardButton(text="Тип", callback_data=f"feedback:type_menu:{item_id}"),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="⬆ Приоритет",
+                    callback_data=f"feedback:priority_higher:{item_id}",
+                ),
+                InlineKeyboardButton(
+                    text="⬇ Приоритет",
+                    callback_data=f"feedback:priority_lower:{item_id}",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="Summary неверный",
+                    callback_data=f"feedback:summary_wrong:{item_id}",
+                )
+            ],
+            [InlineKeyboardButton(text="← Назад", callback_data=f"feedback:back:{item_id}")],
+        ]
+    )
+
+
+def _category_button_label(category: str) -> str:
+    """Fit dynamic labels into Telegram's inline-button text bound."""
+    if len(category) <= _MAX_CATEGORY_LABEL_LENGTH:
+        return category
+    prefix_length = _MAX_CATEGORY_LABEL_LENGTH - 13
+    return f"{category[:prefix_length]}…{category[-12:]}"
+
+
+def feedback_category_keyboard(item_id: int, categories: Sequence[str]) -> InlineKeyboardMarkup:
+    """Expose bounded, user-scoped category choices using short stable tokens."""
+    rows = [
+        [
+            InlineKeyboardButton(
+                text=_category_button_label(category),
+                callback_data=(f"feedback:category:{item_id}:{category_callback_token(category)}"),
+            )
+        ]
+        for category in categories[:_MAX_CATEGORY_CHOICES]
+    ]
+    rows.append([InlineKeyboardButton(text="← Назад", callback_data=f"feedback:menu:{item_id}")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def feedback_type_keyboard(item_id: int) -> InlineKeyboardMarkup:
+    """Use stable ItemType values in callback data and localized labels in Telegram."""
+    labels = {
+        ItemType.ACTION: "Действие",
+        ItemType.LEARN: "Изучить",
+        ItemType.READ: "Прочитать",
+        ItemType.WATCH: "Посмотреть",
+        ItemType.IDEA: "Идея",
+        ItemType.REFERENCE: "Справка",
+        ItemType.SOMEDAY: "Когда-нибудь",
+    }
+    buttons = [
+        InlineKeyboardButton(
+            text=labels[item_type],
+            callback_data=f"feedback:type:{item_id}:{item_type.value}",
+        )
+        for item_type in ItemType
+    ]
+    rows = [buttons[index : index + 2] for index in range(0, len(buttons), 2)]
+    rows.append([InlineKeyboardButton(text="← Назад", callback_data=f"feedback:menu:{item_id}")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 

@@ -1,0 +1,595 @@
+import asyncio
+from types import SimpleNamespace
+
+from sqlalchemy import func, select
+
+from app.bot.formatting import format_ready_item
+from app.bot.handlers import on_feedback_callback
+from app.bot.keyboards import (
+    category_callback_token,
+    feedback_category_keyboard,
+    feedback_menu_keyboard,
+    item_keyboard,
+)
+from app.domain.enums import ItemState, ItemType, ProcessingStatus, SourceType
+from app.services import feedback as feedback_service
+from app.services.feedback import correct_item_category
+from app.services.retrieval import TodayService
+from app.storage.models import Event, FeedbackCallbackReceipt, Item, ItemSource, User
+
+
+class FakeCallbackMessage:
+    """Capture markup-only and canonical correction edits at the Telegram edge."""
+
+    def __init__(self, text=None, reply_markup=None):
+        self.text = text
+        self.reply_markup = reply_markup
+        self.markup_edits = 0
+        self.text_edits = 0
+
+    async def edit_reply_markup(self, reply_markup=None):
+        self.reply_markup = reply_markup
+        self.markup_edits += 1
+
+    async def edit_text(self, text, reply_markup=None):
+        self.text = text
+        self.reply_markup = reply_markup
+        self.text_edits += 1
+
+
+class FakeCallback:
+    """Minimal callback identity lets duplicate transport delivery be replayed."""
+
+    def __init__(self, user_id: int, data: str, callback_id: str = "callback-1"):
+        self.id = callback_id
+        self.from_user = SimpleNamespace(id=user_id)
+        self.data = data
+        self.message = FakeCallbackMessage()
+        self.answers = []
+
+    async def answer(self, text=None):
+        self.answers.append(text)
+
+
+async def _create_ready_item(
+    session_factory,
+    *,
+    category="Programming",
+    item_type=ItemType.REFERENCE,
+    state=ItemState.ACTIVE,
+    interest_level=2,
+    priority_score=72,
+    completeness=None,
+):
+    async with session_factory() as session:
+        user = User(telegram_user_id=42, telegram_chat_id=42)
+        session.add(user)
+        await session.flush()
+        item = Item(
+            user_id=user.id,
+            telegram_message_id=None,
+            source_index=0,
+            processing_status=ProcessingStatus.READY,
+            state=state,
+            source_type=SourceType.TEXT,
+            processing_stage="READY",
+            analysis_completeness=completeness,
+            user_note="",
+            title="Feedback item",
+            summary="The original summary",
+            category=category,
+            item_type=item_type,
+            priority_score=priority_score,
+            interest_level=interest_level,
+        )
+        session.add(item)
+        await session.commit()
+        return item.id
+
+
+async def _create_category_item(session_factory, category: str) -> int:
+    async with session_factory() as session:
+        user = await session.scalar(select(User).where(User.telegram_user_id == 42))
+        if user is None:
+            user = User(telegram_user_id=42, telegram_chat_id=42)
+            session.add(user)
+            await session.flush()
+        item = Item(
+            user_id=user.id,
+            telegram_message_id=None,
+            source_index=1,
+            processing_status=ProcessingStatus.READY,
+            state=ItemState.ACTIVE,
+            source_type=SourceType.TEXT,
+            processing_stage="READY",
+            user_note="",
+            title=f"Existing {category} category",
+            category=category,
+            item_type=ItemType.LEARN,
+            priority_score=50,
+        )
+        session.add(item)
+        await session.commit()
+        return item.id
+
+
+async def _event_count(session_factory, item_id: int) -> int:
+    async with session_factory() as session:
+        return await session.scalar(select(func.count(Event.id)).where(Event.item_id == item_id))
+
+
+def _callback_data(markup) -> list[str]:
+    return [
+        button.callback_data
+        for row in markup.inline_keyboard
+        for button in row
+        if button.callback_data
+    ]
+
+
+def test_ready_keyboard_keeps_existing_actions_and_adds_compact_feedback():
+    item = Item(
+        id=7,
+        user_id=1,
+        processing_status=ProcessingStatus.READY,
+        state=ItemState.ACTIVE,
+        source_type=SourceType.TEXT,
+        processing_stage="READY",
+        user_note="",
+        title="x",
+        category="Programming",
+        item_type=ItemType.LEARN,
+        priority_score=55,
+        interest_level=2,
+        source_url=None,
+        source_metadata_json={
+            "forwarded": True,
+            "forward_origin_type": "channel",
+            "forward_source_username": "public_channel",
+            "forward_message_id": 42,
+        },
+        analysis_completeness="PARTIAL",
+    )
+    sources = [
+        ItemSource(
+            id=11,
+            item_id=7,
+            source_index=0,
+            source_type=SourceType.YOUTUBE,
+            source_url="https://www.youtube.com/watch?v=ready",
+            extraction_status="READY",
+        ),
+        ItemSource(
+            id=12,
+            item_id=7,
+            source_index=1,
+            source_type=SourceType.WEB,
+            source_url="https://example.com/article",
+            extraction_status="READY",
+        ),
+        ItemSource(
+            id=13,
+            item_id=7,
+            source_index=2,
+            source_type=SourceType.WEB,
+            source_url="https://example.com/failed",
+            extraction_status="FAILED",
+            metadata_json={"failure_permanent": False},
+        ),
+    ]
+
+    markup = item_keyboard(item, sources)
+    callbacks = _callback_data(markup)
+    labels = [button.text for row in markup.inline_keyboard for button in row]
+
+    assert labels[0:3] == ["1", "2 ✓", "3"]
+    assert labels[3:6] == ["👍 Полезно", "👎 Не моё", "⚙ Исправить"]
+    assert "item:done:7" in callbacks
+    assert "item:later:7" in callbacks
+    assert "item:archive:7" in callbacks
+    assert "item:video:7:11" in callbacks
+    assert "item:retry:7" in callbacks
+    assert "https://t.me/public_channel/42" in [
+        button.url for row in markup.inline_keyboard for button in row if button.url
+    ]
+
+
+def test_non_ready_keyboard_does_not_expose_feedback_controls():
+    item = Item(
+        id=7,
+        user_id=1,
+        processing_status=ProcessingStatus.PROCESSING,
+        state=ItemState.ACTIVE,
+        source_type=SourceType.TEXT,
+        processing_stage="ANALYZING",
+        user_note="",
+        title=None,
+    )
+
+    callbacks = _callback_data(item_keyboard(item))
+    assert not any(value.startswith("feedback:") for value in callbacks)
+    assert not any(value.startswith("item:interest:") for value in callbacks)
+
+
+def test_category_callback_tokens_fit_telegram_limit_for_long_unicode_values():
+    category = "Очень длинная категория для проверки Unicode " * 2
+    markup = feedback_category_keyboard(9_223_372_036_854_775_807, [category])
+    button = markup.inline_keyboard[0][0]
+
+    assert button.callback_data == (
+        f"feedback:category:9223372036854775807:{category_callback_token(category)}"
+    )
+    assert len(button.callback_data.encode("utf-8")) <= 64
+    assert len(button.text) <= 64
+
+
+def test_category_keyboard_bounds_the_number_of_choices():
+    markup = feedback_category_keyboard(7, [f"Category {index}" for index in range(30)])
+
+    assert len(markup.inline_keyboard) == 21
+
+
+async def test_feedback_menu_back_restores_source_aware_item_keyboard_without_events(
+    settings, session_factory
+):
+    item_id = await _create_ready_item(session_factory, completeness="PARTIAL")
+    async with session_factory() as session:
+        session.add_all(
+            [
+                ItemSource(
+                    item_id=item_id,
+                    source_index=0,
+                    source_type=SourceType.YOUTUBE,
+                    source_url="https://www.youtube.com/watch?v=ready",
+                    extraction_status="READY",
+                ),
+                ItemSource(
+                    item_id=item_id,
+                    source_index=1,
+                    source_type=SourceType.WEB,
+                    source_url="https://example.com/failed",
+                    extraction_status="FAILED",
+                ),
+            ]
+        )
+        await session.commit()
+        item = await session.get(Item, item_id)
+        sources = list(
+            (
+                await session.scalars(
+                    select(ItemSource)
+                    .where(ItemSource.item_id == item_id)
+                    .order_by(ItemSource.source_index)
+                )
+            ).all()
+        )
+
+    message = FakeCallbackMessage(reply_markup=item_keyboard(item, sources))
+    opened = FakeCallback(42, f"feedback:menu:{item_id}", "open-menu")
+    opened.message = message
+    await on_feedback_callback(opened, settings, session_factory)
+    assert f"feedback:priority_higher:{item_id}" in _callback_data(message.reply_markup)
+    assert await _event_count(session_factory, item_id) == 0
+
+    category_menu = FakeCallback(42, f"feedback:category_menu:{item_id}", "categories")
+    category_menu.message = message
+    await on_feedback_callback(category_menu, settings, session_factory)
+    assert (
+        f"feedback:category:{item_id}:{category_callback_token('Programming')}"
+        in _callback_data(message.reply_markup)
+    )
+    assert await _event_count(session_factory, item_id) == 0
+
+    type_menu = FakeCallback(42, f"feedback:type_menu:{item_id}", "types")
+    type_menu.message = message
+    await on_feedback_callback(type_menu, settings, session_factory)
+    assert {f"feedback:type:{item_id}:{item_type.value}" for item_type in ItemType} <= set(
+        _callback_data(message.reply_markup)
+    )
+    assert await _event_count(session_factory, item_id) == 0
+
+    return_to_menu = FakeCallback(42, f"feedback:menu:{item_id}", "return-to-menu")
+    return_to_menu.message = message
+    await on_feedback_callback(return_to_menu, settings, session_factory)
+    assert f"feedback:priority_higher:{item_id}" in _callback_data(message.reply_markup)
+
+    back = FakeCallback(42, f"feedback:back:{item_id}", "back")
+    back.message = message
+    await on_feedback_callback(back, settings, session_factory)
+
+    callbacks = _callback_data(message.reply_markup)
+    assert f"item:interest:{item_id}:2" in callbacks
+    assert f"feedback:useful:{item_id}" in callbacks
+    assert f"item:video:{item_id}:{sources[0].id}" in callbacks
+    assert f"item:retry:{item_id}" in callbacks
+    assert "https://www.youtube.com/watch?v=ready" in [
+        button.url for row in message.reply_markup.inline_keyboard for button in row if button.url
+    ]
+    assert await _event_count(session_factory, item_id) == 0
+
+
+async def test_feedback_callback_duplicate_is_durable_and_preserves_interest(
+    settings, session_factory
+):
+    item_id = await _create_ready_item(session_factory, interest_level=3)
+    first = FakeCallback(42, f"feedback:not_interesting:{item_id}", "same-click")
+    duplicate = FakeCallback(42, f"feedback:not_interesting:{item_id}", "same-click")
+
+    await on_feedback_callback(first, settings, session_factory)
+    await on_feedback_callback(duplicate, settings, session_factory)
+
+    async with session_factory() as session:
+        stored = await session.get(Item, item_id)
+        event = await session.scalar(select(Event).where(Event.item_id == item_id))
+        assert stored.state is ItemState.ACTIVE
+        assert stored.interest_level == 3
+        assert event.event_type == "NOT_INTERESTING"
+        assert event.idempotency_key == "telegram-callback:same-click"
+    assert first.answers == ["Записал — буду учитывать"]
+    assert duplicate.answers == ["Записал — буду учитывать"]
+    assert await _event_count(session_factory, item_id) == 1
+
+
+async def test_primary_feedback_clicks_with_different_ids_remain_distinct(
+    settings, session_factory
+):
+    item_id = await _create_ready_item(session_factory, interest_level=1)
+
+    await on_feedback_callback(
+        FakeCallback(42, f"feedback:useful:{item_id}", "first"), settings, session_factory
+    )
+    await on_feedback_callback(
+        FakeCallback(42, f"feedback:useful:{item_id}", "later"), settings, session_factory
+    )
+
+    async with session_factory() as session:
+        stored = await session.get(Item, item_id)
+        events = list((await session.scalars(select(Event).where(Event.item_id == item_id))).all())
+        assert stored.interest_level == 1
+        assert [event.event_type for event in events] == ["USEFUL", "USEFUL"]
+
+
+async def test_category_callback_corrects_item_and_refreshes_canonical_result(
+    settings, session_factory
+):
+    item_id = await _create_ready_item(session_factory, category="Programming")
+    await _create_category_item(session_factory, "AI")
+    message = FakeCallbackMessage(
+        text="Old result",
+        reply_markup=feedback_category_keyboard(item_id, ["Programming", "AI"]),
+    )
+    callback = FakeCallback(
+        42,
+        f"feedback:category:{item_id}:{category_callback_token('AI')}",
+        "category-correction",
+    )
+    callback.message = message
+
+    await on_feedback_callback(callback, settings, session_factory)
+
+    async with session_factory() as session:
+        stored = await session.get(Item, item_id)
+        event = await session.scalar(select(Event).where(Event.item_id == item_id))
+        assert stored.category == "AI"
+        assert event.event_type == "CATEGORY_CORRECTED"
+        assert event.payload_json["from"] == "Programming"
+        assert event.payload_json["to"] == "AI"
+    assert "Категория: AI" in message.text
+    assert f"feedback:menu:{item_id}" in _callback_data(message.reply_markup)
+    assert callback.answers == ["Категория изменена"]
+
+
+async def test_replayed_category_callback_refreshes_latest_value_without_reapplying(
+    settings, session_factory
+):
+    item_id = await _create_ready_item(session_factory, category="Programming")
+    await _create_category_item(session_factory, "AI")
+    await _create_category_item(session_factory, "Piano")
+    await correct_item_category(
+        session_factory,
+        42,
+        item_id,
+        "AI",
+        idempotency_key="telegram-callback:replayed-category",
+    )
+    await correct_item_category(
+        session_factory,
+        42,
+        item_id,
+        "Piano",
+        idempotency_key="telegram-callback:later-category",
+    )
+    message = FakeCallbackMessage(
+        text="stale result",
+        reply_markup=feedback_category_keyboard(item_id, ["AI", "Piano"]),
+    )
+    callback = FakeCallback(
+        42,
+        f"feedback:category:{item_id}:{category_callback_token('AI')}",
+        "replayed-category",
+    )
+    callback.message = message
+
+    await on_feedback_callback(callback, settings, session_factory)
+
+    async with session_factory() as session:
+        stored = await session.get(Item, item_id)
+        corrections = list(
+            (
+                await session.scalars(
+                    select(Event).where(
+                        Event.item_id == item_id,
+                        Event.event_type == "CATEGORY_CORRECTED",
+                    )
+                )
+            ).all()
+        )
+        assert stored.category == "Piano"
+        assert len(corrections) == 2
+    assert "Категория: Piano" in message.text
+    assert callback.answers == ["Категория без изменений"]
+
+
+async def test_stale_category_callback_cannot_apply_after_category_returns(
+    settings, session_factory, monkeypatch
+):
+    await _create_category_item(session_factory, "Other")
+    item_id = await _create_category_item(session_factory, "Programming")
+    async with session_factory() as session:
+        target = await session.get(Item, item_id)
+        assert target.user_id != item_id
+    callback = FakeCallback(
+        42,
+        f"feedback:category:{item_id}:{category_callback_token('AI')}",
+        "stale-category",
+    )
+
+    receipt_claimed = asyncio.Event()
+    release_callback = asyncio.Event()
+    original_claim = feedback_service._claim_feedback_callback_receipt
+    paused = False
+
+    async def pause_after_claim(session, user_id, idempotency_key):
+        nonlocal paused
+        claimed = await original_claim(session, user_id, idempotency_key)
+        if idempotency_key == "telegram-callback:stale-category" and claimed and not paused:
+            paused = True
+            receipt_claimed.set()
+            await release_callback.wait()
+        return claimed
+
+    monkeypatch.setattr(feedback_service, "_claim_feedback_callback_receipt", pause_after_claim)
+    stale_delivery = asyncio.create_task(on_feedback_callback(callback, settings, session_factory))
+    await asyncio.wait_for(receipt_claimed.wait(), timeout=5)
+    category_creation = asyncio.create_task(_create_category_item(session_factory, "AI"))
+    replay = asyncio.create_task(on_feedback_callback(callback, settings, session_factory))
+    await asyncio.sleep(0)
+    release_callback.set()
+    await asyncio.gather(stale_delivery, category_creation, replay)
+
+    async with session_factory() as session:
+        stored = await session.get(Item, item_id)
+        corrections = list(
+            (
+                await session.scalars(
+                    select(Event).where(
+                        Event.item_id == item_id,
+                        Event.event_type == "CATEGORY_CORRECTED",
+                    )
+                )
+            ).all()
+        )
+        receipt = await session.scalar(
+            select(FeedbackCallbackReceipt).where(
+                FeedbackCallbackReceipt.user_id == stored.user_id,
+                FeedbackCallbackReceipt.idempotency_key == "telegram-callback:stale-category",
+            )
+        )
+        assert stored.category == "Programming"
+        assert corrections == []
+        assert receipt is not None
+    assert len(callback.answers) == 2
+    assert set(callback.answers) == {"Категория больше недоступна", "Категория без изменений"}
+
+
+async def test_type_callback_updates_today_and_keeps_priority(settings, session_factory):
+    item_id = await _create_ready_item(session_factory, item_type=ItemType.REFERENCE)
+    message = FakeCallbackMessage(reply_markup=feedback_menu_keyboard(item_id))
+    callback = FakeCallback(42, f"feedback:type:{item_id}:LEARN", "type-correction")
+    callback.message = message
+
+    await on_feedback_callback(callback, settings, session_factory)
+
+    async with session_factory() as session:
+        stored = await session.get(Item, item_id)
+        today = await TodayService().list_items(session, stored.user_id)
+        event = await session.scalar(select(Event).where(Event.item_id == item_id))
+        assert stored.item_type is ItemType.LEARN
+        assert stored.priority_score == 72
+        assert [item.id for item in today] == [item_id]
+        assert event.event_type == "TYPE_CORRECTED"
+    assert "Тип: LEARN" in message.text
+    assert callback.answers == ["Тип изменён"]
+
+
+async def test_priority_feedback_from_menu_closes_menu_without_changing_score(
+    settings, session_factory
+):
+    item_id = await _create_ready_item(session_factory)
+    message = FakeCallbackMessage(reply_markup=feedback_menu_keyboard(item_id))
+    callback = FakeCallback(42, f"feedback:priority_higher:{item_id}", "priority-higher")
+    callback.message = message
+
+    await on_feedback_callback(callback, settings, session_factory)
+
+    async with session_factory() as session:
+        stored = await session.get(Item, item_id)
+        event = await session.scalar(select(Event).where(Event.item_id == item_id))
+        assert stored.priority_score == 72
+        assert event.event_type == "PRIORITY_HIGHER"
+        assert event.payload_json["priority_score_at_feedback"] == 72
+    callbacks = _callback_data(message.reply_markup)
+    assert f"feedback:menu:{item_id}" in callbacks
+    assert f"feedback:priority_higher:{item_id}" not in callbacks
+    assert callback.answers == ["Записал сигнал о приоритете"]
+
+
+async def test_malformed_stale_and_unauthorized_feedback_callbacks_do_not_mutate(
+    settings, session_factory
+):
+    item_id = await _create_ready_item(session_factory)
+    callbacks = [
+        FakeCallback(42, "feedback:type"),
+        FakeCallback(42, f"feedback:type:{item_id}:INVALID"),
+        FakeCallback(42, f"feedback:category:{item_id}:not-a-token"),
+        FakeCallback(42, "feedback:useful:not-an-id"),
+        FakeCallback(1000, f"feedback:useful:{item_id}"),
+        FakeCallback(42, "feedback:useful:999999"),
+    ]
+
+    for callback in callbacks:
+        await on_feedback_callback(callback, settings, session_factory)
+
+    async with session_factory() as session:
+        stored = await session.get(Item, item_id)
+        assert stored.category == "Programming"
+        assert stored.item_type is ItemType.REFERENCE
+        assert stored.priority_score == 72
+    assert await _event_count(session_factory, item_id) == 0
+
+
+async def test_category_noop_closes_menu_without_editing_summary(settings, session_factory):
+    item_id = await _create_ready_item(session_factory, category="Programming")
+    message = FakeCallbackMessage(
+        text=format_ready_item(
+            Item(
+                id=item_id,
+                user_id=1,
+                processing_status=ProcessingStatus.READY,
+                state=ItemState.ACTIVE,
+                source_type=SourceType.TEXT,
+                processing_stage="READY",
+                user_note="",
+                title="Feedback item",
+                summary="The original summary",
+                category="Programming",
+                item_type=ItemType.REFERENCE,
+                priority_score=72,
+                interest_level=2,
+            )
+        ),
+        reply_markup=feedback_category_keyboard(item_id, ["Programming"]),
+    )
+    callback = FakeCallback(
+        42,
+        f"feedback:category:{item_id}:{category_callback_token('Programming')}",
+        "category-noop",
+    )
+    callback.message = message
+
+    await on_feedback_callback(callback, settings, session_factory)
+
+    assert message.text_edits == 0
+    assert message.markup_edits == 1
+    assert callback.answers == ["Категория без изменений"]
+    assert await _event_count(session_factory, item_id) == 0

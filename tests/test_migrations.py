@@ -23,6 +23,7 @@ def test_fresh_database_migrates_to_latest_schema(tmp_path):
             "contents",
             "item_search",
             "events",
+            "feedback_callback_receipts",
             "reminders",
             "deliveries",
             "alembic_version",
@@ -31,6 +32,7 @@ def test_fresh_database_migrates_to_latest_schema(tmp_path):
             "SELECT sql FROM sqlite_master WHERE name='item_search'"
         ).fetchone()[0]
         assert "fts5" in search_sql
+        assert "idempotency_key" in {row[1] for row in conn.execute("PRAGMA table_info(events)")}
 
         # Идемпотентность Telegram-источника enforced схемой, не логикой:
         # дубль (user_id, telegram_message_id, source_index) запрещён на уровне БД.
@@ -215,3 +217,97 @@ def test_existing_phase1_db_upgrades_with_data_intact(tmp_path):
         assert row == (42, "Изучить AI agents", "READY")
     finally:
         conn.close()
+
+
+def test_event_idempotency_migration_preserves_history_and_allows_legacy_nulls(tmp_path):
+    db = tmp_path / "event-idempotency.db"
+    cfg = Config()
+    cfg.set_main_option("script_location", "migrations")
+    cfg.set_main_option("sqlalchemy.url", f"sqlite+aiosqlite:///{db}")
+    command.upgrade(cfg, "f5a7c2d91e04")
+
+    with sqlite3.connect(db) as conn:
+        conn.execute("INSERT INTO users (telegram_user_id) VALUES (42)")
+        first_user_id = conn.execute("SELECT id FROM users WHERE telegram_user_id = 42").fetchone()[
+            0
+        ]
+        conn.execute("INSERT INTO users (telegram_user_id) VALUES (1000)")
+        second_user_id = conn.execute(
+            "SELECT id FROM users WHERE telegram_user_id = 1000"
+        ).fetchone()[0]
+        item_ids = []
+        for user_id, message_id in ((first_user_id, 1), (first_user_id, 2), (second_user_id, 3)):
+            item_ids.append(
+                conn.execute(
+                    "INSERT INTO items (user_id, telegram_message_id, source_index, "
+                    "processing_status, state, source_type, processing_stage, user_note) "
+                    "VALUES (?, ?, 0, 'READY', 'ACTIVE', 'TEXT', 'READY', '') RETURNING id",
+                    (user_id, message_id),
+                ).fetchone()[0]
+            )
+        conn.execute(
+            "INSERT INTO events (user_id, item_id, event_type, payload_json) "
+            "VALUES (?, ?, 'DONE', '{}')",
+            (first_user_id, item_ids[0]),
+        )
+        conn.execute(
+            "INSERT INTO events (user_id, item_id, event_type, payload_json) "
+            "VALUES (?, ?, 'SNOOZED', '{}')",
+            (first_user_id, item_ids[1]),
+        )
+
+    command.upgrade(cfg, "head")
+
+    with sqlite3.connect(db) as conn:
+        receipt_columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(feedback_callback_receipts)")
+        }
+        assert {"user_id", "idempotency_key", "created_at"} <= receipt_columns
+        assert conn.execute(
+            "SELECT event_type, payload_json, idempotency_key FROM events ORDER BY id"
+        ).fetchall() == [("DONE", "{}", None), ("SNOOZED", "{}", None)]
+        conn.execute(
+            "INSERT INTO events (user_id, item_id, event_type) VALUES (?, ?, 'USEFUL')",
+            (first_user_id, item_ids[0]),
+        )
+        conn.execute(
+            "INSERT INTO events (user_id, item_id, event_type, idempotency_key) "
+            "VALUES (?, ?, 'USEFUL', 'telegram-callback:one')",
+            (first_user_id, item_ids[0]),
+        )
+        try:
+            conn.execute(
+                "INSERT INTO events (user_id, item_id, event_type, idempotency_key) "
+                "VALUES (?, ?, 'NOT_INTERESTING', 'telegram-callback:one')",
+                (first_user_id, item_ids[1]),
+            )
+        except sqlite3.IntegrityError:
+            conn.rollback()
+        else:
+            raise AssertionError("duplicate per-user idempotency key was allowed")
+        conn.execute(
+            "INSERT INTO events (user_id, item_id, event_type, idempotency_key) "
+            "VALUES (?, ?, 'USEFUL', 'telegram-callback:one')",
+            (second_user_id, item_ids[2]),
+        )
+        conn.execute(
+            "INSERT INTO feedback_callback_receipts (user_id, idempotency_key) "
+            "VALUES (?, 'telegram-callback:noop')",
+            (first_user_id,),
+        )
+        conn.commit()
+        try:
+            conn.execute(
+                "INSERT INTO feedback_callback_receipts (user_id, idempotency_key) "
+                "VALUES (?, 'telegram-callback:noop')",
+                (first_user_id,),
+            )
+        except sqlite3.IntegrityError:
+            conn.rollback()
+        else:
+            raise AssertionError("duplicate callback receipt for one user was allowed")
+        conn.execute(
+            "INSERT INTO feedback_callback_receipts (user_id, idempotency_key) "
+            "VALUES (?, 'telegram-callback:noop')",
+            (second_user_id,),
+        )
