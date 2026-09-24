@@ -394,3 +394,35 @@ saw.
 Consequences: PM-06 ignores the exposure Event as a preference signal;
 `priority_score` and `/today`/digest ordering remain unchanged. No schema
 migration is required.
+
+## D-031 — Proactive Attention uses durable Reminder claims
+
+Context: PM-08 must pace proactive delivery across worker restarts and competing
+worker attempts without changing PM-07 ranking or holding SQLite locks during
+Telegram I/O.
+
+Decision: derive the daily budget, minimum gap and same-Item cooldown from
+successful Reminder history. Serialize per-user digest, snooze and proactive
+send claims with short `BEGIN IMMEDIATE` transactions; a partial unique index
+also enforces one open `PROACTIVE_ATTENTION` claim. Store a claim timestamp and
+generation, bound Telegram retries below the lease, and fence recovery/finalize
+updates by generation. The two-minute send deadline starts at `claimed_at`, so
+pre-send delay consumes the window instead of extending a live sender past
+lease recovery. Re-run PM-07 under the serialized prepare transaction so a
+stale candidate cannot pass the threshold using an old rank. Record
+`ATTENTION_SHOWN` with successful delivery finalization. Capture the prepare
+timestamp under the same writer lock for quiet hours, ranking and cooldown, and
+record successful `sent_at` when Telegram returns; PM-08 local-day budgets and
+gaps therefore follow delivery completion across scheduler and timezone
+boundaries. Existing users receive an explicit Attention OFF setting during
+rollout.
+
+Reason: Reminder rows are durable delivery facts; derived counters and
+duplicated ranking state would drift from actual history.
+
+Consequences: proactive claims can be re-evaluated after a bounded lease, and
+an expired owner cannot alter the recovered claim. Digest and snooze retain
+their no-replay behavior; their active claims temporarily reserve the user
+against proactive sends. An ambiguous Telegram outcome or process stop after
+acceptance but before SQLite finalization can still cause a duplicate; delivery
+across Telegram and SQLite is not exactly once.

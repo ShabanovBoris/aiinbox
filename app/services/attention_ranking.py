@@ -200,11 +200,28 @@ class AttentionRankingService:
         limit: int | None = None,
         now: datetime | None = None,
     ) -> list[tuple[Item, AttentionRank]]:
-        """Load bounded user-scoped inputs, reuse PM-06 once, and return stable top results."""
-        captured_now = _as_utc(now or datetime.now(UTC))
         result_limit = max(0, min(_DEFAULT_LIMIT if limit is None else limit, _MAX_LIMIT))
         if result_limit == 0:
             return []
+
+        return await self.list_candidates(session, user_id, limit=result_limit, now=now)
+
+    async def list_candidates(
+        self,
+        session: AsyncSession,
+        user_id: int,
+        *,
+        limit: int | None = None,
+        now: datetime | None = None,
+    ) -> list[tuple[Item, AttentionRank]]:
+        """Return PM-07's ranked candidates independently of Telegram's five-card limit.
+
+        The scheduler needs a wider shortlist so a cooled-down preview leader does
+        not hide the next eligible Item; `/attention` keeps using `list_ranked`.
+        """
+        if limit is not None and limit <= 0:
+            return []
+        captured_now = _as_utc(now or datetime.now(UTC))
 
         candidates = list(
             (
@@ -258,4 +275,44 @@ class AttentionRankingService:
                 pair[0].id,
             )
         )
-        return ranked[:result_limit]
+        return ranked if limit is None else ranked[:limit]
+
+    async def rank_item(
+        self,
+        session: AsyncSession,
+        user_id: int,
+        item_id: int,
+        *,
+        now: datetime | None = None,
+    ) -> tuple[Item, AttentionRank] | None:
+        """Recompute one actionable Item's live rank for a serialized send check.
+
+        PM-08 uses this after acquiring its short prepare transaction: a single
+        current candidate check avoids ranking every Item while SQLite writers
+        are paused, while the same PM-06 and PM-07 calculations remain canonical.
+        """
+        captured_now = _as_utc(now or datetime.now(UTC))
+        item = await session.scalar(
+            select(Item).where(
+                Item.id == item_id,
+                Item.user_id == user_id,
+                Item.processing_status == ProcessingStatus.READY,
+                Item.state == ItemState.ACTIVE,
+                Item.item_type.in_(ACTIONABLE_ITEM_TYPES),
+            )
+        )
+        if item is None:
+            return None
+
+        behaviour_rank = await BehaviourAffinityService().rank_item(
+            session, user_id, item, now=captured_now
+        )
+        last_shown_at = await session.scalar(
+            select(func.max(Event.created_at)).where(
+                Event.user_id == user_id,
+                Event.item_id == item_id,
+                Event.event_type.in_(_EXPOSURE_EVENT_TYPES),
+            )
+        )
+        rank = calculate_attention_rank(item, behaviour_rank, last_shown_at, captured_now)
+        return item, rank

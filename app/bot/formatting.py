@@ -170,6 +170,26 @@ def format_attention_item(index: int, count: int, item: Item, rank: AttentionRan
     return _fit_message(lines)
 
 
+def format_proactive_attention_reminder(item: Item, rank: AttentionRank) -> str:
+    """Render a scheduled Item with PM-07's existing explainability signals.
+
+    Keeping this as a presentation projection prevents PM-08 from inventing a
+    second reason formula or copying the Item's saved content into Reminder data.
+    """
+    lines = [
+        "⏳ Вернём это в фокус",
+        item.title or "Без названия",
+        "",
+        f"Почему сейчас: {format_attention_reason(rank)}",
+        "",
+        f"Внимание: {rank.score}/100",
+        f"Приоритет: {rank.priority_score}/100",
+        f"Интерес: {item.interest_level}/3",
+        f"Сохранён: {int(rank.age_days)} дн. назад",
+    ]
+    return _fit_message(lines)
+
+
 def format_item_list(items: list[Item], heading: str) -> str:
     """Общий компактный список для inbox/category/search."""
     if not items:

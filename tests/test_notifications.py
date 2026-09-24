@@ -1,19 +1,29 @@
 import asyncio
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app.domain.enums import ItemState, ItemType, ProcessingStatus, SourceType
 from app.services.actions import apply_item_action
+from app.services.attention_ranking import AttentionRankingService
 from app.services.notifications import (
+    ATTENTION_POLICIES,
     DAILY_DIGEST,
+    MIN_PROACTIVE_ATTENTION_SCORE,
+    NOTIFICATION_SEND_TIMEOUT,
+    PROACTIVE_ATTENTION,
+    PROACTIVE_CLAIM_LEASE,
     SNOOZE_RESURFACE,
     ReminderWorker,
+    _local_day_window,
+    attention_policy,
     get_notification_settings,
+    settings_for,
     update_notification_settings,
 )
-from app.storage.models import Item, Reminder, User
+from app.storage.models import Event, Item, ItemSource, Reminder, User
 
 
 class FakeBot:
@@ -26,12 +36,60 @@ class FakeBot:
         if self.fail or self.failures:
             self.failures = max(0, self.failures - 1)
             raise RuntimeError("telegram unavailable")
-        self.messages.append((chat_id, text))
+        self.messages.append((chat_id, text, kwargs))
 
 
-async def make_ready_item(session_factory, *, state=ItemState.ACTIVE, snoozed_until=None):
+class BarrierBot(FakeBot):
+    """Hold the first delivery so tests can inspect a durable in-flight claim."""
+
+    def __init__(self, *, fail_first=False):
+        super().__init__()
+        self.fail_first = fail_first
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+        self.finished_first = asyncio.Event()
+        self.calls = 0
+        self.active_calls = 0
+        self.max_active_calls = 0
+
+    async def send_message(self, chat_id, text, **kwargs):
+        """Expose an in-flight send window without timing-dependent sleeps."""
+        self.calls += 1
+        self.active_calls += 1
+        self.max_active_calls = max(self.max_active_calls, self.active_calls)
+        try:
+            if self.calls == 1:
+                self.started.set()
+                try:
+                    await self.release.wait()
+                except asyncio.CancelledError:
+                    self.finished_first.set()
+                    raise
+                if self.fail_first:
+                    raise RuntimeError("first Telegram delivery failed")
+                self.messages.append((chat_id, text, kwargs))
+            else:
+                self.messages.append((chat_id, text, kwargs))
+        finally:
+            self.active_calls -= 1
+            if self.calls == 1:
+                self.finished_first.set()
+
+
+async def make_ready_item(
+    session_factory,
+    *,
+    state=ItemState.ACTIVE,
+    snoozed_until=None,
+    attention_enabled=False,
+):
     async with session_factory() as session:
-        user = User(telegram_user_id=42, telegram_chat_id=42, timezone="Europe/Moscow")
+        user = User(
+            telegram_user_id=42,
+            telegram_chat_id=42,
+            timezone="Europe/Moscow",
+            settings_json={"attention_enabled": attention_enabled},
+        )
         session.add(user)
         await session.flush()
         item = Item(
@@ -51,6 +109,24 @@ async def make_ready_item(session_factory, *, state=ItemState.ACTIVE, snoozed_un
         return user.id, item.id
 
 
+async def add_ready_item(session_factory, user_id: int, *, title="Another task", priority=80):
+    async with session_factory() as session:
+        item = Item(
+            user_id=user_id,
+            processing_status=ProcessingStatus.READY,
+            state=ItemState.ACTIVE,
+            source_type=SourceType.TEXT,
+            processing_stage="READY",
+            user_note=title,
+            item_type=ItemType.ACTION,
+            title=title,
+            priority_score=priority,
+        )
+        session.add(item)
+        await session.commit()
+        return item.id
+
+
 async def test_timezone_digest_is_once_per_local_day(session_factory):
     _, _ = await make_ready_item(session_factory)
     bot = FakeBot()
@@ -63,6 +139,160 @@ async def test_timezone_digest_is_once_per_local_day(session_factory):
     async with session_factory() as session:
         reminder = await session.scalar(select(Reminder).where(Reminder.type == DAILY_DIGEST))
         assert reminder.status == "SENT"
+
+
+async def test_digest_claim_becomes_successful_only_after_telegram_accepts(session_factory):
+    await make_ready_item(session_factory)
+    now = datetime(2026, 9, 14, 6, 30)
+
+    class InspectClaimBot(FakeBot):
+        async def send_message(self, chat_id, text, **kwargs):
+            async with session_factory() as session:
+                reminder = await session.scalar(
+                    select(Reminder).where(Reminder.type == DAILY_DIGEST)
+                )
+                assert reminder.status == "CLAIMED"
+                assert reminder.sent_at is None
+            await super().send_message(chat_id, text, **kwargs)
+
+    assert await ReminderWorker(session_factory, InspectClaimBot()).process_once(now) == 1
+    async with session_factory() as session:
+        reminder = await session.scalar(select(Reminder).where(Reminder.type == DAILY_DIGEST))
+        assert reminder.status == "SENT"
+        assert reminder.sent_at == now
+
+
+@pytest.mark.parametrize("notification_type", [DAILY_DIGEST, SNOOZE_RESURFACE, PROACTIVE_ATTENTION])
+async def test_successful_delivery_timestamp_uses_telegram_completion_time(
+    session_factory, monkeypatch, notification_type
+):
+    """Persist each notification's accepted delivery time, not its cycle-start time."""
+    cycle_started_at = datetime(2026, 9, 14, 20, 59, 30)
+    completed_at = cycle_started_at + timedelta(minutes=1)
+    user_id, item_id = await make_ready_item(
+        session_factory, attention_enabled=notification_type == PROACTIVE_ATTENTION
+    )
+    await update_notification_settings(
+        session_factory,
+        42,
+        daily_digest_enabled=notification_type == DAILY_DIGEST,
+        daily_digest_time="23:00",
+        quiet_hours_start="01:00",
+        quiet_hours_end="06:00",
+        attention_enabled=notification_type == PROACTIVE_ATTENTION,
+        attention_intensity=5,
+    )
+    if notification_type == DAILY_DIGEST:
+        async with session_factory() as session:
+            user = await session.get(User, user_id)
+            user.created_at = cycle_started_at - timedelta(days=1)
+            user.daily_digest_enabled_at = cycle_started_at - timedelta(days=1)
+            await session.commit()
+    elif notification_type == SNOOZE_RESURFACE:
+        await apply_item_action(
+            session_factory,
+            42,
+            item_id,
+            "snooze",
+            cycle_started_at - timedelta(minutes=1),
+        )
+
+    clock = [cycle_started_at]
+    monkeypatch.setattr("app.services.notifications._utc_now", lambda: clock[0])
+    worker = ReminderWorker(session_factory, FakeBot())
+    send = worker._send_with_retry
+
+    async def complete_after_telegram_acceptance(*args, **kwargs):
+        """Advance the fake clock only after Telegram has accepted the message."""
+        await send(*args, **kwargs)
+        clock[0] = completed_at
+
+    worker._send_with_retry = complete_after_telegram_acceptance
+    assert await worker.process_once() == 1
+
+    async with session_factory() as session:
+        reminder = await session.scalar(
+            select(Reminder).where(Reminder.user_id == user_id, Reminder.type == notification_type)
+        )
+        assert reminder.status == "SENT"
+        assert reminder.sent_at == completed_at
+
+
+async def test_delivery_crossing_local_midnight_counts_on_completion_day(
+    session_factory, monkeypatch
+):
+    """A successful proactive send consumes PM-08 budget on Telegram's acceptance date."""
+    cycle_started_at = datetime(2026, 9, 14, 20, 59, 30)
+    completed_at = cycle_started_at + timedelta(minutes=1)
+    user_id, _ = await make_ready_item(session_factory, attention_enabled=True)
+    await update_notification_settings(
+        session_factory,
+        42,
+        daily_digest_enabled=False,
+        attention_enabled=True,
+        attention_intensity=1,
+        quiet_hours_start="01:00",
+        quiet_hours_end="06:00",
+    )
+    clock = [cycle_started_at]
+    monkeypatch.setattr("app.services.notifications._utc_now", lambda: clock[0])
+    worker = ReminderWorker(session_factory, FakeBot())
+    send = worker._send_with_retry
+
+    async def complete_after_telegram_acceptance(*args, **kwargs):
+        """Advance the fake clock only after Telegram has accepted the message."""
+        await send(*args, **kwargs)
+        clock[0] = completed_at
+
+    worker._send_with_retry = complete_after_telegram_acceptance
+    assert await worker.process_once() == 1
+
+    async with session_factory() as session:
+        reminder = await session.scalar(
+            select(Reminder).where(Reminder.type == PROACTIVE_ATTENTION)
+        )
+        assert reminder.sent_at == completed_at
+        user = await session.get(User, user_id)
+        _, _, local_date, blocked = await worker._attention_gate(
+            session, user, completed_at + timedelta(hours=9)
+        )
+        assert local_date.isoformat() == "2026-09-15"
+        assert blocked == "daily_cap"
+
+
+async def test_minimum_gap_is_anchored_to_delivery_completion(session_factory, monkeypatch):
+    """The ninety-minute PM-08 gap starts when Telegram accepts the send."""
+    cycle_started_at = datetime(2026, 9, 14, 12, 0)
+    completed_at = cycle_started_at + timedelta(minutes=1)
+    user_id, _ = await make_ready_item(session_factory, attention_enabled=True)
+    await update_notification_settings(
+        session_factory,
+        42,
+        daily_digest_enabled=False,
+        attention_enabled=True,
+        attention_intensity=5,
+    )
+    clock = [cycle_started_at]
+    monkeypatch.setattr("app.services.notifications._utc_now", lambda: clock[0])
+    worker = ReminderWorker(session_factory, FakeBot())
+    send = worker._send_with_retry
+
+    async def complete_after_telegram_acceptance(*args, **kwargs):
+        """Advance the fake clock only after Telegram has accepted the message."""
+        await send(*args, **kwargs)
+        clock[0] = completed_at
+
+    worker._send_with_retry = complete_after_telegram_acceptance
+    assert await worker.process_once() == 1
+
+    async with session_factory() as session:
+        user = await session.get(User, user_id)
+        _, _, _, blocked = await worker._attention_gate(
+            session,
+            user,
+            completed_at + timedelta(minutes=90) - timedelta(seconds=1),
+        )
+        assert blocked == "minimum_gap"
 
 
 async def test_digest_due_during_quiet_hours_is_deferred_to_morning(session_factory):
@@ -222,10 +452,15 @@ async def test_concurrent_disjoint_settings_updates_are_merged(session_factory):
     await asyncio.gather(
         update_notification_settings(session_factory, 42, daily_digest_time="08:30"),
         update_notification_settings(session_factory, 42, quiet_hours_start="20:00"),
+        update_notification_settings(
+            session_factory, 42, attention_enabled=True, attention_intensity=4
+        ),
     )
     current = await get_notification_settings(session_factory, 42)
     assert current[1]["daily_digest_time"] == "08:30"
     assert current[1]["quiet_hours_start"] == "20:00"
+    assert current[1]["attention_enabled"] is True
+    assert current[1]["attention_intensity"] == 4
 
 
 async def test_transient_notification_failure_retries_before_terminal_failure(session_factory):
@@ -241,7 +476,21 @@ async def test_snoozed_item_becomes_active_and_notifies(session_factory):
     _, item_id = await make_ready_item(session_factory, state=ItemState.ACTIVE, snoozed_until=None)
     await apply_item_action(session_factory, 42, item_id, "snooze", until)
     await update_notification_settings(session_factory, 42, daily_digest_enabled=False)
-    bot = FakeBot()
+
+    class InspectClaimBot(FakeBot):
+        async def send_message(self, chat_id, text, **kwargs):
+            async with session_factory() as session:
+                reminder = await session.scalar(
+                    select(Reminder).where(
+                        Reminder.item_id == item_id,
+                        Reminder.type == SNOOZE_RESURFACE,
+                    )
+                )
+                assert reminder.status == "CLAIMED"
+                assert reminder.sent_at is None
+            await super().send_message(chat_id, text, **kwargs)
+
+    bot = InspectClaimBot()
     assert await ReminderWorker(session_factory, bot).process_once(datetime(2026, 9, 14, 7, 0)) == 1
     async with session_factory() as session:
         item = await session.get(Item, item_id)
@@ -250,6 +499,36 @@ async def test_snoozed_item_becomes_active_and_notifies(session_factory):
         assert item.snoozed_until is None
         assert reminder.status == "SENT"
     assert "Вернулся" in bot.messages[0][1]
+
+
+async def test_failed_snooze_send_does_not_start_proactive_minimum_gap(session_factory):
+    now = datetime(2026, 9, 14, 6, 30)
+    _, item_id = await make_ready_item(session_factory, attention_enabled=True)
+    await apply_item_action(session_factory, 42, item_id, "snooze", now - timedelta(minutes=1))
+    await update_notification_settings(
+        session_factory, 42, daily_digest_enabled=False, attention_enabled=True
+    )
+
+    class FailSnoozeThenSucceed(FakeBot):
+        async def send_message(self, chat_id, text, **kwargs):
+            if text.startswith("⏰ Вернулся"):
+                raise RuntimeError("Telegram unavailable for snooze")
+            await super().send_message(chat_id, text, **kwargs)
+
+    bot = FailSnoozeThenSucceed()
+    assert await ReminderWorker(session_factory, bot).process_once(now) == 1
+    assert len(bot.messages) == 1
+    assert "⏳ Вернём это в фокус" in bot.messages[0][1]
+    async with session_factory() as session:
+        snooze = await session.scalar(
+            select(Reminder).where(Reminder.item_id == item_id, Reminder.type == SNOOZE_RESURFACE)
+        )
+        proactive = await session.scalar(
+            select(Reminder).where(Reminder.type == PROACTIVE_ATTENTION)
+        )
+        assert snooze.status == "FAILED"
+        assert snooze.sent_at is None
+        assert proactive.status == "SENT"
 
 
 async def test_snooze_resurfacing_respects_quiet_hours(session_factory):
@@ -266,6 +545,27 @@ async def test_snooze_resurfacing_respects_quiet_hours(session_factory):
         assert item.state is ItemState.SNOOZED
         assert reminder.status == "PENDING"
     assert await worker.process_once(datetime(2026, 9, 15, 6, 1)) == 1
+    assert len(bot.messages) == 1
+
+
+async def test_proactive_attention_waits_until_quiet_hours_end(session_factory):
+    await make_ready_item(session_factory, attention_enabled=True)
+    await update_notification_settings(
+        session_factory, 42, daily_digest_enabled=False, attention_enabled=True
+    )
+    bot = FakeBot()
+    worker = ReminderWorker(session_factory, bot)
+
+    assert await worker.process_once(datetime(2026, 9, 14, 23, 0)) == 0
+    async with session_factory() as session:
+        assert (
+            await session.scalar(
+                select(func.count(Reminder.id)).where(Reminder.type == PROACTIVE_ATTENTION)
+            )
+            == 0
+        )
+    assert bot.messages == []
+    assert await worker.process_once(datetime(2026, 9, 15, 5, 0)) == 1
     assert len(bot.messages) == 1
 
 
@@ -310,3 +610,960 @@ async def test_notification_settings_validate_and_persist(session_factory):
     assert updated[1]["daily_digest_enabled"] is False
     current = await get_notification_settings(session_factory, 42)
     assert current[1]["daily_digest_time"] == "10:15"
+
+
+def test_attention_policy_table_and_validation_are_exact():
+    expected = {
+        1: ("Calm", 1, timedelta(hours=8), timedelta(hours=72)),
+        2: ("Light", 2, timedelta(hours=5), timedelta(hours=48)),
+        3: ("Normal", 3, timedelta(hours=3), timedelta(hours=30)),
+        4: ("Active", 4, timedelta(hours=2), timedelta(hours=20)),
+        5: ("Aggressive", 6, timedelta(minutes=90), timedelta(hours=12)),
+    }
+    assert {
+        level: (
+            policy.label,
+            policy.daily_cap,
+            policy.minimum_gap,
+            policy.same_item_cooldown,
+        )
+        for level, policy in ATTENTION_POLICIES.items()
+    } == expected
+    with pytest.raises(TypeError):
+        ATTENTION_POLICIES[6] = ATTENTION_POLICIES[5]
+    for value in (0, 6, "high", True):
+        with pytest.raises(ValueError):
+            attention_policy(value)
+    assert MIN_PROACTIVE_ATTENTION_SCORE == 60
+
+
+async def test_attention_defaults_and_settings_validation(session_factory):
+    async with session_factory() as session:
+        session.add(User(telegram_user_id=42, telegram_chat_id=42, timezone="Europe/Moscow"))
+        await session.commit()
+    current = await get_notification_settings(session_factory, 42)
+    assert current[1]["attention_enabled"] is True
+    assert current[1]["attention_intensity"] == 3
+
+    updated = await update_notification_settings(
+        session_factory, 42, attention_enabled=False, attention_intensity=5
+    )
+    assert updated[1]["attention_enabled"] is False
+    assert updated[1]["attention_intensity"] == 5
+    for value in (0, 6, "high", True):
+        with pytest.raises(ValueError):
+            await update_notification_settings(session_factory, 42, attention_intensity=value)
+    with pytest.raises(ValueError):
+        await update_notification_settings(session_factory, 42, attention_enabled=1)
+
+    async with session_factory() as session:
+        user = await session.scalar(select(User).where(User.telegram_user_id == 42))
+        assert user.settings_json == {
+            "attention_enabled": False,
+            "attention_intensity": 5,
+        }
+    assert settings_for(User(settings_json={}))["attention_enabled"] is True
+
+
+async def test_proactive_delivery_persists_reminder_and_exposure(session_factory):
+    user_id, item_id = await make_ready_item(session_factory, attention_enabled=True)
+    await update_notification_settings(
+        session_factory, 42, daily_digest_enabled=False, attention_enabled=True
+    )
+    async with session_factory() as session:
+        source = ItemSource(
+            item_id=item_id,
+            source_index=0,
+            source_type=SourceType.YOUTUBE,
+            source_url="https://www.youtube.com/watch?v=example",
+            extraction_status="READY",
+        )
+        session.add(source)
+        await session.commit()
+        source_id = source.id
+    bot = FakeBot()
+    now = datetime(2026, 9, 14, 6, 30)
+
+    assert await ReminderWorker(session_factory, bot).process_once(now) == 1
+    assert len(bot.messages) == 1
+    _, message, kwargs = bot.messages[0]
+    assert "Сделать задачу" in message
+    assert "Почему сейчас:" in message
+    assert "Внимание:" in message
+    assert "Приоритет:" in message
+    assert "Интерес:" in message
+    assert "Сохранён:" in message
+    callbacks = {
+        button.callback_data for row in kwargs["reply_markup"].inline_keyboard for button in row
+    }
+    urls = {
+        button.url for row in kwargs["reply_markup"].inline_keyboard for button in row if button.url
+    }
+    assert f"item:done:{item_id}" in callbacks
+    assert f"item:later:{item_id}" in callbacks
+    assert f"item:archive:{item_id}" in callbacks
+    assert f"item:video:{item_id}:{source_id}" in callbacks
+    assert "https://www.youtube.com/watch?v=example" in urls
+
+    async with session_factory() as session:
+        reminder = await session.scalar(
+            select(Reminder).where(Reminder.type == PROACTIVE_ATTENTION)
+        )
+        event = await session.scalar(select(Event).where(Event.event_type == "ATTENTION_SHOWN"))
+        assert reminder.user_id == user_id
+        assert reminder.item_id == item_id
+        assert reminder.status == "SENT"
+        assert reminder.sent_at == now
+        assert reminder.payload_json["policy_level"] == 3
+        assert reminder.payload_json["attention_score"] >= MIN_PROACTIVE_ATTENTION_SCORE
+        assert len(str(reminder.payload_json)) < 500
+        assert event.item_id == item_id
+        assert event.payload_json == {
+            "source": "proactive_attention",
+            "reminder_id": reminder.id,
+        }
+        assert event.idempotency_key == f"reminder:{reminder.id}:attention_shown"
+        assert event.created_at == now
+        ranked = await AttentionRankingService().list_candidates(session, user_id, now=now)
+        assert ranked[0][0].id == item_id
+        assert ranked[0][1].recent_show_penalty == -25
+
+
+async def test_level_five_sends_at_most_one_and_minimum_gap_blocks_next_poll(session_factory):
+    user_id, _ = await make_ready_item(session_factory, attention_enabled=True)
+    await update_notification_settings(
+        session_factory,
+        42,
+        daily_digest_enabled=False,
+        attention_intensity=5,
+        attention_enabled=True,
+    )
+    for index in range(5):
+        await add_ready_item(session_factory, user_id, title=f"Task {index}")
+    bot = FakeBot()
+    worker = ReminderWorker(session_factory, bot)
+    now = datetime(2026, 9, 14, 6, 30)
+
+    assert await worker.process_once(now) == 1
+    assert await worker.process_once(now + timedelta(minutes=1)) == 0
+    assert len(bot.messages) == 1
+    async with session_factory() as session:
+        count = await session.scalar(
+            select(func.count(Reminder.id)).where(
+                Reminder.type == PROACTIVE_ATTENTION,
+                Reminder.status == "SENT",
+            )
+        )
+        assert count == 1
+
+
+async def test_digest_consumes_budget_after_its_gap_has_elapsed(session_factory):
+    user_id, _ = await make_ready_item(session_factory, attention_enabled=True)
+    await update_notification_settings(
+        session_factory,
+        42,
+        daily_digest_enabled=False,
+        attention_intensity=1,
+        attention_enabled=True,
+    )
+    now = datetime(2026, 9, 14, 15, 0)
+    async with session_factory() as session:
+        session.add(
+            Reminder(
+                user_id=user_id,
+                item_id=None,
+                type=DAILY_DIGEST,
+                scheduled_at=datetime(2026, 9, 14),
+                status="SENT",
+                sent_at=now - timedelta(hours=9),
+            )
+        )
+        await session.commit()
+
+    bot = FakeBot()
+    assert await ReminderWorker(session_factory, bot).process_once(now) == 0
+    assert bot.messages == []
+    async with session_factory() as session:
+        assert (
+            await session.scalar(
+                select(func.count(Reminder.id)).where(Reminder.type == PROACTIVE_ATTENTION)
+            )
+            == 0
+        )
+
+
+async def test_budget_day_uses_current_timezone_without_rewriting_history(session_factory):
+    user_id, _ = await make_ready_item(session_factory, attention_enabled=True)
+    await update_notification_settings(
+        session_factory,
+        42,
+        daily_digest_enabled=False,
+        attention_enabled=True,
+        attention_intensity=1,
+        timezone="America/Los_Angeles",
+    )
+    sent_at = datetime(2026, 9, 15, 6, 0)
+    now = datetime(2026, 9, 15, 15, 0)  # 08:00 in Los Angeles
+    async with session_factory() as session:
+        session.add(
+            Reminder(
+                user_id=user_id,
+                item_id=None,
+                type=DAILY_DIGEST,
+                scheduled_at=datetime(2026, 9, 14),
+                status="SENT",
+                sent_at=sent_at,
+            )
+        )
+        await session.commit()
+
+    worker = ReminderWorker(session_factory, FakeBot())
+    async with session_factory() as session:
+        user = await session.get(User, user_id)
+        _, _, local_date, blocked = await worker._attention_gate(session, user, now)
+        assert local_date.isoformat() == "2026-09-15"
+        assert blocked is None
+
+    await update_notification_settings(session_factory, 42, timezone="UTC")
+    async with session_factory() as session:
+        user = await session.get(User, user_id)
+        _, _, local_date, blocked = await worker._attention_gate(session, user, now)
+        assert local_date.isoformat() == "2026-09-15"
+        assert blocked == "daily_cap"
+        reminder = await session.scalar(select(Reminder).where(Reminder.type == DAILY_DIGEST))
+        assert reminder.sent_at == sent_at
+
+
+async def test_manual_attention_exposure_does_not_consume_notification_budget(session_factory):
+    user_id, item_id = await make_ready_item(session_factory, attention_enabled=True)
+    await update_notification_settings(
+        session_factory, 42, daily_digest_enabled=False, attention_enabled=True
+    )
+    now = datetime(2026, 9, 14, 6, 30)
+    async with session_factory() as session:
+        session.add(
+            Event(
+                user_id=user_id,
+                item_id=item_id,
+                event_type="ATTENTION_SHOWN",
+                created_at=now - timedelta(days=1),
+            )
+        )
+        await session.commit()
+
+    bot = FakeBot()
+    assert await ReminderWorker(session_factory, bot).process_once(now) == 1
+    async with session_factory() as session:
+        assert (
+            await session.scalar(
+                select(func.count(Reminder.id)).where(
+                    Reminder.type == PROACTIVE_ATTENTION,
+                    Reminder.status == "SENT",
+                )
+            )
+            == 1
+        )
+
+
+async def test_snooze_uses_gap_but_not_daily_budget(session_factory):
+    user_id, item_id = await make_ready_item(session_factory, attention_enabled=True)
+    now = datetime(2026, 9, 14, 6, 30)
+    await apply_item_action(session_factory, 42, item_id, "snooze", now - timedelta(minutes=1))
+    await update_notification_settings(
+        session_factory, 42, daily_digest_enabled=False, attention_enabled=True
+    )
+    bot = FakeBot()
+    worker = ReminderWorker(session_factory, bot)
+
+    assert await worker.process_once(now) == 1
+    async with session_factory() as session:
+        assert (
+            await session.scalar(
+                select(func.count(Reminder.id)).where(Reminder.type == PROACTIVE_ATTENTION)
+            )
+            == 0
+        )
+        snooze = await session.scalar(
+            select(Reminder).where(Reminder.item_id == item_id, Reminder.type == SNOOZE_RESURFACE)
+        )
+        assert snooze.status == "SENT"
+
+    assert await worker.process_once(now + timedelta(hours=3)) == 1
+    async with session_factory() as session:
+        assert (
+            await session.scalar(
+                select(func.count(Reminder.id)).where(
+                    Reminder.type == PROACTIVE_ATTENTION,
+                    Reminder.status == "SENT",
+                )
+            )
+            == 1
+        )
+
+
+async def test_minimum_gap_exact_boundary_uses_next_ranked_item(session_factory):
+    user_id, _ = await make_ready_item(session_factory, attention_enabled=True)
+    await update_notification_settings(
+        session_factory, 42, daily_digest_enabled=False, attention_enabled=True
+    )
+    await add_ready_item(session_factory, user_id, title="Second task")
+    bot = FakeBot()
+    worker = ReminderWorker(session_factory, bot)
+    now = datetime(2026, 9, 14, 6, 30)
+
+    assert await worker.process_once(now) == 1
+    assert await worker.process_once(now + timedelta(hours=2, minutes=59, seconds=59)) == 0
+    assert await worker.process_once(now + timedelta(hours=3)) == 1
+    assert len(bot.messages) == 2
+
+
+async def test_same_item_cooldown_exact_boundary_and_restart(session_factory):
+    await make_ready_item(session_factory, attention_enabled=True)
+    await update_notification_settings(
+        session_factory, 42, daily_digest_enabled=False, attention_enabled=True
+    )
+    now = datetime(2026, 9, 14, 6, 30)
+    bot = FakeBot()
+    assert await ReminderWorker(session_factory, bot).process_once(now) == 1
+
+    assert (
+        await ReminderWorker(session_factory, FakeBot()).process_once(
+            now + timedelta(hours=29, minutes=59, seconds=59)
+        )
+        == 0
+    )
+    recovered_bot = FakeBot()
+    assert (
+        await ReminderWorker(session_factory, recovered_bot).process_once(now + timedelta(hours=30))
+        == 1
+    )
+    assert len(recovered_bot.messages) == 1
+
+
+async def test_unfinalized_digest_claim_does_not_consume_budget(session_factory):
+    user_id, _ = await make_ready_item(session_factory, attention_enabled=True)
+    await update_notification_settings(
+        session_factory,
+        42,
+        daily_digest_enabled=False,
+        attention_enabled=True,
+        attention_intensity=1,
+    )
+    now = datetime(2026, 9, 14, 15, 0)
+    async with session_factory() as session:
+        session.add(
+            Reminder(
+                user_id=user_id,
+                item_id=None,
+                type=DAILY_DIGEST,
+                scheduled_at=datetime(2026, 9, 14),
+                status="CLAIMED",
+            )
+        )
+        await session.commit()
+
+    bot = FakeBot()
+    assert await ReminderWorker(session_factory, bot).process_once(now) == 1
+    assert "Сделать задачу" in bot.messages[0][1]
+    async with session_factory() as session:
+        sent = await session.scalar(
+            select(Reminder).where(
+                Reminder.type == PROACTIVE_ATTENTION,
+                Reminder.status == "SENT",
+            )
+        )
+        assert sent is not None
+
+
+async def test_cooldown_top_five_does_not_hide_sixth_candidate(session_factory):
+    user_id, first_item_id = await make_ready_item(session_factory, attention_enabled=True)
+    await update_notification_settings(
+        session_factory,
+        42,
+        daily_digest_enabled=False,
+        attention_intensity=5,
+        attention_enabled=True,
+    )
+    item_ids = [first_item_id]
+    for index in range(5):
+        item_ids.append(await add_ready_item(session_factory, user_id, title=f"Task {index}"))
+    now = datetime(2026, 9, 14, 6, 30)
+    async with session_factory() as session:
+        for item_id in item_ids[:5]:
+            session.add(
+                Reminder(
+                    user_id=user_id,
+                    item_id=item_id,
+                    type=PROACTIVE_ATTENTION,
+                    scheduled_at=now - timedelta(hours=2),
+                    status="SENT",
+                    sent_at=now - timedelta(hours=2),
+                )
+            )
+        await session.commit()
+
+    bot = FakeBot()
+    assert await ReminderWorker(session_factory, bot).process_once(now) == 1
+    async with session_factory() as session:
+        sent = await session.scalar(
+            select(Reminder).where(
+                Reminder.type == PROACTIVE_ATTENTION,
+                Reminder.status == "SENT",
+                Reminder.sent_at == now,
+            )
+        )
+        assert sent.item_id == item_ids[5]
+
+
+async def test_below_threshold_does_not_create_reminder_then_score_sixty_qualifies(
+    session_factory,
+):
+    user_id, item_id = await make_ready_item(session_factory, attention_enabled=True)
+    await update_notification_settings(
+        session_factory, 42, daily_digest_enabled=False, attention_enabled=True
+    )
+    async with session_factory() as session:
+        item = await session.get(Item, item_id)
+        item.priority_score = 59
+        await session.commit()
+    now = datetime(2026, 9, 14, 6, 30)
+    bot = FakeBot()
+    worker = ReminderWorker(session_factory, bot)
+
+    assert await worker.process_once(now) == 0
+    async with session_factory() as session:
+        assert (
+            await session.scalar(
+                select(func.count(Reminder.id)).where(Reminder.type == PROACTIVE_ATTENTION)
+            )
+            == 0
+        )
+        item = await session.get(Item, item_id)
+        item.priority_score = 60
+        await session.commit()
+    assert await worker.process_once(now + timedelta(seconds=1)) == 1
+
+
+def test_budget_window_uses_local_calendar_day_across_dst():
+    local_date, start, end = _local_day_window(
+        datetime(2026, 3, 29, 12), ZoneInfo("Europe/Helsinki")
+    )
+    assert local_date.isoformat() == "2026-03-29"
+    assert end - start == timedelta(hours=23)
+
+
+async def test_stale_open_claim_recovers_with_current_rank_after_restart(session_factory):
+    user_id, item_id = await make_ready_item(session_factory, attention_enabled=True)
+    await update_notification_settings(
+        session_factory, 42, daily_digest_enabled=False, attention_enabled=True
+    )
+    now = datetime(2026, 9, 14, 6, 30)
+    async with session_factory() as session:
+        reminder = Reminder(
+            user_id=user_id,
+            item_id=item_id,
+            type=PROACTIVE_ATTENTION,
+            scheduled_at=now - timedelta(minutes=6),
+            created_at=now - timedelta(minutes=6),
+            status="CLAIMED",
+            payload_json={"attention_score": 99},
+        )
+        session.add(reminder)
+        await session.commit()
+        reminder_id = reminder.id
+
+    bot = FakeBot()
+    assert await ReminderWorker(session_factory, bot).process_once(now) == 1
+    async with session_factory() as session:
+        reminder = await session.get(Reminder, reminder_id)
+        proactive_rows = (
+            await session.scalars(select(Reminder).where(Reminder.type == PROACTIVE_ATTENTION))
+        ).all()
+        assert len(proactive_rows) == 1
+        assert reminder.status == "SENT"
+        assert reminder.sent_at == now
+        assert reminder.payload_json["attention_score"] == 80
+    assert len(bot.messages) == 1
+
+
+async def test_stale_claim_below_current_threshold_is_cancelled(session_factory):
+    user_id, item_id = await make_ready_item(session_factory, attention_enabled=True)
+    await update_notification_settings(
+        session_factory, 42, daily_digest_enabled=False, attention_enabled=True
+    )
+    now = datetime(2026, 9, 14, 6, 30)
+    async with session_factory() as session:
+        item = await session.get(Item, item_id)
+        item.priority_score = 50
+        reminder = Reminder(
+            user_id=user_id,
+            item_id=item_id,
+            type=PROACTIVE_ATTENTION,
+            scheduled_at=now - timedelta(minutes=6),
+            created_at=now - timedelta(minutes=6),
+            status="CLAIMED",
+            payload_json={"attention_score": 99},
+        )
+        session.add(reminder)
+        await session.commit()
+        reminder_id = reminder.id
+
+    bot = FakeBot()
+    assert await ReminderWorker(session_factory, bot).process_once(now) == 0
+    async with session_factory() as session:
+        reminder = await session.get(Reminder, reminder_id)
+        assert reminder.status == "CANCELLED"
+    assert bot.messages == []
+
+
+@pytest.mark.parametrize("action", ["done", "archive", "snooze", "disable"])
+async def test_claim_is_revalidated_before_telegram_send(session_factory, action):
+    user_id, item_id = await make_ready_item(session_factory, attention_enabled=True)
+    await update_notification_settings(
+        session_factory, 42, daily_digest_enabled=False, attention_enabled=True
+    )
+    now = datetime(2026, 9, 14, 6, 30)
+    bot = FakeBot()
+    worker = ReminderWorker(session_factory, bot)
+    prepare = worker._prepare_proactive_send
+
+    async def mutate_before_send(
+        reminder_id, current_user_id, current_item_id, claim_generation, current_now
+    ):
+        if action == "disable":
+            await update_notification_settings(session_factory, 42, attention_enabled=False)
+        else:
+            await apply_item_action(
+                session_factory,
+                42,
+                item_id,
+                action,
+                now + timedelta(days=1) if action == "snooze" else None,
+            )
+        return await prepare(
+            reminder_id,
+            current_user_id,
+            current_item_id,
+            claim_generation,
+            current_now,
+        )
+
+    worker._prepare_proactive_send = mutate_before_send
+    assert await worker.process_once(now) == 0
+    assert bot.messages == []
+    async with session_factory() as session:
+        reminder = await session.scalar(
+            select(Reminder).where(Reminder.type == PROACTIVE_ATTENTION)
+        )
+        assert reminder.status == "CANCELLED"
+        if action != "disable":
+            item = await session.get(Item, item_id)
+            expected = {
+                "done": ItemState.DONE,
+                "archive": ItemState.ARCHIVED,
+                "snooze": ItemState.SNOOZED,
+            }[action]
+            assert item.state is expected
+
+
+async def test_current_pm07_score_is_revalidated_before_telegram_send(session_factory):
+    """A new exposure penalty can invalidate a previously qualified score."""
+    user_id, item_id = await make_ready_item(session_factory, attention_enabled=True)
+    await update_notification_settings(
+        session_factory, 42, daily_digest_enabled=False, attention_enabled=True
+    )
+    now = datetime(2026, 9, 14, 6, 30)
+    bot = FakeBot()
+    worker = ReminderWorker(session_factory, bot)
+    prepare = worker._prepare_proactive_send
+
+    async def record_manual_exposure_before_send(
+        reminder_id, current_user_id, current_item_id, claim_generation, current_now
+    ):
+        async with session_factory() as session:
+            session.add(
+                Event(
+                    user_id=user_id,
+                    item_id=item_id,
+                    event_type="ATTENTION_SHOWN",
+                    created_at=now,
+                )
+            )
+            await session.commit()
+        return await prepare(
+            reminder_id,
+            current_user_id,
+            current_item_id,
+            claim_generation,
+            current_now,
+        )
+
+    worker._prepare_proactive_send = record_manual_exposure_before_send
+    assert await worker.process_once(now) == 0
+    assert bot.messages == []
+    async with session_factory() as session:
+        current_ranked = await AttentionRankingService().list_candidates(session, user_id, now=now)
+        assert current_ranked[0][1].score < MIN_PROACTIVE_ATTENTION_SCORE
+        reminder = await session.scalar(
+            select(Reminder).where(Reminder.type == PROACTIVE_ATTENTION)
+        )
+        assert reminder.status == "CANCELLED"
+
+
+async def test_prepare_uses_current_time_after_worker_crosses_quiet_hours(
+    session_factory, monkeypatch
+):
+    """A candidate claimed before quiet hours is stopped if preparation crosses the boundary."""
+    user_id, _ = await make_ready_item(session_factory, attention_enabled=True)
+    await update_notification_settings(
+        session_factory,
+        42,
+        daily_digest_enabled=False,
+        attention_enabled=True,
+        quiet_hours_start="22:00",
+        quiet_hours_end="08:00",
+    )
+    clock = [datetime(2026, 9, 14, 18, 59, 20)]  # 21:59:20 in Europe/Moscow
+    monkeypatch.setattr("app.services.notifications._utc_now", lambda: clock[0])
+    bot = FakeBot()
+    worker = ReminderWorker(session_factory, bot)
+    prepare = worker._prepare_proactive_send
+
+    async def cross_quiet_boundary_before_prepare(
+        reminder_id, current_user_id, item_id, claim_generation, current_now
+    ):
+        """Simulate a worker pause while the claim remains inside its send deadline."""
+        clock[0] += timedelta(minutes=1)
+        return await prepare(reminder_id, current_user_id, item_id, claim_generation, current_now)
+
+    worker._prepare_proactive_send = cross_quiet_boundary_before_prepare
+    assert await worker.process_once() == 0
+    assert bot.messages == []
+    async with session_factory() as session:
+        reminder = await session.scalar(
+            select(Reminder).where(
+                Reminder.user_id == user_id, Reminder.type == PROACTIVE_ATTENTION
+            )
+        )
+        assert reminder.status == "CLAIMED"
+
+
+async def test_failed_proactive_send_has_no_budget_gap_or_cooldown_cost(session_factory):
+    await make_ready_item(session_factory, attention_enabled=True)
+    await update_notification_settings(
+        session_factory, 42, daily_digest_enabled=False, attention_enabled=True
+    )
+    now = datetime(2026, 9, 14, 6, 30)
+    failing = FakeBot(fail=True)
+    assert (
+        await ReminderWorker(session_factory, failing, retry_backoff_seconds=0).process_once(now)
+        == 0
+    )
+    async with session_factory() as session:
+        failed = await session.scalar(select(Reminder).where(Reminder.type == PROACTIVE_ATTENTION))
+        assert failed.status == "FAILED"
+        assert failed.sent_at is None
+        assert (
+            await session.scalar(select(Event.id).where(Event.event_type == "ATTENTION_SHOWN"))
+            is None
+        )
+
+    succeeding = FakeBot()
+    assert (
+        await ReminderWorker(session_factory, succeeding).process_once(now + timedelta(seconds=1))
+        == 1
+    )
+    assert len(succeeding.messages) == 1
+
+
+@pytest.mark.parametrize("notification_type", [DAILY_DIGEST, SNOOZE_RESURFACE])
+@pytest.mark.parametrize("first_send_fails", [False, True])
+async def test_in_flight_digest_or_snooze_reserves_user_from_proactive_send(
+    session_factory, notification_type, first_send_fails
+):
+    """Prove another worker waits for cross-type delivery to resolve before pacing."""
+    user_id, item_id = await make_ready_item(session_factory, attention_enabled=True)
+    now = datetime(2026, 9, 14, 6, 30)
+    await update_notification_settings(
+        session_factory,
+        42,
+        daily_digest_enabled=notification_type == DAILY_DIGEST,
+        attention_enabled=True,
+        attention_intensity=1,
+    )
+    if notification_type == SNOOZE_RESURFACE:
+        await apply_item_action(session_factory, 42, item_id, "snooze", now - timedelta(minutes=1))
+
+    first_bot = BarrierBot(fail_first=first_send_fails)
+    first_worker = ReminderWorker(
+        session_factory, first_bot, max_send_attempts=1, retry_backoff_seconds=0
+    )
+    first_cycle = asyncio.create_task(first_worker.process_once(now))
+    await asyncio.wait_for(first_bot.started.wait(), timeout=1)
+
+    second_bot = FakeBot()
+    second_cycle = await ReminderWorker(session_factory, second_bot).process_once(
+        now + timedelta(seconds=1)
+    )
+    assert second_cycle == 0
+    assert second_bot.messages == []
+
+    first_bot.release.set()
+    assert await asyncio.wait_for(first_cycle, timeout=1) == 1
+    assert first_bot.max_active_calls == 1
+    assert len(first_bot.messages) == 1
+    async with session_factory() as session:
+        first_reminder = await session.scalar(
+            select(Reminder).where(Reminder.type == notification_type)
+        )
+        assert first_reminder.status == ("FAILED" if first_send_fails else "SENT")
+        proactive = await session.scalar(
+            select(Reminder).where(Reminder.type == PROACTIVE_ATTENTION)
+        )
+        if first_send_fails:
+            assert proactive is not None and proactive.status == "SENT"
+        else:
+            assert proactive is None
+
+
+async def test_send_timeout_precedes_lease_recovery_and_generation_fences_old_owner(
+    session_factory, monkeypatch
+):
+    """Verify timeout ends a sender before recovery and stale writes are fenced."""
+    assert NOTIFICATION_SEND_TIMEOUT < PROACTIVE_CLAIM_LEASE
+    lease = timedelta(milliseconds=120)
+    timeout = timedelta(milliseconds=60)
+    monkeypatch.setattr("app.services.notifications.PROACTIVE_CLAIM_LEASE", lease)
+    monkeypatch.setattr("app.services.notifications.NOTIFICATION_SEND_TIMEOUT", timeout)
+    assert timeout < lease
+
+    user_id, item_id = await make_ready_item(session_factory, attention_enabled=True)
+    await update_notification_settings(
+        session_factory, 42, daily_digest_enabled=False, attention_enabled=True
+    )
+    now = datetime(2026, 9, 14, 6, 30)
+    lease_clock = [now]
+    monkeypatch.setattr("app.services.notifications._utc_now", lambda: lease_clock[0])
+    first_bot = BarrierBot()
+    first_worker = ReminderWorker(session_factory, first_bot, retry_backoff_seconds=0)
+
+    # Model process loss after the bounded Telegram call has timed out but
+    # before the old owner can persist its terminal state.
+    async def leave_claim_for_recovery(reminder_id, claim_generation, status):
+        return None
+
+    first_worker._set_proactive_status = leave_claim_for_recovery
+    first_cycle = asyncio.create_task(first_worker.process_once(now))
+    await asyncio.wait_for(first_bot.started.wait(), timeout=1)
+    assert await asyncio.wait_for(first_bot.finished_first.wait(), timeout=1)
+    assert await asyncio.wait_for(first_cycle, timeout=1) == 0
+    assert first_bot.active_calls == 0
+
+    async with session_factory() as session:
+        reminder = await session.scalar(
+            select(Reminder).where(Reminder.type == PROACTIVE_ATTENTION)
+        )
+        assert reminder.status == "CLAIMED"
+        old_generation = reminder.claim_generation
+        reminder_id = reminder.id
+
+    recovered_bot = FakeBot()
+    recovered_at = now + lease + timedelta(milliseconds=1)
+    lease_clock[0] = recovered_at
+    assert await ReminderWorker(session_factory, recovered_bot).process_once(recovered_at) == 1
+    assert len(recovered_bot.messages) == 1
+
+    # A delayed completion from the expired owner must not finalize or fail
+    # the claim now owned by the recovery worker.
+    await first_worker._set_proactive_status(reminder_id, old_generation, "FAILED")
+    await first_worker._finalize_proactive_send(
+        reminder_id, user_id, item_id, old_generation, recovered_at
+    )
+    async with session_factory() as session:
+        reminder = await session.get(Reminder, reminder_id)
+        assert reminder.status == "SENT"
+        assert reminder.claim_generation == old_generation + 1
+        assert reminder.sent_at == recovered_at
+        assert (
+            await session.scalar(
+                select(func.count(Event.id)).where(Event.event_type == "ATTENTION_SHOWN")
+            )
+            == 1
+        )
+
+
+async def test_recovered_claim_owner_does_not_start_telegram_after_claim_deadline(
+    session_factory, monkeypatch
+):
+    """An owner delayed after prepare must not send after recovery takes its generation."""
+    lease = timedelta(milliseconds=120)
+    timeout = timedelta(milliseconds=60)
+    monkeypatch.setattr("app.services.notifications.PROACTIVE_CLAIM_LEASE", lease)
+    monkeypatch.setattr("app.services.notifications.NOTIFICATION_SEND_TIMEOUT", timeout)
+
+    user_id, item_id = await make_ready_item(session_factory, attention_enabled=True)
+    await update_notification_settings(
+        session_factory, 42, daily_digest_enabled=False, attention_enabled=True
+    )
+    now = datetime(2026, 9, 14, 6, 30)
+    lease_clock = [now]
+    monkeypatch.setattr("app.services.notifications._utc_now", lambda: lease_clock[0])
+
+    first_bot = BarrierBot()
+    first_worker = ReminderWorker(session_factory, first_bot, retry_backoff_seconds=0)
+    prepare = first_worker._prepare_proactive_send
+    prepared = asyncio.Event()
+    resume_old_owner = asyncio.Event()
+
+    async def pause_after_prepare(
+        reminder_id, current_user_id, current_item_id, claim_generation, current_now
+    ):
+        result = await prepare(
+            reminder_id,
+            current_user_id,
+            current_item_id,
+            claim_generation,
+            current_now,
+        )
+        prepared.set()
+        await resume_old_owner.wait()
+        return result
+
+    first_worker._prepare_proactive_send = pause_after_prepare
+    first_cycle = asyncio.create_task(first_worker.process_once())
+    await asyncio.wait_for(prepared.wait(), timeout=1)
+
+    recovered_at = now + lease + timedelta(milliseconds=1)
+    lease_clock[0] = recovered_at
+    recovered_bot = FakeBot()
+    assert await ReminderWorker(session_factory, recovered_bot).process_once() == 1
+    assert len(recovered_bot.messages) == 1
+
+    resume_old_owner.set()
+    assert await asyncio.wait_for(first_cycle, timeout=1) == 0
+    assert first_bot.calls == 0
+
+    async with session_factory() as session:
+        reminder = await session.scalar(
+            select(Reminder).where(Reminder.type == PROACTIVE_ATTENTION)
+        )
+        assert reminder.status == "SENT"
+        assert reminder.claim_generation == 2
+        assert reminder.sent_at == recovered_at
+        assert (
+            await session.scalar(
+                select(func.count(Event.id)).where(Event.event_type == "ATTENTION_SHOWN")
+            )
+            == 1
+        )
+
+
+async def test_expired_claim_is_rejected_before_preparation_and_then_recovered(
+    session_factory, monkeypatch
+):
+    """A paused owner cannot prepare an expired claim; the next owner can recover it."""
+    lease = timedelta(milliseconds=120)
+    timeout = timedelta(milliseconds=60)
+    monkeypatch.setattr("app.services.notifications.PROACTIVE_CLAIM_LEASE", lease)
+    monkeypatch.setattr("app.services.notifications.NOTIFICATION_SEND_TIMEOUT", timeout)
+
+    await make_ready_item(session_factory, attention_enabled=True)
+    await update_notification_settings(
+        session_factory, 42, daily_digest_enabled=False, attention_enabled=True
+    )
+    now = datetime(2026, 9, 14, 6, 30)
+    lease_clock = [now]
+    monkeypatch.setattr("app.services.notifications._utc_now", lambda: lease_clock[0])
+
+    first_bot = FakeBot()
+    first_worker = ReminderWorker(session_factory, first_bot)
+    prepare = first_worker._prepare_proactive_send
+    claimed = asyncio.Event()
+    resume_old_owner = asyncio.Event()
+
+    async def pause_before_prepare(
+        reminder_id, current_user_id, current_item_id, claim_generation, current_now
+    ):
+        claimed.set()
+        await resume_old_owner.wait()
+        return await prepare(
+            reminder_id,
+            current_user_id,
+            current_item_id,
+            claim_generation,
+            current_now,
+        )
+
+    first_worker._prepare_proactive_send = pause_before_prepare
+    first_cycle = asyncio.create_task(first_worker.process_once())
+    await asyncio.wait_for(claimed.wait(), timeout=1)
+
+    recovered_at = now + lease + timedelta(milliseconds=1)
+    lease_clock[0] = recovered_at
+    resume_old_owner.set()
+    assert await asyncio.wait_for(first_cycle, timeout=1) == 0
+    assert first_bot.messages == []
+
+    recovered_bot = FakeBot()
+    assert await ReminderWorker(session_factory, recovered_bot).process_once() == 1
+    assert len(recovered_bot.messages) == 1
+    async with session_factory() as session:
+        reminder = await session.scalar(
+            select(Reminder).where(Reminder.type == PROACTIVE_ATTENTION)
+        )
+        assert reminder.status == "SENT"
+        assert reminder.claim_generation == 2
+
+
+async def test_two_workers_create_only_one_open_proactive_claim(session_factory):
+    await make_ready_item(session_factory, attention_enabled=True)
+    await update_notification_settings(
+        session_factory, 42, daily_digest_enabled=False, attention_enabled=True
+    )
+    now = datetime(2026, 9, 14, 6, 30)
+    first_bot, second_bot = FakeBot(), FakeBot()
+
+    results = await asyncio.gather(
+        ReminderWorker(session_factory, first_bot).process_once(now),
+        ReminderWorker(session_factory, second_bot).process_once(now),
+    )
+    assert sum(results) == 1
+    assert len(first_bot.messages) + len(second_bot.messages) == 1
+    async with session_factory() as session:
+        rows = (
+            await session.scalars(select(Reminder).where(Reminder.type == PROACTIVE_ATTENTION))
+        ).all()
+        assert len(rows) == 1
+        assert rows[0].status == "SENT"
+
+
+async def test_proactive_user_failure_does_not_stop_other_users(session_factory):
+    first_user_id, _ = await make_ready_item(session_factory, attention_enabled=True)
+    await update_notification_settings(
+        session_factory, 42, daily_digest_enabled=False, attention_enabled=True
+    )
+    async with session_factory() as session:
+        second_user = User(
+            telegram_user_id=1000,
+            telegram_chat_id=1000,
+            timezone="Europe/Moscow",
+            settings_json={"attention_enabled": True, "daily_digest_enabled": False},
+        )
+        session.add(second_user)
+        await session.flush()
+        second_user_id = second_user.id
+        await session.commit()
+    await add_ready_item(session_factory, second_user_id, title="Second user's task")
+
+    worker = ReminderWorker(session_factory, FakeBot())
+    process_user = worker._process_proactive_attention
+
+    async def fail_first_user(user_id, now):
+        if user_id == first_user_id:
+            raise RuntimeError("bad user data")
+        return await process_user(user_id, now)
+
+    worker._process_proactive_attention = fail_first_user
+    assert await worker.process_once(datetime(2026, 9, 14, 6, 30)) == 1
+    assert len(worker.bot.messages) == 1
+    assert "Second user's task" in worker.bot.messages[0][1]

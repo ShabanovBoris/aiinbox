@@ -3,6 +3,8 @@
 Type: Post-MVP Epic + Detailed Technical Specification  
 Prerequisite: PM-07 Attention Ranking Engine
 
+Status: IN_REVIEW
+
 ## 1. Epic
 
 ### Problem
@@ -136,9 +138,16 @@ After quiet hours, choose the best current candidate under normal policy.
 
 ## 9. Minimum gap
 
-Measure from latest successfully sent budget-consuming notification:
+Measure from the latest successfully sent notification that interrupts the
+user:
 - DAILY_DIGEST;
-- PROACTIVE_ATTENTION.
+- PROACTIVE_ATTENTION;
+- SNOOZE_RESURFACE.
+
+Only DAILY_DIGEST and PROACTIVE_ATTENTION consume the daily budget. An active
+CLAIMED delivery of any of these three types is a cross-worker reservation:
+proactive scheduling waits for it to resolve before checking the successful
+send history again.
 
 Failed delivery does not count as successful-send gap, but retries remain bounded.
 
@@ -294,3 +303,34 @@ Exact each-level cap/gap/cooldown tests.
 - BOT_USAGE/RUNBOOK as needed;
 - no PM-09/10 scope creep;
 - repository review completed.
+
+## 21. Implemented delivery details
+
+- New users default to `attention_enabled=true` and intensity 3. The migration
+  explicitly sets existing users to OFF only when that key is absent, preserving
+  all saved settings and any existing PM-08 values.
+- The local-day cap counts successful `DAILY_DIGEST` and `PROACTIVE_ATTENTION`
+  Reminder rows in the user's current IANA timezone. `SNOOZE_RESURFACE` does not
+  use quota, but it anchors the minimum gap. DST days use their actual UTC span.
+- A five-minute durable lease and partial unique index allow only one open
+  proactive intent per user. Digest, snooze, and proactive claim transactions
+  serialize per-user send intents under SQLite `BEGIN IMMEDIATE`. Every claim
+  records `claimed_at` and a generation; recovered proactive work increments
+  the generation so a stale sender cannot finalize the new owner's claim.
+- The two-minute Telegram deadline is anchored to `claimed_at`, leaving three
+  minutes before lease recovery. A worker delayed past that deadline marks its
+  claim failed without entering Telegram; retries cannot restart the window.
+  All network I/O runs after the claim transaction commits.
+- Immediately before proactive delivery, the worker recomputes the selected
+  actionable Item's PM-07 rank under the serialized prepare transaction. It
+  cancels a claim if the Item is no longer eligible or its current score is
+  below 60, and snapshots the validated score/reason into the Reminder.
+- Recovery re-ranks through PM-07 and cancels an intent whose Item is no longer
+  actionable or whose current attention score is below 60. `/attention` still
+  uses its existing one-to-five preview limit; scheduling can inspect ten.
+- After Telegram confirms a proactive message, `Reminder.SENT` and the
+  `ATTENTION_SHOWN` exposure Event are committed together. If Telegram accepts
+  a message but its response is lost, or the process stops before this
+  transaction commits, recovery may retry it: Telegram and SQLite cannot
+  provide exactly-once delivery across that boundary. A stale generation cannot
+  overwrite a claim already recovered by another worker.
