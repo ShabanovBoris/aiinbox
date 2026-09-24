@@ -247,8 +247,10 @@ Detailed specification: [PM-05_EXPLICIT_FEEDBACK.md](PM-05_EXPLICIT_FEEDBACK.md)
 
 ## 10. PM-06 — Behaviour-Aware Ranking
 
-Current state: IN_REVIEW. The backend calculation and local verification are
-complete; `/today` continues to use `priority_score`.
+Current state: DONE. `BehaviourAffinityService` derives user-scoped
+category/type affinity from canonical Item metadata and Event history; its
+bounded `personal_rank` is consumed by PM-07. `/today` continues to use
+`priority_score`.
 
 Do not alter `priority_score`.
 
@@ -270,6 +272,10 @@ Initial implementation should be deterministic and bounded, e.g. maximum ±15 po
 No ML until event volume justifies it.
 
 ## 11. PM-07 — Attention Ranking Engine
+
+Current state: IN_REVIEW. The deterministic manual `/attention` preview uses
+PM-06 `personal_rank`, manual interest, age, due date and durable exposure.
+`/today` and the digest keep their existing semantic-priority ordering.
 
 Create a dynamic ranking answering:
 

@@ -7,7 +7,7 @@ from aiogram.types import CallbackQuery, Message
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
-from app.bot.formatting import format_ready_item
+from app.bot.formatting import format_attention_item, format_ready_item
 from app.bot.keyboards import (
     feedback_category_keyboard,
     feedback_menu_keyboard,
@@ -20,6 +20,7 @@ from app.domain.enums import ItemState, ItemType, ProcessingStatus, SourceType
 from app.extractors.document import document_format_hint, safe_document_file_name
 from app.extractors.instagram import is_instagram_reel_url
 from app.services.actions import apply_item_action, record_item_events, set_item_interest
+from app.services.attention_ranking import AttentionRankingService
 from app.services.delivery import enqueue_item_video_delivery
 from app.services.feedback import (
     correct_item_category_by_token,
@@ -50,6 +51,7 @@ HELP_TEXT = (
     "YouTube-ссылку или Instagram Reel.\n\n"
     "Команды:\n"
     "/today — приоритетные Items на сегодня\n"
+    "/attention [1-5] — что сейчас заслуживает внимания\n"
     "/inbox — последние Items\n"
     "/search <текст> — поиск по сохранённому содержимому\n"
     "/category [имя] — категории и Items категории\n"
@@ -460,6 +462,13 @@ def make_router(
     @router.message(Command("today"))
     async def today(message: Message) -> None:
         await on_today(message, settings, session_factory)
+
+    @router.message(Command("attention"))
+    async def attention(message: Message) -> None:
+        """Translate the Telegram command into the PM-07 preview application call."""
+        parts = (message.text or "").split(maxsplit=1)
+        arguments = parts[1] if len(parts) == 2 else ""
+        await on_attention(message, settings, session_factory, arguments)
 
     @router.message(Command("inbox"))
     async def inbox(message: Message) -> None:
@@ -956,10 +965,82 @@ async def on_today(message: Message, settings: Settings, session_factory) -> Non
             chat_id=message.chat.id,
             timezone=settings.default_timezone,
         )
+        user_id = user.id
         items = await TodayService().list_items(session, user.id)
-        await record_item_events(session, user.id, [item.id for item in items], "TODAY_SHOWN")
+        response = format_today(items)
         await session.commit()
-    await message.answer(format_today(items))
+    await message.answer(response)
+
+    # PM-07 treats this history as exposure, so a failed Telegram send must not
+    # suppress these Items in a later attention preview.
+    if items:
+        async with session_factory() as session:
+            await record_item_events(session, user_id, [item.id for item in items], "TODAY_SHOWN")
+            await session.commit()
+
+
+async def on_attention(
+    message: Message, settings: Settings, session_factory, arguments: str = ""
+) -> None:
+    """Build the preview before Telegram I/O, then persist exposure after each sent card."""
+    if not await _allowed(message, settings):
+        return
+
+    parts = arguments.split()
+    limit = None
+    if parts:
+        try:
+            if len(parts) != 1:
+                raise ValueError
+            requested_limit = int(parts[0])
+            if not 1 <= requested_limit <= 5:
+                raise ValueError
+        except ValueError:
+            await message.answer("Использование: /attention [1-5]")
+            return
+        limit = requested_limit
+
+    from app.services.ingestion import get_or_create_user
+
+    async with session_factory() as session:
+        user = await get_or_create_user(
+            session,
+            telegram_user_id=message.from_user.id,
+            chat_id=message.chat.id,
+            timezone=settings.default_timezone,
+        )
+        ranked = await AttentionRankingService().list_ranked(session, user.id, limit=limit)
+        item_ids = [item.id for item, _ in ranked]
+        sources_by_item: dict[int, list[ItemSource]] = {item_id: [] for item_id in item_ids}
+        if item_ids:
+            sources = (
+                await session.scalars(
+                    select(ItemSource)
+                    .where(ItemSource.item_id.in_(item_ids))
+                    .order_by(ItemSource.item_id, ItemSource.source_index, ItemSource.id)
+                )
+            ).all()
+            for source in sources:
+                sources_by_item[source.item_id].append(source)
+        user_id = user.id
+        await session.commit()
+
+    if not ranked:
+        await message.answer("Сейчас нет подходящих Items.")
+        return
+
+    await message.answer("🎯 Сейчас заслуживает внимания:")
+    count = len(ranked)
+    for index, (item, rank) in enumerate(ranked, start=1):
+        await message.answer(
+            format_attention_item(index, count, item, rank),
+            reply_markup=item_keyboard(item, sources_by_item[item.id]),
+        )
+        # Exposure is durable only after Telegram accepted this card; each Item
+        # commits independently so a later delivery failure leaves a truthful prefix.
+        async with session_factory() as session:
+            await record_item_events(session, user_id, [item.id], "ATTENTION_SHOWN")
+            await session.commit()
 
 
 async def on_inbox(message: Message, settings: Settings, session_factory) -> None:

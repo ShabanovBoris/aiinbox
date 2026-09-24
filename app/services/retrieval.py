@@ -10,11 +10,10 @@ import re
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.domain.enums import ItemState, ItemType, ProcessingStatus
+from app.domain.enums import ACTIONABLE_ITEM_TYPES, ItemState, ProcessingStatus
 from app.storage.models import Content, Item
 
 _FTS_TABLE = "item_search"
-_TODAY_TYPES = (ItemType.ACTION, ItemType.LEARN, ItemType.READ, ItemType.WATCH)
 _DEFAULT_INBOX_LIMIT = 20
 _DEFAULT_SEARCH_LIMIT = 10
 _MAX_SEARCH_LIMIT = 20
@@ -102,7 +101,7 @@ class TodayService:
                 Item.user_id == user_id,
                 Item.processing_status == ProcessingStatus.READY,
                 Item.state == ItemState.ACTIVE,
-                Item.item_type.in_(_TODAY_TYPES),
+                Item.item_type.in_(ACTIONABLE_ITEM_TYPES),
             )
             .order_by(Item.priority_score.desc(), Item.created_at.asc(), Item.id.asc())
             .limit(limit)
