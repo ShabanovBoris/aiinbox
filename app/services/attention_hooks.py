@@ -402,25 +402,33 @@ def _build_hook_context(contents: list[Content], sources: list[ItemSource]) -> _
     chunks_by_source: dict[int | None, list[_EvidenceChunk]] = {}
     for source_id in source_order:
         content_chunks = grouped.get(source_id, [])
+        candidates = [
+            chunks[slot]
+            for slot in range(max((len(chunks) for chunks in content_chunks), default=0))
+            for chunks in content_chunks
+            if slot < len(chunks)
+        ]
+        transcript_ending = next(
+            (
+                chunks[-1]
+                for chunks in content_chunks
+                if chunks[0].kind is ContentKind.TRANSCRIPT and len(chunks) > 1
+            ),
+            None,
+        )
         selected: list[_EvidenceChunk] = []
         seen_text: set[str] = set()
-        slot = 0
-        while len(selected) < MAX_HOOK_CHUNKS_PER_SOURCE:
-            added = False
-            for chunks in content_chunks:
-                if slot >= len(chunks):
-                    continue
-                chunk = chunks[slot]
-                normalized = _normalize_whitespace(chunk.text)
-                if normalized and normalized not in seen_text:
-                    selected.append(chunk)
-                    seen_text.add(normalized)
-                    added = True
-                    if len(selected) == MAX_HOOK_CHUNKS_PER_SOURCE:
-                        break
-            if not added:
-                break
-            slot += 1
+        # Preserve the transcript conclusion before kind round-robin spends every slot.
+        if transcript_ending is not None:
+            candidates.remove(transcript_ending)
+            candidates.insert(MAX_HOOK_CHUNKS_PER_SOURCE - 1, transcript_ending)
+        for chunk in candidates:
+            normalized = _normalize_whitespace(chunk.text)
+            if normalized and normalized not in seen_text:
+                selected.append(chunk)
+                seen_text.add(normalized)
+                if len(selected) == MAX_HOOK_CHUNKS_PER_SOURCE:
+                    break
         if selected:
             chunks_by_source[source_id] = selected
 

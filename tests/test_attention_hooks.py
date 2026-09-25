@@ -451,21 +451,29 @@ async def test_bounded_context_is_labeled_fair_and_caps_chunks_per_source(sessio
 
 
 async def test_multiple_content_kinds_share_four_slots_for_one_source(session_factory):
-    """Represent transcript and visual notes without treating them as separate sources."""
+    """Preserve a transcript conclusion while sharing the source's bounded kind budget."""
+    transcript_end_marker = "TRANSCRIPT_CONCLUSION_MARKER"
     user_id, item_id, source_id, _content_id, _claimed_at = await _seed_claimed_item(
         session_factory,
-        text="TRANSCRIPT_MARKER " + ("transcriptword " * 8_000),
+        text="TRANSCRIPT_MARKER " + ("transcriptword " * 8_000) + transcript_end_marker,
         kind=ContentKind.TRANSCRIPT,
     )
     async with session_factory() as session:
+        description = Content(
+            item_id=item_id,
+            source_id=source_id,
+            kind=ContentKind.DESCRIPTION,
+            text="DESCRIPTION_MARKER source-level context.",
+        )
         visual = Content(
             item_id=item_id,
             source_id=source_id,
             kind=ContentKind.VISUAL_NOTES,
             text="VISUAL_MARKER " + ("visualword " * 8_000),
         )
-        session.add(visual)
+        session.add_all([description, visual])
         await session.commit()
+        description_id = description.id
         visual_id = visual.id
         transcript_id = await session.scalar(
             select(Content.id).where(
@@ -486,8 +494,11 @@ async def test_multiple_content_kinds_share_four_slots_for_one_source(session_fa
     context = provider.attention_hook_calls[0][0]
     source_labels = [int(value) for value in re.findall(r"SOURCE_ID: (\d+)", context)]
     content_labels = {int(value) for value in re.findall(r"CONTENT_ID: (\d+)", context)}
-    assert source_labels.count(source_id) <= MAX_HOOK_CHUNKS_PER_SOURCE
+    assert source_labels.count(source_id) == MAX_HOOK_CHUNKS_PER_SOURCE
+    assert "TRANSCRIPT_MARKER" in context
+    assert transcript_end_marker in context
     assert transcript_id in content_labels
+    assert description_id in content_labels
     assert visual_id in content_labels
 
 
