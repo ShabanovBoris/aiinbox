@@ -155,15 +155,15 @@ def test_display_title_has_deterministic_source_type_fallbacks(source_type, expe
     assert item_display_title(item) == expected
 
 
-def test_display_title_uses_only_a_short_first_note_line_and_composes_sources():
+def test_display_title_never_exposes_private_note_content_and_composes_sources():
     item = make_ready_item()
     item.title = None
     item.source_type = SourceType.TEXT
-    item.user_note = "Short saved intent\nsecond line"
-    assert item_display_title(item) == "Short saved intent"
-
-    item.user_note = "x" * 121
+    item.user_note = "PRIVATE NOTE CONTENT\nsecond line"
     assert item_display_title(item) == "Текстовая заметка"
+    text_source = ItemSource(item_id=item.id, source_index=0, source_type=SourceType.TEXT)
+    assert item_display_title(item, [text_source]) == "Текстовая заметка"
+    assert "PRIVATE NOTE CONTENT" not in item_display_title(item, [text_source])
     web = ItemSource(
         item_id=item.id,
         source_index=0,

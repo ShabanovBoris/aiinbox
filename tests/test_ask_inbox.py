@@ -338,6 +338,20 @@ async def test_context_falls_back_to_summary_only_when_primary_evidence_is_absen
 
 
 @pytest.mark.asyncio
+async def test_untitled_item_keeps_existing_ask_model_context_placeholder(session_factory):
+    """Сохраняет контракт Ask prompt отдельно от Telegram display-title projection."""
+    user_id = await make_user(session_factory)
+    async with session_factory() as session:
+        item = make_item(user_id, title=None, summary="")
+        session.add(item)
+        await session.flush()
+        context = build_ask_context("question", [SearchHit(item.id, 0, None)], [item], [], [])
+
+    assert 'TITLE_JSON: "(untitled)"' in context.text
+    assert context.references[0].title == "(untitled)"
+
+
+@pytest.mark.asyncio
 async def test_cross_item_source_is_rejected_before_chunk_summary_fallback(session_factory):
     user_id = await make_user(session_factory)
     async with session_factory() as session:

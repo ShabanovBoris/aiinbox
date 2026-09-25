@@ -3,10 +3,13 @@ import asyncio
 import pytest
 from sqlalchemy import select
 
+from app.domain.category_tokens import category_token
 from app.domain.enums import ItemState, ItemType, ProcessingStatus, SourceType
 from app.services import feedback as feedback_service
+from app.services import retrieval as retrieval_service
 from app.services.feedback import (
     correct_item_category,
+    correct_item_category_by_token,
     correct_item_type,
     record_item_feedback,
 )
@@ -313,6 +316,68 @@ async def test_category_correction_is_atomic_and_retrieval_uses_canonical_value(
             item_id,
             ai_item_id,
         }
+
+
+async def test_category_token_correction_resolves_categories_across_bounded_pages(session_factory):
+    """Проверяет, что коррекция переиспользует bounded resolver без лимита категорий."""
+    item_id = await _create_item(session_factory, category="Before")
+    async with session_factory() as session:
+        target = await session.get(Item, item_id)
+        session.add_all(
+            [
+                Item(
+                    user_id=target.user_id,
+                    telegram_message_id=None,
+                    source_index=0,
+                    processing_status=ProcessingStatus.READY,
+                    state=ItemState.ACTIVE,
+                    source_type=SourceType.TEXT,
+                    processing_stage="READY",
+                    user_note="",
+                    category=f"Category {index:03}",
+                )
+                for index in range(105)
+            ]
+        )
+        await session.commit()
+
+    selected_category = "Category 104"
+    result = await correct_item_category_by_token(
+        session_factory,
+        42,
+        item_id,
+        category_token(selected_category),
+        idempotency_key="telegram-callback:category-page-two",
+    )
+
+    assert result is not None and result[1] is True
+    async with session_factory() as session:
+        stored = await session.get(Item, item_id)
+        assert stored.category == selected_category
+
+
+async def test_category_token_correction_rejects_colliding_owner_categories(
+    session_factory, monkeypatch
+):
+    """Гарантирует отказ от неоднозначного токена до изменения canonical category."""
+    item_id = await _create_item(session_factory, category="First")
+    await _create_item(session_factory, title="second category", category="Second")
+    collision = "a" * 20
+    monkeypatch.setattr(retrieval_service, "category_token", lambda _category: collision)
+
+    result = await correct_item_category_by_token(
+        session_factory,
+        42,
+        item_id,
+        collision,
+        idempotency_key="telegram-callback:colliding-category-token",
+    )
+
+    assert result is None
+    async with session_factory() as session:
+        stored = await session.get(Item, item_id)
+        assert stored.category == "First"
+    assert await _event_rows(session_factory, item_id) == []
 
 
 async def test_category_noop_invalid_and_nonexistent_targets_do_not_create_events(

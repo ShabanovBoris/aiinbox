@@ -14,7 +14,6 @@ from app.storage.models import Item, ItemSource
 
 _MAX_SOURCE_LABEL_LENGTH = 64
 _MAX_ITEM_BUTTON_LABEL_LENGTH = 60
-_MAX_NOTE_TITLE_LENGTH = 120
 
 ITEM_TYPE_LABELS = {
     ItemType.ACTION: "Действие",
@@ -71,7 +70,7 @@ def item_display_title(item: Item, sources: Sequence[ItemSource] = ()) -> str:
         key=lambda source: (source.source_index, source.id if source.id is not None else 0),
     )
     if ordered_sources:
-        identities = [_source_fallback_title(source, item.user_note) for source in ordered_sources]
+        identities = [_source_fallback_title(source) for source in ordered_sources]
         if len(identities) > 1:
             return " + ".join(identities[:2])
         return identities[0]
@@ -108,7 +107,7 @@ def _single_line(value: str | None) -> str:
     return " ".join(value.split()) if isinstance(value, str) else ""
 
 
-def _source_fallback_title(source: ItemSource, user_note: str | None = None) -> str:
+def _source_fallback_title(source: ItemSource) -> str:
     """Use one persisted source identity as a deterministic presentation fallback."""
     if source.error_code == "SECURITY_REJECTED" and source.source_url:
         return "Ссылка"
@@ -129,7 +128,8 @@ def _source_fallback_title(source: ItemSource, user_note: str | None = None) -> 
         file_name = metadata.get("file_name")
         safe_name = safe_document_file_name(file_name if isinstance(file_name, str) else None)
         return f"Документ — {safe_name}" if safe_name else "Документ"
-    return _note_fallback(user_note)
+    # ❌ Удалён `_note_fallback`: user_note — приватное содержимое, не идентичность источника.
+    return "Текстовая заметка"
 
 
 def _legacy_source_fallback(item: Item) -> str:
@@ -153,16 +153,7 @@ def _legacy_source_fallback(item: Item) -> str:
         file_name = metadata.get("file_name")
         safe_name = safe_document_file_name(file_name if isinstance(file_name, str) else None)
         return f"Документ — {safe_name}" if safe_name else "Документ"
-    return _note_fallback(item.user_note)
-
-
-def _note_fallback(value: str | None) -> str:
-    """Use only a short saved first line; long note text is not list identity."""
-    if not isinstance(value, str):
-        return "Текстовая заметка"
-    first_line = value.splitlines()[0] if value.splitlines() else ""
-    title = _single_line(first_line)
-    return title if title and len(title) <= _MAX_NOTE_TITLE_LENGTH else "Текстовая заметка"
+    return "Текстовая заметка"
 
 
 def item_reference_projection(
