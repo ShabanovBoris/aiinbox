@@ -419,6 +419,13 @@ sqlite3 data/app.db \
 обрабатывать Ask запросы; после настройки используйте штатный restart и проверку
 `python -m app.ops smoke`.
 
+Для OpenRouter strict JSON Schema запросы требуют upstream provider, который
+обрабатывает `response_format`; adapter включает `require_parameters=true`, чтобы
+маршрутизатор не выбрал upstream, молча игнорирующий параметр. При
+`INVALID_LLM_OUTPUT` Ask log показывает только finish reason, наличие refusal,
+тип/длину ответа и имена schema validation errors. Сам ответ, вопрос и контекст
+не логируются.
+
 ## Reminders / digest
 
 ```bash

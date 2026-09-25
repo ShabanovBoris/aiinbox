@@ -212,6 +212,12 @@ class OpenAiProvider:
             },
         }
 
+    def _structured_output_request_options(self) -> dict[str, object]:
+        """Route OpenRouter schema-constrained requests only to parameter-compatible providers."""
+        if self._provider_name != "openrouter":
+            return {}
+        return {"extra_body": {"provider": {"require_parameters": True}}}
+
     async def analyze(
         self,
         content: NormalizedContent,
@@ -233,6 +239,7 @@ class OpenAiProvider:
                     # а не парсингом свободного текста (PRODUCT_SPEC §30).
                     response_format=self.response_format,
                     max_tokens=max_tokens,
+                    **self._structured_output_request_options(),
                 )
             except LlmError:
                 raise
@@ -284,6 +291,7 @@ class OpenAiProvider:
                     },
                 },
                 max_tokens=2048,
+                **self._structured_output_request_options(),
             )
         except LlmError:
             raise
@@ -338,23 +346,40 @@ class OpenAiProvider:
                         },
                     },
                     max_tokens=2048,
+                    **self._structured_output_request_options(),
                 )
             except Exception as exc:  # SDK errors stay inside the provider adapter.
                 log.warning("ask provider call failed provider=%s", self._provider_name)
                 raise LlmError("LLM_FAILED", "ask provider call failed") from exc
 
             choices = getattr(response, "choices", None)
-            message = choices[0].message if choices else None
+            choice = choices[0] if choices else None
+            message = getattr(choice, "message", None)
             content = getattr(message, "content", None)
             raw = content if isinstance(content, str) else ""
             try:
                 return AskInboxResult.model_validate_json(raw)
-            except ValidationError:
+            except ValidationError as exc:
+                validation = ",".join(
+                    f"{'/'.join(map(str, error['loc']))}:{error['type']}"
+                    for error in exc.errors(include_input=False, include_context=False)
+                )
+                log.warning(
+                    "ask provider returned invalid structured output provider=%s "
+                    "finish_reason=%s refusal=%s content_type=%s content_chars=%s "
+                    "validation=%s retry=%s/1",
+                    self._provider_name,
+                    getattr(choice, "finish_reason", "unknown"),
+                    bool(getattr(message, "refusal", None)),
+                    type(content).__name__ if content is not None else "none",
+                    len(raw),
+                    validation or "unknown",
+                    attempt,
+                )
                 if attempt == 1:
                     raise LlmError(
                         "INVALID_LLM_OUTPUT", "ask response did not match the required schema"
                     ) from None
-                log.warning("ask provider returned invalid structured output; retry=1/1")
                 await asyncio.sleep(0.5)
         raise AssertionError("ask structured-output retry loop must return or raise")
 
@@ -416,6 +441,7 @@ class OpenAiProvider:
                     "type": "json_schema",
                     "json_schema": {"name": "profile_patch", "strict": True, "schema": schema},
                 },
+                **self._structured_output_request_options(),
             )
         except LlmError:
             raise

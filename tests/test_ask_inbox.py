@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 from datetime import datetime
 from types import SimpleNamespace
 
@@ -783,6 +784,7 @@ async def test_provider_receives_separated_untrusted_context_and_strict_no_tools
     assert result.citations == [AskInboxCitation(item_id=12, source_id=None)]
     request = client.requests[0]
     assert "tools" not in request
+    assert "extra_body" not in request
     assert request["response_format"]["json_schema"]["strict"] is True
     assert request["response_format"]["json_schema"]["schema"]["additionalProperties"] is False
     assert request["messages"][0]["content"] == ASK_INBOX_SYSTEM_PROMPT
@@ -793,18 +795,47 @@ async def test_provider_receives_separated_untrusted_context_and_strict_no_tools
 
 
 @pytest.mark.asyncio
-async def test_provider_invalid_json_has_only_one_structured_retry(monkeypatch):
+async def test_openrouter_requires_provider_to_honor_structured_output_schema():
+    raw = json.dumps(
+        {
+            "answer": "The saved note mentions offline models.",
+            "citations": [{"item_id": 12, "source_id": None}],
+            "insufficient_context": False,
+        }
+    )
+    client = FakeCompletionClient(raw)
+    provider = OpenAiProvider(
+        "unused",
+        "google/gemini-2.5-flash-lite",
+        provider_name="openrouter",
+    )
+    provider._client = client
+
+    await provider.answer_inbox("What did I save?", "ITEM_ID: 12", preferred_language="en")
+
+    assert client.requests[0]["extra_body"] == {"provider": {"require_parameters": True}}
+
+
+@pytest.mark.asyncio
+async def test_provider_invalid_json_has_only_one_structured_retry(monkeypatch, caplog):
     async def no_wait(_seconds):
         return None
 
     monkeypatch.setattr("app.llm.openai.asyncio.sleep", no_wait)
     provider = OpenAiProvider("unused", "test-model")
-    client = FakeCompletionClient("not json", "still not json")
+    private_response = "private provider response"
+    client = FakeCompletionClient(private_response, "another private response")
     provider._client = client
-    with pytest.raises(LlmError) as error:
-        await provider.answer_inbox("q", "context", preferred_language="ru")
+    with caplog.at_level(logging.WARNING, logger="app.llm.openai"):
+        with pytest.raises(LlmError) as error:
+            await provider.answer_inbox("q", "context", preferred_language="ru")
     assert error.value.code == "INVALID_LLM_OUTPUT"
     assert len(client.requests) == 2
+    assert private_response not in caplog.text
+    assert "another private response" not in caplog.text
+    assert "content_type=str" in caplog.text
+    assert "content_chars=" in caplog.text
+    assert "validation=" in caplog.text
 
 
 def test_ask_format_and_keyboard_bound_references_and_validate_urls():
