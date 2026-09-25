@@ -453,7 +453,7 @@ Detailed specification: [PM-14_HYBRID_SEMANTIC_SEARCH.md](PM-14_HYBRID_SEMANTIC_
 
 ## 19. PM-15 — Export / Ownership
 
-Status: PLANNED.
+Status: IN_REVIEW.
 
 Backup restores AIInbox; export gives the user portable data outside AIInbox.
 Add durable background `/export` generation with compact/full modes, a versioned
