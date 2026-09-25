@@ -226,15 +226,25 @@ def _source_action_buttons(
     reference = item_reference_projection(
         item, sources, owner_chat_available=False, focus_source_id=focus_source_id
     )
-    return _reference_action_buttons(reference, video_callback_prefix=video_callback_prefix)
+    return _reference_action_buttons(
+        reference,
+        video_callback_prefix=video_callback_prefix,
+        focus_source_id=focus_source_id,
+    )
 
 
 def _reference_action_buttons(
-    reference: ItemReferenceProjection, *, video_callback_prefix: str
+    reference: ItemReferenceProjection,
+    *,
+    video_callback_prefix: str,
+    focus_source_id: int | None = None,
 ) -> list[InlineKeyboardButton]:
     """Translate stable provenance facts into this surface's callback namespace."""
     buttons = []
-    for action in reference.source_actions:
+    actions = list(reference.source_actions)
+    if focus_source_id is not None:
+        actions.sort(key=lambda action: action.source_id != focus_source_id)
+    for action in actions:
         if action.can_resend_media and action.source_id is not None:
             buttons.append(
                 InlineKeyboardButton(
@@ -274,7 +284,7 @@ def proactive_reminder_keyboard(
     focus_source_id: int | None = None,
     original_available: bool | None = None,
 ) -> InlineKeyboardMarkup:
-    """Project a focused reaction surface whose callbacks retain Reminder identity."""
+    """Keep source access primary and move PM-11 reactions to an ephemeral More menu."""
     reference = item_reference_projection(
         item,
         sources,
@@ -294,14 +304,32 @@ def proactive_reminder_keyboard(
                 )
             ]
         )
-    rows.extend(
-        [button]
-        for button in _reference_action_buttons(
-            reference, video_callback_prefix=f"reminder:open:{reminder_id}:"
-        )[:_MAX_SOURCE_MENU_ACTIONS]
+    source_actions = _reference_action_buttons(
+        reference,
+        video_callback_prefix=f"reminder:open:{reminder_id}:",
+        focus_source_id=focus_source_id,
     )
-    rows.extend(
-        [
+    rows.extend([[button] for button in source_actions[:_MAX_PRIMARY_SOURCE_ACTIONS]])
+    if len(source_actions) > _MAX_PRIMARY_SOURCE_ACTIONS:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text="🔗 Источники", callback_data=f"reminder:sources:{reminder_id}"
+                )
+            ]
+        )
+    rows.append(
+        [InlineKeyboardButton(text="••• Ещё", callback_data=f"reminder:more:{reminder_id}")]
+    )
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def reminder_more_keyboard(reminder_id: int) -> InlineKeyboardMarkup:
+    """Project existing PM-11 reactions into a read-only Reminder submenu."""
+    # Callback identities remain the same so this UI projection cannot change
+    # the durable feedback semantics owned by ReminderFeedbackService.
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
             [
                 InlineKeyboardButton(
                     text="⏰ Позже", callback_data=f"reminder:later:{reminder_id}"
@@ -320,9 +348,9 @@ def proactive_reminder_keyboard(
                     text="👎 Меньше таких", callback_data=f"reminder:less:{reminder_id}"
                 )
             ],
+            [InlineKeyboardButton(text="← Назад", callback_data=f"reminder:back:{reminder_id}")],
         ]
     )
-    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def reminder_sources_keyboard(
@@ -331,15 +359,18 @@ def reminder_sources_keyboard(
     sources: Sequence[ItemSource] | None = None,
     *,
     focus_source_id: int | None = None,
-) -> InlineKeyboardMarkup | None:
-    """Keep fallback source resends attributed to their proactive Reminder."""
+) -> InlineKeyboardMarkup:
+    """Show bounded source actions and return to the reminder without storing menu state."""
     rows = _source_action_rows(
         item,
         sources,
         focus_source_id,
         video_callback_prefix=f"reminder:open:{reminder_id}:",
     )[:_MAX_SOURCE_MENU_ACTIONS]
-    return InlineKeyboardMarkup(inline_keyboard=rows) if rows else None
+    rows.append(
+        [InlineKeyboardButton(text="← Назад", callback_data=f"reminder:back:{reminder_id}")]
+    )
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def motivation_reminder_keyboard(reminder_id: int) -> InlineKeyboardMarkup:

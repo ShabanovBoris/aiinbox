@@ -27,6 +27,7 @@ from app.bot.keyboards import (
     item_navigation_keyboard,
     item_sources_keyboard,
     proactive_reminder_keyboard,
+    reminder_more_keyboard,
     reminder_snooze_keyboard,
     reminder_sources_keyboard,
 )
@@ -825,6 +826,33 @@ async def on_reminder_callback(
 
     callback_action = parts[1]
     service = ReminderFeedbackService(session_factory)
+    if callback_action in {"more", "sources", "back"} and len(parts) == 3:
+        projection = await service.item_reminder_projection(callback.from_user.id, reminder_id)
+        if projection is None:
+            await callback.answer("Это напоминание сейчас недоступно")
+            return
+        reminder, item, sources, original_available = projection
+        focus_source_id = (reminder.payload_json or {}).get("focus_source_id")
+        if type(focus_source_id) is not int:
+            focus_source_id = None
+        if callback_action == "more":
+            keyboard = reminder_more_keyboard(reminder_id)
+        elif callback_action == "sources":
+            keyboard = reminder_sources_keyboard(
+                reminder_id, item, sources, focus_source_id=focus_source_id
+            )
+        else:
+            keyboard = proactive_reminder_keyboard(
+                reminder_id,
+                item,
+                sources,
+                focus_source_id=focus_source_id,
+                original_available=original_available,
+            )
+        await _edit_reply_markup_if_changed(callback.message, keyboard)
+        await callback.answer()
+        return
+
     if callback_action == "original" and len(parts) == 3:
         chat_id = getattr(getattr(callback.message, "chat", None), "id", None)
         target = await reminder_original_target(
@@ -855,7 +883,7 @@ async def on_reminder_callback(
                     reminder_id, item, sources, focus_source_id=focus_source_id
                 )
                 message = "Оригинальное сообщение больше недоступно."
-                if keyboard is not None:
+                if len(keyboard.inline_keyboard) > 1:
                     message += "\nМожно открыть сохранённый источник:"
                 await callback.message.answer(message, reply_markup=keyboard)
             await callback.answer("Оригинал недоступен")

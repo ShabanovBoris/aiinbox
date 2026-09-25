@@ -754,7 +754,78 @@ async def test_reminder_later_and_cancel_retries_preserve_current_keyboard(
     assert cancel.message.markup_edits == 1
     assert proactive_markup != snooze_markup
     callbacks = _callback_data(proactive_markup)
-    assert f"reminder:done:{reminder_id}" in callbacks
+    assert f"reminder:more:{reminder_id}" in callbacks
+
+
+async def test_reminder_more_sources_and_back_are_owner_scoped_read_only_navigation(
+    settings, session_factory
+):
+    item_id = await _create_ready_item(session_factory, telegram_message_id=987)
+    reminder_id = await _create_sent_proactive_reminder(session_factory, item_id)
+    async with session_factory() as session:
+        sources = [
+            ItemSource(
+                item_id=item_id,
+                source_index=index,
+                source_type=SourceType.YOUTUBE if index == 0 else SourceType.WEB,
+                source_url=(
+                    "https://www.youtube.com/watch?v=focus"
+                    if index == 0
+                    else f"https://example.com/{index}"
+                ),
+                extraction_status="READY",
+            )
+            for index in range(3)
+        ]
+        session.add_all(sources)
+        await session.flush()
+        reminder = await session.get(Reminder, reminder_id)
+        reminder.payload_json = {"focus_source_id": sources[0].id}
+        await session.commit()
+        focus_source_id = sources[0].id
+
+    message = FakeCallbackMessage(reply_markup="old-menu")
+    more = FakeCallback(42, f"reminder:more:{reminder_id}", "reminder-more")
+    more.message = message
+    await on_reminder_callback(more, settings, session_factory)
+    more_callbacks = _callback_data(message.reply_markup)
+    assert {
+        f"reminder:done:{reminder_id}",
+        f"reminder:later:{reminder_id}",
+        f"reminder:dismiss:{reminder_id}",
+        f"reminder:less:{reminder_id}",
+        f"reminder:back:{reminder_id}",
+    } <= set(more_callbacks)
+
+    sources_callback = FakeCallback(42, f"reminder:sources:{reminder_id}", "reminder-sources")
+    sources_callback.message = message
+    await on_reminder_callback(sources_callback, settings, session_factory)
+    source_callbacks = _callback_data(message.reply_markup)
+    assert f"reminder:open:{reminder_id}:{focus_source_id}" in source_callbacks
+    assert f"reminder:back:{reminder_id}" in source_callbacks
+    assert "https://www.youtube.com/watch?v=focus" in {
+        button.url for row in message.reply_markup.inline_keyboard for button in row if button.url
+    }
+
+    back = FakeCallback(42, f"reminder:back:{reminder_id}", "reminder-back")
+    back.message = message
+    await on_reminder_callback(back, settings, session_factory)
+    primary_callbacks = _callback_data(message.reply_markup)
+    assert f"reminder:original:{reminder_id}" in primary_callbacks
+    assert f"reminder:sources:{reminder_id}" in primary_callbacks
+    assert f"reminder:more:{reminder_id}" in primary_callbacks
+    assert not any(
+        value.startswith(
+            ("reminder:done:", "reminder:later:", "reminder:dismiss:", "reminder:less:")
+        )
+        for value in primary_callbacks
+    )
+    async with session_factory() as session:
+        reminder = await session.get(Reminder, reminder_id)
+        item = await session.get(Item, item_id)
+        assert reminder.status == "SENT"
+        assert item.state is ItemState.ACTIVE
+        assert await session.scalar(select(func.count(Event.id))) == 0
 
 
 async def test_primary_feedback_clicks_with_different_ids_remain_distinct(
