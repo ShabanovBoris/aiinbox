@@ -9,6 +9,7 @@ from app.storage.models import Item, ItemSource
 
 _TELEGRAM_MAX_MESSAGE_LENGTH = 4096
 _ATTENTION_SUMMARY_PREVIEW_LENGTH = 520
+_PROACTIVE_SUMMARY_PREVIEW_LENGTH = 700
 
 
 def format_instagram_failure_reason(error_code: str | None) -> str:
@@ -384,33 +385,19 @@ def format_attention_item(index: int, count: int, item: Item, rank: AttentionRan
     return _fit_message(lines)
 
 
-def format_proactive_attention_reminder(
-    item: Item, rank: AttentionRank, hook_block: str | None = None
-) -> str:
-    """Render a scheduled Item with PM-07's existing explainability signals.
-
-    Keeping this as a presentation projection prevents PM-08 from inventing a
-    second reason formula or copying the Item's saved content into Reminder data.
-    """
-    lines = [
-        "⏳ Вернём это в фокус",
-        item.title or "Без названия",
-    ]
-    # ❌ Удалён жёстко заданный блок без hook: он мешал вставить проверенный
-    # контекстный блок; fallback по-прежнему собирает тот же текст ниже.
-    if hook_block:
-        lines.extend(["", hook_block])
-    lines.extend(
-        [
-            "",
-            f"Почему сейчас: {format_attention_reason(rank)}",
-            "",
-            f"Внимание: {rank.score}/100",
-            f"Приоритет: {rank.priority_score}/100",
-            f"Интерес: {item.interest_level}/3",
-            f"Сохранён: {int(rank.age_days)} дн. назад",
-        ]
-    )
+def format_proactive_attention_reminder(item: Item, hook_text: str | None = None) -> str:
+    """Project an Item reminder as title plus hook, summary fallback, or title alone."""
+    # ❌ Удалены wrapper, ranking reason, scores, interest and age from reminder copy:
+    # они объясняли выбор планировщика вместо содержательной причины открыть материал.
+    lines = [f"🎯 {item.title or 'Без названия'}"]
+    content = (hook_text or "").strip()
+    if not content:
+        # Item.summary is presentation fallback only; AttentionHookService never reads it.
+        content = " ".join((item.summary or "").split())
+        if len(content) > _PROACTIVE_SUMMARY_PREVIEW_LENGTH:
+            content = content[: _PROACTIVE_SUMMARY_PREVIEW_LENGTH - 1].rstrip() + "…"
+    if content:
+        lines.extend(("", content))
     return _fit_message(lines)
 
 
