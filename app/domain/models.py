@@ -144,6 +144,45 @@ class AttentionHook:
     generator_version: int
 
 
+class AskInboxCitation(BaseModel):
+    """Provider-owned identity only; the application resolves all display metadata."""
+
+    model_config = {"extra": "forbid"}
+
+    item_id: int = Field(gt=0, strict=True)
+    source_id: int | None = Field(default=None, gt=0, strict=True)
+
+
+class AskInboxResult(BaseModel):
+    """Strict LLM boundary for one standalone, inbox-grounded question."""
+
+    model_config = {"extra": "forbid"}
+
+    answer: str = Field(max_length=3000, strict=True)
+    citations: list[AskInboxCitation] = Field(default_factory=list, max_length=5)
+    insufficient_context: bool = Field(strict=True)
+
+
+@dataclass(frozen=True, slots=True)
+class AskReference:
+    """Trusted presentation projection built from validated persisted Item/source rows."""
+
+    item_id: int
+    source_id: int | None
+    title: str
+    source_type: str | None
+    source_url: str | None
+
+
+class AskDeliveryPayload(BaseModel):
+    """Temporary outbox contract; answer text is cleared after successful Telegram send."""
+
+    model_config = {"extra": "forbid"}
+
+    answer: str = Field(min_length=1, max_length=3000, strict=True)
+    references: list[AskInboxCitation] = Field(default_factory=list, max_length=5)
+
+
 class AnalysisResult(BaseModel):
     """Строгая схема ответа LLM; валидируется Pydantic до попадания в БД.
 

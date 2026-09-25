@@ -125,7 +125,7 @@ Goal: make resurfacing useful and engaging rather than repetitive.
 
 ### Milestone F — Reflection
 
-- PM-12 Weekly Review — IN_REVIEW
+- PM-12 Weekly Review — DONE (PR #41 merged)
 
 Goal: expose trends in attention, backlog growth, completion, neglect and category balance.
 
@@ -390,6 +390,8 @@ attention ranking
 
 ## 16. PM-12 — Weekly Review
 
+Current state: DONE. PM-12 was implemented and merged to `main` in PR #41.
+
 Add on-demand `/weekly`; scheduled weekly delivery is out of scope for v1.
 
 Show:
@@ -405,6 +407,8 @@ Show:
 This is reflection, not another giant backlog dump.
 
 ## 17. PM-13 — Ask My Inbox
+
+Current state: IN_REVIEW.
 
 Initial implementation should use existing FTS5:
 

@@ -74,8 +74,9 @@ Telegram → ingestion → SQLite queue → ProcessingWorker
                              Telegram
 ```
 
-Напоминания обслуживает `ReminderWorker`, READY/FAILED/profile notifications и
-явно запрошенная отправка видео — durable `DeliveryWorker`.
+Напоминания обслуживает `ReminderWorker`, а READY/FAILED/profile/Ask results и
+явно запрошенная отправка видео используют durable `DeliveryWorker`. `AskWorker`
+обрабатывает отдельные вопросы пользователя вне Telegram handler.
 
 ## 6. Текущая поддерживаемая поверхность
 
@@ -94,7 +95,7 @@ Telegram → ingestion → SQLite queue → ProcessingWorker
   provenance;
 - forwarded photo-post с URL в caption/text_link: caption и ссылки сохраняются как
   единый source content, само изображение не анализируется;
-- `/today`, `/attention`, `/weekly`, `/inbox`, `/category`, `/search`;
+- `/today`, `/attention`, `/weekly`, `/inbox`, `/category`, `/search`, `/ask`;
 - `/profile`, `/profile_update`;
 - `/settings`, `/settings attention`;
 - Done / Later / Archive / Retry;
@@ -444,6 +445,25 @@ SQLite FTS5 ищет title, summary, user note, tags и persisted original sourc
 content. Derived `ATTENTION_HOOK` text не индексируется.
 DONE/ARCHIVED остаются searchable. Default limit — 10.
 
+### `/ask`
+
+`/ask <вопрос>` создаёт standalone `AskJob`; Telegram handler только проверяет
+пустой ввод/лимит 2000 символов, сохраняет job и отправляет быстрый ACK.
+`AskWorker` использует текущий provider и SQLite FTS5, по умолчанию получает до
+8 Items (абсолютный максимум — 10) без фильтра lifecycle state. Контекст строится
+только из уже сохранённых Item/ItemSource/Content, с пределом 6000 символов на
+Item и 40000 суммарно; URL не загружаются. `ATTENTION_HOOK` и
+`TRANSCRIPT_CHUNK` не являются evidence, `CHUNK_SUMMARY` — только fallback при
+отсутствии исходного persisted content.
+
+LLM возвращает строгую схему с Item/source IDs. Application принимает ссылки
+только из точного набора контекста, переданного provider, и строит названия и
+HTTP(S)-кнопки из persisted rows. Ответ в `preferred_language` доставляется через
+durable outbox; после успешной Telegram delivery сгенерированный текст удаляется
+из payload. Ответ не записывается в Item, Content, FTS, Profile или Event.
+Пустая выдача завершает job без LLM-вызова; `/search` сохраняет прежний список
+результатов.
+
 ## 46. Почему хранить extracted content
 
 Сохранять именно тот текст/transcript, который анализировался: source может
@@ -460,6 +480,7 @@ Canonical SQLite tables:
 - `events`;
 - `reminders`;
 - `profile_update_jobs`;
+- `ask_jobs`;
 - `deliveries`;
 - FTS5 virtual table `item_search`.
 

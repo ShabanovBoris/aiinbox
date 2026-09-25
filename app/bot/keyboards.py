@@ -1,12 +1,14 @@
 """Small Telegram keyboard projections for the Item action surface."""
 
 from collections.abc import Sequence
+from urllib.parse import urlsplit
 
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from app.bot.provenance import forward_original_url
 from app.domain.category_tokens import category_token as category_callback_token
 from app.domain.enums import ItemType, ProcessingStatus, SourceType
+from app.domain.models import AskReference
 from app.storage.models import Item, ItemSource
 
 _MAX_CATEGORY_CHOICES = 20
@@ -80,6 +82,21 @@ def item_keyboard(
     ):
         rows.append([InlineKeyboardButton(text="🔁 Retry", callback_data=f"item:retry:{item.id}")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def ask_sources_keyboard(
+    references: Sequence[AskReference],
+) -> InlineKeyboardMarkup | None:
+    """Expose only persisted HTTP(S) URLs for citations already validated by Ask."""
+    rows = []
+    for index, reference in enumerate(references[:5], start=1):
+        if not reference.source_url:
+            continue
+        parsed = urlsplit(reference.source_url)
+        if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname:
+            continue
+        rows.append([InlineKeyboardButton(text=f"[{index}] Открыть", url=reference.source_url)])
+    return InlineKeyboardMarkup(inline_keyboard=rows) if rows else None
 
 
 def _source_action_rows(

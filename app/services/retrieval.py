@@ -6,6 +6,7 @@
 """
 
 import re
+from dataclasses import dataclass
 
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -17,6 +18,8 @@ _FTS_TABLE = "item_search"
 _DEFAULT_INBOX_LIMIT = 20
 _DEFAULT_SEARCH_LIMIT = 10
 _MAX_SEARCH_LIMIT = 20
+_DEFAULT_ASK_LIMIT = 8
+_MAX_ASK_LIMIT = 10
 
 
 async def ensure_search_index(session: AsyncSession) -> None:
@@ -156,6 +159,49 @@ def _fts_query(query: str) -> str:
     # в SQL/FTS exception; OR сохраняет результаты для частичных запросов.
     tokens = re.findall(r"[^\s]+", query.strip())
     return " OR ".join('"' + token.replace('"', '""') + '"' for token in tokens)
+
+
+@dataclass(frozen=True, slots=True)
+class SearchHit:
+    """Small ranked retrieval result; Ask separately loads trusted persisted evidence."""
+
+    item_id: int
+    fts_rank: float
+    matched_snippet: str | None
+
+
+async def search_item_hits(
+    session: AsyncSession,
+    user_id: int,
+    query: str,
+    *,
+    limit: int = _DEFAULT_ASK_LIMIT,
+) -> list[SearchHit]:
+    """Return bounded user-scoped lexical hits without changing `/search` results."""
+    match = _fts_query(query)
+    if not match:
+        return []
+    limit = max(0, min(limit, _MAX_ASK_LIMIT))
+    await rebuild_user_search_index(session, user_id)
+    rows = await session.execute(
+        text(
+            "SELECT i.id AS item_id, bm25(item_search) AS fts_rank, "
+            "snippet(item_search, 6, '', '', ' … ', 18) AS matched_snippet "
+            "FROM item_search AS s JOIN items AS i ON i.id = CAST(s.item_id AS INTEGER) "
+            "WHERE s.user_id = :user_id AND i.user_id = :user_id "
+            "AND item_search MATCH :match "
+            "ORDER BY bm25(item_search), i.created_at DESC, i.id DESC LIMIT :limit"
+        ),
+        {"user_id": user_id, "match": match, "limit": limit},
+    )
+    return [
+        SearchHit(
+            item_id=row.item_id,
+            fts_rank=float(row.fts_rank),
+            matched_snippet=(row.matched_snippet[:1200] if row.matched_snippet else None),
+        )
+        for row in rows
+    ]
 
 
 async def search_items(

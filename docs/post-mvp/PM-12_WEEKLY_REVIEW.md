@@ -3,7 +3,7 @@
 Type: Post-MVP Epic + Detailed Technical Specification  
 Prerequisites: PM-06 Behaviour Ranking; PM-11 Reminder Feedback Loop
 
-Status: IN_REVIEW
+Status: DONE (PR #41 merged)
 
 ## 1. Epic
 

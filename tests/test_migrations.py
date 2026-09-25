@@ -717,7 +717,6 @@ def test_pm08_migration_preserves_settings_and_serializes_open_claims(tmp_path):
             conn.rollback()
         else:
             raise AssertionError("two open proactive claims for one user were allowed")
-
         conn.execute(
             "INSERT INTO reminders (user_id, item_id, type, scheduled_at, status, sent_at) "
             "VALUES (?, ?, 'PROACTIVE_ATTENTION', '2026-09-24 10:02:00', 'SENT', "
@@ -731,3 +730,158 @@ def test_pm08_migration_preserves_settings_and_serializes_open_claims(tmp_path):
             (user_ids[0], item_ids[1]),
         )
         conn.commit()
+
+
+def test_ask_migration_preserves_existing_deliveries_and_enforces_source_identity(tmp_path):
+    db = tmp_path / "ask-upgrade.db"
+    cfg = Config()
+    cfg.set_main_option("script_location", "migrations")
+    cfg.set_main_option("sqlalchemy.url", f"sqlite+aiosqlite:///{db}")
+    command.upgrade(cfg, "f5a7c2d91e10")
+
+    with sqlite3.connect(db) as conn:
+        conn.execute("PRAGMA foreign_keys=ON")
+        user_id = conn.execute(
+            "INSERT INTO users (telegram_user_id) VALUES (42) RETURNING id"
+        ).fetchone()[0]
+        item_id = conn.execute(
+            "INSERT INTO items (user_id, telegram_message_id, source_index, processing_status, "
+            "state, source_type, processing_stage, user_note) "
+            "VALUES (?, 1, 0, 'READY', 'ACTIVE', 'TEXT', 'READY', '') RETURNING id",
+            (user_id,),
+        ).fetchone()[0]
+        profile_job_id = conn.execute(
+            "INSERT INTO profile_update_jobs (user_id, instruction, status) "
+            "VALUES (?, 'change goals', 'DONE') RETURNING id",
+            (user_id,),
+        ).fetchone()[0]
+        conn.execute(
+            "INSERT INTO deliveries (user_id, item_id, type, status, attempts, payload_json, "
+            "last_error, sent_at) VALUES (?, ?, 'ITEM_READY', 'SENT', 2, ?, 'old transport error', "
+            "'2026-09-24 12:00:00')",
+            (user_id, item_id, '{"title":"old item"}'),
+        )
+        conn.execute(
+            "INSERT INTO deliveries (user_id, profile_update_job_id, type, status, attempts, "
+            "payload_json) VALUES (?, ?, 'PROFILE_UPDATED', 'PENDING', 1, ?)",
+            (user_id, profile_job_id, '{"changed":["goals"]}'),
+        )
+        conn.commit()
+
+    command.upgrade(cfg, "head")
+
+    with sqlite3.connect(db) as conn:
+        conn.execute("PRAGMA foreign_keys=ON")
+        old_deliveries = conn.execute(
+            "SELECT type, status, item_id, profile_update_job_id, attempts, payload_json, "
+            "last_error, sent_at FROM deliveries ORDER BY id"
+        ).fetchall()
+        assert old_deliveries == [
+            (
+                "ITEM_READY",
+                "SENT",
+                item_id,
+                None,
+                2,
+                '{"title":"old item"}',
+                "old transport error",
+                "2026-09-24 12:00:00",
+            ),
+            (
+                "PROFILE_UPDATED",
+                "PENDING",
+                None,
+                profile_job_id,
+                1,
+                '{"changed":["goals"]}',
+                None,
+                None,
+            ),
+        ]
+        ask_job_id = conn.execute(
+            "INSERT INTO ask_jobs (user_id, telegram_message_id, question, status) "
+            "VALUES (?, 77, 'what did I save?', 'PENDING') RETURNING id",
+            (user_id,),
+        ).fetchone()[0]
+        conn.execute(
+            "INSERT INTO deliveries (user_id, ask_job_id, type, status, payload_json) "
+            "VALUES (?, ?, 'ASK_RESULT', 'PENDING', ?)",
+            (user_id, ask_job_id, '{"answer":"answer","references":[]}'),
+        )
+        conn.commit()
+        assert conn.execute(
+            "SELECT type, ask_job_id FROM deliveries WHERE ask_job_id = ?",
+            (ask_job_id,),
+        ).fetchone() == ("ASK_RESULT", ask_job_id)
+
+        invalid_rows = [
+            (
+                "INSERT INTO deliveries (user_id, type) VALUES (?, 'INVALID_NONE')",
+                (user_id,),
+            ),
+            (
+                "INSERT INTO deliveries (user_id, item_id, ask_job_id, type) "
+                "VALUES (?, ?, ?, 'INVALID_TWO')",
+                (user_id, item_id, ask_job_id),
+            ),
+            (
+                "INSERT INTO deliveries (user_id, ask_job_id, type) VALUES (?, ?, 'ASK_RESULT')",
+                (user_id, ask_job_id),
+            ),
+        ]
+        for statement, parameters in invalid_rows:
+            try:
+                conn.execute(statement, parameters)
+                conn.commit()
+            except sqlite3.IntegrityError:
+                conn.rollback()
+            else:
+                raise AssertionError("invalid or duplicate Ask delivery was allowed")
+
+
+def test_fresh_ask_schema_contains_job_and_delivery_constraints(tmp_path):
+    db = tmp_path / "ask-fresh.db"
+    cfg = Config()
+    cfg.set_main_option("script_location", "migrations")
+    cfg.set_main_option("sqlalchemy.url", f"sqlite+aiosqlite:///{db}")
+    command.upgrade(cfg, "head")
+
+    with sqlite3.connect(db) as conn:
+        conn.execute("PRAGMA foreign_keys=ON")
+        tables = {
+            row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
+        assert "ask_jobs" in tables
+        assert "ask_job_id" in {row[1] for row in conn.execute("PRAGMA table_info(deliveries)")}
+        assert {"ix_ask_jobs_status", "ix_deliveries_ask_job_id"} <= {
+            row[1]
+            for table in ("ask_jobs", "deliveries")
+            for row in conn.execute(f"PRAGMA index_list({table})")
+        }
+        ask_sql = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='ask_jobs'"
+        ).fetchone()[0]
+        delivery_sql = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='deliveries'"
+        ).fetchone()[0]
+        assert "uq_ask_jobs_user_telegram_message" in ask_sql
+        assert "uq_deliveries_ask_job_type" in delivery_sql
+        assert ("ask_jobs", "ask_job_id", "id") in {
+            (row[2], row[3], row[4]) for row in conn.execute("PRAGMA foreign_key_list(deliveries)")
+        }
+        user_id = conn.execute(
+            "INSERT INTO users (telegram_user_id) VALUES (42) RETURNING id"
+        ).fetchone()[0]
+        ask_job_id = conn.execute(
+            "INSERT INTO ask_jobs (user_id, telegram_message_id, question) "
+            "VALUES (?, 77, 'fresh database question') RETURNING id",
+            (user_id,),
+        ).fetchone()[0]
+        conn.execute(
+            "INSERT INTO deliveries (user_id, ask_job_id, type, payload_json) "
+            "VALUES (?, ?, 'ASK_RESULT', ?)",
+            (user_id, ask_job_id, '{"answer":"fresh schema"}'),
+        )
+        assert conn.execute(
+            "SELECT status FROM ask_jobs WHERE id = ?", (ask_job_id,)
+        ).fetchone() == ("PENDING",)
