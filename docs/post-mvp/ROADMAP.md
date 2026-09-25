@@ -163,7 +163,7 @@ Goal: expose trends in attention, backlog growth, completion, neglect and catego
 
 ### Milestone P — Quality & UX Polish — CURRENT FOCUS
 
-- POLISH-01 AI Analysis v2 — PLANNED
+- POLISH-01 AI Analysis v2 — IN_REVIEW
 - POLISH-02 Compact Telegram Item UI — PLANNED
 - POLISH-03 Unified Provenance & Original Access — PLANNED
 - POLISH-04 Hooks & Notifications v2 — PLANNED
