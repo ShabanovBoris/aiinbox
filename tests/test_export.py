@@ -144,6 +144,20 @@ async def _seed_export_content(session_factory):
             source_file_id="SOURCE_FILE_ID_PRIVATE_MARKER",
             metadata_json={"failure_permanent": True, "debug": "SOURCE_INTERNAL_MARKER"},
         )
+        document_source = ItemSource(
+            item_id=item.id,
+            source_index=1,
+            source_type=SourceType.DOCUMENT,
+            source_file_id="DOCUMENT_SOURCE_FILE_ID_PRIVATE_MARKER",
+            extraction_status="READY",
+            metadata_json={
+                "file_name": "research-notes.pdf",
+                "mime_type": "application/pdf; charset=binary",
+                "document_format": "PDF",
+                "failure_permanent": True,
+                "debug": "DOCUMENT_SOURCE_INTERNAL_MARKER",
+            },
+        )
         other_source = ItemSource(
             item_id=other_item.id,
             source_index=0,
@@ -151,7 +165,7 @@ async def _seed_export_content(session_factory):
             source_url="https://other.example/private",
             extraction_status="READY",
         )
-        session.add_all([source, other_source])
+        session.add_all([source, document_source, other_source])
         await session.flush()
         primary_kinds = (
             ContentKind.USER_TEXT,
@@ -427,6 +441,7 @@ async def test_compact_and_full_archives_obey_allowlists_and_user_ownership(
         assert manifest["format"] == "aiinbox-export" and manifest["version"] == 1
         assert manifest["mode"] == "compact" and manifest["counts"]["contents"] == 0
         assert manifest["counts"]["items"] == 1
+        assert manifest["counts"]["sources"] == 2
         assert profile["free_text"] == "PROFILE_USER_OWNED_MARKER"
         assert settings_json == {
             "timezone": "Europe/Moscow",
@@ -459,8 +474,27 @@ async def test_compact_and_full_archives_obey_allowlists_and_user_ownership(
                 "extraction_status": "READY",
                 "created_at": compact_sources[0]["created_at"],
                 "updated_at": compact_sources[0]["updated_at"],
-            }
+                "metadata": {},
+            },
+            {
+                "id": compact_sources[1]["id"],
+                "item_id": item_id,
+                "source_index": 1,
+                "source_type": "DOCUMENT",
+                "source_url": None,
+                "content_duration_seconds": None,
+                "extraction_status": "READY",
+                "created_at": compact_sources[1]["created_at"],
+                "updated_at": compact_sources[1]["updated_at"],
+                "metadata": {
+                    "file_name": "research-notes.pdf",
+                    "mime_type": "application/pdf",
+                    "document_format": "pdf",
+                },
+            },
         ]
+        assert "failure_permanent" not in json.dumps(compact_sources)
+        assert "debug" not in json.dumps(compact_sources)
         assert compact_events[0]["payload"] == {
             "from": "Old",
             "to": "AI",
@@ -482,6 +516,8 @@ async def test_compact_and_full_archives_obey_allowlists_and_user_ownership(
         "SOURCE_FILE_ID_PRIVATE_MARKER",
         "ITEM_METADATA_PRIVATE_MARKER",
         "SOURCE_INTERNAL_MARKER",
+        "DOCUMENT_SOURCE_FILE_ID_PRIVATE_MARKER",
+        "DOCUMENT_SOURCE_INTERNAL_MARKER",
         "CONTENT_METADATA_PRIVATE_MARKER",
         "EVENT_INTERNAL_MARKER",
         "REMINDER_INTERNAL_MARKER",
@@ -518,6 +554,11 @@ async def test_compact_and_full_archives_obey_allowlists_and_user_ownership(
         "EXCLUDED_CONTENT_CHUNK_SUMMARY_MARKER",
         "EXCLUDED_CONTENT_TRANSCRIPT_CHUNK_MARKER",
         "EXCLUDED_CONTENT_ATTENTION_HOOK_MARKER",
+        "FILEID_DO_NOT_EXPORT",
+        "SOURCE_FILE_ID_PRIVATE_MARKER",
+        "DOCUMENT_SOURCE_FILE_ID_PRIVATE_MARKER",
+        "SOURCE_INTERNAL_MARKER",
+        "DOCUMENT_SOURCE_INTERNAL_MARKER",
         "OTHER_OWNER_PRIVATE_MARKER",
         "OTHER_OWNER_CONTENT_PRIVATE_MARKER",
         "ASK_ANSWER_PRIVATE_MARKER",

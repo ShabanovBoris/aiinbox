@@ -60,6 +60,11 @@ _SETTINGS_ALLOWLIST = (
     "attention_intensity",
     "generic_motivation_enabled",
 )
+_SOURCE_METADATA_LIMITS = {
+    "file_name": 255,
+    "mime_type": 127,
+    "document_format": 32,
+}
 _FORWARD_ORIGIN_TYPES = frozenset({"user", "hidden_user", "chat", "channel"})
 _REMINDER_EVENT_TYPES = frozenset(
     {
@@ -134,7 +139,7 @@ class ExportItem:
 
 @dataclass(frozen=True, slots=True)
 class ExportSource:
-    """Detached source identity and user-visible extraction provenance."""
+    """Detached source identity and allowlisted portable file provenance."""
 
     id: int
     item_id: int
@@ -145,6 +150,7 @@ class ExportSource:
     extraction_status: str
     created_at: datetime | None
     updated_at: datetime | None
+    metadata: tuple[tuple[str, str], ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -389,8 +395,28 @@ def _item_record(item: ExportItem) -> dict:
     }
 
 
+def _portable_source_metadata(metadata: object) -> tuple[tuple[str, str], ...]:
+    """Keep only bounded document labels; extraction/retry metadata stays internal."""
+    if not isinstance(metadata, dict):
+        return ()
+
+    safe_values: list[tuple[str, str]] = []
+    for key, limit in _SOURCE_METADATA_LIMITS.items():
+        value = metadata.get(key)
+        if not isinstance(value, str):
+            continue
+        if key == "file_name":
+            value = value.replace("\\", "/").rsplit("/", 1)[-1]
+        else:
+            value = value.split(";", 1)[0].strip().lower()
+        value = "".join(character for character in value.strip() if character.isprintable())[:limit]
+        if value:
+            safe_values.append((key, value))
+    return tuple(safe_values)
+
+
 def _source_record(source: ExportSource) -> dict:
-    """Project a child source while omitting Telegram file identifiers and retry errors."""
+    """Project source provenance without Telegram file IDs or retry metadata."""
     return {
         "id": source.id,
         "item_id": source.item_id,
@@ -401,6 +427,7 @@ def _source_record(source: ExportSource) -> dict:
         "extraction_status": source.extraction_status,
         "created_at": _datetime_iso(source.created_at),
         "updated_at": _datetime_iso(source.updated_at),
+        "metadata": dict(source.metadata),
     }
 
 
@@ -515,6 +542,8 @@ def _archive_readme(snapshot: ExportSnapshot) -> str:
         "- `profile.json` и `settings.json` — профиль и effective пользовательские настройки.\n"
         "- `items.jsonl`, `sources.jsonl`, `events.jsonl`, `reminders.jsonl` — данные, "
         "по одной JSON-записи на строку.\n"
+        "- `sources.jsonl` может содержать ограниченные поля файла `file_name`, `mime_type` "
+        "и `document_format` в объекте `metadata`.\n"
         "- `items.md` — краткий человекочитаемый обзор Items.\n"
         f"- {contents_note}\n\n"
         "## Связи и даты\n\n"
@@ -915,6 +944,7 @@ async def build_export_snapshot(
                     extraction_status=source.extraction_status,
                     created_at=source.created_at,
                     updated_at=source.updated_at,
+                    metadata=_portable_source_metadata(source.metadata_json),
                 )
                 for source in sources
             )
