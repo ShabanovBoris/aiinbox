@@ -326,6 +326,130 @@ async def test_context_falls_back_to_summary_only_when_primary_evidence_is_absen
 
 
 @pytest.mark.asyncio
+async def test_cross_item_source_is_rejected_before_chunk_summary_fallback(session_factory):
+    user_id = await make_user(session_factory)
+    async with session_factory() as session:
+        item_a = make_item(user_id, title="Summary fallback target")
+        item_b = make_item(user_id, title="Foreign source owner")
+        session.add_all([item_a, item_b])
+        await session.flush()
+        source_b = await add_source(session, item_b.id, 0, url="https://example.com/b")
+        session.add_all(
+            [
+                Content(
+                    item_id=item_a.id,
+                    source_id=source_b.id,
+                    kind=ContentKind.CHUNK_SUMMARY,
+                    text="foreign_summary_must_not_be_relabelled_item_level",
+                ),
+                Content(
+                    item_id=item_b.id,
+                    source_id=source_b.id,
+                    kind=ContentKind.WEB_TEXT,
+                    text="valid source evidence",
+                ),
+            ]
+        )
+        await session.flush()
+        context = build_ask_context(
+            "source evidence",
+            [SearchHit(item_a.id, -2, None), SearchHit(item_b.id, -1, None)],
+            [item_a, item_b],
+            [source_b],
+            list((await session.scalars(select(Content).order_by(Content.id))).all()),
+        )
+
+    assert "foreign_summary_must_not_be_relabelled_item_level" not in context.text
+    assert "CONTENT_KIND: CHUNK_SUMMARY" not in context.text
+    assert (item_a.id, source_b.id) not in {
+        (reference.item_id, reference.source_id) for reference in context.references
+    }
+    assert (item_b.id, source_b.id) in {
+        (reference.item_id, reference.source_id) for reference in context.references
+    }
+
+
+@pytest.mark.asyncio
+async def test_context_gives_late_composite_source_a_fair_first_pass(session_factory):
+    user_id = await make_user(session_factory)
+    async with session_factory() as session:
+        first = make_item(user_id, title="Composite evidence")
+        others = [make_item(user_id, title=f"Other result {index}") for index in range(9)]
+        items = [first, *others]
+        session.add_all(items)
+        await session.flush()
+        sources = [
+            await add_source(session, first.id, index, kind=SourceType.WEB) for index in range(3)
+        ]
+        contents = [
+            Content(
+                item_id=first.id,
+                source_id=source.id,
+                kind=ContentKind.WEB_TEXT,
+                text=f"needle weak source {index} " + "filler " * 250,
+            )
+            for index, source in enumerate(sources[:2])
+        ]
+        contents.append(
+            Content(
+                item_id=first.id,
+                source_id=sources[2].id,
+                kind=ContentKind.WEB_TEXT,
+                text="needle " * 20 + "strongest_late_source " + "filler " * 250,
+            )
+        )
+        contents.extend(
+            Content(item_id=item.id, kind=ContentKind.USER_TEXT, text="needle other result")
+            for item in others
+        )
+        session.add_all(contents)
+        await session.flush()
+
+        context = build_ask_context(
+            "needle",
+            [SearchHit(item.id, -float(index), None) for index, item in enumerate(items)],
+            items,
+            sources,
+            list((await session.scalars(select(Content).order_by(Content.id))).all()),
+        )
+
+    first_block = context.text.split("\n\nITEM_ID: ", 1)[0]
+    assert all(f"SOURCE_ID: {source.id}" in first_block for source in sources)
+    assert "strongest_late_source" in first_block
+    assert len(first_block) <= MAX_ASK_ITEM_CONTEXT_CHARS
+    assert len(context.text) <= MAX_ASK_TOTAL_CONTEXT_CHARS
+
+
+@pytest.mark.asyncio
+async def test_context_hard_bounds_json_escaped_item_metadata(session_factory):
+    user_id = await make_user(session_factory)
+    escaped = '"\\\x01' * 1200
+    source_url = "https://example.com/" + ('"' * 600)
+    async with session_factory() as session:
+        item = make_item(
+            user_id,
+            title=escaped,
+            summary=escaped,
+            source_url=source_url,
+            note=escaped,
+        )
+        item.category = escaped
+        session.add(item)
+        await session.flush()
+        context = build_ask_context(
+            "metadata",
+            [SearchHit(item.id, 0, None)],
+            [item],
+            [],
+            [],
+        )
+
+    assert len(context.text) <= MAX_ASK_ITEM_CONTEXT_CHARS
+    assert len(context.text) <= MAX_ASK_TOTAL_CONTEXT_CHARS
+    assert "ITEM_SOURCE_URL_JSON:" in context.text
+
+
+@pytest.mark.asyncio
 async def test_context_distributes_global_budget_across_ten_ranked_items(session_factory):
     user_id = await make_user(session_factory)
     async with session_factory() as session:

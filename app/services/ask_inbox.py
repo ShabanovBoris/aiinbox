@@ -29,6 +29,7 @@ DEFAULT_ASK_RETRIEVAL_LIMIT = 8
 MAX_ASK_RETRIEVAL_LIMIT = 10
 MAX_ASK_ITEM_CONTEXT_CHARS = 6000
 MAX_ASK_TOTAL_CONTEXT_CHARS = 40_000
+MAX_ASK_ITEM_HEADER_CHARS = 1600
 ASK_EXCERPT_CHARS = 1400
 _MAX_EXCERPTS_PER_CONTENT = 4
 _MAX_USER_NOTE_CONTEXT_CHARS = 800
@@ -79,6 +80,30 @@ class AskContext:
 def _json_field(name: str, value: str) -> str:
     """Quote persisted strings so multiline source text cannot impersonate provenance labels."""
     return f"{name}: {json.dumps(value, ensure_ascii=False)}"
+
+
+def _bounded_json_field(name: str, value: str, *, max_chars: int) -> str | None:
+    """Bound the serialized provider representation, including JSON escape expansion."""
+    # ❌ Удалена сериализация полей по длине raw-текста: JSON escaping превышал context bounds.
+    if max_chars < len(name) + 5:
+        return None
+    full_field = _json_field(name, value)
+    if len(full_field) <= max_chars:
+        return full_field
+
+    best = _json_field(name, "…")
+    if len(best) > max_chars:
+        return None
+    low, high = 0, len(value)
+    while low <= high:
+        middle = (low + high) // 2
+        candidate = _json_field(name, f"{value[:middle]}…")
+        if len(candidate) <= max_chars:
+            best = candidate
+            low = middle + 1
+        else:
+            high = middle - 1
+    return best
 
 
 def safe_http_url(value: str | None) -> str | None:
@@ -162,34 +187,59 @@ def _excerpt_windows(text: str, terms: frozenset[str]) -> list[tuple[int, int, s
     return sorted(selected, key=lambda window: window[0])
 
 
-def _item_header(item: Item, item_url: str | None) -> str:
-    """Render Item metadata separately from JSON-quoted untrusted source evidence."""
+def _item_header(item: Item, item_url: str | None, *, max_chars: int) -> str:
+    """Keep Item identity and bounded metadata inside each serialized context budget."""
     item_type = item.item_type.value if item.item_type is not None else ""
     lines = [
         f"ITEM_ID: {item.id}",
-        _json_field("TITLE_JSON", (item.title or "(untitled)")[:300]),
-        _json_field("SUMMARY_JSON", (item.summary or "")[:1200]),
-        _json_field("CATEGORY_JSON", (item.category or "")[:100]),
         f"ITEM_TYPE: {item_type}",
         f"CREATED_AT: {item.created_at.isoformat() if item.created_at else ''}",
     ]
-    if item.user_note:
-        lines.append(_json_field("USER_NOTE_JSON", item.user_note[:_MAX_USER_NOTE_CONTEXT_CHARS]))
-    if item_url:
-        lines.append(_json_field("ITEM_SOURCE_URL_JSON", item_url))
+    fields = [
+        ("TITLE_JSON", (item.title or "(untitled)")[:300], 250),
+        ("SUMMARY_JSON", (item.summary or "")[:1200], 500),
+        ("CATEGORY_JSON", (item.category or "")[:100], 110),
+        ("USER_NOTE_JSON", (item.user_note or "")[:_MAX_USER_NOTE_CONTEXT_CHARS], 250),
+        ("ITEM_SOURCE_URL_JSON", (item_url or "")[:700], 200),
+    ]
+    for name, value, field_limit in fields:
+        if name != "TITLE_JSON" and not value:
+            continue
+        current_length = len("\n".join(lines))
+        remaining = max_chars - current_length - 1
+        field = _bounded_json_field(name, value, max_chars=min(field_limit, remaining))
+        if field is not None:
+            lines.append(field)
     return "\n".join(lines)
 
 
-def _evidence_block(excerpt: _Excerpt) -> str:
-    """Keep each bounded excerpt attached to its persisted Item/source identity."""
+def _evidence_block(excerpt: _Excerpt, *, max_chars: int) -> str | None:
+    """Fit evidence and optional source metadata to a fair share of an Item budget."""
     source_id = str(excerpt.source_id) if excerpt.source_id is not None else "ITEM_LEVEL"
     lines = [
         f"SOURCE_ID: {source_id}",
         f"SOURCE_TYPE: {excerpt.source_type or 'ITEM_LEVEL'}",
+        f"CONTENT_KIND: {excerpt.kind}",
     ]
+    base_length = len("\n".join(lines))
+    # Reserve one newline and the smallest explicit excerpt before optional URL metadata.
+    excerpt_budget = max_chars - base_length - 1
+    minimum_excerpt = _bounded_json_field("EXCERPT_JSON", "…", max_chars=excerpt_budget)
+    if minimum_excerpt is None:
+        return None
+
+    remaining = excerpt_budget
     if excerpt.source_url:
-        lines.append(_json_field("SOURCE_URL_JSON", excerpt.source_url))
-    lines.extend((f"CONTENT_KIND: {excerpt.kind}", _json_field("EXCERPT_JSON", excerpt.text)))
+        url_budget = min(200, remaining - len(minimum_excerpt) - 1)
+        url_field = _bounded_json_field("SOURCE_URL_JSON", excerpt.source_url, max_chars=url_budget)
+        if url_field is not None:
+            lines.append(url_field)
+            remaining -= len(url_field) + 1
+
+    excerpt_field = _bounded_json_field("EXCERPT_JSON", excerpt.text, max_chars=remaining)
+    if excerpt_field is None:
+        return None
+    lines.append(excerpt_field)
     return "\n".join(lines)
 
 
@@ -239,7 +289,7 @@ def build_ask_context(
     item_blocks: list[tuple[int, str, set[int], AskReference]] = []
     for item in hit_items:
         item_sources = sources_by_item[item.id]
-        valid_rows: list[Content] = []
+        valid_provenance_rows: list[Content] = []
         for row in contents_by_item[item.id]:
             if row.source_id is not None:
                 source = source_by_id.get(row.source_id)
@@ -251,15 +301,22 @@ def build_ask_context(
                         row.source_id,
                     )
                     continue
-            if row.kind in _PRIMARY_KINDS and row.text.strip():
-                valid_rows.append(row)
+            valid_provenance_rows.append(row)
+
+        primary_rows = [
+            row for row in valid_provenance_rows if row.kind in _PRIMARY_KINDS and row.text.strip()
+        ]
 
         # Chunk summaries are aggregate analysis checkpoints, so they may stand in
         # only when no original persisted evidence remains usable for this Item.
-        fallback = not valid_rows
-        evidence_rows = valid_rows or [
+        # Provenance is validated first so the fallback cannot relabel another
+        # Item's source as ITEM_LEVEL evidence.
+        # ❌ Удалён fallback по непроверенным Content: он выдавал чужой source за
+        # Item-level summary.
+        fallback = not primary_rows
+        evidence_rows = primary_rows or [
             row
-            for row in contents_by_item[item.id]
+            for row in valid_provenance_rows
             if row.kind == ContentKind.CHUNK_SUMMARY and row.text.strip()
         ]
         grouped: dict[int | None, list[_Excerpt]] = {}
@@ -290,53 +347,69 @@ def build_ask_context(
             sorted(grouped[group_id], key=lambda row: (-row.score, row.content_id, row.start))
             for group_id in ordered_group_ids
         ]
-        item_url = unique_item_source_url(item, item_sources)
-        header = _item_header(item, item_url)
-        selected: list[_Excerpt] = []
-        offsets = [0] * len(group_candidates)
         item_budget = min(
             MAX_ASK_ITEM_CONTEXT_CHARS,
             (MAX_ASK_TOTAL_CONTEXT_CHARS - 2 * (len(hit_items) - 1)) // len(hit_items),
         )
+        item_url = unique_item_source_url(item, item_sources)
+        header = _item_header(
+            item,
+            item_url,
+            max_chars=min(MAX_ASK_ITEM_HEADER_CHARS, item_budget),
+        )
+        selected: list[tuple[_Excerpt, str]] = []
+        offsets = [0] * len(group_candidates)
 
-        # The first pass gives each composite source a chance before any source
-        # receives a second excerpt; later passes rotate in stable source order.
-        for group_index, candidates in enumerate(group_candidates):
-            if candidates:
-                candidate = candidates[0]
-                proposed = "\n\n".join(
-                    [
-                        header,
-                        *(_evidence_block(value) for value in selected),
-                        _evidence_block(candidate),
-                    ]
-                )
-                if len(proposed) <= item_budget:
-                    selected.append(candidate)
-                    offsets[group_index] = 1
+        # ❌ Удалён последовательный first pass по source_index: поздний source
+        # терял место при полном бюджете.
+        # Each round gives every source group one equally bounded excerpt before
+        # any group receives another one.
         while True:
+            active_groups = [
+                index
+                for index, candidates in enumerate(group_candidates)
+                if offsets[index] < len(candidates)
+            ]
+            if not active_groups:
+                break
+            used = len(header) + sum(len(value) + 2 for _, value in selected)
+            remaining = item_budget - used - 2 * len(active_groups)
+            if remaining <= 0:
+                break
+
+            # Later rounds also share space evenly; extra characters go to the
+            # most relevant next excerpts, with stable source IDs as tie-breaks.
+            share, remainder = divmod(remaining, len(active_groups))
+            relevance_order = sorted(
+                active_groups,
+                key=lambda index: (
+                    -group_candidates[index][offsets[index]].score,
+                    ordered_group_ids[index] if ordered_group_ids[index] is not None else -1,
+                ),
+            )
+            caps = {index: share for index in active_groups}
+            for index in relevance_order[:remainder]:
+                caps[index] += 1
+
             added = False
-            for group_index, candidates in enumerate(group_candidates):
-                offset = offsets[group_index]
-                if offset >= len(candidates):
+            for group_index in active_groups:
+                candidate = group_candidates[group_index][offsets[group_index]]
+                block = _evidence_block(candidate, max_chars=caps[group_index])
+                if block is None:
                     continue
-                candidate = candidates[offset]
-                proposed = "\n\n".join(
-                    [
-                        header,
-                        *(_evidence_block(value) for value in selected),
-                        _evidence_block(candidate),
-                    ]
-                )
+                used = len(header) + sum(len(value) + 2 for _, value in selected)
+                if used + len(block) + 2 > item_budget:
+                    continue
+                selected.append((candidate, block))
                 offsets[group_index] += 1
-                if len(proposed) <= item_budget:
-                    selected.append(candidate)
-                    added = True
+                added = True
             if not added:
                 break
 
-        rendered = "\n\n".join([header, *(_evidence_block(value) for value in selected)])
-        included_source_ids = {row.source_id for row in selected if row.source_id is not None}
+        rendered = "\n\n".join([header, *(block for _, block in selected)])
+        included_source_ids = {
+            excerpt.source_id for excerpt, _ in selected if excerpt.source_id is not None
+        }
         item_reference = AskReference(
             item_id=item.id,
             source_id=None,
