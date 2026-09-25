@@ -305,7 +305,11 @@ async def _load_ask_references(session, user_id: int, payload: AskDeliveryPayloa
             if source is None or source.item_id != item.id:
                 raise RuntimeError("Ask delivery references an unavailable source")
             source_type = source.source_type.value
-            source_url = safe_http_url(source.source_url)
+            source_url = (
+                None
+                if source.error_code == "SECURITY_REJECTED"
+                else safe_http_url(source.source_url)
+            )
         references.append(
             AskReference(
                 item_id=item.id,

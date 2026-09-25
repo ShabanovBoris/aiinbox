@@ -19,10 +19,9 @@ def _item_reply_parameters(item: Item) -> ReplyParameters | None:
     # message identity, so READY and FAILED use one reply projection.
     if item.telegram_message_id is None:
         return None
-    return ReplyParameters(
-        message_id=item.telegram_message_id,
-        allow_sending_without_reply=True,
-    )
+    # ❌ Удален allow_sending_without_reply: он мог скрыть потерю reply-якоря;
+    # unanchored отправка разрешена только после классифицированного ответа Telegram ниже.
+    return ReplyParameters(message_id=item.telegram_message_id)
 
 
 def _reply_target_is_missing(exc: TelegramBadRequest) -> bool:

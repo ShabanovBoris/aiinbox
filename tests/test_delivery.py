@@ -800,10 +800,7 @@ async def test_video_result_replies_to_input_and_keeps_forward_origin_link(
     worker = DeliveryWorker(session_factory, bot, retry_backoff_seconds=0)
     assert await worker.process_one() is True
 
-    assert bot.message_kwargs[0]["reply_parameters"] == ReplyParameters(
-        message_id=1,
-        allow_sending_without_reply=True,
-    )
+    assert bot.message_kwargs[0]["reply_parameters"] == ReplyParameters(message_id=1)
     buttons = [
         button for row in bot.message_kwargs[0]["reply_markup"].inline_keyboard for button in row
     ]
@@ -842,10 +839,7 @@ async def test_all_telegram_item_types_reply_to_capture(session_factory, status,
     await send(bot, session_factory, item)
 
     assert len(bot.message_calls) == 1
-    assert bot.message_calls[0][2]["reply_parameters"] == ReplyParameters(
-        message_id=1,
-        allow_sending_without_reply=True,
-    )
+    assert bot.message_calls[0][2]["reply_parameters"] == ReplyParameters(message_id=1)
 
 
 async def test_deleted_reply_target_retries_once_without_reply_parameters(session_factory):
@@ -1044,3 +1038,54 @@ async def test_ask_navigation_resolves_only_cited_sources_and_never_guesses_comp
         f"item:original:{cited.id}"
     ]
     assert all("903" not in (button.callback_data or "") for button in buttons)
+
+
+async def test_ask_navigation_hides_security_rejected_source_urls(session_factory):
+    unsafe_url = "https://public-looking.example/article"
+    async with session_factory() as session:
+        user = await session.scalar(select(User).where(User.telegram_user_id == 42))
+        if user is None:
+            user = User(telegram_user_id=42, telegram_chat_id=42)
+            session.add(user)
+            await session.flush()
+        item = Item(
+            user_id=user.id,
+            telegram_message_id=904,
+            source_index=0,
+            processing_status=ProcessingStatus.READY,
+            state=ItemState.ACTIVE,
+            source_type=SourceType.WEB,
+            source_url=unsafe_url,
+            processing_stage="READY",
+            user_note="",
+            title="Rejected source",
+        )
+        session.add(item)
+        await session.flush()
+        source = ItemSource(
+            item_id=item.id,
+            source_index=0,
+            source_type=SourceType.WEB,
+            source_url=unsafe_url,
+            extraction_status="FAILED",
+            error_code="SECURITY_REJECTED",
+        )
+        session.add(source)
+        await session.flush()
+        payload = AskDeliveryPayload(
+            answer="Answer",
+            references=[
+                AskInboxCitation(item_id=item.id, source_id=source.id),
+                AskInboxCitation(item_id=item.id, source_id=None),
+            ],
+        )
+
+        references = await _load_ask_references(session, user.id, payload)
+        markup = ask_sources_keyboard(references)
+
+    assert [reference.source_url for reference in references] == [None, None]
+    assert markup is not None
+    assert not [button for row in markup.inline_keyboard for button in row if button.url]
+    assert [button.callback_data for row in markup.inline_keyboard for button in row] == [
+        f"item:original:{item.id}"
+    ]

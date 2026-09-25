@@ -585,17 +585,17 @@ async def on_item_callback(
     if item_id < 1:
         await callback.answer("Некорректный Item")
         return
+    current_chat_id = getattr(getattr(callback.message, "chat", None), "id", None)
 
     if action == "original":
         if len(parts) != 3:
             await callback.answer("Некорректное действие")
             return
-        chat_id = getattr(getattr(callback.message, "chat", None), "id", None)
         target = await item_original_target(
             session_factory,
             user.id,
             item_id,
-            current_chat_id=chat_id,
+            current_chat_id=current_chat_id,
         )
         if target is None:
             await callback.answer("Item недоступен")
@@ -609,7 +609,12 @@ async def on_item_callback(
         except TelegramBadRequest as exc:
             if not _original_is_unavailable(exc):
                 raise
-            projection = await _load_item_ui_projection(session_factory, user.id, item_id)
+            projection = await _load_item_ui_projection(
+                session_factory,
+                user.id,
+                item_id,
+                current_chat_id=current_chat_id,
+            )
             if projection is None:
                 await callback.answer("Item недоступен")
                 return
@@ -633,7 +638,15 @@ async def on_item_callback(
         if len(parts) != 3:
             await callback.answer("Некорректное действие")
             return
-        projection = await _load_item_ui_projection(session_factory, user.id, item_id)
+        if action == "view" and current_chat_id is None:
+            await callback.answer("Item недоступен")
+            return
+        projection = await _load_item_ui_projection(
+            session_factory,
+            user.id,
+            item_id,
+            current_chat_id=current_chat_id if action == "view" else None,
+        )
         if projection is None:
             await callback.answer("Item недоступен")
             return
@@ -726,7 +739,12 @@ async def on_item_callback(
         if level not in {1, 2, 3}:
             await callback.answer("Некорректный уровень интереса")
             return
-        projection = await _load_item_ui_projection(session_factory, user.id, item_id)
+        projection = await _load_item_ui_projection(
+            session_factory,
+            user.id,
+            item_id,
+            current_chat_id=current_chat_id,
+        )
         if projection is None or projection[0].processing_status is not ProcessingStatus.READY:
             await callback.answer("Item недоступен")
             return
@@ -971,9 +989,13 @@ async def _load_ready_feedback_projection(
 
 
 async def _load_item_ui_projection(
-    session_factory: async_sessionmaker, telegram_user_id: int, item_id: int
+    session_factory: async_sessionmaker,
+    telegram_user_id: int,
+    item_id: int,
+    *,
+    current_chat_id: int | None = None,
 ) -> tuple[Item, list[ItemSource], bool] | None:
-    """Reload one owner-scoped Item and its stable source order for Telegram projections."""
+    """Reload an owner's Item only in its persisted Telegram chat when one is supplied."""
     async with session_factory() as session:
         row = await session.execute(
             select(Item, User.telegram_chat_id)
@@ -987,6 +1009,8 @@ async def _load_item_ui_projection(
         if projection is None:
             return None
         item, chat_id = projection
+        if chat_id is None or (current_chat_id is not None and chat_id != current_chat_id):
+            return None
         sources = list(
             (
                 await session.scalars(
@@ -996,7 +1020,7 @@ async def _load_item_ui_projection(
                 )
             ).all()
         )
-        return item, sources, chat_id is not None
+        return item, sources, item.telegram_message_id is not None
 
 
 def _original_is_unavailable(exc: TelegramBadRequest) -> bool:

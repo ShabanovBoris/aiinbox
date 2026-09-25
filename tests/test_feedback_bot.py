@@ -385,6 +385,21 @@ async def test_item_view_sends_a_new_owner_scoped_card_without_events(settings, 
         assert await session.scalar(select(func.count(Event.id))) == 0
 
 
+async def test_item_view_rejects_a_different_chat_for_the_same_telegram_user(
+    settings, session_factory
+):
+    item_id = await _create_ready_item(session_factory, telegram_message_id=987)
+    callback = FakeCallback(42, f"item:view:{item_id}")
+    callback.message.chat.id = -10042
+
+    await on_item_callback(callback, settings, session_factory)
+
+    assert callback.message.sent_answers == []
+    assert callback.answers == ["Item недоступен"]
+    async with session_factory() as session:
+        assert await session.scalar(select(func.count(Event.id))) == 0
+
+
 async def test_original_callback_copies_owned_capture_without_business_writes(
     settings, session_factory
 ):
