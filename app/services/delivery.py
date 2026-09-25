@@ -24,7 +24,7 @@ from app.domain.models import AskDeliveryPayload, AskReference
 from app.errors import AppError, MediaTooLargeError
 from app.extractors.subprocess_runner import cleanup_temporary_directory
 from app.services.ask_inbox import safe_http_url, unique_item_source_url
-from app.storage.models import AskJob, Delivery, Item, ItemSource, User
+from app.storage.models import AskJob, Delivery, ExportJob, Item, ItemSource, User
 
 log = logging.getLogger(__name__)
 
@@ -33,6 +33,8 @@ ITEM_FAILED = "ITEM_FAILED"
 PROFILE_UPDATED = "PROFILE_UPDATED"
 ASK_RESULT = "ASK_RESULT"
 ASK_FAILED = "ASK_FAILED"
+EXPORT_FILE = "EXPORT_FILE"
+EXPORT_FAILED = "EXPORT_FAILED"
 ITEM_VIDEO_PREFIX = "ITEM_VIDEO:"
 TELEGRAM_MAX_UPLOAD_BYTES = 50_000_000
 
@@ -231,6 +233,36 @@ async def enqueue_ask_delivery(
     return delivery
 
 
+async def enqueue_export_delivery(
+    session,
+    *,
+    user_id: int,
+    export_job_id: int,
+    delivery_type: str,
+    payload: dict,
+) -> Delivery:
+    """Record exactly one export outcome beside its durable ExportJob transition."""
+    if delivery_type not in {EXPORT_FILE, EXPORT_FAILED}:
+        raise ValueError(f"unsupported export delivery type={delivery_type}")
+    existing = await session.scalar(
+        select(Delivery).where(
+            Delivery.export_job_id == export_job_id,
+            Delivery.type == delivery_type,
+        )
+    )
+    if existing is not None:
+        return existing
+    delivery = Delivery(
+        user_id=user_id,
+        export_job_id=export_job_id,
+        type=delivery_type,
+        status="PENDING",
+        payload_json=payload,
+    )
+    session.add(delivery)
+    return delivery
+
+
 async def _load_ask_references(session, user_id: int, payload: AskDeliveryPayload):
     """Resolve transient citation IDs from their owning user-scoped database rows."""
     citations = payload.references
@@ -317,6 +349,7 @@ class DeliveryWorker:
         *,
         youtube_extractor=None,
         instagram_extractor=None,
+        export_dir: str | Path = "./exports",
         poll_seconds: float = 1.0,
         max_attempts: int = 3,
         retry_backoff_seconds: float = 1.0,
@@ -325,6 +358,7 @@ class DeliveryWorker:
         self.bot = bot
         self.youtube_extractor = youtube_extractor
         self.instagram_extractor = instagram_extractor
+        self.export_dir = Path(export_dir)
         self.poll_seconds = poll_seconds
         self.max_attempts = max(1, max_attempts)
         self.retry_backoff_seconds = max(0.0, retry_backoff_seconds)
@@ -389,6 +423,7 @@ class DeliveryWorker:
     async def _send(self, delivery_id: int) -> dict | None:
         ask_text = None
         ask_keyboard = None
+        export_job = None
         async with self.session_factory() as session:
             delivery = await session.get(Delivery, delivery_id)
             if delivery is None:
@@ -398,11 +433,24 @@ class DeliveryWorker:
                 raise RuntimeError(f"delivery {delivery_id} has no Telegram chat")
             chat_id = user.telegram_chat_id
             delivery_type = delivery.type
-            payload = dict(delivery.payload_json or {})
+            payload = dict(delivery.payload_json) if isinstance(delivery.payload_json, dict) else {}
             item = await session.get(Item, delivery.item_id) if delivery.item_id else None
             ask_job = (
                 await session.get(AskJob, delivery.ask_job_id) if delivery.ask_job_id else None
             )
+            if delivery_type in {EXPORT_FILE, EXPORT_FAILED}:
+                export_job = (
+                    await session.get(ExportJob, delivery.export_job_id)
+                    if delivery.export_job_id
+                    else None
+                )
+                expected_status = "DONE" if delivery_type == EXPORT_FILE else "FAILED"
+                if (
+                    export_job is None
+                    or export_job.user_id != delivery.user_id
+                    or export_job.status != expected_status
+                ):
+                    raise RuntimeError(f"delivery {delivery_id} has no matching ExportJob")
             video_source = None
             if delivery_type.startswith(ITEM_VIDEO_PREFIX):
                 source_id = payload.get("source_id")
@@ -466,6 +514,48 @@ class DeliveryWorker:
                 chat_id,
                 "Не удалось подготовить ответ по сохранённым материалам. Попробуй ещё раз.",
             )
+            return None
+        if delivery_type == EXPORT_FILE:
+            if export_job is None:
+                raise RuntimeError(f"delivery {delivery_id} has no matching ExportJob")
+            from app.services.export import resolve_export_artifact
+
+            artifact_name = payload.get("artifact_name")
+            mode = payload.get("mode")
+            size_bytes = payload.get("size_bytes")
+            if (
+                mode != export_job.mode
+                or mode not in {"COMPACT", "FULL"}
+                or type(size_bytes) is not int
+                or size_bytes <= 0
+                or size_bytes > TELEGRAM_MAX_UPLOAD_BYTES
+            ):
+                raise RuntimeError(f"delivery {delivery_id} has invalid export metadata")
+            try:
+                artifact_path = resolve_export_artifact(self.export_dir, artifact_name)
+            except ValueError:
+                raise RuntimeError(
+                    f"delivery {delivery_id} has an unsafe export artifact"
+                ) from None
+            if artifact_path.stat().st_size != size_bytes:
+                raise RuntimeError(f"delivery {delivery_id} export artifact size changed")
+            await self.bot.send_document(
+                chat_id=chat_id,
+                document=FSInputFile(artifact_path),
+                caption=f"Экспорт AIInbox — {mode.casefold()}",
+            )
+            return None
+        if delivery_type == EXPORT_FAILED:
+            if export_job is None:
+                raise RuntimeError(f"delivery {delivery_id} has no matching ExportJob")
+            if export_job.error_code in {"EXPORT_TOO_LARGE", "EXPORT_CONTENT_TOO_LARGE"}:
+                message = (
+                    "Полный экспорт получился слишком большим для отправки в Telegram. "
+                    "Попробуй /export compact."
+                )
+            else:
+                message = "Не удалось подготовить экспорт. Попробуй ещё раз."
+            await self.bot.send_message(chat_id, message)
             return None
         raise RuntimeError(f"unsupported delivery type={delivery_type}")
 
@@ -681,9 +771,15 @@ class DeliveryWorker:
         return None
 
     async def _mark_sent(self, delivery_id: int, payload_updates: dict | None = None) -> None:
+        export_artifact_name = None
+        marked_sent = False
         async with self.session_factory() as session:
             delivery = await session.get(Delivery, delivery_id)
             if delivery is not None and delivery.status == "SENDING":
+                if delivery.type == EXPORT_FILE:
+                    payload = delivery.payload_json
+                    if isinstance(payload, dict):
+                        export_artifact_name = payload.get("artifact_name")
                 delivery.status = "SENT"
                 delivery.sent_at = func.now()
                 delivery.last_error = None
@@ -692,7 +788,15 @@ class DeliveryWorker:
                         **dict(delivery.payload_json or {}),
                         **payload_updates,
                     }
+                marked_sent = True
             await session.commit()
+        if marked_sent and export_artifact_name is not None:
+            from app.services.export import remove_export_artifact
+
+            try:
+                remove_export_artifact(self.export_dir, export_artifact_name)
+            except (OSError, ValueError):
+                log.warning("sent export artifact cleanup failed delivery_id=%s", delivery_id)
 
     async def _record_failure(self, delivery_id: int, exc: Exception) -> bool:
         notify_chat_id = None

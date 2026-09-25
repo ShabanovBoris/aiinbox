@@ -386,6 +386,36 @@ class AskJob(Base):
     )
 
 
+class ExportJob(Base):
+    """Durable owner request; archive bytes and filesystem paths stay outside SQLite."""
+
+    __tablename__ = "export_jobs"
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id", "telegram_message_id", name="uq_export_jobs_user_telegram_message"
+        ),
+        CheckConstraint("mode IN ('COMPACT', 'FULL')", name="ck_export_jobs_mode"),
+        CheckConstraint(
+            "status IN ('PENDING', 'RUNNING', 'DONE', 'FAILED')",
+            name="ck_export_jobs_status",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    telegram_message_id: Mapped[int] = mapped_column(BigInteger)
+    mode: Mapped[str] = mapped_column(String(16))
+    status: Mapped[str] = mapped_column(
+        String(16), default="PENDING", server_default="PENDING", index=True
+    )
+    error_code: Mapped[str | None] = mapped_column(String(64))
+    error_message: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now()
+    )
+
+
 class Delivery(Base):
     """Durable outbox for immediate Telegram delivery after business commits.
 
@@ -397,14 +427,20 @@ class Delivery(Base):
     __tablename__ = "deliveries"
     __table_args__ = (
         CheckConstraint(
-            "(item_id IS NOT NULL AND profile_update_job_id IS NULL AND ask_job_id IS NULL) OR "
-            "(item_id IS NULL AND profile_update_job_id IS NOT NULL AND ask_job_id IS NULL) OR "
-            "(item_id IS NULL AND profile_update_job_id IS NULL AND ask_job_id IS NOT NULL)",
+            "(item_id IS NOT NULL AND profile_update_job_id IS NULL AND ask_job_id IS NULL "
+            "AND export_job_id IS NULL) OR "
+            "(item_id IS NULL AND profile_update_job_id IS NOT NULL AND ask_job_id IS NULL "
+            "AND export_job_id IS NULL) OR "
+            "(item_id IS NULL AND profile_update_job_id IS NULL AND ask_job_id IS NOT NULL "
+            "AND export_job_id IS NULL) OR "
+            "(item_id IS NULL AND profile_update_job_id IS NULL AND ask_job_id IS NULL "
+            "AND export_job_id IS NOT NULL)",
             name="ck_deliveries_single_source",
         ),
         UniqueConstraint("item_id", "type", name="uq_deliveries_item_type"),
         UniqueConstraint("profile_update_job_id", "type", name="uq_deliveries_profile_job_type"),
         UniqueConstraint("ask_job_id", "type", name="uq_deliveries_ask_job_type"),
+        UniqueConstraint("export_job_id", "type", name="uq_deliveries_export_job_type"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -414,6 +450,7 @@ class Delivery(Base):
         ForeignKey("profile_update_jobs.id"), index=True
     )
     ask_job_id: Mapped[int | None] = mapped_column(ForeignKey("ask_jobs.id"), index=True)
+    export_job_id: Mapped[int | None] = mapped_column(ForeignKey("export_jobs.id"), index=True)
     type: Mapped[str] = mapped_column(String(32), index=True)
     status: Mapped[str] = mapped_column(
         String(16), default="PENDING", server_default="PENDING", index=True

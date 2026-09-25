@@ -529,3 +529,21 @@ Consequences: retries of a pending/sending Telegram delivery do not repeat LLM
 synthesis; delivery retains the existing at-least-once transport window. PM-13
 uses lexical FTS5 only, leaving semantic/hybrid retrieval to PM-14 if real misses
 justify it.
+
+## D-037 — User export is a durable portable projection, not a backup
+
+Context: verified SQLite backup/restore protects application recovery, but users
+need a portable copy they can read outside AIInbox. Full archives may be too large
+for an in-memory Telegram message.
+
+Decision: `/export` creates a durable `ExportJob`. `ExportWorker` reads an explicit
+user-scoped DTO snapshot, closes SQLite, writes a versioned ZIP into a separate
+persistent export directory, then commits `DONE` with an `EXPORT_FILE` Delivery.
+`DeliveryWorker` owns Telegram file I/O and removes the artifact only after
+`SENT` is durably committed. The archive uses explicit field/content allowlists.
+
+Reason: this keeps ownership data separate from operational snapshots, survives
+restart/retry, and prevents database internals from becoming the export contract.
+
+Consequences: the portable schema needs explicit versioning, full snapshots need
+a memory bound, and sensitive temporary artifacts need bounded retention.

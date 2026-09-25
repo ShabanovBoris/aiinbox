@@ -74,9 +74,10 @@ Telegram → ingestion → SQLite queue → ProcessingWorker
                              Telegram
 ```
 
-Напоминания обслуживает `ReminderWorker`, а READY/FAILED/profile/Ask results и
-явно запрошенная отправка видео используют durable `DeliveryWorker`. `AskWorker`
-обрабатывает отдельные вопросы пользователя вне Telegram handler.
+Напоминания обслуживает `ReminderWorker`, а READY/FAILED/profile/Ask results,
+пользовательские export-файлы и явно запрошенная отправка видео используют
+durable `DeliveryWorker`. `AskWorker` и `ExportWorker` обрабатывают отдельные
+запросы пользователя вне Telegram handler.
 
 ## 6. Текущая поддерживаемая поверхность
 
@@ -96,6 +97,7 @@ Telegram → ingestion → SQLite queue → ProcessingWorker
 - forwarded photo-post с URL в caption/text_link: caption и ссылки сохраняются как
   единый source content, само изображение не анализируется;
 - `/today`, `/attention`, `/weekly`, `/inbox`, `/category`, `/search`, `/ask`;
+- `/export [compact|full]`;
 - `/profile`, `/profile_update`;
 - `/settings`, `/settings attention`;
 - Done / Later / Archive / Retry;
@@ -481,6 +483,7 @@ Canonical SQLite tables:
 - `reminders`;
 - `profile_update_jobs`;
 - `ask_jobs`;
+- `export_jobs`;
 - `deliveries`;
 - FTS5 virtual table `item_search`.
 
@@ -542,7 +545,8 @@ user-level motivation claims. `MOTIVATION_NUDGE` использует `item_id=N
 отдельную уникальность локального дневного слота. Events могут независимо
 указывать Item и Reminder, но хотя бы одна ссылка обязательна; один Reminder
 может иметь не более одного Event каждого PM-11 типа.
-`deliveries` — отдельный durable outbox для READY/FAILED/profile notifications.
+`deliveries` — отдельный durable outbox для READY/FAILED/profile notifications,
+Ask outcomes, export-файлов и других явных Telegram delivery.
 
 ## 51. Daily digest
 
@@ -829,6 +833,25 @@ generation обратно и до объявления успеха выполн
 `PRAGMA integrity_check`, `PRAGMA foreign_key_check` и restore в отдельный
 временный DB-файл. Off-host credentials принадлежат deployment host и не
 передаются application runtime.
+
+## 86. `/export` — portable ownership copy
+
+`/export` и `/export compact` ставят durable `ExportJob` в очередь; `/export full`
+добавляет первичные сохранённые тексты и транскрипты. Handler только валидирует
+режим, фиксирует idempotent job по Telegram message identity и отправляет ACK.
+`ExportWorker` создаёт versioned ZIP из user-scoped allowlist всех Item lifecycle
+states, profile/effective settings, источников, sanitized Events и Reminder history.
+Compact не содержит Content; full включает только `USER_TEXT`, `WEB_TEXT`,
+`DOCUMENT_TEXT`, `TRANSCRIPT`, `VISUAL_NOTES` и `DESCRIPTION`.
+
+`EXPORT_DIR` хранится отдельно от `BACKUP_DIR`, full export ограничивается по
+суммарному числу Content-символов, а готовый архив — лимитом Telegram upload.
+`DeliveryWorker` повторно отправляет тот же артефакт при transient failure и
+удаляет его только после durable `SENT`; startup recovery возвращает прерванную
+генерацию в очередь. Export — portable user data, а не backup или import. Он не
+меняет Items, Contents, Events, Reminders, профиль, настройки или FTS; секреты,
+transport IDs, worker jobs, outbox, callback receipts, checkpoints, derived
+Content и Ask answers не экспортируются.
 
 ## 99. Основной критерий успеха продукта
 

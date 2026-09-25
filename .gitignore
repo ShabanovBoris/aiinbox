@@ -21,6 +21,7 @@ instagram-cookies.txt
 data/
 temp/
 backups/
+exports/
 
 # Coverage
 .coverage

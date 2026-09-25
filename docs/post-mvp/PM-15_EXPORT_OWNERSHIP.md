@@ -2,7 +2,7 @@
 
 Type: Post-MVP Epic + Detailed Technical Specification  
 Prerequisite: stable post-MVP schema; existing verified backup/restore remains independent  
-Status: PLANNED
+Status: IN_REVIEW
 
 ## 1. Problem
 
