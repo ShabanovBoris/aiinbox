@@ -380,3 +380,16 @@ Exact tests for:
 - BOT_USAGE updated;
 - no PM-11 feedback implementation early;
 - repository review completed.
+
+## 20. POLISH-04 current behavior
+
+Every existing `MotivationKind` has four maintained, concise Russian copy
+variants. These templates interpolate only the facts already produced by
+`MotivationService`; fact queries, thresholds and `_KIND_SCORES` are unchanged.
+There is no LLM call, source content, Item summary, or profile context on this
+path.
+
+Successful `SENT` Reminder history advances through the ordered variants and
+wraps deterministically. Missing, unknown, or legacy template IDs start at the
+first current variant. Failed or open claims do not advance rotation, and the
+existing same-day kind suppression and notification caps remain authoritative.

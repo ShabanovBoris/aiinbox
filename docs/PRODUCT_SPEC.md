@@ -600,14 +600,27 @@ Quiet hours блокируют proactive delivery; после них Items ра�
 без догоняющей очереди. Только успешный proactive send создаёт `SENT` Reminder
 и `ATTENTION_SHOWN`; derived `attention_score` не сохраняется.
 
-PM-09 может дополнить такой reminder сохранённым contextual hook. Генерация
-выполняется лениво после durable claim, только по уже сохранённым исходным
-Content; она не запускается на ingestion или `/attention` и не загружает URL
+PM-09 может дополнить такой reminder сохранённым contextual hook. Генератор v2
+работает лениво после durable claim, только по уже сохранённому исходному
+Content; он не запускается на ingestion или `/attention` и не загружает URL
 повторно. Evidence валидируется как точный source excerpt, а `source_id` берётся
 из подтверждающего Content. Hook generation выполняется вне SQLite-транзакции
 в оставшемся PM-08 send window; затем worker выполняет обычную финальную
-revalidation. Timeout, ошибка provider или отсутствие валидных кандидатов
-сохраняют обычный PM-07 reason и не блокируют reminder.
+revalidation. Старые версии hook остаются историческим Content и не используются
+повторно.
+
+Proactive Reminder показывает `🎯` и title, затем напрямую grounded hook. Если
+валидного hook нет, formatter использует whitespace-нормализованный preview
+outcome-first `Item.summary` до 700 символов, а при пустом summary оставляет
+только title. Summary используется только для показа и никогда не становится
+evidence новой генерации hook. В тексте уведомления нет attention/priority score,
+interest, возраста Item или объяснения ranking; эти данные остаются внутри
+selection, claim и Reminder snapshot.
+
+Основная клавиатура Reminder оставляет Original и максимум два source actions;
+overflow открывается в `Источники`, а реакции PM-11 находятся за `••• Ещё`.
+Навигация меню не создаёт Events и не меняет Item/Reminder. Наблюдаемость
+Original и video resend, а также необозримость прямых URL-click сохраняются.
 
 PM-10 вычисляет только детерминированные факты из actionable Items и lifecycle
 Events; motivational copy — поддерживаемые русские шаблоны без LLM, профиля,
@@ -639,8 +652,8 @@ Generic intent хранится как Reminder с `item_id=NULL`. `scheduled_at
 Event хранит bounded snapshot отправки, а не source content. Delivery сохраняет
 текущую PM-08 at-least-once семантику при сбое между Telegram и SQLite.
 
-Proactive reminder позволяет Done, Later, Not now и Fewer like this; generic
-nudge — OK и Fewer like this. Reminder Done/Snooze фиксируют дополнительный
+Proactive reminder позволяет Done, Later, Not now и Fewer like this через More;
+generic nudge — OK и Fewer like this. Reminder Done/Snooze фиксируют дополнительный
 outcome в транзакции с canonical lifecycle event; normal Item Done/Snooze не
 приписываются задним числом к напоминанию. Не наблюдаемый Telegram URL-click не
 создаёт `REMINDER_OPENED`; этот Event означает только наблюдаемый bot-mediated

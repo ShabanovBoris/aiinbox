@@ -5,6 +5,7 @@ from zoneinfo import ZoneInfo
 import pytest
 from sqlalchemy import func, select
 
+from app.bot.formatting import format_proactive_attention_reminder
 from app.domain.enums import ContentKind, ItemState, ItemType, ProcessingStatus, SourceType
 from app.domain.models import AttentionHookCandidate, AttentionHookGeneration
 from app.llm.base import LlmError
@@ -115,6 +116,23 @@ async def make_ready_item(
         session.add(item)
         await session.commit()
         return user.id, item.id
+
+
+def test_proactive_copy_uses_direct_hook_or_bounded_summary_then_title():
+    item = Item(id=1, user_id=1, title="Saved result", summary="  First line.\n\nSecond   line. ")
+
+    assert format_proactive_attention_reminder(item, "  Grounded hook.  ") == (
+        "🎯 Saved result\n\nGrounded hook."
+    )
+    assert format_proactive_attention_reminder(item) == (
+        "🎯 Saved result\n\nFirst line. Second line."
+    )
+    item.summary = "x" * 800
+    preview = format_proactive_attention_reminder(item).split("\n\n", maxsplit=1)[1]
+    assert len(preview) == 700
+    assert preview.endswith("…")
+    item.summary = "  \n  "
+    assert format_proactive_attention_reminder(item) == "🎯 Saved result"
 
 
 async def add_ready_item(session_factory, user_id: int, *, title="Another task", priority=80):
@@ -581,7 +599,7 @@ async def test_failed_snooze_send_does_not_start_proactive_minimum_gap(session_f
     bot = FailSnoozeThenSucceed()
     assert await ReminderWorker(session_factory, bot).process_once(now) == 1
     assert len(bot.messages) == 1
-    assert "⏳ Вернём это в фокус" in bot.messages[0][1]
+    assert bot.messages[0][1] == "🎯 Сделать задачу"
     async with session_factory() as session:
         snooze = await session.scalar(
             select(Reminder).where(Reminder.item_id == item_id, Reminder.type == SNOOZE_RESURFACE)
@@ -775,12 +793,8 @@ async def test_proactive_delivery_persists_reminder_and_exposure(session_factory
     assert await ReminderWorker(session_factory, bot).process_once(now) == 1
     assert len(bot.messages) == 1
     _, message, kwargs = bot.messages[0]
-    assert "Сделать задачу" in message
-    assert "Почему сейчас:" in message
-    assert "Внимание:" in message
-    assert "Приоритет:" in message
-    assert "Интерес:" in message
-    assert "Сохранён:" in message
+    assert message == "🎯 Сделать задачу"
+    assert not any(value in message for value in ("Почему сейчас:", "Внимание:", "/100", "/3"))
     callbacks = {
         button.callback_data
         for row in kwargs["reply_markup"].inline_keyboard
@@ -796,10 +810,13 @@ async def test_proactive_delivery_persists_reminder_and_exposure(session_factory
         for button in row
         if button.url
     )
-    assert any(value.startswith("reminder:done:") for value in callbacks)
-    assert any(value.startswith("reminder:later:") for value in callbacks)
-    assert any(value.startswith("reminder:dismiss:") for value in callbacks)
-    assert any(value.startswith("reminder:less:") for value in callbacks)
+    assert any(value.startswith("reminder:more:") for value in callbacks)
+    assert not any(
+        value.startswith(
+            ("reminder:done:", "reminder:later:", "reminder:dismiss:", "reminder:less:")
+        )
+        for value in callbacks
+    )
     assert any(value.startswith("reminder:open:") for value in callbacks)
     assert any(value.startswith("reminder:original:") for value in callbacks)
     assert not any(value.startswith("item:done:") for value in callbacks)
@@ -868,6 +885,10 @@ async def test_proactive_hook_keeps_source_provenance_and_focuses_its_action(ses
         source_index=1,
         text="The method reduced cache misses by 40%.",
     )
+    async with session_factory() as session:
+        item = await session.get(Item, item_id)
+        item.summary = "This canonical summary must not be repeated beside a valid hook."
+        await session.commit()
     provider = FakeLlmProvider(
         attention_hook_generation=AttentionHookGeneration(
             candidates=[
@@ -894,9 +915,8 @@ async def test_proactive_hook_keeps_source_provenance_and_focuses_its_action(ses
     )
 
     _, message, kwargs = bot.messages[0]
-    assert "Одна сильная мысль внутри:" in message
-    assert "It reduced repeated work." in message
-    assert "Почему сейчас:" in message
+    assert message == "🎯 Сделать задачу\n\nIt reduced repeated work."
+    assert "canonical summary" not in message
     urls = [
         button.url for row in kwargs["reply_markup"].inline_keyboard for button in row if button.url
     ]
@@ -914,7 +934,7 @@ async def test_proactive_hook_keeps_source_provenance_and_focuses_its_action(ses
         assert hook.source_id == supporting_source_id
         assert reminder.status == "SENT"
         assert reminder.payload_json["hook_content_id"] == hook.id
-        assert reminder.payload_json["template_id"] == "strong_thought_v1"
+        assert reminder.payload_json["template_id"] == "direct_v2"
         assert reminder.payload_json["attention_score"] >= MIN_PROACTIVE_ATTENTION_SCORE
         assert reminder.payload_json["priority_score"] == 80
         assert "evidence_excerpt" not in reminder.payload_json
@@ -927,7 +947,7 @@ async def test_proactive_hook_keeps_source_provenance_and_focuses_its_action(ses
 
 
 async def test_hook_provider_failure_keeps_the_normal_proactive_reminder(session_factory):
-    """Treat hook generation failure as an optional enhancement and send the PM-07 fallback."""
+    """Treat hook generation failure as an optional enhancement and send the summary fallback."""
     user_id, item_id = await make_ready_item(session_factory, attention_enabled=True)
     await update_notification_settings(
         session_factory, 42, daily_digest_enabled=False, attention_enabled=True
@@ -938,6 +958,10 @@ async def test_hook_provider_failure_keeps_the_normal_proactive_reminder(session
         source_index=0,
         text="An article with enough saved content for a hook request.",
     )
+    async with session_factory() as session:
+        item = await session.get(Item, item_id)
+        item.summary = "Outcome-first summary fallback."
+        await session.commit()
     provider = FakeLlmProvider(attention_hook_error=LlmError("LLM_FAILED", "provider unavailable"))
     bot = FakeBot()
     result = await ReminderWorker(
@@ -948,8 +972,7 @@ async def test_hook_provider_failure_keeps_the_normal_proactive_reminder(session
 
     assert result == 1
     assert len(provider.attention_hook_calls) == 1
-    assert "Почему сейчас:" in bot.messages[0][1]
-    assert "Одна сильная мысль внутри:" not in bot.messages[0][1]
+    assert bot.messages[0][1] == "🎯 Сделать задачу\n\nOutcome-first summary fallback."
     async with session_factory() as session:
         reminder = await session.scalar(
             select(Reminder).where(Reminder.type == PROACTIVE_ATTENTION)
@@ -963,6 +986,79 @@ async def test_hook_provider_failure_keeps_the_normal_proactive_reminder(session
             )
             == 0
         )
+
+
+async def test_invalid_hook_candidate_uses_summary_fallback(session_factory):
+    _user_id, item_id = await make_ready_item(session_factory, attention_enabled=True)
+    await update_notification_settings(
+        session_factory, 42, daily_digest_enabled=False, attention_enabled=True
+    )
+    _source_id, evidence_id = await add_hook_source(
+        session_factory,
+        item_id,
+        source_index=0,
+        text="The saved method reduced cache misses by 40%.",
+    )
+    async with session_factory() as session:
+        item = await session.get(Item, item_id)
+        item.summary = "Validated summary remains useful when evidence is rejected."
+        await session.commit()
+    provider = FakeLlmProvider(
+        attention_hook_generation=AttentionHookGeneration(
+            candidates=[
+                AttentionHookCandidate(
+                    hook_type="SURPRISING_FACT",
+                    text="An unsupported 99% claim.",
+                    evidence_excerpt="The saved method reduced cache misses by 99%",
+                    source_content_id=evidence_id,
+                )
+            ]
+        )
+    )
+    bot = FakeBot()
+
+    assert (
+        await ReminderWorker(
+            session_factory,
+            bot,
+            attention_hook_service=AttentionHookService(session_factory, provider),
+        ).process_once(datetime(2026, 9, 14, 6, 30))
+        == 1
+    )
+    assert bot.messages[0][1] == (
+        "🎯 Сделать задачу\n\nValidated summary remains useful when evidence is rejected."
+    )
+    async with session_factory() as session:
+        assert (
+            await session.scalar(
+                select(func.count(Content.id)).where(Content.kind == ContentKind.ATTENTION_HOOK)
+            )
+            == 0
+        )
+
+
+async def test_no_hook_evidence_uses_summary_without_a_provider_call(session_factory):
+    _user_id, item_id = await make_ready_item(session_factory, attention_enabled=True)
+    await update_notification_settings(
+        session_factory, 42, daily_digest_enabled=False, attention_enabled=True
+    )
+    async with session_factory() as session:
+        item = await session.get(Item, item_id)
+        item.summary = "Useful saved summary."
+        await session.commit()
+    provider = FakeLlmProvider()
+    bot = FakeBot()
+
+    assert (
+        await ReminderWorker(
+            session_factory,
+            bot,
+            attention_hook_service=AttentionHookService(session_factory, provider),
+        ).process_once(datetime(2026, 9, 14, 6, 30))
+        == 1
+    )
+    assert provider.attention_hook_calls == []
+    assert bot.messages[0][1] == "🎯 Сделать задачу\n\nUseful saved summary."
 
 
 async def test_hook_timeout_still_sends_fallback_without_resetting_claim(
@@ -979,6 +1075,10 @@ async def test_hook_timeout_still_sends_fallback_without_resetting_claim(
         source_index=0,
         text="An article with enough saved content for a hook request.",
     )
+    async with session_factory() as session:
+        item = await session.get(Item, item_id)
+        item.summary = "Timeout summary fallback."
+        await session.commit()
     monkeypatch.setattr("app.services.notifications.ATTENTION_HOOK_TIMEOUT_SECONDS", 0.01)
     provider = FakeLlmProvider()
     cancelled = asyncio.Event()
@@ -1012,8 +1112,7 @@ async def test_hook_timeout_still_sends_fallback_without_resetting_claim(
     assert result == 1
     assert cancelled.is_set()
     assert observed_claims and observed_claims[0][0] == observed_claims[0][1]
-    assert "Почему сейчас:" in bot.messages[0][1]
-    assert "Одна сильная мысль внутри:" not in bot.messages[0][1]
+    assert bot.messages[0][1] == "🎯 Сделать задачу\n\nTimeout summary fallback."
 
 
 async def test_item_done_during_hook_generation_fails_final_pm08_revalidation(session_factory):

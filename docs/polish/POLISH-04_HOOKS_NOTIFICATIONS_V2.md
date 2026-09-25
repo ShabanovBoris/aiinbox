@@ -2,7 +2,7 @@
 
 Type: Stabilization / Engagement quality specification  
 Depends on: POLISH-01, POLISH-03  
-Status: PLANNED
+Status: IN_REVIEW
 
 ## 1. Problem
 
@@ -348,3 +348,19 @@ For every `MotivationKind`:
 ## 25. Definition of Done
 
 POLISH-04 is complete when a proactive notification feels like a specific reason to reopen saved content, while PM-08/09/11 grounding, pacing, feedback and delivery guarantees remain intact.
+
+## 26. Current implementation (IN_REVIEW)
+
+- Attention Hook generation uses version 2, keeps exact original-Content evidence
+  validation, stores at most one candidate per hook type, and selects bounded
+  transcript regions near the beginning, one-third, two-thirds, and end.
+- Reminder copy is `🎯 title` plus a direct grounded hook, a whitespace-normalized
+  summary preview capped at 700 characters, or the title alone. Summary is only
+  a presentation fallback and is never supplied as hook evidence.
+- Source/original actions stay primary. Up to two source actions appear beside
+  Original; overflow opens Sources, while PM-11 reactions live under More.
+- Generic PM-10 copy has four maintained variants per kind and advances through
+  them deterministically from successful SENT history. Its facts and scheduler
+  policy are unchanged.
+- No migration or dependency change is required. PM-08 pacing and PM-11 event
+  semantics remain unchanged.

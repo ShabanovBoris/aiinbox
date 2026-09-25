@@ -165,8 +165,8 @@ Goal: expose trends in attention, backlog growth, completion, neglect and catego
 
 - POLISH-01 AI Analysis v2 — DONE (PR #46 merged)
 - POLISH-02 Compact Telegram Item UI — DONE (PR #48 merged)
-- POLISH-03 Unified Provenance & Original Access — IN_REVIEW
-- POLISH-04 Hooks & Notifications v2 — PLANNED
+- POLISH-03 Unified Provenance & Original Access — DONE (PR #49 merged)
+- POLISH-04 Hooks & Notifications v2 — IN_REVIEW
 - POLISH-05 Telegram Navigation & AI Reliability — PLANNED
 
 Goal: make the existing AI understanding, Telegram presentation, source navigation,
@@ -386,6 +386,12 @@ Hooks must be grounded only in persisted source content. A generated hook should
 Generate lazily only after an Item becomes a real proactive-reminder candidate.
 Persist up to three grounded hooks and reuse them with deterministic phrasing
 templates rather than calling an LLM for every reminder.
+
+POLISH-04 current behavior: hook generator version 2 creates at most three
+distinct hook types, renders the selected hook directly, and samples bounded
+long content across the start, one-third, two-thirds, and end. A missing hook
+falls back to the canonical summary for presentation only, then title. This
+summary is never hook evidence.
 
 ## 14. PM-10 — Motivational Nudges
 

@@ -3,7 +3,7 @@
 Type: Stabilization / Navigation & provenance specification  
 Depends on: POLISH-02 preferred  
 Blocks: POLISH-04 final reminder UX  
-Status: IN_REVIEW
+Status: DONE (PR #49 merged)
 
 ## 1. Problem
 

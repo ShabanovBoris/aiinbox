@@ -117,7 +117,7 @@ class AttentionHookCandidate(BaseModel):
     model_config = {"extra": "forbid"}
 
     hook_type: AttentionHookType
-    text: str = Field(min_length=1, max_length=320)
+    text: str = Field(min_length=1, max_length=280)
     evidence_excerpt: str = Field(min_length=1, max_length=300)
     source_content_id: int = Field(gt=0)
 

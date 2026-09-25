@@ -331,7 +331,7 @@ class ReminderFeedbackService:
     async def item_reminder_projection(
         self, telegram_user_id: int, reminder_id: int
     ) -> tuple[Reminder, Item, list[ItemSource], bool] | None:
-        """Load only an owned, SENT proactive Item reminder for its cancel projection."""
+        """Load an owned SENT Item reminder for read-only menu navigation projections."""
         if self.session_factory is None:
             raise RuntimeError("Reminder callbacks require a session factory")
         async with self.session_factory() as session:

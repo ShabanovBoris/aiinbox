@@ -606,3 +606,25 @@ Consequences: deleting a Telegram capture makes Bot API reproduction unavailable
 but does not invalidate the Item or its extracted evidence. Original callbacks
 revalidate ownership, and their transport side effect retains the existing
 at-least-once window.
+
+## D-041 — Notifications expose content value, not ranking diagnostics
+
+Context: PM-07 correctly chooses which Item may deserve an interruption, but
+proactive reminders still exposed ranking scores, age, and generic hook
+wrappers. Generic motivation copy also read like backlog telemetry.
+
+Decision: Item-specific reminders show the Item title and either a current
+grounded v2 hook, the outcome-first summary as a bounded presentation fallback,
+or the title alone. Ranking values stay in scheduling and Reminder attribution,
+not default Telegram copy. Hook templates are direct; source/original access
+stays primary and PM-11 reactions move into an ephemeral More menu. Generic
+motivation remains deterministic over existing facts and rotates through
+maintained variants in SENT-history order.
+
+Reason: the interruption should earn attention through the saved content or a
+truthful computed fact, not expose the machinery that selected it.
+
+Consequences: changing hook semantics increments the generator version, while
+old hooks remain historical and lazy generation continues. PM-08 pacing,
+PM-11 feedback, source provenance, hook evidence validation, and the existing
+motivation facts and scores remain unchanged. No schema migration is required.

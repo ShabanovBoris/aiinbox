@@ -1,5 +1,6 @@
 import asyncio
 from datetime import UTC, date, datetime, time, timedelta
+from string import Formatter
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -7,7 +8,7 @@ from sqlalchemy import func, select
 
 from app.domain.enums import ItemState, ItemType, MotivationKind, ProcessingStatus, SourceType
 from app.services.calendar_windows import local_day_window
-from app.services.motivation import MotivationService
+from app.services.motivation import _TEMPLATES, MotivationService, _next_template
 from app.services.notifications import MOTIVATION_NUDGE, PROACTIVE_ATTENTION, ReminderWorker
 from app.storage.models import Event, Item, Reminder, User
 
@@ -418,7 +419,7 @@ async def test_streak_must_be_current_and_templates_rotate_from_sent_history(ses
         )
     before = await candidates(session_factory, user_id, now)
     quick = next(candidate for candidate in before if candidate.kind is MotivationKind.QUICK_WINS)
-    assert quick.template_id == "quick_wins_v1"
+    assert quick.template_id == "quick_wins_v3"
     assert MotivationKind.COMPLETION_STREAK not in {candidate.kind for candidate in before}
 
     async with session_factory() as session:
@@ -438,7 +439,7 @@ async def test_streak_must_be_current_and_templates_rotate_from_sent_history(ses
     rotated_quick = next(
         candidate for candidate in rotated if candidate.kind is MotivationKind.QUICK_WINS
     )
-    assert rotated_quick.template_id == "quick_wins_v2"
+    assert rotated_quick.template_id == "quick_wins_v4"
 
     async with session_factory() as session:
         session.add(
@@ -457,6 +458,41 @@ async def test_streak_must_be_current_and_templates_rotate_from_sent_history(ses
     assert MotivationKind.QUICK_WINS not in {candidate.kind for candidate in same_day}
 
 
+def test_motivation_templates_use_only_their_known_facts_and_rotate_in_order():
+    """Keep maintained copy within deterministic facts and make every variant reachable."""
+    fact_contracts = {
+        MotivationKind.STALE_IMPORTANT: {"count": 4},
+        MotivationKind.HIGH_INTEREST_STALE: {"count": 4},
+        MotivationKind.QUICK_WINS: {"count": 4, "max_minutes": 20},
+        MotivationKind.INBOX_GROWTH: {"created": 6, "resolved": 2, "net": 4},
+        MotivationKind.COMPLETION_STREAK: {"days": 4},
+        MotivationKind.WEEKLY_PROGRESS: {"completed": 5, "days": 7},
+    }
+    formatter = Formatter()
+    for kind, templates in _TEMPLATES.items():
+        assert len(templates) >= 3
+        assert len({template.template_id for template in templates}) == len(templates)
+        allowed = set(fact_contracts[kind])
+        for template in templates:
+            fields = {
+                field_name
+                for _literal, field_name, _format_spec, _conversion in formatter.parse(
+                    template.text
+                )
+                if field_name is not None
+            }
+            assert fields <= allowed
+            rendered = template.text.format(**fact_contracts[kind])
+            assert len(rendered) <= 180
+            assert all(str(fact_contracts[kind][field]) in rendered for field in fields)
+
+        ids = [template.template_id for template in templates]
+        assert _next_template(templates, None).template_id == ids[0]
+        assert _next_template(templates, "quick_wins_v1").template_id == ids[0]
+        for current, expected in zip(ids, ids[1:] + ids[:1], strict=True):
+            assert _next_template(templates, current).template_id == expected
+
+
 async def test_worker_sends_generic_claim_with_feedback_controls_and_send_attribution(
     session_factory,
 ):
@@ -471,8 +507,8 @@ async def test_worker_sends_generic_claim_with_feedback_controls_and_send_attrib
     assert len(bot.messages) == 1
     chat_id, text, kwargs = bot.messages[0]
     assert chat_id == 42
-    assert "добавлено 3" in text
-    assert "Разница" in text
+    assert "3 новых" in text
+    assert "+3" in text
     callbacks = {
         button.callback_data for row in kwargs["reply_markup"].inline_keyboard for button in row
     }
@@ -491,7 +527,7 @@ async def test_worker_sends_generic_claim_with_feedback_controls_and_send_attrib
         assert reminder.payload_json == {
             "kind": "INBOX_GROWTH",
             "facts": {"created": 3, "resolved": 0, "net": 3},
-            "template_id": "inbox_growth_v1",
+            "template_id": "inbox_growth_v3",
             "policy_level": 3,
             "local_date": "2026-09-24",
             "slot": 1,
@@ -507,7 +543,7 @@ async def test_worker_sends_generic_claim_with_feedback_controls_and_send_attrib
             "reminder_type": "MOTIVATION_NUDGE",
             "policy_level": 3,
             "motivation_kind": "INBOX_GROWTH",
-            "template_id": "inbox_growth_v1",
+            "template_id": "inbox_growth_v3",
             "local_date": "2026-09-24",
             "slot": 1,
         }
@@ -586,7 +622,7 @@ async def test_disliked_nudge_kind_is_filtered_before_and_during_arbitration(ses
     worker = ReminderWorker(session_factory, bot)
     assert await worker.process_once(now) == 1
     assert len(bot.messages) == 1
-    assert "важных Item" in bot.messages[0][1]
+    assert "Важные сохранения старше месяца" in bot.messages[0][1]
     async with session_factory() as session:
         sent = await session.scalar(
             select(Reminder).where(
@@ -700,7 +736,7 @@ async def test_stale_generic_claim_recovers_same_slot_with_current_facts_and_fen
     worker = ReminderWorker(session_factory, bot)
 
     assert await worker.process_once(now) == 1
-    assert "добавлено 4" in bot.messages[0][1]
+    assert "4 новых" in bot.messages[0][1]
     async with session_factory() as session:
         recovered = await session.get(Reminder, reminder_id)
         rows = (
@@ -772,7 +808,7 @@ async def test_final_prepare_can_replace_a_quick_win_with_a_new_current_kind(ses
 
     worker._prepare_motivation_send = cross_stale_threshold_before_prepare
     assert await worker.process_once(now) == 1
-    assert "важных Item" in bot.messages[0][1]
+    assert "Важные сохранения старше месяца" in bot.messages[0][1]
     async with session_factory() as session:
         reminder = await session.scalar(select(Reminder).where(Reminder.type == MOTIVATION_NUDGE))
         assert reminder.payload_json["kind"] == "STALE_IMPORTANT"

@@ -8,6 +8,7 @@ from app.bot.keyboards import (
     item_more_keyboard,
     motivation_reminder_keyboard,
     proactive_reminder_keyboard,
+    reminder_more_keyboard,
     reminder_snooze_keyboard,
 )
 from app.domain.enums import ItemState, ItemType, MotivationKind, ProcessingStatus, SourceType
@@ -732,7 +733,9 @@ def test_reminder_keyboards_are_compact_identity_preserving_and_bounded(session_
         "reminder:dismiss:456",
         "reminder:less:456",
     }
-    assert proactive_actions <= set(_callback_data(proactive))
+    assert "reminder:more:456" in _callback_data(proactive)
+    assert not proactive_actions & set(_callback_data(proactive))
+    assert proactive_actions <= set(_callback_data(reminder_more_keyboard(456)))
     assert {"reminder:ok:456", "reminder:less:456"} <= set(_callback_data(motivation))
     assert "reminder:snooze:456:tomorrow" in _callback_data(snooze)
 
@@ -748,3 +751,47 @@ def test_reminder_keyboards_are_compact_identity_preserving_and_bounded(session_
     assert f"item:later:{item.id}" in secondary
     assert f"item:archive:{item.id}" in secondary
     assert f"feedback:menu:{item.id}" in secondary
+
+
+def test_reminder_primary_keeps_hook_source_ahead_of_other_media_actions():
+    item = Item(
+        id=124,
+        user_id=1,
+        processing_status=ProcessingStatus.READY,
+        state=ItemState.ACTIVE,
+        source_type=SourceType.YOUTUBE,
+        processing_stage="READY",
+        user_note="",
+    )
+    videos = [
+        ItemSource(
+            id=source_id,
+            item_id=item.id,
+            source_index=source_id,
+            source_type=SourceType.YOUTUBE,
+            source_url=f"https://www.youtube.com/watch?v=video{source_id}",
+            extraction_status="READY",
+        )
+        for source_id in (201, 202, 203)
+    ]
+    focus = ItemSource(
+        id=777,
+        item_id=item.id,
+        source_index=4,
+        source_type=SourceType.WEB,
+        source_url="https://focus.example.com/result",
+        extraction_status="READY",
+    )
+
+    markup = proactive_reminder_keyboard(456, item, [*videos, focus], focus_source_id=focus.id)
+    buttons = [button for row in markup.inline_keyboard for button in row]
+
+    assert buttons[0].url == "https://focus.example.com/result"
+    assert (
+        sum(
+            button.url is not None or button.callback_data.startswith("reminder:open:")
+            for button in buttons
+        )
+        <= 2
+    )
+    assert "reminder:sources:456" in _callback_data(markup)

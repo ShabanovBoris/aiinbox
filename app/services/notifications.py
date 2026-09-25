@@ -1380,8 +1380,7 @@ class ReminderWorker:
                 chat_id,
                 format_proactive_attention_reminder(
                     item,
-                    rank,
-                    hook_block=(
+                    hook_text=(
                         hook_presentation.rendered_text if hook_presentation is not None else None
                     ),
                 ),
