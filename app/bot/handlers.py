@@ -2,9 +2,12 @@ import logging
 from datetime import UTC, datetime, timedelta
 
 from aiogram import F, Router
+from aiogram.dispatcher.middlewares.base import BaseMiddleware
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, CommandStart
-from aiogram.types import CallbackQuery, Message
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
@@ -17,15 +20,19 @@ from app.bot.formatting import (
 )
 from app.bot.keyboards import (
     attention_settings_keyboard,
+    category_navigation_keyboard,
+    export_mode_keyboard,
     feedback_category_keyboard,
     feedback_menu_keyboard,
     feedback_type_keyboard,
+    input_cancel_keyboard,
     item_details_keyboard,
     item_interest_keyboard,
     item_keyboard,
     item_more_keyboard,
     item_navigation_keyboard,
     item_sources_keyboard,
+    main_menu_keyboard,
     proactive_reminder_keyboard,
     reminder_more_keyboard,
     reminder_snooze_keyboard,
@@ -33,6 +40,7 @@ from app.bot.keyboards import (
 )
 from app.bot.provenance import normalize_forward_origin, text_with_entity_urls
 from app.config import Settings
+from app.domain.category_tokens import category_token
 from app.domain.enums import ItemState, ItemType, ProcessingStatus, SourceType
 from app.extractors.document import document_format_hint, safe_document_file_name
 from app.extractors.instagram import is_instagram_reel_url
@@ -70,37 +78,130 @@ from app.storage.models import Item, ItemSource, User
 
 log = logging.getLogger(__name__)
 
+# ❌ Удалена старая HELP_TEXT-командная простыня: основные действия теперь видны в inline-меню.
 HELP_TEXT = (
-    "Personal AI Inbox — отправь или перешли текст, URL, voice/audio/video, документ, "
-    "YouTube-ссылку или Instagram Reel.\n\n"
-    "Команды:\n"
-    "/today — приоритетные Items на сегодня\n"
-    "/attention [1-5] — что сейчас заслуживает внимания\n"
-    "/weekly — обзор backlog и внимания за 7 дней\n"
-    "/inbox — последние Items\n"
-    "/search <текст> — поиск по сохранённому содержимому\n"
-    "/ask <вопрос> — ответ по сохранённым материалам\n"
-    "/export [compact|full] — выгрузить свои данные AIInbox\n"
-    "/category [имя] — категории и Items категории\n"
-    "/profile — текущий профиль\n"
-    "/profile_update <инструкция> — обновить профиль\n"
-    "/settings — настройки digest и quiet hours\n"
-    "/settings attention — proactive Attention Manager\n"
-    "/help — эта справка"
+    "Просто отправь\n"
+    "• текст, ссылку, видео, документ или forward\n\n"
+    "Найти\n"
+    "• 🔎 Поиск по сохранённому\n"
+    "• 🧠 Ask по своим материалам\n\n"
+    "Вернуться\n"
+    "• 🎯 Сегодня\n"
+    "• ✨ Внимание\n"
+    "• 📊 Неделя\n\n"
+    "Управлять\n"
+    "• 👤 Профиль\n"
+    "• ⚙️ Настройки\n"
+    "• 📦 Экспорт\n\n"
+    "Slash-команды тоже работают."
 )
+
+
+class GuidedInput(StatesGroup):
+    """Ephemeral Telegram prompts only; durable Ask work remains in AskJob/AskWorker."""
+
+    ask = State()
+    search = State()
+
+
+class ClearGuidedInputOnCommandMiddleware(BaseMiddleware):
+    """Let ordinary commands escape one-shot text prompts without capturing their text."""
+
+    async def __call__(self, handler, event, data):
+        if (
+            isinstance(event, Message)
+            and event.text
+            and event.text.startswith("/")
+            and event.forward_origin is None
+        ):
+            state = data.get("state")
+            if state is not None and await state.get_state() is not None:
+                await state.clear()
+        return await handler(event, data)
+
+
+class ClearGuidedInputOnCallbackMiddleware(BaseMiddleware):
+    """Clear stale text prompts when another inline action takes over the chat."""
+
+    async def __call__(self, handler, event, data):
+        if isinstance(event, CallbackQuery) and event.data not in {
+            "nav:ask",
+            "nav:search",
+            "nav:input:cancel",
+        }:
+            state = data.get("state")
+            if state is not None and await state.get_state() is not None:
+                await state.clear()
+        return await handler(event, data)
 
 
 async def on_start(message: Message, settings: Settings) -> None:
     if not settings.is_allowed(message.from_user.id if message.from_user else None):
         return
-    await message.answer("Personal AI Inbox готов. Просто отправь текст или ссылку.")
+    await message.answer(
+        "AIInbox готов.\n\nОтправь текст, ссылку, видео или документ — либо выбери действие ниже.",
+        reply_markup=main_menu_keyboard(),
+    )
 
 
 async def on_help(message: Message, settings: Settings) -> None:
     """Expose the stable Telegram command surface without business logic."""
     if not settings.is_allowed(message.from_user.id if message.from_user else None):
         return
-    await message.answer(HELP_TEXT)
+    await message.answer(HELP_TEXT, reply_markup=main_menu_keyboard())
+
+
+async def on_menu(message: Message, settings: Settings) -> None:
+    """Return the authorized user to the compact navigation projection."""
+    if not settings.is_allowed(message.from_user.id if message.from_user else None):
+        return
+    await message.answer("Главное меню:", reply_markup=main_menu_keyboard())
+
+
+# ❌ Удалена раздельная сборка read-only экранов настроек: slash и callbacks теперь
+# строят текст и клавиатуру из одной проекции текущих настроек.
+async def _build_settings_projection(
+    telegram_user_id: int,
+    chat_id: int,
+    settings: Settings,
+    session_factory,
+    *,
+    attention: bool = False,
+) -> tuple[str, InlineKeyboardMarkup] | None:
+    """Project canonical notification settings for both slash and inline entry points."""
+    if not settings.is_allowed(telegram_user_id):
+        return None
+    result = await get_notification_settings(session_factory, telegram_user_id)
+    if result is None:
+        from app.services.ingestion import get_or_create_user
+
+        async with session_factory() as session:
+            await get_or_create_user(
+                session,
+                telegram_user_id=telegram_user_id,
+                chat_id=chat_id,
+                timezone=settings.default_timezone,
+            )
+            await session.commit()
+        result = await get_notification_settings(session_factory, telegram_user_id)
+    if result is None:
+        return None
+    user, values = result
+    if attention:
+        return (
+            format_attention_settings(values),
+            attention_settings_keyboard(
+                values["attention_enabled"],
+                values["attention_intensity"],
+                values["generic_motivation_enabled"],
+            ),
+        )
+    from app.bot.keyboards import settings_keyboard
+
+    return (
+        format_settings(user, values),
+        settings_keyboard(values["daily_digest_enabled"]),
+    )
 
 
 async def on_settings(
@@ -124,18 +225,12 @@ async def on_settings(
     parts = arguments.split(maxsplit=2)
     try:
         if parts and parts[0] == "attention" and len(parts) == 1:
-            result = await get_notification_settings(session_factory, user_id)
-            if result is None:
-                return
-            _, attention_settings = result
-            await message.answer(
-                format_attention_settings(attention_settings),
-                reply_markup=attention_settings_keyboard(
-                    attention_settings["attention_enabled"],
-                    attention_settings["attention_intensity"],
-                    attention_settings["generic_motivation_enabled"],
-                ),
+            projection = await _build_settings_projection(
+                user_id, message.chat.id, settings, session_factory, attention=True
             )
+            if projection is None:
+                return
+            await message.answer(projection[0], reply_markup=projection[1])
             return
         elif parts and parts[0] == "timezone" and len(parts) == 2:
             result = await update_notification_settings(session_factory, user_id, timezone=parts[1])
@@ -159,11 +254,16 @@ async def on_settings(
             )
             return
         else:
-            result = await get_notification_settings(session_factory, user_id)
-        if result is None:
+            projection = await _build_settings_projection(
+                user_id, message.chat.id, settings, session_factory
+            )
+            if projection is not None:
+                await message.answer(projection[0], reply_markup=projection[1])
             return
     except ValueError as exc:
         await message.answer(str(exc))
+        return
+    if result is None:
         return
     user, notification_settings = result
     from app.bot.keyboards import settings_keyboard
@@ -432,6 +532,8 @@ def make_router(
     settings: Settings, session_factory: async_sessionmaker, max_audio_bytes: int = 20_000_000
 ) -> Router:
     router = Router()
+    router.message.outer_middleware(ClearGuidedInputOnCommandMiddleware())
+    router.callback_query.outer_middleware(ClearGuidedInputOnCallbackMiddleware())
 
     # Specific media handlers must precede the forwarded-text catch-all. Aiogram's
     # MagicFilter field lookup is permissive enough that relying on F.text alone for
@@ -478,6 +580,18 @@ def make_router(
     @router.message(Command("help"))
     async def help_command(message: Message) -> None:
         await on_help(message, settings)
+
+    @router.message(Command("menu"))
+    async def menu_command(message: Message) -> None:
+        await on_menu(message, settings)
+
+    @router.message(GuidedInput.ask, ~F.forward_origin, F.text, ~F.text.startswith("/"))
+    async def guided_ask(message: Message, state: FSMContext) -> None:
+        await on_guided_ask_input(message, settings, session_factory, state)
+
+    @router.message(GuidedInput.search, ~F.forward_origin, F.text, ~F.text.startswith("/"))
+    async def guided_search(message: Message, state: FSMContext) -> None:
+        await on_guided_search_input(message, settings, session_factory, state)
 
     # Не-командный текст — источники TEXT/WEB; медиа-источники добавляются
     # в своих фазах и идут через тот же pipeline.
@@ -542,6 +656,14 @@ def make_router(
     async def export(message: Message) -> None:
         await on_export(message, settings, session_factory)
 
+    @router.callback_query(F.data.startswith("nav:"))
+    async def navigation(callback: CallbackQuery, state: FSMContext) -> None:
+        await on_navigation_callback(callback, settings, session_factory, state)
+
+    @router.callback_query(F.data.startswith("export:mode:"))
+    async def export_mode(callback: CallbackQuery) -> None:
+        await on_export_mode_callback(callback, settings, session_factory)
+
     @router.callback_query(F.data.startswith("item:"))
     async def item_action(callback: CallbackQuery) -> None:
         await on_item_callback(callback, settings, session_factory)
@@ -557,6 +679,10 @@ def make_router(
     @router.callback_query(F.data == "settings:digest")
     async def settings_digest(callback: CallbackQuery) -> None:
         await on_settings_callback(callback, settings, session_factory)
+
+    @router.callback_query(F.data == "settings:open")
+    async def settings_open(callback: CallbackQuery) -> None:
+        await on_settings_open_callback(callback, settings, session_factory)
 
     @router.callback_query(F.data.startswith("settings:attention:"))
     async def settings_attention(callback: CallbackQuery) -> None:
@@ -1349,11 +1475,42 @@ async def on_settings_callback(
     await callback.answer()
 
 
+async def on_settings_open_callback(
+    callback: CallbackQuery, settings: Settings, session_factory
+) -> None:
+    """Return from PM-08 controls to the shared canonical settings projection."""
+    if not settings.is_allowed(callback.from_user.id) or callback.message is None:
+        await callback.answer()
+        return
+    projection = await _build_settings_projection(
+        callback.from_user.id,
+        callback.message.chat.id,
+        settings,
+        session_factory,
+    )
+    if projection is not None:
+        await _edit_item_message_if_changed(callback.message, projection[0], projection[1])
+    await callback.answer()
+
+
 async def on_attention_settings_callback(
     callback: CallbackQuery, settings: Settings, session_factory: async_sessionmaker
 ) -> None:
     """Persist one allowlisted PM-08 choice and redraw only when it changed."""
     if not settings.is_allowed(callback.from_user.id) or not callback.data:
+        await callback.answer()
+        return
+    if callback.data == "settings:attention:open":
+        if callback.message is not None:
+            projection = await _build_settings_projection(
+                callback.from_user.id,
+                callback.message.chat.id,
+                settings,
+                session_factory,
+                attention=True,
+            )
+            if projection is not None:
+                await _edit_item_message_if_changed(callback.message, projection[0], projection[1])
         await callback.answer()
         return
     current = await get_notification_settings(session_factory, callback.from_user.id)
@@ -1406,6 +1563,19 @@ async def on_attention_settings_callback(
 async def on_profile(message: Message, settings: Settings, session_factory) -> None:
     if not settings.is_allowed(message.from_user.id if message.from_user else None):
         return
+    await _send_profile_for_actor(
+        telegram_user_id=message.from_user.id,
+        chat_id=message.chat.id,
+        settings=settings,
+        session_factory=session_factory,
+        send=message.answer,
+    )
+
+
+async def _send_profile_for_actor(
+    *, telegram_user_id: int, chat_id: int, settings: Settings, session_factory, send
+) -> None:
+    """Share the existing profile projection while keeping callback actor identity explicit."""
     from app.bot.formatting import format_profile
     from app.services.ingestion import get_or_create_user
     from app.services.profile import get_profile
@@ -1414,13 +1584,13 @@ async def on_profile(message: Message, settings: Settings, session_factory) -> N
         # get_or_create + get_profile: lazy seed работает и для первого /profile
         user = await get_or_create_user(
             session,
-            telegram_user_id=message.from_user.id,
-            chat_id=message.chat.id,
+            telegram_user_id=telegram_user_id,
+            chat_id=chat_id,
             timezone=settings.default_timezone,
         )
         await session.commit()
         profile = await get_profile(session, user.id)
-    await message.answer(format_profile(profile))
+    await send(format_profile(profile))
 
 
 async def on_profile_update(
@@ -1451,8 +1621,25 @@ async def _allowed(message: Message, settings: Settings) -> bool:
     return settings.is_allowed(message.from_user.id if message.from_user else None)
 
 
+# ❌ Удалены независимые command-only тела Today/Attention/Inbox/Weekly/Profile/Search:
+# menu callbacks now use the same actor-explicit projections and preserve each operation's effects.
 async def on_today(message: Message, settings: Settings, session_factory) -> None:
     if not await _allowed(message, settings):
+        return
+    await _send_today_for_actor(
+        telegram_user_id=message.from_user.id,
+        chat_id=message.chat.id,
+        settings=settings,
+        session_factory=session_factory,
+        send=message.answer,
+    )
+
+
+async def _send_today_for_actor(
+    *, telegram_user_id: int, chat_id: int, settings: Settings, session_factory, send
+) -> None:
+    """Share Today selection and post-send exposure across command and menu transports."""
+    if not settings.is_allowed(telegram_user_id):
         return
     from app.bot.formatting import format_today
     from app.services.ingestion import get_or_create_user
@@ -1460,15 +1647,15 @@ async def on_today(message: Message, settings: Settings, session_factory) -> Non
     async with session_factory() as session:
         user = await get_or_create_user(
             session,
-            telegram_user_id=message.from_user.id,
-            chat_id=message.chat.id,
+            telegram_user_id=telegram_user_id,
+            chat_id=chat_id,
             timezone=settings.default_timezone,
         )
         user_id = user.id
         items = await TodayService().list_items(session, user.id)
         response = format_today(items)
         await session.commit()
-    await message.answer(
+    await send(
         response,
         reply_markup=item_navigation_keyboard([item.id for item in items]),
     )
@@ -1482,16 +1669,30 @@ async def on_today(message: Message, settings: Settings, session_factory) -> Non
 
 
 async def on_weekly(message: Message, settings: Settings, session_factory) -> None:
-    """Resolve the user's saved timezone and send one read-model projection."""
     if not await _allowed(message, settings):
+        return
+    await _send_weekly_for_actor(
+        telegram_user_id=message.from_user.id,
+        chat_id=message.chat.id,
+        settings=settings,
+        session_factory=session_factory,
+        send=message.answer,
+    )
+
+
+async def _send_weekly_for_actor(
+    *, telegram_user_id: int, chat_id: int, settings: Settings, session_factory, send
+) -> None:
+    """Resolve the same timezone-aware weekly read projection for either Telegram surface."""
+    if not settings.is_allowed(telegram_user_id):
         return
     from app.services.ingestion import get_or_create_user
 
     async with session_factory() as session:
         user = await get_or_create_user(
             session,
-            telegram_user_id=message.from_user.id,
-            chat_id=message.chat.id,
+            telegram_user_id=telegram_user_id,
+            chat_id=chat_id,
             timezone=settings.default_timezone,
         )
         try:
@@ -1502,7 +1703,7 @@ async def on_weekly(message: Message, settings: Settings, session_factory) -> No
         review = await WeeklyReviewService().build(session, user.id, zone=zone)
         response = format_weekly_review(review)
         await session.commit()
-    await message.answer(
+    await send(
         response,
         reply_markup=item_navigation_keyboard(
             [recommendation.item_id for recommendation in review.recommendations]
@@ -1513,8 +1714,29 @@ async def on_weekly(message: Message, settings: Settings, session_factory) -> No
 async def on_attention(
     message: Message, settings: Settings, session_factory, arguments: str = ""
 ) -> None:
-    """Build the preview before Telegram I/O, then persist exposure after each sent card."""
     if not await _allowed(message, settings):
+        return
+    await _send_attention_for_actor(
+        telegram_user_id=message.from_user.id,
+        chat_id=message.chat.id,
+        arguments=arguments,
+        settings=settings,
+        session_factory=session_factory,
+        send=message.answer,
+    )
+
+
+async def _send_attention_for_actor(
+    *,
+    telegram_user_id: int,
+    chat_id: int,
+    arguments: str,
+    settings: Settings,
+    session_factory,
+    send,
+) -> None:
+    """Keep ranking and per-card post-send exposure identical for command and menu users."""
+    if not settings.is_allowed(telegram_user_id):
         return
 
     parts = arguments.split()
@@ -1527,7 +1749,7 @@ async def on_attention(
             if not 1 <= requested_limit <= 5:
                 raise ValueError
         except ValueError:
-            await message.answer("Использование: /attention [1-5]")
+            await send("Использование: /attention [1-5]")
             return
         limit = requested_limit
 
@@ -1536,8 +1758,8 @@ async def on_attention(
     async with session_factory() as session:
         user = await get_or_create_user(
             session,
-            telegram_user_id=message.from_user.id,
-            chat_id=message.chat.id,
+            telegram_user_id=telegram_user_id,
+            chat_id=chat_id,
             timezone=settings.default_timezone,
         )
         ranked = await AttentionRankingService().list_ranked(session, user.id, limit=limit)
@@ -1558,13 +1780,13 @@ async def on_attention(
         await session.commit()
 
     if not ranked:
-        await message.answer("Сейчас нет подходящих Items.")
+        await send("Сейчас нет подходящих Items.")
         return
 
-    await message.answer("🎯 Сейчас заслуживает внимания:")
+    await send("🎯 Сейчас заслуживает внимания:")
     count = len(ranked)
     for index, (item, rank) in enumerate(ranked, start=1):
-        await message.answer(
+        await send(
             format_attention_item(index, count, item, rank),
             reply_markup=item_keyboard(
                 item,
@@ -1582,19 +1804,34 @@ async def on_attention(
 async def on_inbox(message: Message, settings: Settings, session_factory) -> None:
     if not await _allowed(message, settings):
         return
+    await _send_inbox_for_actor(
+        telegram_user_id=message.from_user.id,
+        chat_id=message.chat.id,
+        settings=settings,
+        session_factory=session_factory,
+        send=message.answer,
+    )
+
+
+async def _send_inbox_for_actor(
+    *, telegram_user_id: int, chat_id: int, settings: Settings, session_factory, send
+) -> None:
+    """Project the same owner-scoped Inbox list for slash commands and inline navigation."""
+    if not settings.is_allowed(telegram_user_id):
+        return
     from app.bot.formatting import format_item_list
     from app.services.ingestion import get_or_create_user
 
     async with session_factory() as session:
         user = await get_or_create_user(
             session,
-            telegram_user_id=message.from_user.id,
-            chat_id=message.chat.id,
+            telegram_user_id=telegram_user_id,
+            chat_id=chat_id,
             timezone=settings.default_timezone,
         )
         await session.commit()
         items = await list_inbox(session, user.id)
-    await message.answer(
+    await send(
         format_item_list(items, "Входящие:"),
         reply_markup=item_navigation_keyboard([item.id for item in items]),
     )
@@ -1603,47 +1840,118 @@ async def on_inbox(message: Message, settings: Settings, session_factory) -> Non
 async def on_category(message: Message, settings: Settings, session_factory, category: str) -> None:
     if not await _allowed(message, settings):
         return
-    from app.bot.formatting import format_categories, format_item_list
+    if category:
+        await _send_category_items_for_actor(
+            telegram_user_id=message.from_user.id,
+            chat_id=message.chat.id,
+            category=category,
+            settings=settings,
+            session_factory=session_factory,
+            send=message.answer,
+        )
+        return
+    from app.bot.formatting import format_categories
+
+    categories = await _load_categories_for_actor(
+        telegram_user_id=message.from_user.id,
+        chat_id=message.chat.id,
+        settings=settings,
+        session_factory=session_factory,
+    )
+    await message.answer(format_categories(categories))
+
+
+async def _load_categories_for_actor(
+    *, telegram_user_id: int, chat_id: int, settings: Settings, session_factory
+) -> list[tuple[str, int]]:
+    """Read dynamic categories only from the authorized user's current Items."""
+    if not settings.is_allowed(telegram_user_id):
+        return []
     from app.services.ingestion import get_or_create_user
 
     async with session_factory() as session:
         user = await get_or_create_user(
             session,
-            telegram_user_id=message.from_user.id,
-            chat_id=message.chat.id,
+            telegram_user_id=telegram_user_id,
+            chat_id=chat_id,
             timezone=settings.default_timezone,
         )
         await session.commit()
-        if category:
-            items = await list_category_items(session, user.id, category)
-            response = format_item_list(items, f"Категория: {category}")
-        else:
-            response = format_categories(await list_categories(session, user.id))
-    await message.answer(
-        response,
-        reply_markup=(item_navigation_keyboard([item.id for item in items]) if category else None),
+        return await list_categories(session, user.id)
+
+
+async def _send_category_items_for_actor(
+    *,
+    telegram_user_id: int,
+    chat_id: int,
+    category: str,
+    settings: Settings,
+    session_factory,
+    send,
+) -> None:
+    """Keep category result ordering and Item navigation shared across both entry points."""
+    if not settings.is_allowed(telegram_user_id):
+        return
+    from app.bot.formatting import format_item_list
+    from app.services.ingestion import get_or_create_user
+
+    async with session_factory() as session:
+        user = await get_or_create_user(
+            session,
+            telegram_user_id=telegram_user_id,
+            chat_id=chat_id,
+            timezone=settings.default_timezone,
+        )
+        await session.commit()
+        items = await list_category_items(session, user.id, category)
+    await send(
+        format_item_list(items, f"Категория: {category}"),
+        reply_markup=item_navigation_keyboard([item.id for item in items]),
     )
 
 
 async def on_search(message: Message, settings: Settings, session_factory, query: str) -> None:
     if not await _allowed(message, settings):
         return
+    await _send_search_for_actor(
+        telegram_user_id=message.from_user.id,
+        chat_id=message.chat.id,
+        query=query,
+        settings=settings,
+        session_factory=session_factory,
+        send=message.answer,
+    )
+
+
+async def _send_search_for_actor(
+    *,
+    telegram_user_id: int,
+    chat_id: int,
+    query: str,
+    settings: Settings,
+    session_factory,
+    send,
+) -> None:
+    """Run the existing lexical search and rendering from either input surface."""
+    if not settings.is_allowed(telegram_user_id):
+        return
     from app.bot.formatting import format_item_list
     from app.services.ingestion import get_or_create_user
 
+    query = query.strip()
     if not query:
-        await message.answer("Использование: /search <запрос>")
+        await send("Использование: /search <запрос>")
         return
     async with session_factory() as session:
         user = await get_or_create_user(
             session,
-            telegram_user_id=message.from_user.id,
-            chat_id=message.chat.id,
+            telegram_user_id=telegram_user_id,
+            chat_id=chat_id,
             timezone=settings.default_timezone,
         )
         await session.commit()
         items = await search_items(session, user.id, query)
-    await message.answer(
+    await send(
         format_item_list(items, "Результаты поиска:"),
         reply_markup=item_navigation_keyboard([item.id for item in items]),
     )
@@ -1657,20 +1965,50 @@ async def on_ask(message: Message, settings: Settings, session_factory, question
     if not question:
         await message.answer("Использование: /ask <вопрос>")
         return
-    if len(question) > MAX_ASK_QUESTION_CHARS:
-        await message.answer(f"Вопрос слишком длинный. Максимум {MAX_ASK_QUESTION_CHARS} символов.")
+    if error := _ask_question_length_error(question):
+        await message.answer(error)
         return
-    user_id = message.from_user.id if message.from_user else None
+    job = await _enqueue_ask_for_actor(
+        telegram_user_id=message.from_user.id,
+        chat_id=message.chat.id,
+        telegram_message_id=message.message_id,
+        question=question,
+        settings=settings,
+        session_factory=session_factory,
+    )
+    if job is not None:
+        await message.answer("Ищу в сохранённых материалах…")
+
+
+def _ask_question_length_error(question: str) -> str | None:
+    """Apply the same bounded Ask input contract to slash and guided submissions."""
+    if len(question) > MAX_ASK_QUESTION_CHARS:
+        return f"Вопрос слишком длинный. Максимум {MAX_ASK_QUESTION_CHARS} символов."
+    return None
+
+
+async def _enqueue_ask_for_actor(
+    *,
+    telegram_user_id: int,
+    chat_id: int,
+    telegram_message_id: int,
+    question: str,
+    settings: Settings,
+    session_factory,
+):
+    """Persist one user message as the durable Ask identity; never call the provider here."""
+    if not settings.is_allowed(telegram_user_id):
+        return None
     job = await enqueue_ask(
         session_factory,
-        telegram_user_id=user_id,
-        telegram_message_id=message.message_id,
-        chat_id=message.chat.id,
+        telegram_user_id=telegram_user_id,
+        telegram_message_id=telegram_message_id,
+        chat_id=chat_id,
         question=question,
         default_timezone=settings.default_timezone,
     )
-    log.info("ask request acknowledged job=%s user_id=%s", job.id, user_id)
-    await message.answer("Ищу в сохранённых материалах…")
+    log.info("ask request acknowledged job=%s user_id=%s", job.id, telegram_user_id)
+    return job
 
 
 async def on_export(message: Message, settings: Settings, session_factory) -> None:
@@ -1685,20 +2023,41 @@ async def on_export(message: Message, settings: Settings, session_factory) -> No
     requested_mode = arguments[0].casefold() if arguments else "compact"
     if requested_mode == "compact":
         mode = COMPACT
-        acknowledgement = "Готовлю компактный экспорт…"
     elif requested_mode == "full":
         mode = FULL
-        acknowledgement = "Готовлю полный экспорт…"
     else:
         await message.answer("Использование: /export [compact|full]")
         return
 
-    telegram_user_id = message.from_user.id
+    job = await _enqueue_export_for_actor(
+        telegram_user_id=message.from_user.id,
+        chat_id=message.chat.id,
+        telegram_message_id=message.message_id,
+        mode=mode,
+        settings=settings,
+        session_factory=session_factory,
+    )
+    if job is not None:
+        await message.answer(_export_acknowledgement(job.mode, job.status))
+
+
+async def _enqueue_export_for_actor(
+    *,
+    telegram_user_id: int,
+    chat_id: int,
+    telegram_message_id: int,
+    mode: str,
+    settings: Settings,
+    session_factory,
+):
+    """Use the existing message-keyed ExportJob boundary for command and chooser requests."""
+    if not settings.is_allowed(telegram_user_id):
+        return None
     job = await enqueue_export(
         session_factory,
         telegram_user_id=telegram_user_id,
-        telegram_message_id=message.message_id,
-        chat_id=message.chat.id,
+        telegram_message_id=telegram_message_id,
+        chat_id=chat_id,
         mode=mode,
         default_timezone=settings.default_timezone,
     )
@@ -1706,6 +2065,256 @@ async def on_export(message: Message, settings: Settings, session_factory) -> No
         "export request acknowledged job_id=%s user_id=%s mode=%s",
         job.id,
         telegram_user_id,
-        mode,
+        job.mode,
     )
-    await message.answer(acknowledgement)
+    return job
+
+
+def _export_acknowledgement(mode: str, status: str) -> str:
+    """Render the durable winning mode when callbacks for one chooser arrive more than once."""
+    label = "полный" if mode == FULL else "компактный"
+    if status in {"PENDING", "RUNNING"}:
+        return f"Готовлю {label} экспорт…"
+    if status == "DONE":
+        return f"Этот {label} экспорт уже подготовлен."
+    return f"Не удалось подготовить {label} экспорт. Повтори /export {mode.casefold()}."
+
+
+async def on_guided_ask_input(
+    message: Message,
+    settings: Settings,
+    session_factory,
+    state: FSMContext,
+) -> None:
+    """Turn one authorized text reply into the existing durable Ask request."""
+    telegram_user_id = message.from_user.id if message.from_user else None
+    if not settings.is_allowed(telegram_user_id):
+        await state.clear()
+        return
+    question = (message.text or "").strip()
+    if not question:
+        return
+    if error := _ask_question_length_error(question):
+        await message.answer(error)
+        return
+    job = await _enqueue_ask_for_actor(
+        telegram_user_id=telegram_user_id,
+        chat_id=message.chat.id,
+        telegram_message_id=message.message_id,
+        question=question,
+        settings=settings,
+        session_factory=session_factory,
+    )
+    if job is not None:
+        await state.clear()
+        await message.answer("Ищу в сохранённых материалах…")
+
+
+async def on_guided_search_input(
+    message: Message,
+    settings: Settings,
+    session_factory,
+    state: FSMContext,
+) -> None:
+    """Consume one guided query through the same FTS presentation path as /search."""
+    telegram_user_id = message.from_user.id if message.from_user else None
+    if not settings.is_allowed(telegram_user_id):
+        await state.clear()
+        return
+    query = (message.text or "").strip()
+    if not query:
+        await message.answer("Напиши, что найти в сохранённых материалах.")
+        return
+    # A valid one-shot query is consumed before local search so a failure cannot
+    # leave the next ordinary message accidentally routed as another query.
+    await state.clear()
+    await _send_search_for_actor(
+        telegram_user_id=telegram_user_id,
+        chat_id=message.chat.id,
+        query=query,
+        settings=settings,
+        session_factory=session_factory,
+        send=message.answer,
+    )
+
+
+async def on_navigation_callback(
+    callback: CallbackQuery,
+    settings: Settings,
+    session_factory,
+    state: FSMContext,
+) -> None:
+    """Route inline navigation with the human callback actor, never the bot-authored message."""
+    if callback.message is None or callback.data is None:
+        await callback.answer()
+        return
+    telegram_user_id = callback.from_user.id
+    if not settings.is_allowed(telegram_user_id):
+        if callback.data in {"nav:ask", "nav:search", "nav:input:cancel"}:
+            await state.clear()
+        await callback.answer()
+        return
+
+    # Each navigation choice replaces any older one-shot prompt. Ask/Search
+    # below install their own state only after the prompt UI is successfully shown.
+    await state.clear()
+    chat_id = callback.message.chat.id
+    send = callback.message.answer
+    data = callback.data
+
+    if data == "nav:input:cancel":
+        await _edit_item_message_if_changed(callback.message, "Отменено.", None)
+        await callback.answer()
+    elif data == "nav:menu":
+        await _edit_item_message_if_changed(callback.message, "Главное меню:", main_menu_keyboard())
+        await callback.answer()
+    elif data == "nav:today":
+        await callback.answer()
+        await _send_today_for_actor(
+            telegram_user_id=telegram_user_id,
+            chat_id=chat_id,
+            settings=settings,
+            session_factory=session_factory,
+            send=send,
+        )
+    elif data == "nav:attention":
+        await callback.answer()
+        await _send_attention_for_actor(
+            telegram_user_id=telegram_user_id,
+            chat_id=chat_id,
+            arguments="",
+            settings=settings,
+            session_factory=session_factory,
+            send=send,
+        )
+    elif data == "nav:inbox":
+        await callback.answer()
+        await _send_inbox_for_actor(
+            telegram_user_id=telegram_user_id,
+            chat_id=chat_id,
+            settings=settings,
+            session_factory=session_factory,
+            send=send,
+        )
+    elif data == "nav:weekly":
+        await callback.answer()
+        await _send_weekly_for_actor(
+            telegram_user_id=telegram_user_id,
+            chat_id=chat_id,
+            settings=settings,
+            session_factory=session_factory,
+            send=send,
+        )
+    elif data == "nav:profile":
+        await callback.answer()
+        await _send_profile_for_actor(
+            telegram_user_id=telegram_user_id,
+            chat_id=chat_id,
+            settings=settings,
+            session_factory=session_factory,
+            send=send,
+        )
+    elif data == "nav:settings":
+        projection = await _build_settings_projection(
+            telegram_user_id, chat_id, settings, session_factory
+        )
+        await callback.answer()
+        if projection is not None:
+            await send(projection[0], reply_markup=projection[1])
+    elif data == "nav:categories":
+        categories = await _load_categories_for_actor(
+            telegram_user_id=telegram_user_id,
+            chat_id=chat_id,
+            settings=settings,
+            session_factory=session_factory,
+        )
+        from app.bot.formatting import format_categories
+
+        choices = categories[:20]
+        text = format_categories(choices)
+        if len(categories) > len(choices):
+            text += "\nПоказаны первые 20 категорий."
+        await callback.answer()
+        await send(
+            text,
+            reply_markup=category_navigation_keyboard([name for name, _ in choices]),
+        )
+    elif data.startswith("nav:category:"):
+        token = data.removeprefix("nav:category:")
+        categories = await _load_categories_for_actor(
+            telegram_user_id=telegram_user_id,
+            chat_id=chat_id,
+            settings=settings,
+            session_factory=session_factory,
+        )
+        matches = [name for name, _ in categories if category_token(name) == token]
+        if len(matches) != 1:
+            await callback.answer("Категория больше недоступна")
+            return
+        await callback.answer()
+        await _send_category_items_for_actor(
+            telegram_user_id=telegram_user_id,
+            chat_id=chat_id,
+            category=matches[0],
+            settings=settings,
+            session_factory=session_factory,
+            send=send,
+        )
+    elif data == "nav:search":
+        await _edit_item_message_if_changed(
+            callback.message,
+            "🔎 Что найти в сохранённых материалах?",
+            input_cancel_keyboard(),
+        )
+        await state.set_state(GuidedInput.search)
+        await callback.answer()
+    elif data == "nav:ask":
+        await _edit_item_message_if_changed(
+            callback.message,
+            "🧠 Задай вопрос по сохранённым материалам.\n\n"
+            "Например: «Что я сохранял про локальные LLM?»",
+            input_cancel_keyboard(),
+        )
+        await state.set_state(GuidedInput.ask)
+        await callback.answer()
+    elif data == "nav:export":
+        await _edit_item_message_if_changed(
+            callback.message, "Выбери формат экспорта:", export_mode_keyboard()
+        )
+        await callback.answer()
+    else:
+        await callback.answer("Действие больше недоступно")
+
+
+async def on_export_mode_callback(
+    callback: CallbackQuery, settings: Settings, session_factory
+) -> None:
+    """Bind both chooser modes to the chooser message's existing durable identity."""
+    if callback.message is None or callback.data is None:
+        await callback.answer()
+        return
+    telegram_user_id = callback.from_user.id
+    if not settings.is_allowed(telegram_user_id):
+        await callback.answer()
+        return
+    mode = callback.data.removeprefix("export:mode:")
+    if mode not in {COMPACT, FULL}:
+        await callback.answer("Формат экспорта больше недоступен")
+        return
+    job = await _enqueue_export_for_actor(
+        telegram_user_id=telegram_user_id,
+        chat_id=callback.message.chat.id,
+        telegram_message_id=callback.message.message_id,
+        mode=mode,
+        settings=settings,
+        session_factory=session_factory,
+    )
+    if job is None:
+        await callback.answer()
+        return
+    # The first successful insert wins if Compact and Full callbacks race on
+    # this one chooser message; report the stored mode and remove both controls.
+    await _edit_item_message_if_changed(
+        callback.message, _export_acknowledgement(job.mode, job.status), None
+    )
+    await callback.answer()

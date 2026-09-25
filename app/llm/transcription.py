@@ -42,10 +42,14 @@ class OpenAiTranscriptionProvider:
                 response = await self._client.audio.transcriptions.create(
                     model=self._model, file=audio_file
                 )
-        except APITimeoutError as exc:
-            raise AppError("TIMEOUT", f"transcription timed out: {exc}") from exc
-        except Exception as exc:  # граница адаптера: SDK-ошибки → код приложения
-            raise AppError("TRANSCRIPTION_FAILED", f"transcription failed: {exc}") from exc
+        except (APITimeoutError, TimeoutError):
+            # ❌ Удалён raw SDK exception text и cause: multipart diagnostics могут
+            # включать содержимое.
+            raise AppError("TIMEOUT", "transcription provider request timed out") from None
+        except Exception:  # граница адаптера: SDK-ошибки → код приложения
+            raise AppError(
+                "TRANSCRIPTION_FAILED", "transcription provider request failed"
+            ) from None
         return (response.text or "").strip()
 
 

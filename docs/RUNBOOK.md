@@ -125,8 +125,10 @@ docker compose ps
 ```
 
 `status` не печатает credentials. Он показывает размер DB, QUEUED/PROCESSING/
-FAILED, pending deliveries, configured provider/model, processing concurrency и
-наличие Telegram config. Critical worker/polling task находится под fail-fast
+FAILED, pending deliveries, Ask PENDING/RUNNING/FAILED, unresolved `ASK_FAILED`
+delivery rows, configured provider/model, processing concurrency и наличие Telegram
+config. Счётчики читают только состояния очереди, не вопросы, ответы или Content.
+Critical worker/polling task находится под fail-fast
 supervisor: его неожиданное завершение роняет основной process; Compose
 `restart: unless-stopped` поднимает его снова.
 
@@ -446,15 +448,79 @@ sqlite3 data/app.db \
 обрабатывать Ask запросы; после настройки используйте штатный restart и проверку
 `python -m app.ops smoke`.
 
+Операторские ошибки можно сгруппировать без чтения приватного вопроса:
+
+```sql
+SELECT error_code, COUNT(*)
+FROM ask_jobs
+WHERE status = 'FAILED'
+GROUP BY error_code
+ORDER BY COUNT(*) DESC;
+
+SELECT id, user_id, status, error_code, created_at, updated_at
+FROM ask_jobs
+WHERE status = 'FAILED'
+ORDER BY id DESC
+LIMIT 50;
+
+SELECT id, ask_job_id, status, attempts, updated_at
+FROM deliveries
+WHERE ask_job_id IS NOT NULL
+ORDER BY id DESC
+LIMIT 50;
+```
+
+| error_code | Likely layer | Operator action |
+|---|---|---|
+| `LLM_TIMEOUT` | Provider/network | Check provider health and outbound network; Ask retries once immediately. |
+| `LLM_RATE_LIMITED` | Provider quota/rate policy | Check provider quota and rate limits. |
+| `LLM_AUTH_FAILED` | Credentials/account | Verify configured secret and provider account, then restart workers. |
+| `LLM_CONFIG_FAILED` | Model/request configuration | Verify provider/model compatibility and Structured Outputs support. |
+| `INVALID_LLM_OUTPUT` | Model/schema compatibility | Verify the configured model supports the required structured response. |
+| `LLM_FAILED` | Connection or provider server | Check safe application logs and provider status; transient failures retry once. |
+
+SQLite/FTS errors are not stored as ordinary `SEARCH_FAILED` Ask outcomes. They
+escape to the fail-fast supervisor; inspect database health and restart recovery.
+
+`AskJob DONE` means synthesis is complete even if its `ASK_RESULT` Delivery is
+still `PENDING`, `SENDING`, or terminal `FAILED`. Delivery retries use the
+persisted outbox payload and never run FTS or the LLM again. Resolve the Telegram
+transport problem first. For a terminal `FAILED` delivery, requeue only that
+durable delivery row after confirming the matching AskJob state; this retains the
+answer and does not create a new AskJob:
+
+```sql
+UPDATE deliveries
+SET status = 'PENDING', attempts = 0, last_error = NULL,
+    updated_at = CURRENT_TIMESTAMP
+WHERE id = :delivery_id
+  AND ask_job_id = :ask_job_id
+  AND type IN ('ASK_RESULT', 'ASK_FAILED')
+  AND status = 'FAILED'
+  AND EXISTS (
+      SELECT 1 FROM ask_jobs
+      WHERE ask_jobs.id = deliveries.ask_job_id
+        AND ask_jobs.status = CASE deliveries.type
+            WHEN 'ASK_RESULT' THEN 'DONE'
+            WHEN 'ASK_FAILED' THEN 'FAILED'
+        END
+  );
+```
+
+Telegram delivery is at-least-once: if the Bot API accepted a message immediately
+before a process/database failure, recovery may send it again. Never reset the
+AskJob to `PENDING` to repair delivery.
+
 Для OpenRouter strict JSON Schema запросы требуют upstream provider, который
 обрабатывает `response_format`; adapter включает `require_parameters=true`, чтобы
 маршрутизатор не выбрал upstream, молча игнорирующий параметр. При
 `INVALID_LLM_OUTPUT` Ask log показывает только finish reason, наличие refusal,
-тип/длину ответа и имена schema validation errors. Сам ответ, вопрос и контекст
-не логируются. Если модель вернёт числовой `source_id` как JSON-строку, adapter
-нормализует только десятичное значение в целое число; Ask service затем всё равно
-сверяет его с источниками, включёнными в конкретный запрос. Другие нарушения схемы
-проходят обычный retry и controlled failure.
+тип/длину ответа и количество schema validation errors. Имена полей и их пути
+не логируются: модель может поместить приватный текст в лишнее имя поля. Сам ответ,
+вопрос и контекст тоже не логируются. Если модель вернёт числовой `source_id` как
+JSON-строку, adapter нормализует только десятичное значение в целое число; Ask
+service затем сверяет его с источниками, включёнными в конкретный запрос. Другие
+нарушения схемы проходят обычный retry и controlled failure.
 
 ## Export / ownership
 

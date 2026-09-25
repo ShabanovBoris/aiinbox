@@ -3,7 +3,16 @@ import base64
 import json
 import logging
 
-from openai import AsyncOpenAI
+from openai import (
+    APIConnectionError,
+    APIStatusError,
+    APITimeoutError,
+    AsyncOpenAI,
+    AuthenticationError,
+    BadRequestError,
+    PermissionDeniedError,
+    RateLimitError,
+)
 from pydantic import BaseModel, ValidationError
 
 from app.domain.enums import SourceType
@@ -15,9 +24,56 @@ from app.domain.models import (
     ProfilePatch,
     UserProfile,
 )
-from app.llm.base import AttentionHookGenerationResult, LlmCapabilities, LlmError
+from app.llm.base import (
+    AttentionHookGenerationResult,
+    LlmCapabilities,
+    LlmError,
+    safe_llm_error_message,
+)
 
 log = logging.getLogger(__name__)
+
+
+def _map_provider_error(exc: Exception, *, operation: str, provider: str, model: str) -> LlmError:
+    """Map SDK failures to safe application codes while logging metadata only."""
+    status_code = exc.status_code if isinstance(exc, APIStatusError) else None
+    if isinstance(exc, (APITimeoutError, TimeoutError)) or status_code == 408:
+        code = "LLM_TIMEOUT"
+        permanent = False
+    elif isinstance(exc, RateLimitError) or status_code == 429:
+        code = "LLM_RATE_LIMITED"
+        permanent = False
+    elif isinstance(exc, (AuthenticationError, PermissionDeniedError)) or status_code in {
+        401,
+        403,
+    }:
+        code = "LLM_AUTH_FAILED"
+        permanent = True
+    elif isinstance(exc, BadRequestError) or (status_code is not None and 400 <= status_code < 500):
+        code = "LLM_CONFIG_FAILED"
+        permanent = True
+    elif isinstance(exc, APIConnectionError) or (status_code is not None and status_code >= 500):
+        code = "LLM_FAILED"
+        permanent = False
+    else:
+        # Unknown failures are bounded but not retried as if they were known transient.
+        code = "LLM_FAILED"
+        permanent = True
+
+    # ❌ Удалено логирование str(exc) и cause: SDK исключение может содержать
+    # prompt или context.
+    log.warning(
+        "llm provider request failed operation=%s provider=%s model=%s code=%s "
+        "exception_type=%s status_code=%s",
+        operation,
+        provider,
+        model,
+        code,
+        type(exc).__name__,
+        status_code,
+    )
+    return LlmError(code, safe_llm_error_message(code), permanent=permanent)
+
 
 # Контент, профиль, source title и category history передаются как данные user-role;
 # system prompt остаётся единственным источником правил анализа (PRODUCT_SPEC §21).
@@ -353,6 +409,16 @@ class OpenAiProvider:
             },
         }
 
+    @property
+    def provider_name(self) -> str:
+        """Expose safe adapter identity without leaking SDK objects into workers."""
+        return self._provider_name
+
+    @property
+    def model_name(self) -> str:
+        """Expose configured model identity for bounded operator diagnostics."""
+        return self._model
+
     def _structured_output_request_options(self) -> dict[str, object]:
         """Route OpenRouter schema-constrained requests only to parameter-compatible providers."""
         if self._provider_name != "openrouter":
@@ -385,8 +451,12 @@ class OpenAiProvider:
             except LlmError:
                 raise
             except Exception as exc:  # граница адаптера: SDK-ошибки → код приложения
-                log.warning("llm analyze failed: %s", exc)
-                raise LlmError("LLM_FAILED", f"provider call failed: {exc}") from exc
+                raise _map_provider_error(
+                    exc,
+                    operation="analyze",
+                    provider=self._provider_name,
+                    model=self._model,
+                ) from None
 
             choice = response.choices[0]
             try:
@@ -437,8 +507,12 @@ class OpenAiProvider:
         except LlmError:
             raise
         except Exception as exc:  # boundary adapter maps SDK failures to the app contract
-            log.warning("attention hook provider call failed provider=%s", self._provider_name)
-            raise LlmError("LLM_FAILED", "attention hook provider call failed") from exc
+            raise _map_provider_error(
+                exc,
+                operation="generate_attention_hooks",
+                provider=self._provider_name,
+                model=self._model,
+            ) from None
 
         raw = response.choices[0].message.content or ""
         try:
@@ -489,9 +563,15 @@ class OpenAiProvider:
                     max_tokens=2048,
                     **self._structured_output_request_options(),
                 )
+            except LlmError:
+                raise
             except Exception as exc:  # SDK errors stay inside the provider adapter.
-                log.warning("ask provider call failed provider=%s", self._provider_name)
-                raise LlmError("LLM_FAILED", "ask provider call failed") from exc
+                raise _map_provider_error(
+                    exc,
+                    operation="answer_inbox",
+                    provider=self._provider_name,
+                    model=self._model,
+                ) from None
 
             choices = getattr(response, "choices", None)
             choice = choices[0] if choices else None
@@ -501,20 +581,18 @@ class OpenAiProvider:
             try:
                 return _parse_ask_result(raw)
             except ValidationError as exc:
-                validation = ",".join(
-                    f"{'/'.join(map(str, error['loc']))}:{error['type']}"
-                    for error in exc.errors(include_input=False, include_context=False)
-                )
+                # Extra JSON field names are untrusted and can contain private prompt text.
+                validation_error_count = len(exc.errors(include_input=False, include_context=False))
                 log.warning(
                     "ask provider returned invalid structured output provider=%s "
                     "finish_reason=%s refusal=%s content_type=%s content_chars=%s "
-                    "validation=%s retry=%s/1",
+                    "validation_error_count=%s retry=%s/1",
                     self._provider_name,
                     getattr(choice, "finish_reason", "unknown"),
                     bool(getattr(message, "refusal", None)),
                     type(content).__name__ if content is not None else "none",
                     len(raw),
-                    validation or "unknown",
+                    validation_error_count,
                     attempt,
                 )
                 if attempt == 1:
@@ -537,8 +615,15 @@ class OpenAiProvider:
                     {"role": "user", "content": text},
                 ],
             )
+        except LlmError:
+            raise
         except Exception as exc:
-            raise LlmError("LLM_FAILED", f"chunk summarization failed: {exc}") from exc
+            raise _map_provider_error(
+                exc,
+                operation="summarize_chunk",
+                provider=self._provider_name,
+                model=self._model,
+            ) from None
         summary = (response.choices[0].message.content or "").strip()
         if not summary:
             raise LlmError("INVALID_LLM_OUTPUT", "empty chunk summary")
@@ -581,12 +666,19 @@ class OpenAiProvider:
         except LlmError:
             raise
         except Exception as exc:
-            raise LlmError("LLM_FAILED", f"profile update failed: {exc}") from exc
+            raise _map_provider_error(
+                exc,
+                operation="profile_update",
+                provider=self._provider_name,
+                model=self._model,
+            ) from None
         raw = response.choices[0].message.content or ""
         try:
             return ProfilePatch.model_validate_json(raw)
-        except ValidationError as exc:
-            raise LlmError("INVALID_LLM_OUTPUT", f"invalid profile patch: {exc}") from exc
+        except ValidationError:
+            raise LlmError(
+                "INVALID_LLM_OUTPUT", "profile response did not match the required schema"
+            ) from None
 
     @staticmethod
     def parse_analysis(raw: str) -> AnalysisResult:
@@ -631,6 +723,13 @@ class OpenAiProvider:
                 model=self._vision_model,
                 messages=[{"role": "user", "content": content_parts}],
             )
+        except LlmError:
+            raise
         except Exception as exc:  # граница адаптера: SDK-ошибки → код приложения
-            raise LlmError("VISUAL_FAILED", f"vision call failed: {exc}") from exc
+            raise _map_provider_error(
+                exc,
+                operation="describe_images",
+                provider=self._provider_name,
+                model=self._vision_model or self._model,
+            ) from None
         return response.choices[0].message.content or ""

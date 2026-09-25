@@ -94,6 +94,60 @@ def item_keyboard(
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+def main_menu_keyboard() -> InlineKeyboardMarkup:
+    """Expose existing bot surfaces as a compact presentation-only projection."""
+    actions = (
+        ("🎯 Сегодня", "nav:today"),
+        ("✨ Внимание", "nav:attention"),
+        ("📥 Inbox", "nav:inbox"),
+        ("🔎 Поиск", "nav:search"),
+        ("🧠 Ask", "nav:ask"),
+        ("📊 Неделя", "nav:weekly"),
+        ("🏷 Категории", "nav:categories"),
+        ("👤 Профиль", "nav:profile"),
+        ("⚙️ Настройки", "nav:settings"),
+        ("📦 Экспорт", "nav:export"),
+    )
+    buttons = [InlineKeyboardButton(text=label, callback_data=data) for label, data in actions]
+    rows = [buttons[index : index + 2] for index in range(0, len(buttons), 2)]
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def input_cancel_keyboard() -> InlineKeyboardMarkup:
+    """Give one-shot Ask/Search input an exit without adding durable chat state."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text="Отмена", callback_data="nav:input:cancel")]]
+    )
+
+
+def export_mode_keyboard() -> InlineKeyboardMarkup:
+    """Offer the two existing durable export modes from one chooser message."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="Compact", callback_data="export:mode:COMPACT"),
+                InlineKeyboardButton(text="Full", callback_data="export:mode:FULL"),
+            ],
+            [InlineKeyboardButton(text="← Меню", callback_data="nav:menu")],
+        ]
+    )
+
+
+def category_navigation_keyboard(categories: Sequence[str]) -> InlineKeyboardMarkup:
+    """Resolve bounded owner-supplied category labels through stable short tokens."""
+    rows = [
+        [
+            InlineKeyboardButton(
+                text=_category_button_label(category),
+                callback_data=f"nav:category:{category_callback_token(category)}",
+            )
+        ]
+        for category in categories[:_MAX_CATEGORY_CHOICES]
+    ]
+    rows.append([InlineKeyboardButton(text="← Меню", callback_data="nav:menu")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 def item_more_keyboard(item: Item) -> InlineKeyboardMarkup:
     """Expose lifecycle and READY-only controls one level below the content card."""
     rows = []
@@ -509,10 +563,14 @@ def snooze_keyboard(item_id: int) -> InlineKeyboardMarkup:
 
 
 def settings_keyboard(enabled: bool) -> InlineKeyboardMarkup:
-    """Minimal settings projection: the common digest toggle is one tap."""
+    """Expose digest and existing Attention settings in one compact projection."""
     label = "🔕 Выключить digest" if enabled else "🔔 Включить digest"
     return InlineKeyboardMarkup(
-        inline_keyboard=[[InlineKeyboardButton(text=label, callback_data="settings:digest")]]
+        inline_keyboard=[
+            [InlineKeyboardButton(text=label, callback_data="settings:digest")],
+            [InlineKeyboardButton(text="⚡ Attention", callback_data="settings:attention:open")],
+            [InlineKeyboardButton(text="← Меню", callback_data="nav:menu")],
+        ]
     )
 
 
@@ -537,5 +595,12 @@ def attention_settings_keyboard(
         callback_data="settings:attention:motivation",
     )
     return InlineKeyboardMarkup(
-        inline_keyboard=[levels[:2], levels[2:4], levels[4:], [toggle], [motivation_toggle]]
+        inline_keyboard=[
+            levels[:2],
+            levels[2:4],
+            levels[4:],
+            [toggle],
+            [motivation_toggle],
+            [InlineKeyboardButton(text="← Настройки", callback_data="settings:open")],
+        ]
     )

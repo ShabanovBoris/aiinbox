@@ -6,6 +6,7 @@ import logging
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
+from app.errors import AppError
 from app.llm.base import LlmProvider
 from app.services.ask_inbox import (
     AskInboxService,
@@ -53,13 +54,23 @@ class AskWorker:
                 job.user_id,
             )
             raise
-        except Exception as exc:
+        except AppError as exc:
             code = ask_failure_code(exc)
             log.warning(
-                "ask worker failed job=%s user_id=%s code=%s",
+                "ask worker failed job_id=%s user_id=%s stage=compute code=%s",
                 job.id,
                 job.user_id,
                 code,
             )
             await self.service.fail(job.id, job.user_id, code)
+        except Exception as exc:
+            # ❌ Удалено превращение неизвестных ошибок в обычный Ask FAILED: programming faults
+            # остаются видны critical supervisor-у и RUNNING job восстановится при старте.
+            log.error(
+                "ask worker unexpected failure job_id=%s user_id=%s exception_type=%s",
+                job.id,
+                job.user_id,
+                type(exc).__name__,
+            )
+            raise
         return True

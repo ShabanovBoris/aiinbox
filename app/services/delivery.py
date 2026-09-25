@@ -33,6 +33,15 @@ ITEM_FAILED = "ITEM_FAILED"
 PROFILE_UPDATED = "PROFILE_UPDATED"
 ASK_RESULT = "ASK_RESULT"
 ASK_FAILED = "ASK_FAILED"
+
+
+def _ask_failure_copy(error_code: str | None) -> str:
+    """Keep computation failure details private while distinguishing temporary provider outages."""
+    if error_code in {"LLM_TIMEOUT", "LLM_RATE_LIMITED", "LLM_FAILED"}:
+        return "Не смог подготовить ответ из-за временной ошибки ИИ. Попробуй ещё раз."
+    return "Сейчас не могу подготовить ответ по сохранённым материалам. Попробуй позже."
+
+
 EXPORT_FILE = "EXPORT_FILE"
 EXPORT_FAILED = "EXPORT_FAILED"
 ITEM_VIDEO_PREFIX = "ITEM_VIDEO:"
@@ -470,6 +479,9 @@ class DeliveryWorker:
             if delivery_type in {ASK_RESULT, ASK_FAILED}:
                 if ask_job is None or ask_job.user_id != delivery.user_id:
                     raise RuntimeError(f"delivery {delivery_id} has no matching AskJob")
+                expected_status = "DONE" if delivery_type == ASK_RESULT else "FAILED"
+                if ask_job.status != expected_status:
+                    raise RuntimeError("Ask delivery does not match its computation status")
                 if delivery_type == ASK_RESULT:
                     try:
                         ask_payload = AskDeliveryPayload.model_validate(payload)
@@ -519,7 +531,7 @@ class DeliveryWorker:
         if delivery_type == ASK_FAILED:
             await self.bot.send_message(
                 chat_id,
-                "Не удалось подготовить ответ по сохранённым материалам. Попробуй ещё раз.",
+                _ask_failure_copy(ask_job.error_code if ask_job is not None else None),
             )
             return None
         if delivery_type == EXPORT_FILE:

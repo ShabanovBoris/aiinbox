@@ -1,5 +1,6 @@
 import os
 import sqlite3
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -19,6 +20,7 @@ from app.ops import (
     verify_backup_copy,
     verify_database,
 )
+from app.ops import main as ops_main
 from app.storage.database import make_engine
 from app.storage.models import Item, User
 
@@ -147,7 +149,7 @@ def test_backup_rotation_removes_only_old_aiinbox_generations(tmp_path):
     assert unrelated.exists()
 
 
-def test_database_status_reports_queue_failures_and_size(tmp_path):
+def test_database_status_reports_safe_ask_aggregates(tmp_path, monkeypatch, capsys):
     """Status reads only durable operational state and never needs provider secrets."""
     database = tmp_path / "status.db"
     connection = sqlite3.connect(database)
@@ -157,10 +159,27 @@ def test_database_status_reports_queue_failures_and_size(tmp_path):
             "INSERT INTO items(processing_status) VALUES (?)",
             [("QUEUED",), ("QUEUED",), ("PROCESSING",), ("FAILED",)],
         )
-        connection.execute("CREATE TABLE deliveries(status TEXT NOT NULL)")
+        connection.execute("CREATE TABLE ask_jobs(status TEXT NOT NULL, question TEXT)")
         connection.executemany(
-            "INSERT INTO deliveries(status) VALUES (?)",
-            [("PENDING",), ("SENDING",), ("SENT",)],
+            "INSERT INTO ask_jobs(status, question) VALUES (?, ?)",
+            [
+                ("PENDING", "PRIVATE_ASK_QUESTION_7f1a"),
+                ("RUNNING", "another private question"),
+                ("FAILED", "never read by status"),
+                ("DONE", "private done question"),
+            ],
+        )
+        connection.execute(
+            "CREATE TABLE deliveries(status TEXT NOT NULL, type TEXT, ask_job_id INTEGER)"
+        )
+        connection.executemany(
+            "INSERT INTO deliveries(status, type, ask_job_id) VALUES (?, ?, ?)",
+            [
+                ("PENDING", "ITEM_READY", None),
+                ("SENDING", "ASK_FAILED", 3),
+                ("FAILED", "ASK_FAILED", 4),
+                ("SENT", "ASK_FAILED", 5),
+            ],
         )
         connection.commit()
     finally:
@@ -172,7 +191,32 @@ def test_database_status_reports_queue_failures_and_size(tmp_path):
     assert status["processing"] == 1
     assert status["failed"] == 1
     assert status["pending_deliveries"] == 2
+    assert status["ask_pending"] == 1
+    assert status["ask_running"] == 1
+    assert status["ask_failed"] == 1
+    assert status["ask_failed_deliveries"] == 2
     assert status["bytes"] > 0
+
+    monkeypatch.setattr(sys, "argv", ["app.ops", "status"])
+    monkeypatch.setattr(
+        "app.ops.Settings",
+        lambda: SimpleNamespace(
+            database_url="unused",
+            llm_provider="openrouter",
+            openrouter_analysis_model="safe-model",
+            openai_analysis_model="",
+            processing_concurrency=2,
+            telegram_bot_token="",
+        ),
+    )
+    monkeypatch.setattr("app.ops.sqlite_database_path", lambda _url: database)
+    ops_main()
+    output = capsys.readouterr().out
+    assert "ask_pending=1" in output
+    assert "ask_running=1" in output
+    assert "ask_failed=1" in output
+    assert "ask_failed_deliveries=2" in output
+    assert "PRIVATE_ASK_QUESTION_7f1a" not in output
 
 
 async def test_rebuild_search_uses_canonical_items(settings, session_factory):

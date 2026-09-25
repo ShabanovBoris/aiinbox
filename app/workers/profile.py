@@ -12,7 +12,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.errors import AppError
-from app.llm.base import LlmProvider
+from app.llm.base import LlmError, LlmProvider, safe_llm_error_message
 from app.services.profile import (
     claim_oldest_profile_update,
     update_profile_from_patch,
@@ -58,7 +58,12 @@ class ProfileUpdateWorker:
         except Exception as exc:
             code = exc.code if isinstance(exc, AppError) else "LLM_FAILED"
             log.warning("profile update failed job=%s code=%s", job.id, code)
-            await finish_with_error(self.session_factory, job.id, code, str(exc)[:500])
+            message = (
+                safe_llm_error_message(code)
+                if isinstance(exc, LlmError)
+                else "Profile update failed"
+            )
+            await finish_with_error(self.session_factory, job.id, code, message)
             return True
         log.info("profile updated job=%s user_id=%s changed=%s", job.id, job.user_id, changed)
         return True

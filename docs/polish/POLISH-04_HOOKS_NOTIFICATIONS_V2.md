@@ -349,7 +349,7 @@ For every `MotivationKind`:
 
 POLISH-04 is complete when a proactive notification feels like a specific reason to reopen saved content, while PM-08/09/11 grounding, pacing, feedback and delivery guarantees remain intact.
 
-## 26. Current implementation (IN_REVIEW)
+## 26. Current implementation (DONE — PR #50 merged)
 
 - Attention Hook generation uses version 2, keeps exact original-Content evidence
   validation, stores at most one candidate per hook type, and selects bounded
@@ -364,3 +364,4 @@ POLISH-04 is complete when a proactive notification feels like a specific reason
   policy are unchanged.
 - No migration or dependency change is required. PM-08 pacing and PM-11 event
   semantics remain unchanged.
+- Merged into `main` in PR #50. POLISH-05 is the next implementation review.

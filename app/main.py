@@ -234,15 +234,20 @@ async def run(settings: Settings) -> None:
             # aiogram импортируется лениво: без токена приложение стартует чисто
             # воркерами — локальный smoke test не требует Telegram network.
             from aiogram import Bot, Dispatcher
+            from aiogram.fsm.storage.memory import MemoryStorage, SimpleEventIsolation
 
             from app.bot.handlers import make_router
+            from app.bot.navigation import configure_bot_commands
 
             bot = Bot(settings.telegram_bot_token)
+            await configure_bot_commands(bot)
             downloader = TelegramFileDownloader(bot, settings.max_audio_bytes)
             audio_extractor = AudioExtractor(
                 build_transcriber(settings), downloader, Path(settings.temp_dir)
             )
-            dispatcher = Dispatcher()
+            dispatcher = Dispatcher(
+                storage=MemoryStorage(), events_isolation=SimpleEventIsolation()
+            )
             dispatcher.include_router(
                 make_router(settings, session_factory, settings.max_audio_bytes)
             )

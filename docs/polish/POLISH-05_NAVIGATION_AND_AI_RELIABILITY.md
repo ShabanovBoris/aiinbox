@@ -3,7 +3,7 @@
 Type: Stabilization / Operability specification  
 Depends on: POLISH-01…04 preferred  
 Blocks: resuming PM-14+ product expansion  
-Status: PLANNED
+Status: IN_REVIEW
 
 ## 1. Problem
 
@@ -417,3 +417,32 @@ Do not start PM-14 in this PR.
 ## 30. Definition of Done
 
 POLISH-05 is complete when users can discover AIInbox's main functions without memorizing slash commands and repeated AI failures can be diagnosed and retried safely without weakening durable job semantics or leaking private content.
+
+## 31. Current implementation (IN_REVIEW)
+
+- Code registers the bounded Russian BotCommand list at Telegram startup. A
+  temporary `set_my_commands` failure logs only the operation and exception
+  type and does not stop workers or polling; workers-only mode makes no Telegram
+  setup call.
+- `/start`, `/menu`, and `/help` expose the compact inline menu. Menu callbacks
+  authorize with `callback.from_user`; command and callback views share their
+  actor-explicit presentation path. Today/Attention exposure remains after the
+  relevant Telegram send succeeds.
+- Guided Ask/Search use in-memory one-shot FSM state. A user text command clears
+  the pending prompt; forwarded text and media continue through ingestion.
+  Guided Ask stores the user's question message ID in AskJob and remains enqueue
+  only.
+- The export chooser uses its Telegram message ID as the existing ExportJob
+  idempotency key. If mode callbacks race, the first persisted mode is shown and
+  both chooser buttons are removed.
+- OpenAI-compatible calls map timeout, rate limit, authentication, request
+  configuration, and generic provider failures to static LLM codes/messages.
+  Provider request/response text is not retained or chained into logs. Ask
+  retries known transient provider failures for at most two logical attempts
+  with a 0.5-second delay; schema validation and citation repair remain separate
+  bounded retries. The worst-case Ask synthesis is bounded to eight provider
+  requests across the initial call, schema retry, citation repair, and
+  transient retry.
+- `NO_RESULTS` and `INSUFFICIENT_CONTEXT` remain successful DONE outcomes.
+  SQLite failures remain fail-fast, and Telegram delivery does not recompute
+  completed synthesis. PM-14+ stays ON HOLD until the separate quality review.

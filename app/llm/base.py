@@ -25,7 +25,19 @@ class LlmCapabilities(BaseModel):
 
 
 class LlmError(AppError):
-    """Ошибка на границе LLM-адаптера (LLM_FAILED / INVALID_LLM_OUTPUT)."""
+    """Bounded provider/application failure; its message must never contain request data."""
+
+
+def safe_llm_error_message(code: str) -> str:
+    """Project a failure code into static durable text instead of provider exception content."""
+    return {
+        "LLM_TIMEOUT": "LLM provider request timed out",
+        "LLM_RATE_LIMITED": "LLM provider rate limited",
+        "LLM_AUTH_FAILED": "LLM provider authentication failed",
+        "LLM_CONFIG_FAILED": "LLM provider request rejected by configuration",
+        "INVALID_LLM_OUTPUT": "LLM response did not match the required schema",
+        "LLM_FAILED": "LLM provider request failed",
+    }.get(code, "LLM operation failed")
 
 
 @dataclass(frozen=True)
@@ -73,6 +85,8 @@ class LlmProvider(Protocol):
     """
 
     capabilities: LlmCapabilities
+    provider_name: str
+    model_name: str
 
     async def analyze(
         self,
