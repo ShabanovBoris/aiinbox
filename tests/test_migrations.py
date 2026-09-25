@@ -26,6 +26,7 @@ def test_fresh_database_migrates_to_latest_schema(tmp_path):
             "events",
             "feedback_callback_receipts",
             "reminders",
+            "export_jobs",
             "deliveries",
             "alembic_version",
         } <= tables

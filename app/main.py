@@ -21,6 +21,7 @@ from app.services.analysis import Analyzer
 from app.services.ask_inbox import requeue_running_ask_jobs
 from app.services.attention_hooks import AttentionHookService
 from app.services.delivery import DeliveryWorker, requeue_sending_deliveries
+from app.services.export import requeue_running_export_jobs
 from app.services.notifications import ReminderWorker
 from app.services.processing import ProcessingPipeline
 from app.services.profile import (
@@ -30,6 +31,7 @@ from app.services.profile import (
 )
 from app.storage.database import make_engine, make_session_factory
 from app.workers.ask import AskWorker
+from app.workers.export import ExportWorker
 from app.workers.processing import ProcessingWorker, requeue_stale
 from app.workers.profile import ProfileUpdateWorker
 
@@ -215,6 +217,7 @@ async def run(settings: Settings) -> None:
         await requeue_stale(session_factory)
         await requeue_running_profile_jobs(session_factory)
         await requeue_running_ask_jobs(session_factory)
+        await requeue_running_export_jobs(session_factory)
         await requeue_sending_deliveries(session_factory)
         await apply_profile_seed(session_factory, settings.profile_seed_file)
         configure_profile_seed(settings.profile_seed_file)
@@ -288,6 +291,14 @@ async def run(settings: Settings) -> None:
             poll_seconds=settings.processing_poll_seconds,
         )
         ask_task = asyncio.create_task(ask_worker.run_forever(stop), name="ask-worker")
+        export_worker = ExportWorker(
+            session_factory,
+            settings.export_dir,
+            max_content_chars=settings.max_export_content_chars,
+            retention_seconds=settings.export_retention_seconds,
+            poll_seconds=settings.processing_poll_seconds,
+        )
+        export_task = asyncio.create_task(export_worker.run_forever(stop), name="export-worker")
         reminder_tasks = []
         delivery_tasks = []
         if bot is not None:
@@ -296,6 +307,7 @@ async def run(settings: Settings) -> None:
                 bot,
                 youtube_extractor=youtube_extractor,
                 instagram_extractor=instagram_extractor,
+                export_dir=settings.export_dir,
                 poll_seconds=settings.processing_poll_seconds,
             )
             delivery_tasks.append(
@@ -328,7 +340,7 @@ async def run(settings: Settings) -> None:
         ]
 
         all_worker_tasks = (
-            worker_tasks + profile_tasks + [ask_task] + delivery_tasks + reminder_tasks
+            worker_tasks + profile_tasks + [ask_task, export_task] + delivery_tasks + reminder_tasks
         )
         critical_tasks = all_worker_tasks + ([polling] if polling is not None else [])
         # ❌ Удален пассивный await stop.wait(): завершившийся worker/polling

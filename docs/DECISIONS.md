@@ -529,3 +529,42 @@ Consequences: retries of a pending/sending Telegram delivery do not repeat LLM
 synthesis; delivery retains the existing at-least-once transport window. PM-13
 uses lexical FTS5 only, leaving semantic/hybrid retrieval to PM-14 if real misses
 justify it.
+
+## D-037 — User export is a durable portable projection, not a backup
+
+Context: verified SQLite backup/restore protects application recovery, but users
+need a portable copy they can read outside AIInbox. Full archives may be too large
+for an in-memory Telegram message.
+
+Decision: `/export` creates a durable `ExportJob`. `ExportWorker` reads an explicit
+user-scoped DTO snapshot, closes SQLite, writes a versioned ZIP into a separate
+persistent export directory, then commits `DONE` with an `EXPORT_FILE` Delivery.
+`DeliveryWorker` owns Telegram file I/O and removes the artifact only after
+`SENT` is durably committed. The archive uses explicit field/content allowlists.
+
+Reason: this keeps ownership data separate from operational snapshots, survives
+restart/retry, and prevents database internals from becoming the export contract.
+
+Consequences: the portable schema needs explicit versioning, full snapshots need
+a memory bound, and sensitive temporary artifacts need bounded retention.
+
+## D-038 — Content topic and user relevance are separate analysis signals
+
+Context: profile and historical categories were supplied beside source content and
+could pull topic classification toward the user's profession. Summaries also tended
+to describe the medium, while durable chunk summaries could outlive their prompt
+semantics.
+
+Decision: derive title, summary and category from captured content. Use the profile
+only for user-relative scoring and the existing response-language rule; treat
+existing categories as optional naming hints. Put supported outcomes first in
+summary, and version durable chunk summaries so incompatible checkpoints are
+recomputed and replaced rather than reused.
+
+Reason: topic identity must remain faithful to the saved source, while personalization
+belongs to relevance and priority.
+
+Consequences: new analysis and explicit retries can produce more specific topics and
+outcome-first summaries; historical READY Items and manual category corrections are
+not rewritten. Any future change to chunk-summary semantics must increment its
+generator version. No schema migration is required.

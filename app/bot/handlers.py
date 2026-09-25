@@ -27,6 +27,7 @@ from app.services.actions import apply_item_action, record_item_events, set_item
 from app.services.ask_inbox import MAX_ASK_QUESTION_CHARS, enqueue_ask
 from app.services.attention_ranking import AttentionRankingService
 from app.services.delivery import enqueue_item_video_delivery
+from app.services.export import COMPACT, FULL, enqueue_export
 from app.services.feedback import (
     correct_item_category_by_token,
     correct_item_type,
@@ -65,6 +66,7 @@ HELP_TEXT = (
     "/inbox — последние Items\n"
     "/search <текст> — поиск по сохранённому содержимому\n"
     "/ask <вопрос> — ответ по сохранённым материалам\n"
+    "/export [compact|full] — выгрузить свои данные AIInbox\n"
     "/category [имя] — категории и Items категории\n"
     "/profile — текущий профиль\n"
     "/profile_update <инструкция> — обновить профиль\n"
@@ -521,6 +523,10 @@ def make_router(
         parts = (message.text or "").split(maxsplit=1)
         question = parts[1].strip() if len(parts) == 2 else ""
         await on_ask(message, settings, session_factory, question)
+
+    @router.message(Command("export"))
+    async def export(message: Message) -> None:
+        await on_export(message, settings, session_factory)
 
     @router.callback_query(F.data.startswith("item:"))
     async def item_action(callback: CallbackQuery) -> None:
@@ -1389,3 +1395,41 @@ async def on_ask(message: Message, settings: Settings, session_factory, question
     )
     log.info("ask request acknowledged job=%s user_id=%s", job.id, user_id)
     await message.answer("Ищу в сохранённых материалах…")
+
+
+async def on_export(message: Message, settings: Settings, session_factory) -> None:
+    """Translate an authorized command into a durable job; generation remains worker-owned."""
+    if not await _allowed(message, settings):
+        return
+    parts = (message.text or "").split()
+    arguments = parts[1:]
+    if len(arguments) > 1:
+        await message.answer("Использование: /export [compact|full]")
+        return
+    requested_mode = arguments[0].casefold() if arguments else "compact"
+    if requested_mode == "compact":
+        mode = COMPACT
+        acknowledgement = "Готовлю компактный экспорт…"
+    elif requested_mode == "full":
+        mode = FULL
+        acknowledgement = "Готовлю полный экспорт…"
+    else:
+        await message.answer("Использование: /export [compact|full]")
+        return
+
+    telegram_user_id = message.from_user.id
+    job = await enqueue_export(
+        session_factory,
+        telegram_user_id=telegram_user_id,
+        telegram_message_id=message.message_id,
+        chat_id=message.chat.id,
+        mode=mode,
+        default_timezone=settings.default_timezone,
+    )
+    log.info(
+        "export request acknowledged job_id=%s user_id=%s mode=%s",
+        job.id,
+        telegram_user_id,
+        mode,
+    )
+    await message.answer(acknowledgement)

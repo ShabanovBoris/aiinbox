@@ -6,6 +6,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     DATABASE_URL=sqlite+aiosqlite:////data/app.db \
     BACKUP_DIR=/backups \
+    EXPORT_DIR=/exports \
     TEMP_DIR=/tmp/aiinbox \
     UV_PROJECT_ENVIRONMENT=/opt/venv \
     UV_LINK_MODE=copy \
@@ -30,8 +31,8 @@ COPY docs ./docs
 
 RUN groupadd --system --gid 10001 aiinbox \
     && useradd --system --uid 10001 --gid aiinbox --home-dir /app aiinbox \
-    && mkdir -p /data /backups /tmp/aiinbox \
-    && chown -R aiinbox:aiinbox /data /backups /tmp/aiinbox
+    && mkdir -p /data /backups /exports /tmp/aiinbox \
+    && chown -R aiinbox:aiinbox /data /backups /exports /tmp/aiinbox
 
 USER 10001:10001
 

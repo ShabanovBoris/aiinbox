@@ -1,3 +1,4 @@
+from pathlib import Path
 from typing import Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -16,6 +17,10 @@ class Settings(BaseSettings):
     # Backups live outside the canonical DB path and rotation is bounded.
     backup_dir: str = "./backups"
     backup_keep: int = Field(14, ge=1)
+    # User-owned export artifacts have their own persistent location and bounded retention.
+    export_dir: str = "./exports"
+    export_retention_seconds: int = Field(86_400, ge=60)
+    max_export_content_chars: int = Field(10_000_000, ge=1)
     processing_concurrency: int = Field(2, ge=1)
     processing_poll_seconds: float = Field(1.0, gt=0)
     processing_timeout_seconds: float = Field(900.0, gt=0)
@@ -110,6 +115,19 @@ class Settings(BaseSettings):
             raise ValueError(
                 "CONTENT_CHUNK_OVERLAP_CHARS must be smaller than CONTENT_CHUNK_MAX_CHARS"
             )
+        return self
+
+    @model_validator(mode="after")
+    def validate_export_directory(self) -> "Settings":
+        """Keep portable user archives physically separate from operational backups."""
+        export_path = Path(self.export_dir).resolve()
+        backup_path = Path(self.backup_dir).resolve()
+        if (
+            export_path == backup_path
+            or export_path.is_relative_to(backup_path)
+            or backup_path.is_relative_to(export_path)
+        ):
+            raise ValueError("EXPORT_DIR and BACKUP_DIR must use separate directories")
         return self
 
     @property

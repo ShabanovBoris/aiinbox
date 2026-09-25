@@ -74,7 +74,7 @@ All post-MVP work must preserve the current architecture:
 | 19 | Android Client | Share Sheet, rich browsing, widgets | PM-18 |
 | 20 | Calendar-aware Attention | Recommend Items using real free-time windows | PM-07, external calendar |
 
-## 3.1 Detailed specifications PM-06…PM-13
+## 3.1 Detailed specifications PM-06…PM-20
 
 - [PM-06 — Behaviour-Aware Ranking](PM-06_BEHAVIOUR_AWARE_RANKING.md)
 - [PM-07 — Attention Ranking Engine](PM-07_ATTENTION_RANKING.md)
@@ -84,6 +84,38 @@ All post-MVP work must preserve the current architecture:
 - [PM-11 — Reminder Feedback Loop](PM-11_REMINDER_FEEDBACK_LOOP.md)
 - [PM-12 — Weekly Review](PM-12_WEEKLY_REVIEW.md)
 - [PM-13 — Ask My Inbox](PM-13_ASK_MY_INBOX.md)
+- [PM-14 — Hybrid Semantic Search](PM-14_HYBRID_SEMANTIC_SEARCH.md)
+- [PM-15 — Export / Ownership](PM-15_EXPORT_OWNERSHIP.md)
+- [PM-16 — Per-operation LLM Routing](PM-16_PER_OPERATION_LLM_ROUTING.md)
+- [PM-17 — Ollama / Local Models](PM-17_OLLAMA_LOCAL_MODELS.md)
+- [PM-18 — HTTP API](PM-18_HTTP_API.md)
+- [PM-19 — Android Client](PM-19_ANDROID_CLIENT.md)
+- [PM-20 — Calendar-aware Attention](PM-20_CALENDAR_AWARE_ATTENTION.md)
+- [PM-14…PM-20 — Remaining roadmap index](PM-14_PM-20_INDEX.md)
+
+
+## 3.2 Quality & UX Polish — current focus
+
+Before resuming PM-14+ feature expansion, complete the five stabilization PRs:
+
+- [POLISH-01 — AI Analysis v2](../polish/POLISH-01_AI_ANALYSIS_V2.md)
+- [POLISH-02 — Compact Telegram Item UI](../polish/POLISH-02_COMPACT_TELEGRAM_UI.md)
+- [POLISH-03 — Unified Provenance & Original Access](../polish/POLISH-03_UNIFIED_PROVENANCE_ORIGINAL_ACCESS.md)
+- [POLISH-04 — Hooks & Notifications v2](../polish/POLISH-04_HOOKS_NOTIFICATIONS_V2.md)
+- [POLISH-05 — Telegram Navigation & AI Reliability](../polish/POLISH-05_NAVIGATION_AND_AI_RELIABILITY.md)
+- [Milestone index and freeze policy](../polish/README.md)
+
+Current sequencing decision:
+
+~~~text
+POLISH-01 → POLISH-02 → POLISH-03 → POLISH-04 → POLISH-05
+→ explicit quality review
+→ resume PM-14+
+~~~
+
+PM-14 and PM-16+ are ON HOLD during this milestone. This is a product-quality
+sequencing decision, not a hard technical dependency. Reliability/security fixes
+remain allowed. PM-15 is already merged and remains supported.
 
 ## 4. Milestone grouping
 
@@ -129,24 +161,35 @@ Goal: make resurfacing useful and engaging rather than repetitive.
 
 Goal: expose trends in attention, backlog growth, completion, neglect and category balance.
 
+### Milestone P — Quality & UX Polish — CURRENT FOCUS
+
+- POLISH-01 AI Analysis v2 — IN_REVIEW
+- POLISH-02 Compact Telegram Item UI — PLANNED
+- POLISH-03 Unified Provenance & Original Access — PLANNED
+- POLISH-04 Hooks & Notifications v2 — PLANNED
+- POLISH-05 Telegram Navigation & AI Reliability — PLANNED
+
+Goal: make the existing AI understanding, Telegram presentation, source navigation,
+reminders and reliability worth extending before new capability is added.
+
 ### Milestone G — Knowledge
 
-PM-13 Ask My Inbox  
-PM-14 Hybrid Semantic Search
+- PM-13 Ask My Inbox — DONE (PR #42 merged)
+- PM-14 Hybrid Semantic Search — ON HOLD until POLISH-01…05 quality review; still evidence-gated
 
 Goal: make stored material queryable as a personal knowledge base.
 
 ### Milestone H — Portability & Cost
 
-PM-15 Export / Ownership  
-PM-16 LLM Routing  
-PM-17 Ollama
+- PM-15 Export / Ownership — DONE (PR #44 merged)
+- PM-16 LLM Routing — ON HOLD until polish milestone review
+- PM-17 Ollama — ON HOLD; depends on PM-16
 
 ### Milestone I — Additional Clients & Context
 
-PM-18 HTTP API  
-PM-19 Android  
-PM-20 Calendar-aware Attention
+- PM-18 HTTP API — ON HOLD until polish milestone review
+- PM-19 Android — ON HOLD; depends on PM-18
+- PM-20 Calendar-aware Attention — ON HOLD until the current core is polished
 
 ## 5. PM-01 — User Interest Level
 
@@ -408,9 +451,13 @@ This is reflection, not another giant backlog dump.
 
 ## 17. PM-13 — Ask My Inbox
 
-Current state: IN_REVIEW.
+Current state: DONE. PM-13 was implemented and merged to main in PR #42.
+`/ask` uses durable AskJob/AskWorker processing, existing SQLite FTS5,
+bounded persisted Item/Content context, strict structured synthesis and validated
+Item/source citations. Generated answers are transient delivery data and do not
+become canonical Content/FTS knowledge.
 
-Initial implementation should use existing FTS5:
+Initial implementation uses existing FTS5:
 
 ~~~text
 query
@@ -426,103 +473,105 @@ Answers must identify source Items so hallucinated “memory” cannot silently 
 
 ## 18. PM-14 — Hybrid Semantic Search
 
-Only start this phase after real queries demonstrate systematic FTS failure.
+Status: ON HOLD until POLISH-01…05 quality review. After the hold is lifted, start only after PM-13 usage records concrete vocabulary-mismatch
+queries where relevant saved Items are not usefully retrieved by FTS5.
 
-Prefer:
+Keep FTS5 and add one rebuildable Item-level embedding projection stored in SQLite.
+Compute cosine similarity in-process at personal scale and fuse bounded lexical +
+semantic candidate lists deterministically. Ask My Inbox is the first hybrid
+consumer; `/search` remains lexical in v1 so its handler stays lightweight.
 
-~~~text
-FTS score
-+ embedding similarity
-+ metadata
-~~~
+No vector database. Semantic retrieval never bypasses PM-13 bounded context or
+Item/source citation validation.
 
-For personal scale, first evaluate embeddings stored with SQLite and in-process similarity. Do not introduce a vector database by default.
+Detailed specification: [PM-14_HYBRID_SEMANTIC_SEARCH.md](PM-14_HYBRID_SEMANTIC_SEARCH.md).
 
 ## 19. PM-15 — Export / Ownership
 
-Backup and export are different:
+Status: DONE. PM-15 was implemented and merged to main in PR #44.
 
-- backup restores AIInbox;
-- export gives the user portable data outside AIInbox.
+Backup restores AIInbox; export gives the user portable data outside AIInbox.
+Add durable background `/export` generation with compact/full modes, a versioned
+JSON/JSONL + Markdown ZIP and delivery through the existing Telegram outbox.
 
-Provide JSON and Markdown export, optionally including full persisted text/transcripts.
+Full mode may include original persisted text/transcripts. Never export secrets,
+cookies, provider credentials, worker internals, callback receipts, transient Ask
+answers or derived embedding vectors by default.
 
-Never include secrets/cookies/API keys.
+Detailed specification: [PM-15_EXPORT_OWNERSHIP.md](PM-15_EXPORT_OWNERSHIP.md).
 
 ## 20. PM-16 — Per-operation LLM Routing
 
-Route deterministic operation classes:
+Status: ON HOLD until the Quality & UX Polish milestone is reviewed.
 
-- FINAL_ANALYSIS;
-- CHUNK_SUMMARY;
-- VISION;
-- TRANSCRIPTION;
-- PROFILE_PATCH;
-- ATTENTION_HOOK;
-- ASK_INBOX;
-- EMBEDDING.
+Route explicit operation classes such as FINAL_ANALYSIS, CHUNK_SUMMARY, VISION,
+TRANSCRIPTION, PROFILE_PATCH, ATTENTION_HOOK, ASK_INBOX and EMBEDDING through a
+deterministic composition-layer router. Business services keep their current
+provider-agnostic interfaces.
 
-Routing is configuration/code, not an LLM deciding which LLM to call.
+Legacy configuration remains the default when no operation map is supplied.
+Routing is code/configuration; no LLM chooses another LLM and no implicit
+cross-provider fallback is introduced in v1.
+
+Detailed specification: [PM-16_PER_OPERATION_LLM_ROUTING.md](PM-16_PER_OPERATION_LLM_ROUTING.md).
 
 ## 21. PM-17 — Ollama / Local Models
 
-After per-operation routing, support local models first for low-risk/cheap tasks:
+Status: ON HOLD. Depends on PM-16 and the Quality & UX Polish milestone review.
 
-- chunk summary;
-- tags/classification where adequate;
-- attention hooks;
-- embeddings.
+Add `ollama` as an optional routed provider for selected low-risk/private
+operations. Initial targets are CHUNK_SUMMARY, ATTENTION_HOOK and EMBEDDING.
+Keep FINAL_ANALYSIS on the established provider by default until local-model
+quality is demonstrated with representative fixtures.
 
-Do not require local models for final analysis until quality is demonstrated.
+A local-route failure must never silently send the same private input to a cloud
+provider unless an explicit fallback is separately configured.
+
+Detailed specification: [PM-17_OLLAMA_LOCAL_MODELS.md](PM-17_OLLAMA_LOCAL_MODELS.md).
 
 ## 22. PM-18 — HTTP API
 
-Expose existing application services via FastAPI rather than recreating business logic.
+Status: ON HOLD until the Quality & UX Polish milestone is reviewed.
 
-Minimum future endpoints:
+Expose existing application services through an authenticated versioned FastAPI
+`/v1` interface. API endpoints remain thin adapters; they do not duplicate
+Telegram business logic. Initial surface covers text/URL capture, Item browsing,
+Today, Attention, Weekly, Search, durable Ask, lifecycle actions and user settings.
 
-~~~text
-POST /items
-GET /items
-GET /items/{id}
-GET /today
-GET /attention
-GET /search
-POST /ask
-POST /items/{id}/done
-POST /items/{id}/snooze
-POST /items/{id}/archive
-PATCH /items/{id}/interest
-~~~
+Write operations support client idempotency keys for mobile/offline retry. HTTP
+Ask remains asynchronous and its generated result stays transient/non-canonical.
+
+Detailed specification: [PM-18_HTTP_API.md](PM-18_HTTP_API.md).
 
 ## 23. PM-19 — Android Client
 
-Android is justified when Telegram becomes limiting for:
+Status: ON HOLD. Depends on PM-18 and the Quality & UX Polish milestone review.
 
-- Share Sheet capture;
-- rich browsing;
-- filters/search;
-- statistics/weekly review;
-- widgets;
-- settings;
-- history.
+Build a native thin Android client over `/v1`: Share Sheet text/URL capture,
+offline retry, Inbox/detail, Today, Attention, Search, Ask, Weekly, lifecycle
+actions, interest and core settings. The server remains canonical and owns all
+ranking/feedback logic.
 
-Telegram remains a supported client.
+Telegram remains a supported capture/reminder client. Android push and rich media
+upload are not required in v1.
+
+Detailed specification: [PM-19_ANDROID_CLIENT.md](PM-19_ANDROID_CLIENT.md).
 
 ## 24. PM-20 — Calendar-aware Attention
 
-Use actual free-time windows together with:
+Status: ON HOLD until the Quality & UX Polish milestone is reviewed. Depends on the Attention engine; PM-18/19 provide the recommended
+initial calendar transport.
 
-- attention score;
-- estimated_action_minutes;
-- age;
-- interest level.
+Use optional fresh busy/free windows together with Attention score and
+estimated_action_minutes. Initial privacy-first integration should let Android
+upload only busy intervals, not event titles, descriptions, attendees or locations.
 
-Example outcome:
+Calendar fit is a bounded derived current-context signal. Fresh busy state can
+suppress discretionary PROACTIVE_ATTENTION/MOTIVATION_NUDGE sends, while all
+existing PM-08 caps, gaps, quiet hours and fatigue policies remain authoritative.
+Core ranking remains fully usable when no calendar is connected.
 
-> 24 minutes until the next event. A high-value Item estimated at 18 minutes has been waiting for 31 days.
-
-Calendar integration must remain optional and must not make core ranking unusable without a calendar.
+Detailed specification: [PM-20_CALENDAR_AWARE_ATTENTION.md](PM-20_CALENDAR_AWARE_ATTENTION.md).
 
 ## 25. Target data-model evolution
 

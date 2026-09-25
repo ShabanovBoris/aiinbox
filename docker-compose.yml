@@ -5,10 +5,12 @@ services:
     environment:
       DATABASE_URL: sqlite+aiosqlite:////data/app.db
       BACKUP_DIR: /backups
+      EXPORT_DIR: /exports
       TEMP_DIR: /tmp/aiinbox
     volumes:
       - aiinbox_data:/data
       - aiinbox_backups:/backups
+      - aiinbox_exports:/exports
     tmpfs:
       - /tmp/aiinbox:mode=1777
     restart: unless-stopped
@@ -22,3 +24,4 @@ services:
 volumes:
   aiinbox_data:
   aiinbox_backups:
+  aiinbox_exports:
