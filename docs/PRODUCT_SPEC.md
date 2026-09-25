@@ -166,7 +166,10 @@ Retry меняет processing status; Done/Later/Archive — lifecycle state.
 
 ## 12. Категории
 
-Категория — динамическая строка из анализа, не enum.
+Категория — динамическая строка из анализа, не enum. Она называет основную тему
+сохранённого содержимого; профессия, цели и интересы пользователя не являются
+тематическими доказательствами. История категорий — только подсказка для повторного
+использования точного тематического названия, не закрытый справочник.
 
 ## 13. Обработка Telegram сообщения
 
@@ -319,24 +322,47 @@ Analyzer обязан возвращать schema-validated `AnalysisResult`. П
 
 Структура включает title, summary, category, ItemType, tags, priority factors,
 estimated action, next action, reason, language и confidence. Pydantic валидирует
-shape/types. Для Item с Telegram VIDEO/YouTube title, summary, next action и
-reason создаются на языке из профиля, даже если transcript на другом языке;
-поле `language` сохраняет язык исходного материала. Для остальных источников
-остаётся правило языка самого контента.
+shape/types и запрещает незнакомые поля, включая `priority_score`; итоговый score
+считает приложение. Поля `next_action`, `priority_reason`, `estimated_action_minutes`
+и ItemType остаются совместимыми с текущими потребителями.
+
+Summary первым предложением сообщает вывод, результат, рекомендацию или resolved
+claim, если источник их подтверждает; exploratory и inconclusive материал описывает
+неопределённость без выдуманного победителя. Summary — короткая canonical prose для
+поиска, Ask, export и других поверхностей, без Telegram markup. Title называет
+содержательную тему, а не формат источника. `next_action` — конкретный шаг либо null;
+когда шага нет, длительность тоже null. `priority_reason` остаётся внутренним
+объяснением факторов и может учитывать профиль.
+
+Для Item с Telegram VIDEO/YouTube title, summary, next action и reason создаются на
+языке из профиля, даже если transcript на другом языке; поле `language` сохраняет
+язык исходного материала. Для остальных источников остаётся правило языка самого
+контента.
 
 ## 32. Long content
 
 Длинный текст анализируется через bounded chunking + intermediate summaries,
-после чего выполняется aggregate/final analysis.
+после чего выполняется aggregate/final analysis. Каждый chunk summary сохраняет
+сильные claims, результаты, рекомендации, изменения и противоречия; если в части
+есть вывод, он помещается в начало её summary. Итоговый aggregate сохраняет порядок,
+равномерно выделяет место каждой части и остаётся в пределах chunk-size bound.
+Нумерация частей — только framing для final analysis и не добавляется в persisted
+summary.
 
 ## 33. Chunking
 
 Chunk boundaries paragraph-aware. Durable `CHUNK_SUMMARY` reuse разрешён только
-при совпадении index, settings и SHA-256 exact chunk text.
+при совпадении index, chunk-size/overlap settings, SHA-256 exact chunk text и
+`generator_version`. Текущая версия семантики — 2; после изменения требований к
+chunk summary version увеличивается. Устаревшая запись не переиспользуется: после
+успешной пересборки она заменяется в своём chunk slot, а больше не нужные поколения
+удаляются, чтобы не дублировать derived evidence в FTS/Ask fallback. Каждая часть
+фиксируется отдельно; SQLite-транзакция не охватывает вызов LLM.
 
 ## 34. Пользовательский профиль
 
-Профиль хранится per user и участвует в анализе будущих Items.
+Профиль хранится per user и участвует в анализе будущих Items как контекст
+персональной релевантности, но не как доказательство темы.
 
 ## 35. UserProfile
 
@@ -353,7 +379,9 @@ constraints, free text и `preferred_language` в формате BCP-47. По у
 
 ## 37. Priority Engine
 
-Финальный `priority_score` считает deterministic code, а не LLM.
+Финальный `priority_score` считает deterministic code, а не LLM. Профиль может
+влиять на user-relative `goal_fit`, `interest_fit`, `importance` и внутренний
+`priority_reason`; category и factual summary выводятся из сохранённого содержимого.
 
 ## 38. Базовая формула priority
 

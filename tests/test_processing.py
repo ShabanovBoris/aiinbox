@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 
 import pytest
 from sqlalchemy import select
@@ -7,7 +8,7 @@ from app.domain.enums import ContentKind, ProcessingStatus
 from app.domain.models import DEFAULT_PROFILE, NormalizedContent
 from app.domain.priority import PriorityEngine
 from app.llm.base import LlmError
-from app.services.analysis import Analyzer, split_text
+from app.services.analysis import CHUNK_SUMMARY_GENERATOR_VERSION, Analyzer, split_text
 from app.services.delivery import ITEM_FAILED, ITEM_READY
 from app.services.ingestion import ingest_message
 from app.services.processing import ProcessingPipeline
@@ -217,6 +218,166 @@ async def test_legacy_chunk_summary_without_content_hash_is_not_reused(session_f
         )
 
     assert provider.summarize_calls == ["x" * 10, "x" * 5]
+
+
+@pytest.mark.parametrize("generator_version", [None, CHUNK_SUMMARY_GENERATOR_VERSION - 1])
+async def test_incompatible_chunk_summary_is_recomputed_in_place(
+    session_factory, generator_version
+):
+    """A prompt change replaces derived evidence instead of reusing or duplicating it."""
+    item = await seed(session_factory, text="x" * 15)
+    metadata = {
+        "stage": "chunk",
+        "chunk_index": 0,
+        "chunk_size_chars": 10,
+        "overlap_chars": 0,
+        "chunk_sha256": hashlib.sha256(("x" * 10).encode()).hexdigest(),
+    }
+    if generator_version is not None:
+        metadata["generator_version"] = generator_version
+
+    async with session_factory() as session:
+        old_row = Content(
+            item_id=item.id,
+            kind=ContentKind.CHUNK_SUMMARY,
+            text="old topic-only summary",
+            metadata_json=metadata,
+        )
+        session.add(old_row)
+        await session.commit()
+        old_id = old_row.id
+
+    provider = FakeLlmProvider()
+    analyzer = Analyzer(provider, chunk_size_chars=10)
+    async with session_factory() as session:
+        await analyzer.analyze(
+            NormalizedContent(source_type=item.source_type, text="x" * 15),
+            session,
+            item.user_id,
+            DEFAULT_PROFILE,
+            item.id,
+        )
+
+    assert provider.summarize_calls == ["x" * 10, "x" * 5]
+    async with session_factory() as session:
+        rows = (
+            await session.scalars(
+                select(Content)
+                .where(Content.item_id == item.id, Content.kind == ContentKind.CHUNK_SUMMARY)
+                .order_by(Content.id)
+            )
+        ).all()
+    assert len(rows) == 2
+    assert rows[0].id == old_id
+    assert [row.metadata_json["generator_version"] for row in rows] == [
+        CHUNK_SUMMARY_GENERATOR_VERSION,
+        CHUNK_SUMMARY_GENERATOR_VERSION,
+    ]
+
+
+async def test_compatible_versioned_chunk_summaries_are_reused(session_factory):
+    """Compatible durable summaries avoid another provider call after restart."""
+    item = await seed(session_factory, text="x" * 15)
+    async with session_factory() as session:
+        session.add(
+            Content(
+                item_id=item.id,
+                kind=ContentKind.CHUNK_SUMMARY,
+                text="v2 first chunk",
+                metadata_json={
+                    "stage": "chunk",
+                    "chunk_index": 0,
+                    "chunk_size_chars": 10,
+                    "overlap_chars": 0,
+                    "chunk_sha256": hashlib.sha256(("x" * 10).encode()).hexdigest(),
+                    "generator_version": CHUNK_SUMMARY_GENERATOR_VERSION,
+                },
+            )
+        )
+        await session.commit()
+
+    provider = FakeLlmProvider()
+    analyzer = Analyzer(provider, chunk_size_chars=10)
+    async with session_factory() as session:
+        await analyzer.analyze(
+            NormalizedContent(source_type=item.source_type, text="x" * 15),
+            session,
+            item.user_id,
+            DEFAULT_PROFILE,
+            item.id,
+        )
+
+    assert provider.summarize_calls == ["x" * 5]
+
+
+async def test_long_content_aggregate_preserves_order_and_late_conclusion(session_factory):
+    """Ordered framing gives final analysis the conclusion without persisting markers."""
+    item = await seed(session_factory, text="x" * 1_000)
+
+    class OutcomeProvider(FakeLlmProvider):
+        chunk_outputs = [
+            "Background: tools were preloaded for convenience.",
+            "Users often enabled a large collection globally.",
+            "The controlled test found extra context reduced task accuracy.",
+            "Conclusion: add skills only after failure.",
+        ]
+
+        async def summarize_chunk(self, text):
+            self.summarize_calls.append(text)
+            return self.chunk_outputs[len(self.summarize_calls) - 1]
+
+    provider = OutcomeProvider()
+    analyzer = Analyzer(provider, chunk_size_chars=300)
+    async with session_factory() as session:
+        await analyzer.analyze(
+            NormalizedContent(source_type=item.source_type, text="x" * 1_000),
+            session,
+            item.user_id,
+            DEFAULT_PROFILE,
+            item.id,
+        )
+
+    aggregate = provider.calls[0][0].text
+    assert len(aggregate) <= 300
+    assert "CHUNK 1/4:" in aggregate
+    assert "CHUNK 4/4:" in aggregate
+    assert "Conclusion: add skills only after failure." in aggregate
+    assert aggregate.index("CHUNK 1/4:") < aggregate.index("CHUNK 4/4:")
+    async with session_factory() as session:
+        rows = (
+            await session.scalars(
+                select(Content)
+                .where(Content.item_id == item.id, Content.kind == ContentKind.CHUNK_SUMMARY)
+                .order_by(Content.id)
+            )
+        ).all()
+    assert [row.text for row in rows] == provider.chunk_outputs
+    assert provider.calls[0][0].metadata["_analysis_chunk_summary_count"] == 4
+
+
+async def test_chunk_summary_provider_call_has_no_open_sqlite_transaction(session_factory):
+    """Each provider request runs between short checkpoint transactions."""
+    item = await seed(session_factory, text="x" * 25)
+
+    class TransactionCheckingProvider(FakeLlmProvider):
+        session = None
+
+        async def summarize_chunk(self, text):
+            assert not self.session.in_transaction()
+            return await super().summarize_chunk(text)
+
+    provider = TransactionCheckingProvider()
+    analyzer = Analyzer(provider, chunk_size_chars=10)
+    async with session_factory() as session:
+        provider.session = session
+        await analyzer.analyze(
+            NormalizedContent(source_type=item.source_type, text="x" * 25),
+            session,
+            item.user_id,
+            DEFAULT_PROFILE,
+            item.id,
+        )
+    assert len(provider.summarize_calls) == 3
 
 
 async def test_existing_categories_passed_to_provider(session_factory):

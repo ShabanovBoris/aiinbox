@@ -547,3 +547,24 @@ restart/retry, and prevents database internals from becoming the export contract
 
 Consequences: the portable schema needs explicit versioning, full snapshots need
 a memory bound, and sensitive temporary artifacts need bounded retention.
+
+## D-038 — Content topic and user relevance are separate analysis signals
+
+Context: profile and historical categories were supplied beside source content and
+could pull topic classification toward the user's profession. Summaries also tended
+to describe the medium, while durable chunk summaries could outlive their prompt
+semantics.
+
+Decision: derive title, summary and category from captured content. Use the profile
+only for user-relative scoring and the existing response-language rule; treat
+existing categories as optional naming hints. Put supported outcomes first in
+summary, and version durable chunk summaries so incompatible checkpoints are
+recomputed and replaced rather than reused.
+
+Reason: topic identity must remain faithful to the saved source, while personalization
+belongs to relevance and priority.
+
+Consequences: new analysis and explicit retries can produce more specific topics and
+outcome-first summaries; historical READY Items and manual category corrections are
+not rewritten. Any future change to chunk-summary semantics must increment its
+generator version. No schema migration is required.

@@ -3,7 +3,7 @@
 Type: Stabilization / Product-quality specification  
 Depends on: current ingestion + Analyzer + PriorityEngine  
 Blocks: POLISH-02, POLISH-04, PM-14+ rollout  
-Status: PLANNED
+Status: IN_REVIEW
 
 ## 1. Problem
 
