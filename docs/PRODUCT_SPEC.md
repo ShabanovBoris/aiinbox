@@ -771,12 +771,28 @@ application-service semantics. Навигация по меню — read-only pr
 URL source action показывается только для корректного HTTP(S) URL с hostname; на
 кнопке отображается bounded destination label без query/path. Public forwarded
 channel получает `↗ Оригинальный пост` только если Telegram дал public username и
-original message id. Private-origin navigation относится к POLISH-03.
+original message id.
 
-READY/FAILED уведомление по Item с VIDEO отправляется ответом на сообщение,
-которое пользователь отправил или переслал боту. Reply preview возвращает к
-копии видео в чате с ботом; для публичного пересланного поста кнопка выше ведёт
-отдельно к исходному посту.
+`↩️ Оригинал` воспроизводит через Bot API сообщение, отправленное пользователем
+в AIInbox. Его identity — `Item.telegram_message_id` и
+`User.telegram_chat_id`; private-chat URL не создаётся. Для пересланного
+публичного Telegram-поста `↗ Оригинальный пост` остаётся отдельной кнопкой:
+первая возвращает capture из чата с ботом, вторая открывает публичный источник.
+Если capture удалён, Item сохраняется, а доступные persisted source actions
+показываются как fallback.
+
+Уведомления `READY` и `FAILED` отвечают на исходное Telegram-сообщение для любого
+захвата с известным `telegram_message_id`, а не только для видео. Если Telegram
+отклонил только reply target, доставка один раз повторяется без reply; другие
+ошибки остаются в durable Delivery retry path.
+
+Списки `/today`, `/inbox`, `/category <имя>`, `/search`, daily digest и конкретные
+рекомендации `/weekly` показывают ограниченные numbered selectors в порядке текста.
+Нажатие присылает отдельную компактную карточку Item, сохраняя сообщение списка.
+Каждая такая карточка, ручной Attention, snooze и proactive Reminder дают доступ
+к оригинальному capture и/или безопасным сохранённым источникам. Ask показывает
+source action и Original только для уже подтверждённых цитат; составной Item без
+единственного source URL не выбирает произвольную ссылку.
 
 READY YouTube/Instagram ItemSource получает отдельное действие отправки этого
 источника в Telegram. Callback только ставит source-scoped intent в durable
