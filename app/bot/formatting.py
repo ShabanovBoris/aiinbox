@@ -4,6 +4,7 @@ from app.bot.provenance import forward_source_label
 from app.domain.enums import SourceType
 from app.domain.models import UserProfile
 from app.services.attention_ranking import AttentionRank
+from app.services.weekly_review import WeeklyReview
 from app.storage.models import Item, ItemSource
 
 _TELEGRAM_MAX_MESSAGE_LENGTH = 4096
@@ -40,6 +41,14 @@ def _fit_message(lines: list[str]) -> str:
         output.append(line)
         used += separator + len(line)
     return "\n".join(output)
+
+
+def _bounded_weekly_label(value: str, limit: int = 120) -> str:
+    """Keep user-authored/model-derived labels on one line within report space."""
+    normalized = " ".join(value.split())
+    if len(normalized) <= limit:
+        return normalized
+    return normalized[: limit - 1] + "…"
 
 
 def format_ready_item(item: Item, sources: Sequence[ItemSource] | None = None) -> str:
@@ -125,6 +134,138 @@ def format_today(items: list[Item]) -> str:
             lines.append(f"   ~{item.estimated_action_minutes} мин")
         if item.next_action:
             lines.append(f"   {item.next_action}")
+    return _fit_message(lines)
+
+
+def format_weekly_review(review: WeeklyReview) -> str:
+    """Render the read model as one compact message, keeping actions ahead of themes."""
+    flow = review.flow
+    backlog = review.backlog
+    reminders = review.reminder_outcomes
+    has_data = any(
+        (
+            flow.created,
+            flow.completed,
+            flow.archived,
+            backlog.active_actionable,
+            backlog.high_priority,
+            backlog.high_interest,
+            backlog.stale,
+            backlog.old_important_unrevisited,
+            bool(review.created_categories),
+            bool(review.completed_categories),
+            review.most_postponed is not None,
+            review.strongest_progress is not None,
+            reminders is not None and reminders.has_activity,
+            bool(review.recommendations),
+        )
+    )
+    if not has_data:
+        return "Неделя\n\nПока недостаточно данных для недельного обзора."
+
+    lines = ["📊 Неделя"]
+    has_flow = any((flow.created, flow.completed, flow.archived))
+    if has_flow:
+        lines.append("")
+        if flow.created:
+            lines.append(f"Добавлено: {flow.created}")
+        if flow.completed:
+            lines.append(f"Готово: {flow.completed}")
+        if flow.archived:
+            lines.append(f"Архивировано: {flow.archived}")
+        if flow.net_change > 0:
+            lines.append(f"Backlog вырос на {flow.net_change}")
+        elif flow.net_change < 0:
+            lines.append(f"Backlog сократился на {abs(flow.net_change)}")
+        else:
+            lines.append("Поток примерно сбалансирован")
+
+    if (
+        any(
+            (
+                backlog.active_actionable,
+                backlog.high_priority,
+                backlog.high_interest,
+            )
+        )
+        or has_flow
+    ):
+        lines.extend(("", "Сейчас:"))
+        lines.append(f"Активных actionable: {backlog.active_actionable}")
+        if backlog.high_priority:
+            lines.append(f"Высокий приоритет: {backlog.high_priority}")
+        if backlog.high_interest:
+            lines.append(f"Интерес 3/3: {backlog.high_interest}")
+
+    if backlog.stale or backlog.old_important_unrevisited:
+        lines.extend(("", "Старый backlog:"))
+        if backlog.stale:
+            lines.append(f"{backlog.stale} Item старше 30 дней")
+        if backlog.old_important_unrevisited:
+            lines.append(
+                f"{backlog.old_important_unrevisited} важных давно не возвращались в фокус"
+            )
+
+    if review.recommendations:
+        lines.extend(("", "На следующую неделю:"))
+        for index, recommendation in enumerate(review.recommendations[:3], start=1):
+            title = _bounded_weekly_label(recommendation.title)
+            if recommendation.kind == "RETURN_OLD_IMPORTANT":
+                lines.append(f"{index}. Вернуться: {title}")
+            elif recommendation.kind == "QUICK_WIN":
+                estimate = (
+                    f" (~{recommendation.estimated_action_minutes} мин)"
+                    if recommendation.estimated_action_minutes is not None
+                    else ""
+                )
+                lines.append(f"{index}. Быстрый шаг: {title}{estimate}")
+            elif recommendation.kind == "CLEANUP_REVIEW":
+                lines.append(f"{index}. Проверить актуальность: {title}")
+
+    if reminders is not None and reminders.has_activity:
+        lines.extend(("", "Attention:"))
+        reminder_labels = (
+            ("отправлено", reminders.sent),
+            ("открыто", reminders.opened),
+            ("отложено", reminders.snoozed),
+            ("готово", reminders.done),
+            ("не сейчас", reminders.dismissed),
+            ("меньше таких", reminders.disliked),
+        )
+        lines.append(" · ".join(f"{label} {count}" for label, count in reminder_labels if count))
+
+    if review.created_categories:
+        lines.extend(("", "Чаще добавлял:"))
+        lines.extend(
+            f"{_bounded_weekly_label(category.category)} — {category.count}"
+            for category in review.created_categories[:3]
+        )
+
+    completed_categories = list(review.completed_categories[:3])
+    progress = review.strongest_progress
+    if progress is not None:
+        progress_category = _bounded_weekly_label(progress.category)
+        progress_line = f"Больше всего завершений: {progress_category} — {progress.count}"
+        lines.extend(("", progress_line))
+        completed_categories = [
+            category for category in completed_categories if category.category != progress.category
+        ]
+    if completed_categories:
+        lines.extend(("", "Темы завершений:"))
+        lines.extend(
+            f"{_bounded_weekly_label(category.category)} — {category.count}"
+            for category in completed_categories
+        )
+
+    if review.most_postponed is not None:
+        postponed = review.most_postponed
+        lines.extend(
+            (
+                "",
+                f"Чаще откладывал: {_bounded_weekly_label(postponed.category)} — {postponed.count}",
+            )
+        )
+
     return _fit_message(lines)
 
 

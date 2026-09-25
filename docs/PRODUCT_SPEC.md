@@ -94,7 +94,7 @@ Telegram → ingestion → SQLite queue → ProcessingWorker
   provenance;
 - forwarded photo-post с URL в caption/text_link: caption и ссылки сохраняются как
   единый source content, само изображение не анализируется;
-- `/today`, `/attention`, `/inbox`, `/category`, `/search`;
+- `/today`, `/attention`, `/weekly`, `/inbox`, `/category`, `/search`;
 - `/profile`, `/profile_update`;
 - `/settings`, `/settings attention`;
 - Done / Later / Archive / Retry;
@@ -411,6 +411,24 @@ Items и подавление недавно показанных Items. Каж�
 существующие Item/ItemSource actions. После успешной отправки карточки
 записывается `ATTENTION_SHOWN`; автоматических сообщений команда не планирует.
 `/today` и daily digest остаются основаны на `priority_score`.
+
+### `/weekly`
+
+On-demand read-only обзор последних семи локальных календарных дней, включая
+сегодня, в сохранённом `User.timezone`. Границы суток переводятся в UTC через
+общий DST-safe helper. Создания считаются по `Item.created_at`, завершения и
+архивы — по `DONE` и `ARCHIVED` Events; `REMINDER_DONE` не заменяет и не
+дублирует обычный `DONE` в потоке. Возраст backlog измеряется прошедшим временем.
+
+Категории завершённых и созданных Items читаются из текущего `Item.category`,
+поскольку исторический снимок категории на каждом lifecycle Event не хранится.
+Attention outcome counts берутся только из PM-11 Events, связанных с
+`PROACTIVE_ATTENTION` Reminder, и показываются как сырые факты без процентов и
+оценки эффективности. Рекомендации используют текущий PM-07 ranking.
+
+PM-12 v1 не пишет Item/Event/Reminder, не меняет профиль или settings, не
+записывает `TODAY_SHOWN`, `ATTENTION_SHOWN` или `WEEKLY_SHOWN`, не сохраняет
+отчёт, не вызывает LLM и не отправляет запланированные weekly notifications.
 
 ## 43. /inbox
 

@@ -8,7 +8,7 @@ from aiogram.types import CallbackQuery, Message
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
-from app.bot.formatting import format_attention_item, format_ready_item
+from app.bot.formatting import format_attention_item, format_ready_item, format_weekly_review
 from app.bot.keyboards import (
     attention_settings_keyboard,
     feedback_category_keyboard,
@@ -36,6 +36,7 @@ from app.services.notifications import (
     format_attention_settings,
     format_settings,
     get_notification_settings,
+    parse_timezone,
     update_notification_settings,
 )
 from app.services.profile import enqueue_profile_update
@@ -48,6 +49,7 @@ from app.services.retrieval import (
     search_items,
 )
 from app.services.url_parsing import find_urls
+from app.services.weekly_review import WeeklyReviewService
 from app.storage.models import Item, ItemSource, User
 
 log = logging.getLogger(__name__)
@@ -58,6 +60,7 @@ HELP_TEXT = (
     "Команды:\n"
     "/today — приоритетные Items на сегодня\n"
     "/attention [1-5] — что сейчас заслуживает внимания\n"
+    "/weekly — обзор backlog и внимания за 7 дней\n"
     "/inbox — последние Items\n"
     "/search <текст> — поиск по сохранённому содержимому\n"
     "/category [имя] — категории и Items категории\n"
@@ -492,6 +495,10 @@ def make_router(
         parts = (message.text or "").split(maxsplit=1)
         arguments = parts[1] if len(parts) == 2 else ""
         await on_attention(message, settings, session_factory, arguments)
+
+    @router.message(Command("weekly"))
+    async def weekly(message: Message) -> None:
+        await on_weekly(message, settings, session_factory)
 
     @router.message(Command("inbox"))
     async def inbox(message: Message) -> None:
@@ -1201,6 +1208,30 @@ async def on_today(message: Message, settings: Settings, session_factory) -> Non
         async with session_factory() as session:
             await record_item_events(session, user_id, [item.id for item in items], "TODAY_SHOWN")
             await session.commit()
+
+
+async def on_weekly(message: Message, settings: Settings, session_factory) -> None:
+    """Resolve the user's saved timezone and send one read-model projection."""
+    if not await _allowed(message, settings):
+        return
+    from app.services.ingestion import get_or_create_user
+
+    async with session_factory() as session:
+        user = await get_or_create_user(
+            session,
+            telegram_user_id=message.from_user.id,
+            chat_id=message.chat.id,
+            timezone=settings.default_timezone,
+        )
+        try:
+            zone = parse_timezone(user.timezone)
+        except ValueError:
+            log.warning("invalid timezone for weekly review user_id=%s; using default", user.id)
+            zone = parse_timezone(settings.default_timezone)
+        review = await WeeklyReviewService().build(session, user.id, zone=zone)
+        response = format_weekly_review(review)
+        await session.commit()
+    await message.answer(response)
 
 
 async def on_attention(
