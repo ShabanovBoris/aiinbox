@@ -19,7 +19,14 @@ uv run python -m app.main
 ```
 
 `app.main` автоматически выполняет `alembic upgrade head`.
-Без `TELEGRAM_BOT_TOKEN` Telegram polling отключён, workers остаются активны.
+Без `TELEGRAM_BOT_TOKEN` Telegram polling отключён, workers остаются активны;
+export generation также работает без Telegram, а готовая Delivery ждёт включения бота.
+
+`EXPORT_DIR` (по умолчанию `./exports`) отделён от `BACKUP_DIR` и содержит
+временные пользовательские ZIP-артефакты. `EXPORT_RETENTION_SECONDS` задаёт
+retention abandoned/terminal artifacts (по умолчанию 86400 секунд), а
+`MAX_EXPORT_CONTENT_CHARS` ограничивает суммарный full Content snapshot
+(по умолчанию 10000000 символов).
 
 Документы используют `MAX_DOCUMENT_BYTES` (по умолчанию 20 MB) и
 `MAX_DOCUMENT_TEXT_CHARS` (500 000 символов). URL PDF проходит через
@@ -43,8 +50,10 @@ Instagram Reels обрабатываются без авторизации по 
 docker build -t personal-ai-inbox .
 docker run --rm --env-file .env \
   -e DATABASE_URL=sqlite+aiosqlite:////data/app.db \
+  -e EXPORT_DIR=/exports \
   -e TEMP_DIR=/tmp/aiinbox \
   -v aiinbox_data:/data \
+  -v aiinbox_exports:/exports \
   --tmpfs /tmp/aiinbox \
   personal-ai-inbox
 ```
@@ -57,8 +66,9 @@ docker compose logs -f app
 docker compose down
 ```
 
-SQLite живёт в named volume `/data`; temporary media — tmpfs
-`/tmp/aiinbox`. Container запускается non-root.
+SQLite живёт в named volume `/data`; portable exports — в отдельном
+`aiinbox_exports` volume `/exports`; temporary media — tmpfs `/tmp/aiinbox`.
+Container запускается non-root.
 
 ## Миграции
 
@@ -374,7 +384,8 @@ category target is stale are also recorded there without adding Event history.
 
 ```bash
 sqlite3 data/app.db \
-  "SELECT id, type, status, item_id, profile_update_job_id, ask_job_id, attempts, last_error, updated_at
+  "SELECT id, type, status, item_id, profile_update_job_id, ask_job_id, export_job_id,
+          attempts, last_error, updated_at
    FROM deliveries ORDER BY id DESC LIMIT 50"
 ```
 
@@ -428,6 +439,38 @@ sqlite3 data/app.db \
 нормализует только десятичное значение в целое число; Ask service затем всё равно
 сверяет его с источниками, включёнными в конкретный запрос. Другие нарушения схемы
 проходят обычный retry и controlled failure.
+
+## Export / ownership
+
+```bash
+sqlite3 data/app.db \
+  "SELECT id, user_id, mode, status, error_code, created_at, updated_at
+   FROM export_jobs ORDER BY id DESC LIMIT 50"
+
+sqlite3 data/app.db \
+  "SELECT id, user_id, export_job_id, type, status, attempts, last_error, updated_at
+   FROM deliveries WHERE type IN ('EXPORT_FILE', 'EXPORT_FAILED')
+   ORDER BY id DESC LIMIT 50"
+```
+
+`PENDING` ExportJob ждёт `ExportWorker`; `RUNNING` автоматически возвращается в
+очередь при startup. `DONE` означает, что ZIP готов и `EXPORT_FILE` Delivery
+durably создана; факт Telegram отправки виден отдельно в `deliveries.status`.
+Для `FAILED` job создаётся `EXPORT_FAILED` Delivery. Ошибки превышения Telegram
+лимита или full-content guard рекомендуют `/export compact`; полный экспорт не
+понижается молча до compact.
+
+Локальный каталог — `EXPORT_DIR` (по умолчанию `./exports`), в Compose он
+монтируется как отдельный persistent `aiinbox_exports:/exports` volume. Файлы
+создаются с mode `0600`, каталог — `0700`; временный файл атомарно переименовывается
+в готовый ZIP. В процессе доставки `PENDING/SENDING` артефакт защищён от retention.
+После durable `SENT` файл удаляется; если удаление не удалось, cleanup удалит его
+после истечения retention. Orphan ZIP и `.tmp` файлы тоже удаляются по mtime после
+retention; файлы с посторонними именами не затрагиваются.
+
+Export не является backup: он не включает SQLite, backup-файлы или внутренние
+worker/outbox данные. `aiinbox_exports` не добавляется в `aiinbox_backups` и не
+реплицируется через `scripts/offsite_backup.sh`.
 
 ## Reminders / digest
 
