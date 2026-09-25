@@ -164,7 +164,17 @@ class ReminderFeedbackService:
             type(reminder_id) is not int
             or reminder_id < 1
             or action
-            not in {"later", "cancel", "ok", "done", "snooze", "dismiss", "dislike", "open"}
+            not in {
+                "later",
+                "cancel",
+                "ok",
+                "done",
+                "snooze",
+                "dismiss",
+                "dislike",
+                "open",
+                "open_original",
+            }
         ):
             return "UNAVAILABLE"
 
@@ -190,7 +200,15 @@ class ReminderFeedbackService:
                 return "UNAVAILABLE"
 
             item_action_types = {"PROACTIVE_ATTENTION"}
-            if action in {"done", "snooze", "dismiss", "open", "later", "cancel"}:
+            if action in {
+                "done",
+                "snooze",
+                "dismiss",
+                "open",
+                "open_original",
+                "later",
+                "cancel",
+            }:
                 if reminder.type not in item_action_types or reminder.item_id is None:
                     await session.rollback()
                     return "UNAVAILABLE"
@@ -223,6 +241,7 @@ class ReminderFeedbackService:
                 "dismiss": "REMINDER_DISMISSED",
                 "dislike": "REMINDER_DISLIKED",
                 "open": "REMINDER_OPENED",
+                "open_original": "REMINDER_OPENED",
             }[action]
             if action == "snooze" and snoozed_until is None:
                 await session.rollback()
@@ -290,6 +309,16 @@ class ReminderFeedbackService:
                 await session.commit()
                 return delivery_status
 
+            if action == "open_original":
+                record_reminder_event(
+                    session,
+                    reminder,
+                    event_type,
+                    callback_id=callback_id,
+                )
+                await session.commit()
+                return "APPLIED"
+
             record_reminder_event(
                 session,
                 reminder,
@@ -301,13 +330,13 @@ class ReminderFeedbackService:
 
     async def item_reminder_projection(
         self, telegram_user_id: int, reminder_id: int
-    ) -> tuple[Reminder, Item, list[ItemSource]] | None:
+    ) -> tuple[Reminder, Item, list[ItemSource], bool] | None:
         """Load only an owned, SENT proactive Item reminder for its cancel projection."""
         if self.session_factory is None:
             raise RuntimeError("Reminder callbacks require a session factory")
         async with self.session_factory() as session:
-            reminder = await session.scalar(
-                select(Reminder)
+            row = await session.execute(
+                select(Reminder, User.telegram_chat_id)
                 .join(User, User.id == Reminder.user_id)
                 .where(
                     Reminder.id == reminder_id,
@@ -317,8 +346,10 @@ class ReminderFeedbackService:
                     Reminder.item_id.is_not(None),
                 )
             )
-            if reminder is None:
+            projection = row.one_or_none()
+            if projection is None:
                 return None
+            reminder, chat_id = projection
             item = await session.get(Item, reminder.item_id)
             if item is None:
                 return None
@@ -331,7 +362,7 @@ class ReminderFeedbackService:
                     )
                 ).all()
             )
-            return reminder, item, sources
+            return reminder, item, sources, chat_id is not None
 
     @staticmethod
     async def _has_event(session, reminder_id: int, event_type: str) -> bool:

@@ -24,9 +24,11 @@ from app.bot.keyboards import (
     item_interest_keyboard,
     item_keyboard,
     item_more_keyboard,
+    item_navigation_keyboard,
     item_sources_keyboard,
     proactive_reminder_keyboard,
     reminder_snooze_keyboard,
+    reminder_sources_keyboard,
 )
 from app.bot.provenance import normalize_forward_origin, text_with_entity_urls
 from app.config import Settings
@@ -51,6 +53,7 @@ from app.services.notifications import (
     parse_timezone,
     update_notification_settings,
 )
+from app.services.original_access import item_original_target, reminder_original_target
 from app.services.profile import enqueue_profile_update
 from app.services.reminder_feedback import ReminderFeedbackService
 from app.services.retrieval import (
@@ -582,17 +585,89 @@ async def on_item_callback(
     if item_id < 1:
         await callback.answer("Некорректный Item")
         return
+    current_chat_id = getattr(getattr(callback.message, "chat", None), "id", None)
 
-    if action in {"more", "details", "sources", "interest_menu", "back"}:
+    if action == "original":
         if len(parts) != 3:
             await callback.answer("Некорректное действие")
             return
-        projection = await _load_item_ui_projection(session_factory, user.id, item_id)
+        target = await item_original_target(
+            session_factory,
+            user.id,
+            item_id,
+            current_chat_id=current_chat_id,
+        )
+        if target is None:
+            await callback.answer("Item недоступен")
+            return
+        try:
+            await callback.bot.copy_message(
+                chat_id=target.destination_chat_id,
+                from_chat_id=target.source_chat_id,
+                message_id=target.message_id,
+            )
+        except TelegramBadRequest as exc:
+            if not _original_is_unavailable(exc):
+                raise
+            projection = await _load_item_ui_projection(
+                session_factory,
+                user.id,
+                item_id,
+                current_chat_id=current_chat_id,
+            )
+            if projection is None:
+                await callback.answer("Item недоступен")
+                return
+            item, sources, _ = projection
+            source_markup = item_sources_keyboard(item, sources)
+            has_source_actions = len(source_markup.inline_keyboard) > 1
+            unavailable_text = "Оригинальное сообщение больше недоступно."
+            if has_source_actions:
+                unavailable_text += "\nМожно открыть сохранённый источник:"
+            if callback.message is not None:
+                await callback.message.answer(
+                    unavailable_text,
+                    reply_markup=source_markup if has_source_actions else None,
+                )
+            await callback.answer("Оригинал недоступен")
+            return
+        await callback.answer("Оригинал отправлен")
+        return
+
+    if action in {"view", "more", "details", "sources", "interest_menu", "back"}:
+        if len(parts) != 3:
+            await callback.answer("Некорректное действие")
+            return
+        if action == "view" and current_chat_id is None:
+            await callback.answer("Item недоступен")
+            return
+        projection = await _load_item_ui_projection(
+            session_factory,
+            user.id,
+            item_id,
+            current_chat_id=current_chat_id if action == "view" else None,
+        )
         if projection is None:
             await callback.answer("Item недоступен")
             return
-        item, sources = projection
-        if action == "more":
+        item, sources, original_available = projection
+        if action == "view":
+            if item.processing_status is ProcessingStatus.READY:
+                text = format_ready_item_compact(item, sources)
+            elif item.processing_status is ProcessingStatus.FAILED:
+                text = format_item_failure(item, sources)
+            else:
+                text = f"⏳ Обрабатывается: {item.title or 'Без названия'}"
+            if callback.message is not None:
+                await callback.message.answer(
+                    text,
+                    reply_markup=item_keyboard(
+                        item,
+                        sources,
+                        original_available=original_available,
+                    ),
+                )
+        elif action == "more":
             await _edit_reply_markup_if_changed(callback.message, item_more_keyboard(item))
         elif action == "interest_menu":
             if item.processing_status is not ProcessingStatus.READY or item.state not in {
@@ -623,7 +698,9 @@ async def on_item_callback(
             else:
                 text = "Item пока обрабатывается."
             await _edit_item_message_if_changed(
-                callback.message, text, item_keyboard(item, sources)
+                callback.message,
+                text,
+                item_keyboard(item, sources, original_available=original_available),
             )
         await callback.answer()
         return
@@ -662,7 +739,12 @@ async def on_item_callback(
         if level not in {1, 2, 3}:
             await callback.answer("Некорректный уровень интереса")
             return
-        projection = await _load_item_ui_projection(session_factory, user.id, item_id)
+        projection = await _load_item_ui_projection(
+            session_factory,
+            user.id,
+            item_id,
+            current_chat_id=current_chat_id,
+        )
         if projection is None or projection[0].processing_status is not ProcessingStatus.READY:
             await callback.answer("Item недоступен")
             return
@@ -743,6 +825,50 @@ async def on_reminder_callback(
 
     callback_action = parts[1]
     service = ReminderFeedbackService(session_factory)
+    if callback_action == "original" and len(parts) == 3:
+        chat_id = getattr(getattr(callback.message, "chat", None), "id", None)
+        target = await reminder_original_target(
+            session_factory,
+            callback.from_user.id,
+            reminder_id,
+            current_chat_id=chat_id,
+        )
+        if target is None:
+            await callback.answer("Это напоминание сейчас недоступно")
+            return
+        try:
+            await callback.bot.copy_message(
+                chat_id=target.destination_chat_id,
+                from_chat_id=target.source_chat_id,
+                message_id=target.message_id,
+            )
+        except TelegramBadRequest as exc:
+            if not _original_is_unavailable(exc):
+                raise
+            projection = await service.item_reminder_projection(callback.from_user.id, reminder_id)
+            if projection is not None and callback.message is not None:
+                reminder, item, sources, _ = projection
+                focus_source_id = (reminder.payload_json or {}).get("focus_source_id")
+                if type(focus_source_id) is not int:
+                    focus_source_id = None
+                keyboard = reminder_sources_keyboard(
+                    reminder_id, item, sources, focus_source_id=focus_source_id
+                )
+                message = "Оригинальное сообщение больше недоступно."
+                if keyboard is not None:
+                    message += "\nМожно открыть сохранённый источник:"
+                await callback.message.answer(message, reply_markup=keyboard)
+            await callback.answer("Оригинал недоступен")
+            return
+        await service.apply_callback(
+            callback.from_user.id,
+            reminder_id,
+            "open_original",
+            callback_id=callback.id,
+        )
+        await callback.answer("Оригинал отправлен")
+        return
+
     kwargs = {"callback_id": callback.id}
     if callback_action == "snooze" and len(parts) == 4:
         durations = {
@@ -798,7 +924,7 @@ async def on_reminder_callback(
             if projection is None:
                 await _edit_reply_markup_if_changed(callback.message, None)
             else:
-                reminder, item, sources = projection
+                reminder, item, sources, original_available = projection
                 focus_source_id = (reminder.payload_json or {}).get("focus_source_id")
                 if type(focus_source_id) is not int:
                     focus_source_id = None
@@ -809,6 +935,7 @@ async def on_reminder_callback(
                         item,
                         sources,
                         focus_source_id=focus_source_id,
+                        original_available=original_available,
                     ),
                 )
         await callback.answer("Выбор отменён")
@@ -858,23 +985,31 @@ async def _load_ready_feedback_projection(
     projection = await _load_item_ui_projection(session_factory, telegram_user_id, item_id)
     if projection is None or projection[0].processing_status is not ProcessingStatus.READY:
         return None
-    return projection
+    return projection[0], projection[1]
 
 
 async def _load_item_ui_projection(
-    session_factory: async_sessionmaker, telegram_user_id: int, item_id: int
-) -> tuple[Item, list[ItemSource]] | None:
-    """Reload one owner-scoped Item and its stable source order for Telegram projections."""
+    session_factory: async_sessionmaker,
+    telegram_user_id: int,
+    item_id: int,
+    *,
+    current_chat_id: int | None = None,
+) -> tuple[Item, list[ItemSource], bool] | None:
+    """Reload an owner's Item only in its persisted Telegram chat when one is supplied."""
     async with session_factory() as session:
-        item = await session.scalar(
-            select(Item)
+        row = await session.execute(
+            select(Item, User.telegram_chat_id)
             .join(User, User.id == Item.user_id)
             .where(
                 User.telegram_user_id == telegram_user_id,
                 Item.id == item_id,
             )
         )
-        if item is None:
+        projection = row.one_or_none()
+        if projection is None:
+            return None
+        item, chat_id = projection
+        if chat_id is None or (current_chat_id is not None and chat_id != current_chat_id):
             return None
         sources = list(
             (
@@ -885,7 +1020,23 @@ async def _load_item_ui_projection(
                 )
             ).all()
         )
-        return item, sources
+        return item, sources, item.telegram_message_id is not None
+
+
+def _original_is_unavailable(exc: TelegramBadRequest) -> bool:
+    """Map only known permanent Bot API copy failures to the deleted-source UX."""
+    message = str(exc).casefold()
+    return any(
+        marker in message
+        for marker in (
+            "message to copy not found",
+            "message_id_invalid",
+            "message can't be copied",
+            "message can not be copied",
+            "message can't be forwarded",
+            "message can not be forwarded",
+        )
+    )
 
 
 async def _edit_reply_markup_if_changed(message, reply_markup) -> None:
@@ -1289,7 +1440,10 @@ async def on_today(message: Message, settings: Settings, session_factory) -> Non
         items = await TodayService().list_items(session, user.id)
         response = format_today(items)
         await session.commit()
-    await message.answer(response)
+    await message.answer(
+        response,
+        reply_markup=item_navigation_keyboard([item.id for item in items]),
+    )
 
     # PM-07 treats this history as exposure, so a failed Telegram send must not
     # suppress these Items in a later attention preview.
@@ -1320,7 +1474,12 @@ async def on_weekly(message: Message, settings: Settings, session_factory) -> No
         review = await WeeklyReviewService().build(session, user.id, zone=zone)
         response = format_weekly_review(review)
         await session.commit()
-    await message.answer(response)
+    await message.answer(
+        response,
+        reply_markup=item_navigation_keyboard(
+            [recommendation.item_id for recommendation in review.recommendations]
+        ),
+    )
 
 
 async def on_attention(
@@ -1367,6 +1526,7 @@ async def on_attention(
             for source in sources:
                 sources_by_item[source.item_id].append(source)
         user_id = user.id
+        original_available = user.telegram_chat_id is not None
         await session.commit()
 
     if not ranked:
@@ -1378,7 +1538,11 @@ async def on_attention(
     for index, (item, rank) in enumerate(ranked, start=1):
         await message.answer(
             format_attention_item(index, count, item, rank),
-            reply_markup=item_keyboard(item, sources_by_item[item.id]),
+            reply_markup=item_keyboard(
+                item,
+                sources_by_item[item.id],
+                original_available=original_available,
+            ),
         )
         # Exposure is durable only after Telegram accepted this card; each Item
         # commits independently so a later delivery failure leaves a truthful prefix.
@@ -1402,7 +1566,10 @@ async def on_inbox(message: Message, settings: Settings, session_factory) -> Non
         )
         await session.commit()
         items = await list_inbox(session, user.id)
-    await message.answer(format_item_list(items, "Входящие:"))
+    await message.answer(
+        format_item_list(items, "Входящие:"),
+        reply_markup=item_navigation_keyboard([item.id for item in items]),
+    )
 
 
 async def on_category(message: Message, settings: Settings, session_factory, category: str) -> None:
@@ -1424,7 +1591,10 @@ async def on_category(message: Message, settings: Settings, session_factory, cat
             response = format_item_list(items, f"Категория: {category}")
         else:
             response = format_categories(await list_categories(session, user.id))
-    await message.answer(response)
+    await message.answer(
+        response,
+        reply_markup=(item_navigation_keyboard([item.id for item in items]) if category else None),
+    )
 
 
 async def on_search(message: Message, settings: Settings, session_factory, query: str) -> None:
@@ -1445,7 +1615,10 @@ async def on_search(message: Message, settings: Settings, session_factory, query
         )
         await session.commit()
         items = await search_items(session, user.id, query)
-    await message.answer(format_item_list(items, "Результаты поиска:"))
+    await message.answer(
+        format_item_list(items, "Результаты поиска:"),
+        reply_markup=item_navigation_keyboard([item.id for item in items]),
+    )
 
 
 async def on_ask(message: Message, settings: Settings, session_factory, question: str) -> None:

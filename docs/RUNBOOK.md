@@ -361,6 +361,22 @@ WHERE id=<id> AND processing_status='FAILED';
 Не очищать `processing_stage`/contents и не переводить `READY` ItemSource обратно
 в `PENDING`: это resume checkpoints уже успешно извлечённых частей сообщения.
 
+### Original capture недоступен
+
+Проверить только идентичность Telegram capture и текущий chat владельца:
+
+~~~sql
+SELECT i.id, i.user_id, i.telegram_message_id, u.telegram_chat_id
+FROM items AS i
+JOIN users AS u ON u.id = i.user_id
+WHERE i.id = ?;
+~~~
+
+Если один из Telegram ID равен `NULL`, кнопка Original не показывается. Если Bot
+API сообщает, что сообщение удалено или недоступно, восстановить его только по ID
+нельзя. Сам Item и извлечённые данные остаются в SQLite (`contents` и
+`item_sources`); пользователю предлагаются сохранённые source actions, если они есть.
+
 ## Event history and explicit feedback
 
 Events remain auxiliary history; inspect a single Item without changing its

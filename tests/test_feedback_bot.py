@@ -2,17 +2,20 @@ import asyncio
 from datetime import datetime
 from types import SimpleNamespace
 
+import pytest
 from aiogram.exceptions import TelegramBadRequest
 from sqlalchemy import func, select
 
 from app.bot.formatting import format_ready_item
-from app.bot.handlers import on_feedback_callback, on_reminder_callback
+from app.bot.handlers import on_feedback_callback, on_item_callback, on_reminder_callback
 from app.bot.keyboards import (
     category_callback_token,
     feedback_category_keyboard,
     feedback_menu_keyboard,
     item_keyboard,
+    item_navigation_keyboard,
     item_sources_keyboard,
+    proactive_reminder_keyboard,
 )
 from app.domain.enums import ItemState, ItemType, ProcessingStatus, SourceType
 from app.services import feedback as feedback_service
@@ -38,6 +41,11 @@ class FakeCallbackMessage:
         self.keep_stale_markup = keep_stale_markup
         self.markup_edits = 0
         self.text_edits = 0
+        self.chat = SimpleNamespace(id=42)
+        self.sent_answers = []
+
+    async def answer(self, text=None, **kwargs):
+        self.sent_answers.append((text, kwargs))
 
     async def edit_reply_markup(self, reply_markup=None):
         self.markup_edits += 1
@@ -71,6 +79,19 @@ class FakeCallback:
         self.answers.append(text)
 
 
+class FakeCopyBot:
+    """Capture Bot API copy attempts so ownership and failure edges stay testable."""
+
+    def __init__(self, error=None):
+        self.error = error
+        self.copies = []
+
+    async def copy_message(self, **kwargs):
+        self.copies.append(kwargs)
+        if self.error is not None:
+            raise self.error
+
+
 async def _create_ready_item(
     session_factory,
     *,
@@ -80,6 +101,7 @@ async def _create_ready_item(
     interest_level=2,
     priority_score=72,
     completeness=None,
+    telegram_message_id=None,
 ):
     async with session_factory() as session:
         user = User(telegram_user_id=42, telegram_chat_id=42)
@@ -87,7 +109,7 @@ async def _create_ready_item(
         await session.flush()
         item = Item(
             user_id=user.id,
-            telegram_message_id=None,
+            telegram_message_id=telegram_message_id,
             source_index=0,
             processing_status=ProcessingStatus.READY,
             state=state,
@@ -136,6 +158,17 @@ async def _create_category_item(session_factory, category: str) -> int:
 async def _event_count(session_factory, item_id: int) -> int:
     async with session_factory() as session:
         return await session.scalar(select(func.count(Event.id)).where(Event.item_id == item_id))
+
+
+async def _reminder_event_count(session_factory, reminder_id: int, event_type: str) -> int:
+    """Count reminder-attributed events without conflating them with Item history."""
+    async with session_factory() as session:
+        return await session.scalar(
+            select(func.count(Event.id)).where(
+                Event.reminder_id == reminder_id,
+                Event.event_type == event_type,
+            )
+        )
 
 
 async def _create_sent_proactive_reminder(session_factory, item_id: int) -> int:
@@ -223,6 +256,7 @@ def test_ready_primary_keyboard_keeps_only_bounded_content_actions_and_more():
     assert not {"1", "2 ✓", "3", "👍 Полезно", "👎 Не моё", "⚙ Исправить"} & set(labels)
     assert not {"item:done:7", "item:later:7", "item:archive:7"} & set(callbacks)
     assert "item:video:7:11" in callbacks
+    assert "item:original:7" not in callbacks
     assert "item:sources:7" in callbacks
     assert "item:retry:7" in callbacks
     assert "https://t.me/public_channel/42" in [
@@ -232,6 +266,298 @@ def test_ready_primary_keyboard_keeps_only_bounded_content_actions_and_more():
         if button.url
     ]
     assert not any(label.startswith("🔗 Открыть") for label in labels)
+
+
+def test_original_action_is_item_provenance_and_does_not_consume_source_bound():
+    item = Item(
+        id=8,
+        user_id=1,
+        telegram_message_id=987,
+        processing_status=ProcessingStatus.READY,
+        state=ItemState.ACTIVE,
+        source_type=SourceType.WEB,
+        processing_stage="READY",
+        user_note="",
+        source_metadata_json={
+            "forwarded": True,
+            "forward_origin_type": "channel",
+            "forward_source_username": "public_channel",
+            "forward_message_id": 42,
+        },
+    )
+    source = ItemSource(
+        id=20,
+        item_id=8,
+        source_index=0,
+        source_type=SourceType.WEB,
+        source_url="https://example.com/article",
+        extraction_status="READY",
+    )
+
+    markup = item_keyboard(item, [source])
+    buttons = [button for row in markup.inline_keyboard for button in row]
+    callbacks = [button.callback_data for button in buttons if button.callback_data]
+    labels = [button.text for button in buttons]
+
+    assert "item:original:8" in callbacks
+    assert "↩️ Оригинал" in labels
+    assert {button.url for button in buttons if button.url} == {
+        "https://example.com/article",
+        "https://t.me/public_channel/42",
+    }
+    source_markup = item_sources_keyboard(item, [source])
+    source_buttons = [button for row in source_markup.inline_keyboard for button in row]
+    assert {button.url for button in source_buttons if button.url} == {
+        "https://example.com/article",
+        "https://t.me/public_channel/42",
+    }
+    assert "item:original:8" not in _callback_data(source_markup)
+
+
+def test_original_action_is_hidden_without_capture_or_owner_chat():
+    item = Item(
+        id=8,
+        user_id=1,
+        telegram_message_id=987,
+        processing_status=ProcessingStatus.READY,
+        state=ItemState.ACTIVE,
+        source_type=SourceType.TEXT,
+        processing_stage="READY",
+        user_note="",
+    )
+
+    assert "item:original:8" not in _callback_data(item_keyboard(item, original_available=False))
+    item.telegram_message_id = None
+    assert "item:original:8" not in _callback_data(item_keyboard(item))
+
+
+def test_numbered_item_navigation_preserves_order_and_callback_bounds():
+    item_ids = [9, 20, 31, 2**63 - 1]
+    markup = item_navigation_keyboard(item_ids)
+    buttons = [button for row in markup.inline_keyboard for button in row]
+
+    assert [(button.text, button.callback_data) for button in buttons] == [
+        (str(index), f"item:view:{item_id}") for index, item_id in enumerate(item_ids, 1)
+    ]
+    assert all(len(button.callback_data.encode("utf-8")) <= 64 for button in buttons)
+    assert (
+        len(
+            [
+                button
+                for row in item_navigation_keyboard(list(range(1, 30))).inline_keyboard
+                for button in row
+            ]
+        )
+        == 20
+    )
+    high_id = 2**63 - 1
+    item = Item(
+        id=high_id,
+        user_id=1,
+        telegram_message_id=987,
+        processing_status=ProcessingStatus.READY,
+        state=ItemState.ACTIVE,
+        source_type=SourceType.TEXT,
+        processing_stage="READY",
+        user_note="",
+    )
+    callbacks = _callback_data(item_keyboard(item)) + _callback_data(
+        proactive_reminder_keyboard(high_id, item)
+    )
+    assert f"item:original:{high_id}" in callbacks
+    assert f"reminder:original:{high_id}" in callbacks
+    assert all(len(value.encode("utf-8")) <= 64 for value in callbacks)
+
+
+async def test_item_view_sends_a_new_owner_scoped_card_without_events(settings, session_factory):
+    item_id = await _create_ready_item(session_factory, telegram_message_id=987)
+    callback = FakeCallback(42, f"item:view:{item_id}")
+
+    await on_item_callback(callback, settings, session_factory)
+
+    assert callback.message.text_edits == 0
+    assert len(callback.message.sent_answers) == 1
+    text, kwargs = callback.message.sent_answers[0]
+    assert "✓ Сохранено" in text
+    assert f"item:original:{item_id}" in _callback_data(kwargs["reply_markup"])
+    assert callback.answers == [None]
+    async with session_factory() as session:
+        assert await session.scalar(select(func.count(Event.id))) == 0
+
+
+async def test_item_view_rejects_a_different_chat_for_the_same_telegram_user(
+    settings, session_factory
+):
+    item_id = await _create_ready_item(session_factory, telegram_message_id=987)
+    callback = FakeCallback(42, f"item:view:{item_id}")
+    callback.message.chat.id = -10042
+
+    await on_item_callback(callback, settings, session_factory)
+
+    assert callback.message.sent_answers == []
+    assert callback.answers == ["Item недоступен"]
+    async with session_factory() as session:
+        assert await session.scalar(select(func.count(Event.id))) == 0
+
+
+async def test_original_callback_copies_owned_capture_without_business_writes(
+    settings, session_factory
+):
+    item_id = await _create_ready_item(session_factory, telegram_message_id=987)
+    callback = FakeCallback(42, f"item:original:{item_id}")
+    callback.bot = FakeCopyBot()
+
+    await on_item_callback(callback, settings, session_factory)
+
+    assert callback.bot.copies == [{"chat_id": 42, "from_chat_id": 42, "message_id": 987}]
+    assert callback.answers == ["Оригинал отправлен"]
+    async with session_factory() as session:
+        stored = await session.get(Item, item_id)
+        assert stored.telegram_message_id == 987
+        assert stored.state is ItemState.ACTIVE
+        assert await session.scalar(select(func.count(Event.id))) == 0
+
+
+async def test_original_callback_rejects_another_owners_item_before_copy(settings, session_factory):
+    async with session_factory() as session:
+        owner = User(telegram_user_id=1000, telegram_chat_id=1000)
+        session.add(owner)
+        await session.flush()
+        item = Item(
+            user_id=owner.id,
+            telegram_message_id=4321,
+            source_index=0,
+            processing_status=ProcessingStatus.READY,
+            state=ItemState.ACTIVE,
+            source_type=SourceType.TEXT,
+            processing_stage="READY",
+            user_note="",
+            title="Private item",
+        )
+        session.add(item)
+        await session.commit()
+        item_id = item.id
+    callback = FakeCallback(42, f"item:original:{item_id}")
+    callback.bot = FakeCopyBot()
+
+    await on_item_callback(callback, settings, session_factory)
+
+    assert callback.bot.copies == []
+    assert callback.answers == ["Item недоступен"]
+    assert "4321" not in str(callback.answers)
+
+
+async def test_unavailable_original_offers_only_persisted_safe_sources(settings, session_factory):
+    item_id = await _create_ready_item(session_factory, telegram_message_id=987)
+    async with session_factory() as session:
+        session.add(
+            ItemSource(
+                item_id=item_id,
+                source_index=0,
+                source_type=SourceType.WEB,
+                source_url="https://example.com/article",
+                extraction_status="READY",
+            )
+        )
+        await session.commit()
+    callback = FakeCallback(42, f"item:original:{item_id}")
+    callback.bot = FakeCopyBot(
+        TelegramBadRequest(method=None, message="Bad Request: message to copy not found")
+    )
+
+    await on_item_callback(callback, settings, session_factory)
+
+    assert "Оригинальное сообщение больше недоступно." in callback.message.sent_answers[0][0]
+    assert "Можно открыть сохранённый источник:" in callback.message.sent_answers[0][0]
+    markup = callback.message.sent_answers[0][1]["reply_markup"]
+    assert [button.url for row in markup.inline_keyboard for button in row if button.url] == [
+        "https://example.com/article"
+    ]
+    async with session_factory() as session:
+        stored = await session.get(Item, item_id)
+        assert stored.telegram_message_id == 987
+        assert stored.processing_status is ProcessingStatus.READY
+        assert await session.scalar(select(func.count(Event.id))) == 0
+
+
+async def test_temporary_original_copy_error_is_not_marked_unavailable(settings, session_factory):
+    item_id = await _create_ready_item(session_factory, telegram_message_id=987)
+    callback = FakeCallback(42, f"item:original:{item_id}")
+    callback.bot = FakeCopyBot(RuntimeError("temporary Telegram outage"))
+
+    with pytest.raises(RuntimeError, match="temporary Telegram outage"):
+        await on_item_callback(callback, settings, session_factory)
+
+    assert callback.message.sent_answers == []
+    async with session_factory() as session:
+        assert await session.scalar(select(func.count(Event.id))) == 0
+
+
+async def test_proactive_original_event_follows_successful_copy_once(settings, session_factory):
+    item_id = await _create_ready_item(session_factory, telegram_message_id=987)
+    reminder_id = await _create_sent_proactive_reminder(session_factory, item_id)
+    callback = FakeCallback(42, f"reminder:original:{reminder_id}", "original-click")
+    callback.bot = FakeCopyBot()
+
+    await on_reminder_callback(callback, settings, session_factory)
+    await on_reminder_callback(callback, settings, session_factory)
+
+    assert len(callback.bot.copies) == 2
+    assert callback.answers == ["Оригинал отправлен", "Оригинал отправлен"]
+    assert await _reminder_event_count(session_factory, reminder_id, "REMINDER_OPENED") == 1
+
+
+async def test_failed_proactive_original_copy_creates_no_open_event(settings, session_factory):
+    item_id = await _create_ready_item(session_factory, telegram_message_id=987)
+    reminder_id = await _create_sent_proactive_reminder(session_factory, item_id)
+    callback = FakeCallback(42, f"reminder:original:{reminder_id}")
+    callback.bot = FakeCopyBot(
+        TelegramBadRequest(method=None, message="Bad Request: message to copy not found")
+    )
+
+    await on_reminder_callback(callback, settings, session_factory)
+
+    assert callback.answers == ["Оригинал недоступен"]
+    assert callback.message.sent_answers[0][0] == "Оригинальное сообщение больше недоступно."
+    assert await _reminder_event_count(session_factory, reminder_id, "REMINDER_OPENED") == 0
+
+
+async def test_proactive_original_cannot_copy_another_users_reminder(settings, session_factory):
+    async with session_factory() as session:
+        owner = User(telegram_user_id=1000, telegram_chat_id=1000)
+        session.add(owner)
+        await session.flush()
+        item = Item(
+            user_id=owner.id,
+            telegram_message_id=4321,
+            source_index=0,
+            processing_status=ProcessingStatus.READY,
+            state=ItemState.ACTIVE,
+            source_type=SourceType.TEXT,
+            processing_stage="READY",
+            user_note="",
+        )
+        session.add(item)
+        await session.flush()
+        reminder = Reminder(
+            user_id=owner.id,
+            item_id=item.id,
+            type="PROACTIVE_ATTENTION",
+            status="SENT",
+            scheduled_at=datetime(2026, 9, 20),
+            sent_at=datetime(2026, 9, 20),
+        )
+        session.add(reminder)
+        await session.commit()
+        reminder_id = reminder.id
+    callback = FakeCallback(42, f"reminder:original:{reminder_id}")
+    callback.bot = FakeCopyBot()
+
+    await on_reminder_callback(callback, settings, session_factory)
+
+    assert callback.bot.copies == []
+    assert callback.answers == ["Это напоминание сейчас недоступно"]
+    assert await _reminder_event_count(session_factory, reminder_id, "REMINDER_OPENED") == 0
 
 
 def test_non_ready_keyboard_does_not_expose_feedback_controls():

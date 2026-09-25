@@ -245,11 +245,20 @@ def _evidence_block(excerpt: _Excerpt, *, max_chars: int) -> str | None:
 
 def unique_item_source_url(item: Item, child_sources: list[ItemSource]) -> str | None:
     """Permit Item-level open buttons only when persisted source identity is unambiguous."""
+    rejected_urls = {
+        source.source_url
+        for source in child_sources
+        if source.error_code == "SECURITY_REJECTED" and source.source_url is not None
+    }
     urls = {
         url
         for url in [safe_http_url(item.source_url)]
-        + [safe_http_url(source.source_url) for source in child_sources]
-        if url
+        + [
+            safe_http_url(source.source_url)
+            for source in child_sources
+            if source.error_code != "SECURITY_REJECTED"
+        ]
+        if url and url not in rejected_urls
     }
     return next(iter(urls)) if len(urls) == 1 else None
 

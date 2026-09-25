@@ -23,7 +23,12 @@ from app.bot.formatting import (
     format_proactive_attention_reminder,
     format_today,
 )
-from app.bot.keyboards import motivation_reminder_keyboard, proactive_reminder_keyboard
+from app.bot.keyboards import (
+    item_keyboard,
+    item_navigation_keyboard,
+    motivation_reminder_keyboard,
+    proactive_reminder_keyboard,
+)
 from app.domain.enums import ACTIONABLE_ITEM_TYPES, ItemState, ProcessingStatus
 from app.domain.models import MotivationCandidate
 from app.services.attention_hooks import AttentionHookService
@@ -466,6 +471,7 @@ class ReminderWorker:
                 user.telegram_chat_id,
                 format_today(items),
                 claimed_at=lease_now,
+                reply_markup=item_navigation_keyboard([item.id for item in items]),
             )
         except Exception:
             log.exception("daily digest delivery failed user_id=%s", user_id)
@@ -1385,6 +1391,7 @@ class ReminderWorker:
                     item,
                     sources,
                     focus_source_id=focus_source_id,
+                    original_available=chat_id is not None,
                 ),
             )
         except Exception:
@@ -1773,12 +1780,22 @@ class ReminderWorker:
             claimed = await self._claim_snooze(reminder_id, now)
             if claimed is None:
                 continue
-            user_id, item_id, scheduled_at, claim_generation, claimed_at, title, chat_id = claimed
+            (
+                user_id,
+                item_id,
+                scheduled_at,
+                claim_generation,
+                claimed_at,
+                title,
+                chat_id,
+                keyboard,
+            ) = claimed
             try:
                 await self._send_with_retry(
                     chat_id,
                     f"⏰ Вернулся отложенный Item: {title}",
                     claimed_at=claimed_at,
+                    reply_markup=keyboard,
                 )
             except Exception:
                 log.exception("snooze notification failed item_id=%s", item_id)
@@ -1795,7 +1812,7 @@ class ReminderWorker:
 
     async def _claim_snooze(
         self, reminder_id: int, now: datetime
-    ) -> tuple[int, int, datetime, int, datetime, str, int] | None:
+    ) -> tuple[int, int, datetime, int, datetime, str, int, object] | None:
         """Claim one due snooze under the same per-user reservation as proactive sends."""
         async with self.session_factory() as session:
             await session.execute(text("BEGIN IMMEDIATE"))
@@ -1847,6 +1864,20 @@ class ReminderWorker:
             reminder.sent_at = None
             item.state = ItemState.ACTIVE
             item.snoozed_until = None
+            sources = list(
+                (
+                    await session.scalars(
+                        select(ItemSource)
+                        .where(ItemSource.item_id == item.id)
+                        .order_by(ItemSource.source_index, ItemSource.id)
+                    )
+                ).all()
+            )
+            keyboard = item_keyboard(
+                item,
+                sources,
+                original_available=user.telegram_chat_id is not None,
+            )
             await session.flush()
             claimed = (
                 user.id,
@@ -1856,6 +1887,7 @@ class ReminderWorker:
                 claimed_at,
                 item.title or "Без названия",
                 user.telegram_chat_id,
+                keyboard,
             )
             await session.commit()
             return claimed

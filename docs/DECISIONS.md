@@ -585,3 +585,24 @@ while internal scoring and administration remain available on demand.
 Consequences: menu navigation writes no database state or Events. Source labels use
 bounded HTTP(S) destinations, and callback handlers reject stale/unavailable or
 cross-owner projections without changing lifecycle, feedback or delivery semantics.
+
+## D-040 — Telegram capture provenance uses Bot API identity
+
+Context: AIInbox stores the Telegram message that created an Item, but private
+bot chats have no reliable public permalink. Resurfaced Items therefore need a
+safe return path that does not invent one.
+
+Decision: resolve `Item.telegram_message_id` together with the owning
+`User.telegram_chat_id` under an owner check, close the SQLite session, then
+reproduce the capture with `copy_message`. Keep public forwarded-post links as a
+separate provenance action. List surfaces open the existing compact Item card;
+proactive Reminder Original actions record `REMINDER_OPENED` only after a
+successful copy.
+
+Reason: this reuses the capture identity already persisted by ingestion without
+re-downloading sources, duplicating content, or coupling navigation to analysis.
+
+Consequences: deleting a Telegram capture makes Bot API reproduction unavailable,
+but does not invalidate the Item or its extracted evidence. Original callbacks
+revalidate ownership, and their transport side effect retains the existing
+at-least-once window.
