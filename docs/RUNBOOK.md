@@ -374,7 +374,7 @@ category target is stale are also recorded there without adding Event history.
 
 ```bash
 sqlite3 data/app.db \
-  "SELECT id, type, status, item_id, profile_update_job_id, attempts, last_error, updated_at
+  "SELECT id, type, status, item_id, profile_update_job_id, ask_job_id, attempts, last_error, updated_at
    FROM deliveries ORDER BY id DESC LIMIT 50"
 ```
 
@@ -392,6 +392,42 @@ YouTube/Reel source. Для Telegram video `file_id` сохраняется в d
 или анализа до пользовательского запроса сами по себе этот fallback не запускают.
 После исчерпания попыток `FAILED` video delivery снова ставится в очередь при
 нажатии соответствующей кнопки.
+
+`ASK_RESULT` и `ASK_FAILED` относятся к `ask_jobs`. `ASK_RESULT` хранит короткий
+ответ только в outbox, пока Telegram не примет сообщение; после успешной отправки
+поле answer очищается. Повторная Telegram delivery не повторяет retrieval/LLM.
+Доставка остаётся at-least-once: процесс может завершиться после принятия сообщения
+Telegram, но до фиксации `SENT`.
+
+## Ask My Inbox
+
+```bash
+sqlite3 data/app.db \
+  "SELECT id, user_id, status, error_code, created_at, updated_at
+   FROM ask_jobs ORDER BY id DESC LIMIT 50"
+```
+
+`RUNNING` AskJob возвращается в `PENDING` при startup recovery. `DONE` означает,
+что synthesis завершён и durable Delivery создан; успешная Telegram отправка
+отражается отдельно в `deliveries.status`. `FAILED` означает сбой вычисления;
+бот ставит короткое `ASK_FAILED` уведомление, а повторный `/ask` создаёт новый
+самостоятельный job. Ошибки SQLite выходят к critical-task supervisor, а не
+превращаются в обычный provider failure.
+
+Для `/ask` не нужны отдельные credentials: `AskWorker` использует выбранные
+`LLM_PROVIDER` и analysis model. Если provider не настроен, приложение не сможет
+обрабатывать Ask запросы; после настройки используйте штатный restart и проверку
+`python -m app.ops smoke`.
+
+Для OpenRouter strict JSON Schema запросы требуют upstream provider, который
+обрабатывает `response_format`; adapter включает `require_parameters=true`, чтобы
+маршрутизатор не выбрал upstream, молча игнорирующий параметр. При
+`INVALID_LLM_OUTPUT` Ask log показывает только finish reason, наличие refusal,
+тип/длину ответа и имена schema validation errors. Сам ответ, вопрос и контекст
+не логируются. Если модель вернёт числовой `source_id` как JSON-строку, adapter
+нормализует только десятичное значение в целое число; Ask service затем всё равно
+сверяет его с источниками, включёнными в конкретный запрос. Другие нарушения схемы
+проходят обычный retry и controlled failure.
 
 ## Reminders / digest
 

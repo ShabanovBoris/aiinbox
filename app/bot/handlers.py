@@ -24,6 +24,7 @@ from app.domain.enums import ItemState, ItemType, ProcessingStatus, SourceType
 from app.extractors.document import document_format_hint, safe_document_file_name
 from app.extractors.instagram import is_instagram_reel_url
 from app.services.actions import apply_item_action, record_item_events, set_item_interest
+from app.services.ask_inbox import MAX_ASK_QUESTION_CHARS, enqueue_ask
 from app.services.attention_ranking import AttentionRankingService
 from app.services.delivery import enqueue_item_video_delivery
 from app.services.feedback import (
@@ -63,6 +64,7 @@ HELP_TEXT = (
     "/weekly — обзор backlog и внимания за 7 дней\n"
     "/inbox — последние Items\n"
     "/search <текст> — поиск по сохранённому содержимому\n"
+    "/ask <вопрос> — ответ по сохранённым материалам\n"
     "/category [имя] — категории и Items категории\n"
     "/profile — текущий профиль\n"
     "/profile_update <инструкция> — обновить профиль\n"
@@ -513,6 +515,12 @@ def make_router(
     async def search(message: Message) -> None:
         value = (message.text or "").removeprefix("/search").strip()
         await on_search(message, settings, session_factory, value)
+
+    @router.message(Command("ask"))
+    async def ask(message: Message) -> None:
+        parts = (message.text or "").split(maxsplit=1)
+        question = parts[1].strip() if len(parts) == 2 else ""
+        await on_ask(message, settings, session_factory, question)
 
     @router.callback_query(F.data.startswith("item:"))
     async def item_action(callback: CallbackQuery) -> None:
@@ -1357,3 +1365,27 @@ async def on_search(message: Message, settings: Settings, session_factory, query
         await session.commit()
         items = await search_items(session, user.id, query)
     await message.answer(format_item_list(items, "Результаты поиска:"))
+
+
+async def on_ask(message: Message, settings: Settings, session_factory, question: str) -> None:
+    """Validate and durably enqueue one question; all retrieval and LLM work stays in AskWorker."""
+    if not await _allowed(message, settings):
+        return
+    question = question.strip()
+    if not question:
+        await message.answer("Использование: /ask <вопрос>")
+        return
+    if len(question) > MAX_ASK_QUESTION_CHARS:
+        await message.answer(f"Вопрос слишком длинный. Максимум {MAX_ASK_QUESTION_CHARS} символов.")
+        return
+    user_id = message.from_user.id if message.from_user else None
+    job = await enqueue_ask(
+        session_factory,
+        telegram_user_id=user_id,
+        telegram_message_id=message.message_id,
+        chat_id=message.chat.id,
+        question=question,
+        default_timezone=settings.default_timezone,
+    )
+    log.info("ask request acknowledged job=%s user_id=%s", job.id, user_id)
+    await message.answer("Ищу в сохранённых материалах…")

@@ -503,3 +503,29 @@ analytics state model or changing future Attention selection.
 
 Consequences: category history reflects current `Item.category`; v1 has no
 scheduled weekly push or report snapshot.
+
+## D-036 — Ask uses durable jobs and bounded lexical evidence
+
+Context: `/ask` combines FTS retrieval with an external LLM call. Running that
+work in the Telegram handler would block updates and lose requests on restart.
+
+Decision: the handler validates and persists one standalone `AskJob`, then ACKs.
+`AskWorker` retrieves the user's top FTS5 Items, builds a bounded immutable
+projection from persisted Item/ItemSource/Content data, closes SQLite before the
+provider call, validates citations against the exact supplied context, and
+atomically finishes the job with an `ASK_RESULT` or `ASK_FAILED` Delivery.
+
+The provider can return only Item/source IDs; display titles and HTTP(S) URLs are
+resolved from persisted rows. `ATTENTION_HOOK` and `TRANSCRIPT_CHUNK` are excluded;
+`CHUNK_SUMMARY` is an item-level fallback only when original evidence is absent.
+An `ASK_RESULT` answer exists only in the delivery payload until Telegram accepts
+it, then the answer text is cleared. Ask does not write Items, Content, Events,
+Profile changes, or search results.
+
+Reason: durable queue/outbox boundaries preserve the existing restart model while
+preventing generated prose or unrelated sources from becoming Inbox evidence.
+
+Consequences: retries of a pending/sending Telegram delivery do not repeat LLM
+synthesis; delivery retains the existing at-least-once transport window. PM-13
+uses lexical FTS5 only, leaving semantic/hybrid retrieval to PM-14 if real misses
+justify it.

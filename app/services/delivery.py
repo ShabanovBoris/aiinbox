@@ -16,17 +16,23 @@ from sqlalchemy import func, select, update
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.sql import text
 
+from app.bot.formatting import format_ask_answer
+from app.bot.keyboards import ask_sources_keyboard
 from app.bot.notify import send_item_failure, send_item_result
 from app.domain.enums import ProcessingStatus, SourceType
+from app.domain.models import AskDeliveryPayload, AskReference
 from app.errors import AppError, MediaTooLargeError
 from app.extractors.subprocess_runner import cleanup_temporary_directory
-from app.storage.models import Delivery, Item, ItemSource, User
+from app.services.ask_inbox import safe_http_url, unique_item_source_url
+from app.storage.models import AskJob, Delivery, Item, ItemSource, User
 
 log = logging.getLogger(__name__)
 
 ITEM_READY = "ITEM_READY"
 ITEM_FAILED = "ITEM_FAILED"
 PROFILE_UPDATED = "PROFILE_UPDATED"
+ASK_RESULT = "ASK_RESULT"
+ASK_FAILED = "ASK_FAILED"
 ITEM_VIDEO_PREFIX = "ITEM_VIDEO:"
 TELEGRAM_MAX_UPLOAD_BYTES = 50_000_000
 
@@ -195,6 +201,91 @@ async def enqueue_profile_delivery(
     return delivery
 
 
+async def enqueue_ask_delivery(
+    session,
+    *,
+    user_id: int,
+    ask_job_id: int,
+    delivery_type: str,
+    payload: dict,
+) -> Delivery:
+    """Keep one synthesis outcome per durable AskJob and delivery type."""
+    if delivery_type not in {ASK_RESULT, ASK_FAILED}:
+        raise ValueError(f"unsupported Ask delivery type={delivery_type}")
+    existing = await session.scalar(
+        select(Delivery).where(
+            Delivery.ask_job_id == ask_job_id,
+            Delivery.type == delivery_type,
+        )
+    )
+    if existing is not None:
+        return existing
+    delivery = Delivery(
+        user_id=user_id,
+        ask_job_id=ask_job_id,
+        type=delivery_type,
+        status="PENDING",
+        payload_json=payload,
+    )
+    session.add(delivery)
+    return delivery
+
+
+async def _load_ask_references(session, user_id: int, payload: AskDeliveryPayload):
+    """Resolve transient citation IDs from their owning user-scoped database rows."""
+    citations = payload.references
+    item_ids = {citation.item_id for citation in citations}
+    if not item_ids:
+        return ()
+    items = list(
+        (
+            await session.scalars(
+                select(Item).where(Item.user_id == user_id, Item.id.in_(item_ids))
+            )
+        ).all()
+    )
+    item_by_id = {item.id: item for item in items}
+    if item_by_id.keys() != item_ids:
+        raise RuntimeError("Ask delivery references an unavailable Item")
+    sources = list(
+        (
+            await session.scalars(
+                select(ItemSource)
+                .where(ItemSource.item_id.in_(item_ids))
+                .order_by(ItemSource.item_id, ItemSource.source_index, ItemSource.id)
+            )
+        ).all()
+    )
+    sources_by_item: dict[int, list[ItemSource]] = {item_id: [] for item_id in item_ids}
+    source_by_id = {}
+    for source in sources:
+        sources_by_item[source.item_id].append(source)
+        source_by_id[source.id] = source
+
+    references = []
+    for citation in citations:
+        item = item_by_id[citation.item_id]
+        if citation.source_id is None:
+            source_type = None
+            source_url = unique_item_source_url(item, sources_by_item[item.id])
+        else:
+            source = source_by_id.get(citation.source_id)
+            if source is None or source.item_id != item.id:
+                raise RuntimeError("Ask delivery references an unavailable source")
+            source_type = source.source_type.value
+            source_url = safe_http_url(source.source_url)
+        references.append(
+            AskReference(
+                item_id=item.id,
+                source_id=citation.source_id,
+                title=(item.title or "(untitled)")[:120],
+                source_type=source_type,
+                source_url=source_url,
+            )
+        )
+    return tuple(references)
+
+
 async def requeue_sending_deliveries(session_factory) -> int:
     """Recover the side-effect boundary after process death.
 
@@ -296,6 +387,8 @@ class DeliveryWorker:
         return True
 
     async def _send(self, delivery_id: int) -> dict | None:
+        ask_text = None
+        ask_keyboard = None
         async with self.session_factory() as session:
             delivery = await session.get(Delivery, delivery_id)
             if delivery is None:
@@ -307,6 +400,9 @@ class DeliveryWorker:
             delivery_type = delivery.type
             payload = dict(delivery.payload_json or {})
             item = await session.get(Item, delivery.item_id) if delivery.item_id else None
+            ask_job = (
+                await session.get(AskJob, delivery.ask_job_id) if delivery.ask_job_id else None
+            )
             video_source = None
             if delivery_type.startswith(ITEM_VIDEO_PREFIX):
                 source_id = payload.get("source_id")
@@ -315,6 +411,18 @@ class DeliveryWorker:
                 if delivery_type != f"{ITEM_VIDEO_PREFIX}{source_id}":
                     raise RuntimeError(f"delivery {delivery_id} video source key does not match")
                 video_source = await session.get(ItemSource, source_id)
+
+            if delivery_type in {ASK_RESULT, ASK_FAILED}:
+                if ask_job is None or ask_job.user_id != delivery.user_id:
+                    raise RuntimeError(f"delivery {delivery_id} has no matching AskJob")
+                if delivery_type == ASK_RESULT:
+                    try:
+                        ask_payload = AskDeliveryPayload.model_validate(payload)
+                    except Exception:
+                        raise RuntimeError("Ask delivery payload is invalid") from None
+                    references = await _load_ask_references(session, delivery.user_id, ask_payload)
+                    ask_text = format_ask_answer(ask_payload.answer, references)
+                    ask_keyboard = ask_sources_keyboard(references)
 
         if delivery_type.startswith(ITEM_VIDEO_PREFIX):
             if item is None or video_source is None:
@@ -338,6 +446,26 @@ class DeliveryWorker:
         if delivery_type == PROFILE_UPDATED:
             changed = payload.get("changed") or []
             await self.bot.send_message(chat_id, "Профиль обновлён: " + ", ".join(changed))
+            return None
+        if delivery_type == ASK_RESULT:
+            try:
+                await self.bot.send_message(
+                    chat_id,
+                    ask_text,
+                    reply_markup=ask_keyboard,
+                )
+            except Exception as exc:
+                # Telegram transport errors can include request text; keep the
+                # answer only in the retryable outbox payload, never in logs.
+                raise RuntimeError(f"Ask result delivery failed: {type(exc).__name__}") from None
+            # Keep the durable retry payload until Telegram accepts the message,
+            # then drop generated prose in the same transaction as SENT.
+            return {"answer": None}
+        if delivery_type == ASK_FAILED:
+            await self.bot.send_message(
+                chat_id,
+                "Не удалось подготовить ответ по сохранённым материалам. Попробуй ещё раз.",
+            )
             return None
         raise RuntimeError(f"unsupported delivery type={delivery_type}")
 

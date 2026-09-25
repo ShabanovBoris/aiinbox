@@ -2,7 +2,7 @@ from collections.abc import Sequence
 
 from app.bot.provenance import forward_source_label
 from app.domain.enums import SourceType
-from app.domain.models import UserProfile
+from app.domain.models import AskReference, UserProfile
 from app.services.attention_ranking import AttentionRank
 from app.services.weekly_review import WeeklyReview
 from app.storage.models import Item, ItemSource
@@ -349,6 +349,20 @@ def format_item_list(items: list[Item], heading: str) -> str:
     for index, item in enumerate(items, start=1):
         score = f" — {item.priority_score}/100" if item.priority_score is not None else ""
         lines.append(f"{index}. {item.title or 'Без названия'}{score}")
+    return _fit_message(lines)
+
+
+def format_ask_answer(answer: str, references: Sequence[AskReference]) -> str:
+    """Render one bounded synthesis with titles supplied by validated persisted rows."""
+    answer = answer.strip()
+    lines = [answer or "В найденных материалах недостаточно данных для уверенного ответа."]
+    if references:
+        lines.extend(("", "Источники:"))
+        for index, reference in enumerate(references[:5], start=1):
+            title = _bounded_weekly_label(reference.title or "Без названия", 120)
+            if reference.source_type:
+                title += f" — {reference.source_type[:16]}"
+            lines.append(f"[{index}] {title}")
     return _fit_message(lines)
 
 

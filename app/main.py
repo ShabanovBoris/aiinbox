@@ -18,6 +18,7 @@ from app.extractors.youtube import YoutubeExtractor
 from app.llm.openai import OpenAiProvider
 from app.llm.transcription import OpenAiTranscriptionProvider, OpenRouterTranscriptionProvider
 from app.services.analysis import Analyzer
+from app.services.ask_inbox import requeue_running_ask_jobs
 from app.services.attention_hooks import AttentionHookService
 from app.services.delivery import DeliveryWorker, requeue_sending_deliveries
 from app.services.notifications import ReminderWorker
@@ -28,6 +29,7 @@ from app.services.profile import (
     requeue_running_profile_jobs,
 )
 from app.storage.database import make_engine, make_session_factory
+from app.workers.ask import AskWorker
 from app.workers.processing import ProcessingWorker, requeue_stale
 from app.workers.profile import ProfileUpdateWorker
 
@@ -212,6 +214,7 @@ async def run(settings: Settings) -> None:
     try:
         await requeue_stale(session_factory)
         await requeue_running_profile_jobs(session_factory)
+        await requeue_running_ask_jobs(session_factory)
         await requeue_sending_deliveries(session_factory)
         await apply_profile_seed(session_factory, settings.profile_seed_file)
         configure_profile_seed(settings.profile_seed_file)
@@ -279,6 +282,12 @@ async def run(settings: Settings) -> None:
             asyncio.create_task(profile_worker.run_forever(stop), name=f"profile-worker-{i}")
             for i in range(1)
         ]
+        ask_worker = AskWorker(
+            session_factory,
+            analyzer.provider,
+            poll_seconds=settings.processing_poll_seconds,
+        )
+        ask_task = asyncio.create_task(ask_worker.run_forever(stop), name="ask-worker")
         reminder_tasks = []
         delivery_tasks = []
         if bot is not None:
@@ -318,7 +327,9 @@ async def run(settings: Settings) -> None:
             for i in range(settings.processing_concurrency)
         ]
 
-        all_worker_tasks = worker_tasks + profile_tasks + delivery_tasks + reminder_tasks
+        all_worker_tasks = (
+            worker_tasks + profile_tasks + [ask_task] + delivery_tasks + reminder_tasks
+        )
         critical_tasks = all_worker_tasks + ([polling] if polling is not None else [])
         # ❌ Удален пассивный await stop.wait(): завершившийся worker/polling
         # оставлял процесс живым без гарантии дальнейшей обработки.

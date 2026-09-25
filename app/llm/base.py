@@ -7,6 +7,7 @@ from pydantic import BaseModel
 
 from app.domain.models import (
     AnalysisResult,
+    AskInboxResult,
     AttentionHookGeneration,
     NormalizedContent,
     ProfilePatch,
@@ -92,6 +93,16 @@ class LlmProvider(Protocol):
 
     async def profile_update(self, instruction: str, current: UserProfile) -> ProfilePatch:
         """Natural language → валидированный ProfilePatch (Phase 8)."""
+        ...
+
+    async def answer_inbox(
+        self,
+        question: str,
+        context: str,
+        *,
+        preferred_language: str,
+    ) -> AskInboxResult:
+        """Synthesize only from application-selected persisted Inbox evidence."""
         ...
 
     async def generate_attention_hooks(
