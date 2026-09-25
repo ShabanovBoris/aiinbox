@@ -166,11 +166,15 @@ Goal: expose trends in attention, backlog growth, completion, neglect and catego
 - POLISH-01 AI Analysis v2 — DONE (PR #46 merged)
 - POLISH-02 Compact Telegram Item UI — DONE (PR #48 merged)
 - POLISH-03 Unified Provenance & Original Access — DONE (PR #49 merged)
-- POLISH-04 Hooks & Notifications v2 — IN_REVIEW
-- POLISH-05 Telegram Navigation & AI Reliability — PLANNED
+- POLISH-04 Hooks & Notifications v2 — DONE (PR #50 merged)
+- POLISH-05 Telegram Navigation & AI Reliability — IN_REVIEW
 
 Goal: make the existing AI understanding, Telegram presentation, source navigation,
 reminders and reliability worth extending before new capability is added.
+
+The next gate is a separate explicit quality review across POLISH-01…05. PM-14
+and PM-16+ remain ON HOLD until that review passes; this implementation PR does
+not resume roadmap expansion.
 
 ### Milestone G — Knowledge
 

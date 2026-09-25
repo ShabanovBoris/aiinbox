@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import func, select
+from sqlalchemy.exc import SQLAlchemyError
 
 from app.bot.formatting import format_ask_answer
 from app.bot.handlers import HELP_TEXT, on_ask
@@ -26,7 +27,7 @@ from app.services.ask_inbox import (
     enqueue_ask,
     requeue_running_ask_jobs,
 )
-from app.services.delivery import ASK_FAILED, ASK_RESULT, DeliveryWorker
+from app.services.delivery import ASK_FAILED, ASK_RESULT, DeliveryWorker, _ask_failure_copy
 from app.services.retrieval import SearchHit, search_item_hits
 from app.storage.models import AskJob, Content, Delivery, Event, Item, ItemSource, Reminder, User
 from app.workers.ask import AskWorker
@@ -153,6 +154,16 @@ async def enqueue(session_factory, question: str, *, message_id: int = 1) -> Ask
         chat_id=42,
         question=question,
     )
+
+
+async def add_ask_evidence(session_factory, user_id: int, text: str = "question keyword evidence"):
+    async with session_factory() as session:
+        item = make_item(user_id, title="Question keyword source")
+        session.add(item)
+        await session.flush()
+        session.add(Content(item_id=item.id, kind=ContentKind.USER_TEXT, text=text))
+        await session.commit()
+        return item.id
 
 
 @pytest.mark.asyncio
@@ -497,7 +508,7 @@ async def test_ask_handler_validates_and_deduplicates_telegram_message(settings,
     assert len(jobs) == 1
     assert jobs[0].status == "PENDING"
     assert jobs[0].question == "local Android models"
-    assert "/ask <вопрос>" in HELP_TEXT
+    assert "Slash-команды тоже работают." in HELP_TEXT
 
 
 @pytest.mark.asyncio
@@ -692,35 +703,214 @@ async def test_invalid_citation_can_be_repaired_once_and_duplicates_are_removed(
 
 
 @pytest.mark.asyncio
-async def test_worker_provider_failure_creates_failed_job_and_delivery(session_factory):
+async def test_worker_provider_failure_creates_safe_failed_job_and_copy(
+    session_factory, monkeypatch, caplog
+):
+    async def no_wait(_seconds):
+        return None
+
+    monkeypatch.setattr("app.services.ask_inbox.asyncio.sleep", no_wait)
     user_id = await make_user(session_factory)
-    async with session_factory() as session:
-        item = make_item(user_id, title="Question about grounded retrieval")
-        session.add(item)
-        await session.flush()
-        session.add(
-            Content(
-                item_id=item.id,
-                kind=ContentKind.USER_TEXT,
-                text="Grounded retrieval question source text.",
-            )
-        )
-        await session.commit()
+    await add_ask_evidence(session_factory, user_id, "question keyword source text")
     job = await enqueue(session_factory, "question", message_id=206)
+    private_marker = "PRIVATE_PROVIDER_TEXT_7f1a"
+    provider = FakeAskProvider(
+        LlmError("LLM_FAILED", private_marker),
+        LlmError("LLM_FAILED", private_marker),
+    )
     worker = AskWorker(
         session_factory,
-        FakeAskProvider(LlmError("LLM_FAILED", "private query and source text")),
+        provider,
         poll_seconds=0,
     )
-    assert await worker.process_one()
+    with caplog.at_level(logging.INFO, logger="app.services.ask_inbox"):
+        assert await worker.process_one()
     async with session_factory() as session:
         stored_job = await session.get(AskJob, job.id)
         delivery = await session.scalar(select(Delivery).where(Delivery.ask_job_id == job.id))
         assert stored_job.status == "FAILED"
         assert stored_job.error_code == "LLM_FAILED"
-        assert "private" not in stored_job.error_message
+        assert stored_job.error_message == "LLM provider request failed"
         assert delivery.type == ASK_FAILED
         assert delivery.payload_json == {}
+    assert len(provider.calls) == 2
+    assert private_marker not in caplog.text
+
+    bot = FakeBot()
+    delivery_worker = DeliveryWorker(session_factory, bot, retry_backoff_seconds=0)
+    await delivery_worker.process_one()
+    assert len(bot.messages) == 1
+    assert "временной ошибки ИИ" in bot.messages[0]["text"]
+    assert "LLM_FAILED" not in bot.messages[0]["text"]
+    assert private_marker not in bot.messages[0]["text"]
+
+
+async def test_rate_limited_ask_retries_once_without_logging_private_content(
+    session_factory, monkeypatch, caplog
+):
+    async def no_wait(_seconds):
+        return None
+
+    monkeypatch.setattr("app.services.ask_inbox.asyncio.sleep", no_wait)
+    user_id = await make_user(session_factory)
+    item_id = await add_ask_evidence(
+        session_factory,
+        user_id,
+        "PRIVATE_ASK_QUESTION_7f1a PRIVATE_SOURCE_EXCERPT_7f1a",
+    )
+    job = await enqueue(session_factory, "PRIVATE_ASK_QUESTION_7f1a", message_id=208)
+    provider = FakeAskProvider(
+        LlmError("LLM_RATE_LIMITED", "PRIVATE_ASK_QUESTION_7f1a"),
+        AskInboxResult(
+            answer="PRIVATE_GENERATED_ANSWER_7f1a",
+            citations=[AskInboxCitation(item_id=item_id)],
+            insufficient_context=False,
+        ),
+    )
+    worker = AskWorker(session_factory, provider, poll_seconds=0)
+
+    with caplog.at_level(logging.INFO, logger="app.services.ask_inbox"):
+        assert await worker.process_one()
+
+    async with session_factory() as session:
+        stored_job = await session.get(AskJob, job.id)
+        delivery = await session.scalar(select(Delivery).where(Delivery.ask_job_id == job.id))
+        assert stored_job.status == "DONE"
+        assert delivery.type == ASK_RESULT
+        assert delivery.payload_json["answer"] == "PRIVATE_GENERATED_ANSWER_7f1a"
+    assert len(provider.calls) == 2
+    assert "code=LLM_RATE_LIMITED" in caplog.text
+    assert "attempt=1 max_attempts=2" in caplog.text
+    for private_value in (
+        "PRIVATE_ASK_QUESTION_7f1a",
+        "PRIVATE_SOURCE_EXCERPT_7f1a",
+        "PRIVATE_GENERATED_ANSWER_7f1a",
+    ):
+        assert private_value not in caplog.text
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        LlmError("LLM_AUTH_FAILED", "PRIVATE", permanent=True),
+        LlmError("LLM_CONFIG_FAILED", "PRIVATE", permanent=True),
+        LlmError("INVALID_LLM_OUTPUT", "PRIVATE"),
+        LlmError("LLM_FAILED", "PRIVATE", permanent=True),
+    ],
+)
+async def test_nontransient_ask_failures_are_not_retried(session_factory, error):
+    user_id = await make_user(session_factory)
+    await add_ask_evidence(session_factory, user_id)
+    job = await enqueue(session_factory, "question", message_id=209)
+    provider = FakeAskProvider(error)
+
+    assert await AskWorker(session_factory, provider, poll_seconds=0).process_one()
+
+    assert len(provider.calls) == 1
+    async with session_factory() as session:
+        stored_job = await session.get(AskJob, job.id)
+        assert stored_job.status == "FAILED"
+        assert stored_job.error_code == error.code
+        assert "PRIVATE" not in stored_job.error_message
+
+
+async def test_ask_database_failure_reaches_worker_supervisor(session_factory, monkeypatch):
+    user_id = await make_user(session_factory)
+    await add_ask_evidence(session_factory, user_id)
+    job = await enqueue(session_factory, "question", message_id=210)
+
+    async def database_failure(*args, **kwargs):
+        raise SQLAlchemyError("PRIVATE_DATABASE_DETAILS")
+
+    monkeypatch.setattr("app.services.ask_inbox.search_item_hits", database_failure)
+    with pytest.raises(SQLAlchemyError, match="PRIVATE_DATABASE_DETAILS"):
+        await AskWorker(session_factory, FakeAskProvider(), poll_seconds=0).process_one()
+
+    async with session_factory() as session:
+        stored_job = await session.get(AskJob, job.id)
+        assert stored_job.status == "RUNNING"
+        assert stored_job.error_code is None
+        assert await session.scalar(select(Delivery).where(Delivery.ask_job_id == job.id)) is None
+
+
+async def test_unexpected_ask_application_error_fails_fast_for_restart_recovery(session_factory):
+    user_id = await make_user(session_factory)
+    await add_ask_evidence(session_factory, user_id)
+    job = await enqueue(session_factory, "question", message_id=211)
+    provider = FakeAskProvider(RuntimeError("PRIVATE_UNEXPECTED_FAILURE"))
+
+    with pytest.raises(RuntimeError, match="PRIVATE_UNEXPECTED_FAILURE"):
+        await AskWorker(session_factory, provider, poll_seconds=0).process_one()
+
+    async with session_factory() as session:
+        stored_job = await session.get(AskJob, job.id)
+        assert stored_job.status == "RUNNING"
+        assert stored_job.error_code is None
+        assert await session.scalar(select(Delivery).where(Delivery.ask_job_id == job.id)) is None
+
+
+@pytest.mark.parametrize(
+    ("code", "copy"),
+    [
+        (
+            "LLM_TIMEOUT",
+            "Не смог подготовить ответ из-за временной ошибки ИИ. Попробуй ещё раз.",
+        ),
+        (
+            "LLM_RATE_LIMITED",
+            "Не смог подготовить ответ из-за временной ошибки ИИ. Попробуй ещё раз.",
+        ),
+        (
+            "LLM_AUTH_FAILED",
+            "Сейчас не могу подготовить ответ по сохранённым материалам. Попробуй позже.",
+        ),
+        (
+            "LLM_CONFIG_FAILED",
+            "Сейчас не могу подготовить ответ по сохранённым материалам. Попробуй позже.",
+        ),
+        (
+            "INVALID_LLM_OUTPUT",
+            "Сейчас не могу подготовить ответ по сохранённым материалам. Попробуй позже.",
+        ),
+    ],
+)
+def test_ask_failure_copy_hides_codes_and_provider_details(code, copy):
+    assert _ask_failure_copy(code) == copy
+    assert code not in copy
+    assert "HTTP" not in copy
+    assert "OpenAI" not in copy
+
+
+async def test_ask_result_delivery_requires_matching_done_computation(session_factory):
+    user_id = await make_user(session_factory)
+    job = await enqueue(session_factory, "question", message_id=212)
+    async with session_factory() as session:
+        stored_job = await session.get(AskJob, job.id)
+        stored_job.status = "FAILED"
+        session.add(
+            Delivery(
+                user_id=user_id,
+                ask_job_id=job.id,
+                type=ASK_RESULT,
+                status="PENDING",
+                payload_json={
+                    "answer": "PRIVATE_ANSWER_MUST_NOT_BE_SENT",
+                    "references": [],
+                },
+            )
+        )
+        await session.commit()
+
+    bot = FakeBot()
+    await DeliveryWorker(session_factory, bot, retry_backoff_seconds=0).process_one()
+
+    assert bot.messages == []
+    async with session_factory() as session:
+        stored_job = await session.get(AskJob, job.id)
+        delivery = await session.scalar(select(Delivery).where(Delivery.ask_job_id == job.id))
+        assert stored_job.status == "FAILED"
+        assert delivery.status == "PENDING"
+        assert "does not match its computation status" in delivery.last_error
 
 
 @pytest.mark.asyncio

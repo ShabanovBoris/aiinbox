@@ -96,6 +96,9 @@ durable `DeliveryWorker`. `AskWorker` и `ExportWorker` обрабатывают
   provenance;
 - forwarded photo-post с URL в caption/text_link: caption и ссылки сохраняются как
   единый source content, само изображение не анализируется;
+- `/start`, `/menu`, and `/help` expose a compact inline menu; the Telegram
+  command list is registered from code. Guided Ask/Search accept one text input
+  without creating general conversation history;
 - `/today`, `/attention`, `/weekly`, `/inbox`, `/category`, `/search`, `/ask`;
 - `/export [compact|full]`;
 - `/profile`, `/profile_update`;
@@ -693,6 +696,7 @@ FAILED → QUEUED. `READY/PARTIAL` с failed child source также можно 
 
 Основные коды: `UNSUPPORTED_SOURCE`, `DOWNLOAD_FAILED`, `TOO_LARGE`,
 `EXTRACTION_FAILED`, `TRANSCRIPTION_FAILED`, `LLM_FAILED`,
+`LLM_TIMEOUT`, `LLM_RATE_LIMITED`, `LLM_AUTH_FAILED`, `LLM_CONFIG_FAILED`,
 `INVALID_LLM_OUTPUT`, `TIMEOUT`, `PROCESSING_TIMEOUT`,
 `SECURITY_REJECTED`, `AUTH_REQUIRED`, `RATE_LIMITED`, `UNKNOWN`.
 
@@ -941,3 +945,43 @@ Content и Ask answers не экспортируются.
 Строить не AI bookmark manager, а **Personal Attention Manager**: система сама
 понимает входящий материал, оценивает его, предлагает действие и возвращает в
 подходящий момент.
+
+## 101. POLISH-05 — Telegram navigation and AI reliability
+
+Telegram owns a bounded native `BotCommand` list and a compact inline main menu.
+`set_my_commands` is best-effort presentation setup: it runs only when the bot
+token is configured, requires no database access, and a temporary failure does
+not stop workers or polling. The menu is additive; existing slash commands stay
+supported and no persistent ReplyKeyboard is used.
+
+Command and callback entry points share the existing user-scoped projections.
+Navigation callbacks authorize from the human `callback.from_user`; the
+bot-authored callback message supplies only the chat and presentation target.
+Today/Attention exposure remains durable only after the corresponding Telegram
+send succeeds. Category callbacks resolve short tokens against the current
+owner-scoped category list and reject stale or colliding tokens.
+
+Guided Ask/Search use only in-process one-shot input state. A normal slash
+command clears a pending prompt, while forwarded content and media keep their
+existing ingestion precedence. Ask stores the actual question message ID and
+enqueues the existing durable AskJob; FTS retrieval and synthesis remain in
+AskWorker. Search uses the existing SQLite FTS path. Neither flow stores chat
+history. Export mode callbacks share the chooser message ID as the existing
+ExportJob idempotency key and acknowledge the mode that was actually persisted.
+
+OpenAI-compatible provider errors map to `LLM_TIMEOUT`, `LLM_RATE_LIMITED`,
+`LLM_AUTH_FAILED`, `LLM_CONFIG_FAILED`, or `LLM_FAILED`. Authentication and
+request-configuration failures are permanent for immediate retry; known timeout,
+rate-limit, connection, and server failures are transient. Ask permits at most
+two logical provider attempts with a 0.5-second delay for transient failures.
+Structured-output retry and PM-13 citation repair remain separate bounded
+mechanisms. `NO_RESULTS` and `INSUFFICIENT_CONTEXT` are successful DONE outcomes;
+SQLite failures still reach fail-fast supervision. Ask answers remain transient
+delivery payloads, and retrying Telegram delivery never reruns retrieval or LLM
+synthesis.
+
+Provider exception text and causes are excluded from logs and durable errors.
+Safe logs carry operation, provider/model, exception type, status code, Ask job
+and user identity, stage, attempt and latency; they do not contain questions,
+evidence, answers or response bodies. `app.ops status` reports only bounded Ask
+state and outstanding ASK_FAILED delivery counts.

@@ -205,6 +205,21 @@ def database_status(path: Path) -> dict[str, int]:
         pending_deliveries = connection.execute(
             "SELECT COUNT(*) FROM deliveries WHERE status IN ('PENDING', 'SENDING')"
         ).fetchone()[0]
+        ask_pending, ask_running, ask_failed = connection.execute(
+            """
+            SELECT
+              COALESCE(SUM(status = 'PENDING'), 0),
+              COALESCE(SUM(status = 'RUNNING'), 0),
+              COALESCE(SUM(status = 'FAILED'), 0)
+            FROM ask_jobs
+            """
+        ).fetchone()
+        ask_failed_deliveries = connection.execute(
+            """
+            SELECT COUNT(*) FROM deliveries
+            WHERE type = 'ASK_FAILED' AND status IN ('PENDING', 'SENDING', 'FAILED')
+            """
+        ).fetchone()[0]
         connection.execute("SELECT 1").fetchone()
     finally:
         connection.close()
@@ -213,6 +228,10 @@ def database_status(path: Path) -> dict[str, int]:
         "processing": int(processing),
         "failed": int(failed),
         "pending_deliveries": int(pending_deliveries),
+        "ask_pending": int(ask_pending),
+        "ask_running": int(ask_running),
+        "ask_failed": int(ask_failed),
+        "ask_failed_deliveries": int(ask_failed_deliveries),
         "bytes": path.stat().st_size,
     }
 
@@ -337,6 +356,9 @@ def main() -> None:
             f"database=ok bytes={status['bytes']} queued={status['queued']} "
             f"processing={status['processing']} failed={status['failed']} "
             f"pending_deliveries={status['pending_deliveries']} "
+            f"ask_pending={status['ask_pending']} ask_running={status['ask_running']} "
+            f"ask_failed={status['ask_failed']} "
+            f"ask_failed_deliveries={status['ask_failed_deliveries']} "
             f"provider={settings.llm_provider} model={model or 'not-configured'} "
             f"processing_workers={settings.processing_concurrency} "
             f"worker_supervision=fail-fast "

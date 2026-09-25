@@ -6,7 +6,8 @@ import pytest
 from sqlalchemy import func, select
 
 from app.bot.formatting import format_weekly_review
-from app.bot.handlers import HELP_TEXT, on_weekly
+from app.bot.handlers import on_weekly
+from app.bot.navigation import BOT_COMMANDS
 from app.config import Settings
 from app.domain.enums import ItemState, ItemType, ProcessingStatus, SourceType
 from app.services.calendar_windows import local_dates_utc_window
@@ -818,7 +819,7 @@ async def test_weekly_handler_sends_one_message_and_falls_back_from_invalid_user
     buttons = [button for row in message.reply_markups[0].inline_keyboard for button in row]
     assert [button.callback_data for button in buttons] == [f"item:view:{quick_win_id}"]
     assert [button.text for button in buttons] == ["1"]
-    assert "/weekly" in HELP_TEXT
+    assert any(command.command == "weekly" for command in BOT_COMMANDS)
 
 
 @pytest.mark.asyncio

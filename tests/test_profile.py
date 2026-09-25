@@ -355,20 +355,24 @@ async def test_profile_update_job_lifecycle_done(tmp_path, session_factory):
     assert profile.profession == "x"
 
 
-async def test_profile_update_job_failure_lifecycle(tmp_path, session_factory):
+async def test_profile_update_job_failure_lifecycle(tmp_path, session_factory, caplog):
     job = await enqueue_profile_update(
         session_factory, telegram_user_id=42, chat_id=42, instruction="i"
     )
+    private_marker = "PRIVATE_PROFILE_INSTRUCTION_7f1a"
     worker = ProfileUpdateWorker(
         session_factory,
-        FakeLlmProvider(profile_error=LlmError("INVALID_LLM_OUTPUT", "bad")),
+        FakeLlmProvider(profile_error=LlmError("INVALID_LLM_OUTPUT", private_marker)),
         poll_seconds=0.01,
     )
-    assert await worker.process_one() is True
+    with caplog.at_level("WARNING", logger="app.workers.profile"):
+        assert await worker.process_one() is True
     async with session_factory() as session:
         stored = await session.get(ProfileUpdateJob, job.id)
         assert stored.status == "FAILED"
         assert stored.error_code == "INVALID_LLM_OUTPUT"
+        assert stored.error_message == "LLM response did not match the required schema"
+    assert private_marker not in caplog.text
     async with session_factory() as session:
         profile = await get_profile(session, 1)
     assert profile.profession is None

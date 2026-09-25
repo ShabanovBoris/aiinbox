@@ -1,8 +1,10 @@
 """Bounded, user-scoped retrieval and synthesis over persisted Inbox evidence."""
 
+import asyncio
 import json
 import logging
 import re
+import time
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 
@@ -18,7 +20,7 @@ from app.domain.models import (
     AskReference,
 )
 from app.errors import AppError
-from app.llm.base import LlmProvider
+from app.llm.base import LlmError, LlmProvider, safe_llm_error_message
 from app.services.retrieval import SearchHit, search_item_hits
 from app.storage.models import AskJob, Content, Item, ItemSource
 
@@ -40,6 +42,9 @@ _INSUFFICIENT_RU = "В найденных материалах недостат�
 _INSUFFICIENT_EN = "The saved materials do not contain enough information to answer confidently."
 _FAILED_RU = "Не удалось подготовить ответ по сохранённым материалам. Попробуй ещё раз."
 _FAILED_EN = "I couldn't prepare an answer from your saved materials. Please try again."
+_ASK_PROVIDER_MAX_ATTEMPTS = 2
+_ASK_PROVIDER_RETRY_DELAY_SECONDS = 0.5
+_TRANSIENT_ASK_PROVIDER_CODES = {"LLM_TIMEOUT", "LLM_RATE_LIMITED", "LLM_FAILED"}
 _PRIMARY_KINDS = {
     ContentKind.USER_TEXT,
     ContentKind.WEB_TEXT,
@@ -593,6 +598,69 @@ class AskInboxService:
         self.session_factory = session_factory
         self.provider = provider
 
+    async def _answer_with_transient_retry(
+        self,
+        *,
+        ask_job_id: int,
+        user_id: int,
+        question: str,
+        context: str,
+        preferred_language: str,
+    ) -> AskInboxResult:
+        """Retry only known temporary provider failures after all SQLite work has closed."""
+        provider_name = getattr(self.provider, "provider_name", type(self.provider).__name__)
+        model_name = getattr(self.provider, "model_name", "unknown")
+        for attempt in range(1, _ASK_PROVIDER_MAX_ATTEMPTS + 1):
+            started = time.perf_counter()
+            try:
+                result = await self.provider.answer_inbox(
+                    question, context, preferred_language=preferred_language
+                )
+            except LlmError as exc:
+                latency_ms = int((time.perf_counter() - started) * 1000)
+                retryable = exc.code in _TRANSIENT_ASK_PROVIDER_CODES and not exc.permanent
+                if retryable and attempt < _ASK_PROVIDER_MAX_ATTEMPTS:
+                    log.warning(
+                        "ask provider retry job_id=%s user_id=%s stage=provider code=%s "
+                        "attempt=%s max_attempts=%s provider=%s model=%s latency_ms=%s",
+                        ask_job_id,
+                        user_id,
+                        exc.code,
+                        attempt,
+                        _ASK_PROVIDER_MAX_ATTEMPTS,
+                        provider_name,
+                        model_name,
+                        latency_ms,
+                    )
+                    await asyncio.sleep(_ASK_PROVIDER_RETRY_DELAY_SECONDS)
+                    continue
+                log.warning(
+                    "ask provider failed job_id=%s user_id=%s stage=provider code=%s "
+                    "attempt=%s max_attempts=%s provider=%s model=%s latency_ms=%s",
+                    ask_job_id,
+                    user_id,
+                    exc.code,
+                    attempt,
+                    _ASK_PROVIDER_MAX_ATTEMPTS,
+                    provider_name,
+                    model_name,
+                    latency_ms,
+                )
+                raise
+            latency_ms = int((time.perf_counter() - started) * 1000)
+            log.info(
+                "ask provider completed job_id=%s user_id=%s stage=provider attempt=%s "
+                "provider=%s model=%s latency_ms=%s",
+                ask_job_id,
+                user_id,
+                attempt,
+                provider_name,
+                model_name,
+                latency_ms,
+            )
+            return result
+        raise AssertionError("bounded Ask provider retry must return or raise")
+
     async def process(self, ask_job_id: int) -> None:
         """Build a detached context, close SQLite, synthesize, then atomically enqueue delivery."""
         from app.services.profile import get_profile
@@ -651,22 +719,34 @@ class AskInboxService:
             await self._complete(ask_job_id, user_id, payload)
             return
 
-        result = await self.provider.answer_inbox(
-            question, context.text, preferred_language=preferred_language
+        result = await self._answer_with_transient_retry(
+            ask_job_id=ask_job_id,
+            user_id=user_id,
+            question=question,
+            context=context.text,
+            preferred_language=preferred_language,
         )
         payload, failure = _validated_answer(result, context)
         if failure == "insufficient":
             payload = _controlled_answer("INSUFFICIENT_CONTEXT", preferred_language)
         elif failure is not None:
-            log.info("ask citation validation retry job=%s reason=%s", ask_job_id, failure)
-            result = await self.provider.answer_inbox(
-                question, context.text, preferred_language=preferred_language
+            log.info(
+                "ask citation validation retry job_id=%s code=INVALID_CITATIONS reason=%s",
+                ask_job_id,
+                failure,
+            )
+            result = await self._answer_with_transient_retry(
+                ask_job_id=ask_job_id,
+                user_id=user_id,
+                question=question,
+                context=context.text,
+                preferred_language=preferred_language,
             )
             payload, retry_failure = _validated_answer(result, context)
             if retry_failure == "insufficient" or retry_failure is not None:
                 payload = _controlled_answer("INSUFFICIENT_CONTEXT", preferred_language)
                 log.info(
-                    "ask citation validation exhausted job=%s reason=%s",
+                    "ask citation validation exhausted job_id=%s code=INVALID_CITATIONS reason=%s",
                     ask_job_id,
                     retry_failure,
                 )
@@ -701,7 +781,7 @@ class AskInboxService:
                 return
             job.status = "FAILED"
             job.error_code = code[:64]
-            job.error_message = "Ask computation failed"
+            job.error_message = safe_llm_error_message(code)
             await enqueue_ask_delivery(
                 session,
                 user_id=user_id,

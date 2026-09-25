@@ -199,7 +199,12 @@ class ProcessingPipeline:
             raise
         except Exception as exc:
             # vision failure не роняет Item с валидным транскриптом (ТЗ §39)
-            log.warning("visual analysis skipped item_id=%s: %s", item.id, exc)
+            log.warning(
+                "visual analysis skipped item_id=%s error_code=%s exception_type=%s",
+                item.id,
+                getattr(exc, "code", "VISUAL_FAILED"),
+                type(exc).__name__,
+            )
             return None
         finally:
             shutil.rmtree(work_dir, ignore_errors=True)

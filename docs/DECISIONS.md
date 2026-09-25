@@ -628,3 +628,28 @@ Consequences: changing hook semantics increments the generator version, while
 old hooks remain historical and lazy generation continues. PM-08 pacing,
 PM-11 feedback, source provenance, hook evidence validation, and the existing
 motivation facts and scores remain unchanged. No schema migration is required.
+
+## D-042 — Telegram navigation is additive and AI failures are classified at adapter boundaries
+
+Context: Core AIInbox features were only discoverable through slash commands,
+while OpenAI-compatible provider failures largely collapsed into `LLM_FAILED`
+and some exception strings could propagate into logs or durable error fields.
+
+Decision: Register the stable command surface from code and expose the main
+features through an inline Telegram menu. Guided Ask/Search use bounded
+ephemeral input state only; durable business work continues through existing
+jobs and workers. OpenAI-compatible adapters classify timeout, rate-limit,
+authentication/configuration, and generic provider failures into safe
+application error codes without preserving raw provider exception text or
+chained private payloads. Ask retries only known transient provider failures
+within a small fixed bound. `NO_RESULTS` and `INSUFFICIENT_CONTEXT` remain
+successful Ask outcomes, while Telegram Delivery remains independent from
+synthesis state.
+
+Reason: Navigation should not require command memorization, and operators need
+actionable failure classes without exposing private saved content.
+
+Consequences: Slash commands remain stable. No general conversation memory is
+added. Database failures continue to fail fast. Delivery retries never
+recompute completed Ask answers. PM-14+ remains paused until a separate quality
+review.

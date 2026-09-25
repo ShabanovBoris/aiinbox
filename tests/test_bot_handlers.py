@@ -1,25 +1,46 @@
 from datetime import UTC, datetime
 
 import pytest
-from aiogram.types import CallbackQuery, Chat, Message
+from aiogram import Bot, Dispatcher
+from aiogram.fsm.storage.memory import MemoryStorage, SimpleEventIsolation
+from aiogram.types import (
+    CallbackQuery,
+    Chat,
+    InlineKeyboardMarkup,
+    Message,
+    MessageOriginChannel,
+    Update,
+)
 from aiogram.types import User as TgUser
 from sqlalchemy import func, select
 
 from app.bot.handlers import (
+    ClearGuidedInputOnCommandMiddleware,
+    GuidedInput,
     _item_action_label,
+    make_router,
     on_attention_settings_callback,
     on_category,
+    on_export_mode_callback,
+    on_guided_ask_input,
+    on_guided_search_input,
     on_help,
     on_inbox,
+    on_navigation_callback,
     on_search,
     on_settings,
+    on_settings_open_callback,
     on_start,
     on_text,
     on_today,
 )
+from app.bot.keyboards import main_menu_keyboard
+from app.bot.navigation import BOT_COMMANDS, configure_bot_commands
+from app.domain.category_tokens import category_token
 from app.domain.enums import ItemState, ItemType, ProcessingStatus, SourceType
+from app.services.ask_inbox import MAX_ASK_QUESTION_CHARS
 from app.services.notifications import get_notification_settings
-from app.storage.models import Event, Item, User
+from app.storage.models import AskJob, Content, Event, ExportJob, Item, User
 
 
 def make_message(user_id: int, message_id: int = 1, text: str = "hello") -> Message:
@@ -29,6 +50,40 @@ def make_message(user_id: int, message_id: int = 1, text: str = "hello") -> Mess
         chat=Chat(id=user_id, type="private"),
         from_user=TgUser(id=user_id, is_bot=False, first_name="Test"),
         text=text,
+    )
+
+
+def make_bot_message(message_id: int = 700, chat_id: int = 42, text: str = "Menu") -> Message:
+    return Message(
+        message_id=message_id,
+        date=datetime.now(UTC),
+        chat=Chat(id=chat_id, type="private"),
+        from_user=TgUser(id=9999, is_bot=True, first_name="AIInbox"),
+        text=text,
+    )
+
+
+class FakeFSMContext:
+    def __init__(self, state: str | None = None):
+        self.value = state
+
+    async def get_state(self):
+        return self.value
+
+    async def set_state(self, state):
+        self.value = state.state
+
+    async def clear(self):
+        self.value = None
+
+
+def make_callback(user_id: int, data: str, *, message_id: int = 700) -> CallbackQuery:
+    return CallbackQuery(
+        id=f"callback-{user_id}-{message_id}-{data}",
+        from_user=TgUser(id=user_id, is_bot=False, first_name="Test"),
+        chat_instance="private",
+        message=make_bot_message(message_id=message_id, chat_id=user_id),
+        data=data,
     )
 
 
@@ -83,16 +138,59 @@ async def test_start_silent_for_unauthorized_user(settings, monkeypatch):
     assert sent == []
 
 
-async def test_help_lists_mvp_commands(settings, monkeypatch):
+async def test_help_is_compact_task_oriented_and_has_inline_menu(settings, monkeypatch):
     sent = capture_answers(monkeypatch)
     await on_help(make_message(42), settings)
-    assert "/today" in sent[0]
-    assert "/attention [1-5]" in sent[0]
-    assert "/settings" in sent[0]
-    assert "/help" in sent[0]
-    assert "YouTube-ссылку" in sent[0]
-    assert "или видео" not in sent[0]
-    assert "/inbox — последние Items" in sent[0]
+    assert "Найти" in sent[0]
+    assert "Сегодня" in sent[0]
+    assert "Настройки" in sent[0]
+    assert "Slash-команды тоже работают." in sent[0]
+    assert len(sent[0]) < 500
+
+
+def test_bot_commands_are_bounded_and_main_menu_is_inline():
+    assert [command.command for command in BOT_COMMANDS] == [
+        "start",
+        "menu",
+        "today",
+        "attention",
+        "inbox",
+        "search",
+        "ask",
+        "weekly",
+        "category",
+        "profile",
+        "settings",
+        "export",
+        "help",
+    ]
+    assert all(command.description and len(command.description) <= 256 for command in BOT_COMMANDS)
+    keyboard = main_menu_keyboard()
+    assert isinstance(keyboard, InlineKeyboardMarkup)
+    assert {button.callback_data for row in keyboard.inline_keyboard for button in row} == {
+        "nav:today",
+        "nav:attention",
+        "nav:inbox",
+        "nav:search",
+        "nav:ask",
+        "nav:weekly",
+        "nav:categories",
+        "nav:profile",
+        "nav:settings",
+        "nav:export",
+    }
+
+
+async def test_bot_command_setup_failure_is_safe_and_nonfatal(caplog):
+    class FailingBot:
+        async def set_my_commands(self, commands):
+            raise RuntimeError("PRIVATE_PROVIDER_BODY_47")
+
+    with caplog.at_level("WARNING", logger="app.bot.navigation"):
+        await configure_bot_commands(FailingBot())
+    assert "operation=set_my_commands" in caplog.text
+    assert "RuntimeError" in caplog.text
+    assert "PRIVATE_PROVIDER_BODY_47" not in caplog.text
 
 
 async def test_two_allowed_users_ingest_separately(settings, session_factory, monkeypatch):
@@ -200,6 +298,389 @@ async def test_today_send_failure_does_not_record_shown_event(
         assert (
             await session.scalar(select(Event.id).where(Event.event_type == "TODAY_SHOWN")) is None
         )
+
+
+async def test_navigation_today_uses_callback_actor_and_records_after_send(
+    settings, session_factory, monkeypatch
+):
+    async with session_factory() as session:
+        user = User(telegram_user_id=42, telegram_chat_id=42)
+        session.add(user)
+        await session.flush()
+        item = Item(
+            user_id=user.id,
+            processing_status=ProcessingStatus.READY,
+            state=ItemState.ACTIVE,
+            source_type=SourceType.TEXT,
+            processing_stage="READY",
+            user_note="today",
+            item_type=ItemType.ACTION,
+            title="Do it",
+            priority_score=80,
+        )
+        session.add(item)
+        await session.commit()
+
+    sent = []
+    callback_answers = []
+
+    async def answer_message(self, text, **kwargs):
+        async with session_factory() as session:
+            assert (
+                await session.scalar(select(Event.id).where(Event.event_type == "TODAY_SHOWN"))
+                is None
+            )
+        sent.append((text, kwargs))
+
+    async def answer_callback(self, text=None, **kwargs):
+        callback_answers.append(text)
+
+    monkeypatch.setattr(Message, "answer", answer_message)
+    monkeypatch.setattr(CallbackQuery, "answer", answer_callback)
+    callback = make_callback(42, "nav:today")
+    assert callback.message.from_user.is_bot is True
+
+    await on_navigation_callback(callback, settings, session_factory, FakeFSMContext("ask"))
+
+    assert callback_answers == [None]
+    assert sent[0][0] == "Сегодня:\n1. Do it — 80/100"
+    async with session_factory() as session:
+        assert (
+            await session.scalar(select(Event.event_type).where(Event.event_type == "TODAY_SHOWN"))
+            == "TODAY_SHOWN"
+        )
+        assert await session.scalar(select(User.id).where(User.telegram_user_id == 9999)) is None
+
+
+@pytest.mark.parametrize("data", ["nav:profile", "nav:settings", "nav:categories", "nav:ask"])
+async def test_unauthorized_navigation_returns_no_private_projection(
+    settings, session_factory, monkeypatch, data
+):
+    sent = []
+    answers = []
+
+    async def answer_message(self, text, **kwargs):
+        sent.append(text)
+
+    async def answer_callback(self, text=None, **kwargs):
+        answers.append(text)
+
+    monkeypatch.setattr(Message, "answer", answer_message)
+    monkeypatch.setattr(CallbackQuery, "answer", answer_callback)
+    state = FakeFSMContext(GuidedInput.ask.state)
+
+    await on_navigation_callback(make_callback(999, data), settings, session_factory, state)
+
+    assert sent == []
+    assert answers == [None]
+    if data == "nav:ask":
+        assert state.value is None
+    async with session_factory() as session:
+        assert await session.scalar(select(User.id)) is None
+
+
+async def test_guided_ask_uses_question_message_identity_and_is_one_shot(
+    settings, session_factory, monkeypatch
+):
+    sent = capture_answers(monkeypatch)
+    state = FakeFSMContext(GuidedInput.ask.state)
+    message = make_message(42, message_id=812, text="What did I save about local models?")
+
+    await on_guided_ask_input(message, settings, session_factory, state)
+
+    assert state.value is None
+    assert sent == ["Ищу в сохранённых материалах…"]
+    async with session_factory() as session:
+        jobs = list((await session.scalars(select(AskJob))).all())
+        assert len(jobs) == 1
+        assert jobs[0].status == "PENDING"
+        assert jobs[0].question == "What did I save about local models?"
+        assert jobs[0].telegram_message_id == 812
+        assert await session.scalar(select(func.count()).select_from(Item)) == 0
+
+    overlong_state = FakeFSMContext(GuidedInput.ask.state)
+    await on_guided_ask_input(
+        make_message(42, message_id=816, text="x" * (MAX_ASK_QUESTION_CHARS + 1)),
+        settings,
+        session_factory,
+        overlong_state,
+    )
+    assert overlong_state.value == GuidedInput.ask.state
+    async with session_factory() as session:
+        assert await session.scalar(select(func.count()).select_from(AskJob)) == 1
+
+
+async def test_guided_search_uses_fts_without_ask_or_item_ingestion(
+    settings, session_factory, monkeypatch
+):
+    async with session_factory() as session:
+        user = User(telegram_user_id=42, telegram_chat_id=42)
+        session.add(user)
+        await session.flush()
+        session.add(
+            Item(
+                user_id=user.id,
+                processing_status=ProcessingStatus.READY,
+                state=ItemState.ACTIVE,
+                source_type=SourceType.TEXT,
+                processing_stage="READY",
+                user_note="",
+                item_type=ItemType.LEARN,
+                title="Local Android models",
+                summary="Notes about on-device inference.",
+                priority_score=50,
+            )
+        )
+        await session.commit()
+
+    sent = capture_answers(monkeypatch)
+    state = FakeFSMContext(GuidedInput.search.state)
+    await on_guided_search_input(
+        make_message(42, message_id=813, text="Android"), settings, session_factory, state
+    )
+
+    assert state.value is None
+    assert "Local Android models" in sent[0]
+    async with session_factory() as session:
+        assert await session.scalar(select(func.count()).select_from(AskJob)) == 0
+        assert await session.scalar(select(func.count()).select_from(Item)) == 1
+
+
+async def test_command_clears_ask_state_and_forwarded_slash_text_stays_ingestion(
+    settings, session_factory, monkeypatch
+):
+    sent = capture_answers(monkeypatch)
+    middleware = ClearGuidedInputOnCommandMiddleware()
+    ask_state = FakeFSMContext(GuidedInput.ask.state)
+
+    async def command_handler(event, data):
+        await on_today(event, settings, session_factory)
+
+    await middleware(command_handler, make_message(42, text="/today"), {"state": ask_state})
+    assert ask_state.value is None
+    assert sent and "Сегодня" in sent[0]
+
+    forwarded_state = FakeFSMContext(GuidedInput.ask.state)
+    forwarded = Message(
+        message_id=814,
+        date=datetime.now(UTC),
+        chat=Chat(id=42, type="private"),
+        from_user=TgUser(id=42, is_bot=False, first_name="Test"),
+        text="/today is text from the forwarded author",
+        forward_origin=MessageOriginChannel(
+            type="channel",
+            date=datetime.now(UTC),
+            chat=Chat(id=-1001, type="channel", title="Source"),
+            message_id=815,
+        ),
+    )
+
+    async def forwarded_handler(event, data):
+        await on_text(event, settings, session_factory)
+
+    await middleware(forwarded_handler, forwarded, {"state": forwarded_state})
+    assert forwarded_state.value == GuidedInput.ask.state
+    async with session_factory() as session:
+        item = await session.scalar(select(Item).where(Item.telegram_message_id == 814))
+        assert item is not None
+        content = await session.scalar(select(Content).where(Content.item_id == item.id))
+        assert content.text == "/today is text from the forwarded author"
+        assert await session.scalar(select(func.count()).select_from(AskJob)) == 0
+
+
+async def test_category_navigation_is_bounded_owner_scoped_and_selectable(
+    settings, session_factory, monkeypatch
+):
+    async with session_factory() as session:
+        owner = User(telegram_user_id=42, telegram_chat_id=42)
+        other = User(telegram_user_id=1000, telegram_chat_id=1000)
+        session.add_all([owner, other])
+        await session.flush()
+        session.add_all(
+            [
+                Item(
+                    user_id=owner.id,
+                    processing_status=ProcessingStatus.READY,
+                    state=ItemState.ACTIVE,
+                    source_type=SourceType.TEXT,
+                    processing_stage="READY",
+                    user_note="",
+                    item_type=ItemType.LEARN,
+                    title="My Android notes",
+                    summary="Owner content.",
+                    category="Android",
+                    priority_score=50,
+                ),
+                Item(
+                    user_id=other.id,
+                    processing_status=ProcessingStatus.READY,
+                    state=ItemState.ACTIVE,
+                    source_type=SourceType.TEXT,
+                    processing_stage="READY",
+                    user_note="",
+                    item_type=ItemType.LEARN,
+                    title="Private other notes",
+                    summary="Other content.",
+                    category="Secrets",
+                    priority_score=50,
+                ),
+            ]
+        )
+        await session.commit()
+
+    sent = []
+    callback_answers = []
+
+    async def answer_message(self, text, **kwargs):
+        sent.append((text, kwargs))
+
+    async def answer_callback(self, text=None, **kwargs):
+        callback_answers.append(text)
+        return None
+
+    monkeypatch.setattr(Message, "answer", answer_message)
+    monkeypatch.setattr(CallbackQuery, "answer", answer_callback)
+    await on_navigation_callback(
+        make_callback(42, "nav:categories"), settings, session_factory, FakeFSMContext()
+    )
+    category_markup = sent[0][1]["reply_markup"]
+    category_button = next(
+        button
+        for row in category_markup.inline_keyboard
+        for button in row
+        if button.callback_data.startswith("nav:category:")
+    )
+    assert category_button.callback_data == f"nav:category:{category_token('Android')}"
+    assert "Secrets" not in sent[0][0]
+
+    await on_navigation_callback(
+        make_callback(42, category_button.callback_data),
+        settings,
+        session_factory,
+        FakeFSMContext(),
+    )
+    assert "My Android notes" in sent[-1][0]
+    assert "Private other notes" not in sent[-1][0]
+
+    await on_navigation_callback(
+        make_callback(42, "nav:category:stale-token"),
+        settings,
+        session_factory,
+        FakeFSMContext(),
+    )
+    assert callback_answers[-1] == "Категория больше недоступна"
+
+
+async def test_menu_settings_exposes_attention_and_back_navigation(
+    settings, session_factory, monkeypatch
+):
+    sent = []
+    edited = []
+
+    async def answer_message(self, text, **kwargs):
+        sent.append((text, kwargs))
+
+    async def edit_message(self, text, **kwargs):
+        edited.append((text, kwargs))
+
+    async def answer_callback(self, text=None, **kwargs):
+        return None
+
+    monkeypatch.setattr(Message, "answer", answer_message)
+    monkeypatch.setattr(Message, "edit_text", edit_message)
+    monkeypatch.setattr(CallbackQuery, "answer", answer_callback)
+
+    await on_navigation_callback(
+        make_callback(42, "nav:settings"), settings, session_factory, FakeFSMContext()
+    )
+    settings_buttons = [
+        button for row in sent[0][1]["reply_markup"].inline_keyboard for button in row
+    ]
+    assert any(button.callback_data == "settings:attention:open" for button in settings_buttons)
+
+    await on_attention_settings_callback(
+        make_callback(42, "settings:attention:open"), settings, session_factory
+    )
+    assert "Attention Manager" in edited[-1][0]
+    attention_buttons = [
+        button for row in edited[-1][1]["reply_markup"].inline_keyboard for button in row
+    ]
+    assert any(button.callback_data == "settings:open" for button in attention_buttons)
+
+    await on_settings_open_callback(make_callback(42, "settings:open"), settings, session_factory)
+    assert "Ежедневный digest" in edited[-1][0]
+
+
+async def test_ask_prompt_cancel_clears_ephemeral_state_without_job(
+    settings, session_factory, monkeypatch
+):
+    edited = []
+
+    async def edit_message(self, text, **kwargs):
+        edited.append((text, kwargs))
+
+    async def answer_callback(self, text=None, **kwargs):
+        return None
+
+    monkeypatch.setattr(Message, "edit_text", edit_message)
+    monkeypatch.setattr(CallbackQuery, "answer", answer_callback)
+    state = FakeFSMContext()
+
+    await on_navigation_callback(make_callback(42, "nav:ask"), settings, session_factory, state)
+    assert state.value == GuidedInput.ask.state
+    assert edited[-1][1]["reply_markup"].inline_keyboard[0][0].callback_data == "nav:input:cancel"
+
+    await on_navigation_callback(
+        make_callback(42, "nav:input:cancel"), settings, session_factory, state
+    )
+    assert state.value is None
+    assert edited[-1] == ("Отменено.", {"reply_markup": None})
+    async with session_factory() as session:
+        assert await session.scalar(select(func.count()).select_from(AskJob)) == 0
+
+
+async def test_export_chooser_uses_one_idempotency_key_and_reports_stored_mode(
+    settings, session_factory, monkeypatch
+):
+    edited = []
+
+    async def edit_message(self, text, **kwargs):
+        edited.append((text, kwargs))
+
+    async def answer_callback(self, text=None, **kwargs):
+        return None
+
+    monkeypatch.setattr(Message, "edit_text", edit_message)
+    monkeypatch.setattr(CallbackQuery, "answer", answer_callback)
+
+    await on_navigation_callback(
+        make_callback(42, "nav:export", message_id=817),
+        settings,
+        session_factory,
+        FakeFSMContext(),
+    )
+    chooser = edited[-1]
+    modes = [
+        button.callback_data for row in chooser[1]["reply_markup"].inline_keyboard for button in row
+    ]
+    assert "export:mode:COMPACT" in modes and "export:mode:FULL" in modes
+
+    await on_export_mode_callback(
+        make_callback(42, "export:mode:COMPACT", message_id=817), settings, session_factory
+    )
+    await on_export_mode_callback(
+        make_callback(42, "export:mode:FULL", message_id=817), settings, session_factory
+    )
+    assert [entry[0] for entry in edited[-2:]] == [
+        "Готовлю компактный экспорт…",
+        "Готовлю компактный экспорт…",
+    ]
+    assert edited[-1][1]["reply_markup"] is None
+    async with session_factory() as session:
+        jobs = list((await session.scalars(select(ExportJob))).all())
+        assert len(jobs) == 1
+        assert jobs[0].telegram_message_id == 817
+        assert jobs[0].mode == "COMPACT"
 
 
 @pytest.mark.parametrize(
@@ -394,10 +875,143 @@ def test_production_router_composition_builds(settings, session_factory):
     router = make_router(settings, session_factory, settings.max_audio_bytes)
     assert isinstance(router, Router)
     names = [h.callback.__name__ for h in router.message.handlers]
-    assert "profile" in names and "profile_update" in names and "settings_command" in names
+    assert (
+        "profile" in names
+        and "profile_update" in names
+        and "settings_command" in names
+        and "menu_command" in names
+        and "guided_ask" in names
+        and "guided_search" in names
+    )
     assert {"help_command", "today", "attention", "inbox", "category", "search"} <= set(names)
+    assert names.index("forwarded_text") < names.index("start")
     assert "item_action" in [h.callback.__name__ for h in router.callback_query.handlers]
     assert "settings_attention" in [h.callback.__name__ for h in router.callback_query.handlers]
+    assert {
+        "navigation",
+        "export_mode",
+        "settings_open",
+    } <= {h.callback.__name__ for h in router.callback_query.handlers}
+
+
+async def test_router_fsm_guidance_precedes_capture_and_commands_escape(
+    settings, session_factory, monkeypatch
+):
+    bot = Bot("123456:TEST")
+    dispatcher = Dispatcher(storage=MemoryStorage(), events_isolation=SimpleEventIsolation())
+    dispatcher.include_router(make_router(settings, session_factory))
+    sent = []
+
+    async def bot_call(self, method, request_timeout=None):
+        api_method = method.__api_method__
+        if api_method == "sendMessage":
+            chat_id = method.chat_id
+            text = method.text
+            reply_markup = method.reply_markup
+            message_id = 1000 + len(sent)
+        elif api_method == "editMessageText":
+            chat_id = method.chat_id
+            text = method.text
+            reply_markup = method.reply_markup
+            message_id = method.message_id
+        else:
+            return True
+        sent.append((chat_id, text))
+        return Message(
+            message_id=message_id,
+            date=datetime.now(UTC),
+            chat=Chat(id=chat_id, type="private"),
+            from_user=TgUser(id=self.id, is_bot=True, first_name="AIInbox"),
+            text=text,
+            reply_markup=reply_markup,
+        ).as_(self)
+
+    async def edit_message(self, text, **kwargs):
+        sent.append((self.chat.id, text))
+        return self
+
+    async def answer_callback(self, text=None, **kwargs):
+        return True
+
+    monkeypatch.setattr(Bot, "__call__", bot_call)
+    monkeypatch.setattr(Message, "edit_text", edit_message)
+    monkeypatch.setattr(CallbackQuery, "answer", answer_callback)
+
+    def bot_menu_message(message_id: int) -> Message:
+        return Message(
+            message_id=message_id,
+            date=datetime.now(UTC),
+            chat=Chat(id=42, type="private"),
+            from_user=TgUser(id=bot.id, is_bot=True, first_name="AIInbox"),
+            text="Главное меню:",
+        ).as_(bot)
+
+    async def tap(update_id: int, data: str) -> None:
+        callback = CallbackQuery(
+            id=f"callback-{update_id}",
+            from_user=TgUser(id=42, is_bot=False, first_name="Test"),
+            chat_instance="private",
+            message=bot_menu_message(700),
+            data=data,
+        ).as_(bot)
+        await dispatcher.feed_update(
+            bot, Update(update_id=update_id, callback_query=callback).as_(bot)
+        )
+
+    async def message(update_id: int, message_id: int, text: str, *, origin=None) -> None:
+        incoming = Message(
+            message_id=message_id,
+            date=datetime.now(UTC),
+            chat=Chat(id=42, type="private"),
+            from_user=TgUser(id=42, is_bot=False, first_name="Test"),
+            text=text,
+            forward_origin=origin,
+        ).as_(bot)
+        await dispatcher.feed_update(bot, Update(update_id=update_id, message=incoming).as_(bot))
+
+    try:
+        await tap(1, "nav:ask")
+        await message(2, 801, "first guided question")
+        async with session_factory() as session:
+            jobs = list((await session.scalars(select(AskJob))).all())
+            assert len(jobs) == 1
+            assert jobs[0].telegram_message_id == 801
+            assert await session.scalar(select(func.count()).select_from(Item)) == 0
+
+        await tap(3, "nav:ask")
+        await message(4, 802, "/today")
+        async with session_factory() as session:
+            assert await session.scalar(select(func.count()).select_from(AskJob)) == 1
+            assert await session.scalar(select(func.count()).select_from(Item)) == 0
+        await message(5, 803, "ordinary capture after command")
+
+        await tap(6, "nav:ask")
+        origin = MessageOriginChannel(
+            type="channel",
+            date=datetime.now(UTC),
+            chat=Chat(id=-1001, type="channel", title="Source"),
+            message_id=804,
+        )
+        await message(7, 805, "/today forwarded text", origin=origin)
+        async with session_factory() as session:
+            forwarded_item = await session.scalar(
+                select(Item).where(Item.telegram_message_id == 805)
+            )
+            assert forwarded_item is not None
+            forwarded_content = await session.scalar(
+                select(Content).where(Content.item_id == forwarded_item.id)
+            )
+            assert forwarded_content.text == "/today forwarded text"
+            assert await session.scalar(select(func.count()).select_from(AskJob)) == 1
+
+        await message(8, 806, "second guided question")
+        async with session_factory() as session:
+            jobs = list((await session.scalars(select(AskJob).order_by(AskJob.id))).all())
+            assert len(jobs) == 2
+            assert jobs[-1].telegram_message_id == 806
+            assert await session.scalar(select(func.count()).select_from(Item)) == 2
+    finally:
+        await bot.session.close()
 
 
 def test_item_action_label_reports_persisted_winner_not_requested_action():

@@ -58,6 +58,19 @@ resume PM-14+
 
 Some implementation work may overlap, but each PR should remain independently reviewable and should not silently absorb the next PR's scope.
 
+## Current status and next gate
+
+- POLISH-01 — DONE (PR #46 merged)
+- POLISH-02 — DONE (PR #48 merged)
+- POLISH-03 — DONE (PR #49 merged)
+- POLISH-04 — DONE (PR #50 merged)
+- POLISH-05 — IN_REVIEW
+
+After POLISH-05 review, run a separate Quality & UX review across analysis and
+category quality, default Item UI density, source/original access, notification
+quality, and navigation/AI reliability. Do not resume PM-14 or PM-16+ until that
+review explicitly passes.
+
 ## Product invariant after the milestone
 
 AIInbox should expose the user's content, not its internal model.
