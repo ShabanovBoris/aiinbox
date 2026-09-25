@@ -40,75 +40,121 @@ class _Template:
     text: str
 
 
+# ❌ Удалены краткие v1/v2 формулировки, звучавшие как telemetry; новые семейства
+# короче и по-прежнему используют только факты из MotivationCandidate.
 _TEMPLATES: Mapping[MotivationKind, tuple[_Template, ...]] = MappingProxyType(
     {
         MotivationKind.STALE_IMPORTANT: (
             _Template(
-                "stale_important_v1",
-                "У тебя {count} важных Item, сохранённых не меньше месяца назад. "
-                "Можно вернуть в фокус один.",
+                "stale_important_v3",
+                "Важные сохранения старше месяца: {count}. Что открыть?",
             ),
             _Template(
-                "stale_important_v2",
-                "В активном списке есть {count} важных Item, сохранённых не меньше месяца назад. "
-                "Достаточно выбрать один.",
+                "stale_important_v4",
+                "Приоритетные Items старше месяца: {count}. Вернуть один в фокус?",
+            ),
+            _Template(
+                "stale_important_v5",
+                "Старые важные сохранения в Inbox: {count}. С чего начать?",
+            ),
+            _Template(
+                "stale_important_v6",
+                "Важное, что лежит больше месяца: {count}. Вернуть одно?",
             ),
         ),
         MotivationKind.HIGH_INTEREST_STALE: (
             _Template(
-                "high_interest_stale_v1",
-                "У {count} активных Item отмечен максимальный интерес; "
-                "они ждут не меньше двух недель.",
+                "high_interest_stale_v3",
+                "Сохранения с интересом 3/3 старше двух недель: {count}. Что открыть?",
             ),
             _Template(
-                "high_interest_stale_v2",
-                "{count} Item с максимальным уровнем интереса сохранены "
-                "не меньше двух недель назад. "
-                "Можно вернуться к одному.",
+                "high_interest_stale_v4",
+                "Интерес 3/3 и возраст от двух недель — таких материалов: {count}. "
+                "Какой пересмотреть?",
+            ),
+            _Template(
+                "high_interest_stale_v5",
+                "Материалы с интересом 3/3 старше двух недель: {count}. Что пересмотреть?",
+            ),
+            _Template(
+                "high_interest_stale_v6",
+                "Сохранения с интересом 3/3 старше двух недель: {count}. С чего начать?",
             ),
         ),
         MotivationKind.QUICK_WINS: (
             _Template(
-                "quick_wins_v1",
-                "В backlog есть {count} активных задач до {max_minutes} минут. "
-                "Одной небольшой победы достаточно.",
+                "quick_wins_v3",
+                "Задач с оценкой до {max_minutes} минут: {count}. Выбрать одну?",
             ),
             _Template(
-                "quick_wins_v2",
-                "Нашлось {count} активных задач с оценкой до {max_minutes} минут. "
-                "Можно выбрать одну.",
+                "quick_wins_v4",
+                "Количество задач с оценкой до {max_minutes} минут — {count}. С какой начать?",
+            ),
+            _Template(
+                "quick_wins_v5",
+                "Коротких задач по оценке (до {max_minutes} минут): {count}. Один быстрый заход?",
+            ),
+            _Template(
+                "quick_wins_v6",
+                "Задач, которым оценили до {max_minutes} минут: {count}. Какую взять?",
             ),
         ),
         MotivationKind.INBOX_GROWTH: (
             _Template(
-                "inbox_growth_v1",
-                "Сегодня добавлено {created}, закрыто или архивировано {resolved}. "
-                "Разница в backlog — {net}.",
+                "inbox_growth_v3",
+                "Сегодня +{net} к списку: {created} новых, {resolved} завершено или архивировано. "
+                "Разгрузить один?",
             ),
             _Template(
-                "inbox_growth_v2",
-                "За сегодня: добавлено {created}, завершено или архивировано {resolved}; "
-                "разница — {net} Item.",
+                "inbox_growth_v4",
+                "Inbox вырос на {net}: добавлено {created}, завершено или архивировано {resolved}. "
+                "С чего начать?",
+            ),
+            _Template(
+                "inbox_growth_v5",
+                "За сегодня — {created} новых и {resolved} завершённых или архивированных; "
+                "прирост {net}. Открыть один?",
+            ),
+            _Template(
+                "inbox_growth_v6",
+                "Сегодня в Inbox стало на {net} записей больше: +{created} и −{resolved}. "
+                "Разобрать одну?",
             ),
         ),
         MotivationKind.COMPLETION_STREAK: (
             _Template(
-                "completion_streak_v1",
-                "Дни с Done идут подряд: {days}. Если удобно, эту серию можно продолжить.",
+                "completion_streak_v3",
+                "Дни подряд с хотя бы одним Done: {days}. Продолжить серию?",
             ),
             _Template(
-                "completion_streak_v2",
-                "Текущая серия включает {days} подряд идущих календарных дней с Done.",
+                "completion_streak_v4",
+                "Done шёл подряд {days} календарных дней. Что станет следующим?",
+            ),
+            _Template(
+                "completion_streak_v5",
+                "Длина серии дней с Done: {days}. Выбрать следующий шаг?",
+            ),
+            _Template(
+                "completion_streak_v6",
+                "Текущая серия Done — {days} подряд. Продолжить в удобном темпе?",
             ),
         ),
         MotivationKind.WEEKLY_PROGRESS: (
             _Template(
-                "weekly_progress_v1",
-                "За последние {days} дней закрыто {completed} Item. Это движение по backlog.",
+                "weekly_progress_v3",
+                "Done за последние {days} дней: {completed}. Какой Item станет следующим?",
             ),
             _Template(
-                "weekly_progress_v2",
-                "За период в {days} календарных дней отмечено {completed} завершений Item.",
+                "weekly_progress_v4",
+                "Завершений за {days}-дневный период: {completed}. Есть что закрыть следующим?",
+            ),
+            _Template(
+                "weekly_progress_v5",
+                "Done за последние {days} дней: {completed}. Выбрать следующий?",
+            ),
+            _Template(
+                "weekly_progress_v6",
+                "Завершения за последние {days} дней: {completed}. Продолжить с одним?",
             ),
         ),
     }
@@ -159,9 +205,7 @@ class MotivationService:
                 continue
             templates = _TEMPLATES[kind]
             latest = latest_templates.get(kind)
-            template = next(
-                (item for item in templates if item.template_id != latest), templates[0]
-            )
+            template = _next_template(templates, latest)
             rendered = template.text.format(**facts)
             candidates.append(
                 MotivationCandidate(
@@ -340,3 +384,16 @@ class MotivationService:
             ):
                 latest_templates[kind] = latest_payload["template_id"]
         return sent_today, latest_templates
+
+
+def _next_template(templates: tuple[_Template, ...], latest_template_id: str | None) -> _Template:
+    """Advance one ordered copy family; legacy history starts from its current first variant."""
+    latest_index = next(
+        (
+            index
+            for index, template in enumerate(templates)
+            if template.template_id == latest_template_id
+        ),
+        None,
+    )
+    return templates[0] if latest_index is None else templates[(latest_index + 1) % len(templates)]
