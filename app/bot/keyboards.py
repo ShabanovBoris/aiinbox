@@ -192,6 +192,11 @@ def _source_action_buttons(
         source.id == focus_source_id for source in ordered_sources
     ):
         ordered_sources.sort(key=lambda source: source.id != focus_source_id)
+    security_rejected_urls = {
+        source.source_url
+        for source in ordered_sources
+        if source.error_code == "SECURITY_REJECTED" and source.source_url
+    }
 
     if item.processing_status is ProcessingStatus.READY:
         video_sources = [
@@ -230,6 +235,7 @@ def _source_action_buttons(
     for source in ordered_sources:
         if (
             source.source_url
+            and source.source_url not in security_rejected_urls
             and source.source_url not in seen_urls
             and source_url_label(source.source_type, source.source_url)
         ):
@@ -237,9 +243,20 @@ def _source_action_buttons(
             seen_urls.add(source.source_url)
     # ❌ Удалено общее имя «Открыть N»: URL действия теперь называют назначение,
     # а идентичные URL схлопываются без потери отдельных source-specific resend actions.
-    if item.source_url and item.source_url not in seen_urls:
+    if (
+        item.source_url
+        and item.source_url not in security_rejected_urls
+        and item.source_url not in seen_urls
+    ):
         if source_url_label(item.source_type, item.source_url):
             source_urls.insert(0, (item.source_url, item.source_type))
+
+    original_url = forward_original_url(item.source_metadata_json)
+    if original_url:
+        # Prefer the explicit provenance label and avoid two buttons for one URL.
+        source_urls = [
+            (url, source_type) for url, source_type in source_urls if url != original_url
+        ]
 
     base_labels = [source_url_label(source_type, url) for url, source_type in source_urls]
     label_counts = {label: base_labels.count(label) for label in base_labels}
@@ -252,7 +269,6 @@ def _source_action_buttons(
             label_indexes[base_label] = label_indexes.get(base_label, 0) + 1
             label = bound_source_button_label(f"{label} {label_indexes[base_label]}")
         buttons.append(InlineKeyboardButton(text=label, url=source_url))
-    original_url = forward_original_url(item.source_metadata_json)
     if original_url:
         buttons.append(InlineKeyboardButton(text="↗ Оригинальный пост", url=original_url))
     return buttons

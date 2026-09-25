@@ -144,8 +144,20 @@ def test_source_url_labels_name_destination_and_reject_unsafe_or_invalid_urls():
         "https:///no-host",
         "https://[broken",
         "https://user:secret@example.com/path",
+        "http://localhost/page",
+        "https://api.localhost/",
+        "http://router.local/",
+        "http://intranet/",
+        "http://127.0.0.1/page",
+        "https://192.168.1.12/private",
+        "http://169.254.1.1/metadata",
+        "http://[::1]/page",
+        "http://[fc00::1]/page",
+        "http://100.64.0.2/page",
+        "http://192.0.0.9/page",
     ):
         assert source_url_label(SourceType.WEB, url) is None
+    assert source_url_label(SourceType.WEB, "https://8.8.8.8/path") == "↗ Статья — 8.8.8.8"
 
 
 def test_primary_sources_are_bounded_and_full_actions_stay_in_sources_menu():
@@ -251,6 +263,28 @@ def test_partial_ready_keyboard_hides_retry_for_permanent_source_failure():
     ]
 
     assert "item:retry:7" not in callbacks
+
+
+def test_security_rejected_source_url_stays_hidden_when_text_makes_item_ready():
+    url = "https://example.com/private-network"
+    source = ItemSource(
+        id=13,
+        item_id=7,
+        source_index=0,
+        source_type=SourceType.WEB,
+        source_url=url,
+        extraction_status="FAILED",
+        error_code="SECURITY_REJECTED",
+        metadata_json={"failure_permanent": True},
+    )
+    item = _ready_item(
+        source_type=SourceType.WEB,
+        source_url=url,
+        analysis_completeness="PARTIAL",
+    )
+
+    for markup in (item_keyboard(item, [source]), item_sources_keyboard(item, [source])):
+        assert all(button.url != url for row in markup.inline_keyboard for button in row)
 
 
 def test_multi_url_keyboard_exposes_each_child_source():

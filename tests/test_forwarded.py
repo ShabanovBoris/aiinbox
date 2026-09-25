@@ -608,6 +608,35 @@ def test_forwarded_ready_item_keeps_public_original_link_without_verbose_source_
     assert all(button.text != "↗ Оригинальный пост" for button in buttons)
 
 
+def test_public_original_button_deduplicates_an_identical_source_url():
+    metadata = normalize_forward_origin(_channel_origin())
+    original_url = forward_original_url(metadata)
+    item = Item(
+        id=1,
+        user_id=1,
+        processing_status=ProcessingStatus.READY,
+        source_type=SourceType.WEB,
+        user_note="",
+        title="Forwarded post",
+        source_url=original_url,
+        source_metadata_json=metadata,
+    )
+    source = ItemSource(
+        id=19,
+        item_id=1,
+        source_index=0,
+        source_type=SourceType.WEB,
+        source_url=original_url,
+        extraction_status="READY",
+    )
+
+    buttons = [button for row in item_keyboard(item, [source]).inline_keyboard for button in row]
+    original_buttons = [button for button in buttons if button.url == original_url]
+
+    assert len(original_buttons) == 1
+    assert original_buttons[0].text == "↗ Оригинальный пост"
+
+
 async def test_unsupported_forwarded_media_fails_gracefully(settings, monkeypatch):
     sent = _capture_answers(monkeypatch)
     await on_unsupported_document(_message(_channel_origin(), text=None), settings)

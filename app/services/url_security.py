@@ -22,12 +22,13 @@ _EXTRA_BLOCKED = [
 ]
 
 
-def _is_blocked_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+def is_public_ip_address(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    """Share the static public-IP policy with source links that cannot resolve DNS."""
     if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
         ip = ip.ipv4_mapped  # ::ffff:127.0.0.1 — смотрим на реальный IPv4
     if any(ip in network for network in _EXTRA_BLOCKED):
-        return True
-    return (
+        return False
+    return not (
         ip.is_private
         or ip.is_loopback
         or ip.is_link_local
@@ -72,7 +73,7 @@ async def resolve_validated_ips(
 
     literal = _resolve_ip_literal(host)
     if literal is not None:
-        if _is_blocked_ip(literal):
+        if not is_public_ip_address(literal):
             raise AppError(
                 "SECURITY_REJECTED", f"host {host!r} is a forbidden address", permanent=True
             )
@@ -85,7 +86,7 @@ async def resolve_validated_ips(
     if not ips:
         raise AppError("DOWNLOAD_FAILED", f"host {host!r} resolved to no addresses")
     for ip_str in ips:
-        if _is_blocked_ip(ipaddress.ip_address(ip_str)):
+        if not is_public_ip_address(ipaddress.ip_address(ip_str)):
             raise AppError(
                 "SECURITY_REJECTED",
                 f"host {host!r} resolves to forbidden address",
