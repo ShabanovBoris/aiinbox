@@ -472,11 +472,19 @@ PM-12 v1 не пишет Item/Event/Reminder, не меняет профиль �
 
 ## 43. /inbox
 
-Возвращает последние Items без lifecycle-фильтра, максимум 20.
+Возвращает последние Items без lifecycle-фильтра через страницы по 10 Items;
+порядок — `created_at DESC, id DESC`. Запрос страницы использует ограниченный
+`LIMIT page_size + 1`, а кнопки перехода позволяют дойти до любого сохранённого
+Item. Размер страницы ограничивает один ответ Telegram, но не доступное число
+Items и не является storage/user quota.
 
 ## 44. /category
 
-Без аргумента — категории + counts; с аргументом — Items категории, максимум 20.
+Без аргумента — алфавитные страницы динамических категорий и их counts; с
+аргументом — priority-ordered страницы Items категории. Категории и Items не
+имеют presentation-level total cap. Callback содержит стабильный короткий token;
+handler разрешает его повторно против текущих категорий действующего owner и
+отвергает stale/colliding token.
 
 ## 45. /search
 
@@ -804,7 +812,8 @@ original message id.
 ошибки остаются в durable Delivery retry path.
 
 Списки `/today`, `/inbox`, `/category <имя>`, `/search`, daily digest и конкретные
-рекомендации `/weekly` показывают ограниченные numbered selectors в порядке текста.
+рекомендации `/weekly` показывают ограниченные полнострочные title-кнопки в
+порядке текста; каждая открывает соответствующий owner-scoped `item:view`.
 Нажатие присылает отдельную компактную карточку Item, сохраняя сообщение списка.
 Каждая такая карточка, ручной Attention, snooze и proactive Reminder дают доступ
 к оригинальному capture и/или безопасным сохранённым источникам. Ask показывает
@@ -985,3 +994,32 @@ Safe logs carry operation, provider/model, exception type, status code, Ask job
 and user identity, stage, attempt and latency; they do not contain questions,
 evidence, answers or response bodies. `app.ops status` reports only bounded Ask
 state and outstanding ASK_FAILED delivery counts.
+
+## 102. POLISH-06 — Bounded Telegram lists and analysis-independent Item identity
+
+Inbox and category browsing use bounded database pages. `page_size` limits one
+Telegram response and SQL result; it does not limit how many Items the owner may
+save or reach. Page callbacks are validated and clamped to the last currently
+available page before their offset is used. Category choices are pageable as
+well, including the existing feedback category chooser.
+
+Each list Item is represented by one full-width title action which reuses the
+existing owner-scoped `item:view:<id>` callback. Search remains bounded and
+FTS-ranked; Today keeps its existing small actionable selection. Today exposure
+is still recorded only after Telegram accepts the send, digest delivery claims
+remain durable, and Weekly Review creates no Events or Reminder writes.
+
+The analyzed `Item.title` stays canonical. When it is absent, Telegram
+presentation derives a deterministic title from the Item's persisted source
+metadata, reusing the same public-URL validation used by source buttons. A
+`SECURITY_REJECTED` or local URL yields the generic `Ссылка` label. Document
+filenames are taken only from the persisted safe filename metadata. The
+projection does not fetch, call an LLM, mutate an Item, or alter export fields;
+list pages batch-load their ItemSources.
+
+FAILED cards use localized explanations and source-derived titles, while
+technical error codes, durable retry policy, Original/source access and Item
+state remain unchanged. Main-menu Export queues COMPACT directly; Help and
+`/export full` keep explicit FULL choice. Profile exposes one-shot guided input
+over the existing durable `ProfileUpdateJob`; a command clears that prompt
+before normal command dispatch. POLISH-06 adds no migration or dependency.

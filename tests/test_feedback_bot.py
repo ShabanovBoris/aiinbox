@@ -13,10 +13,11 @@ from app.bot.keyboards import (
     feedback_category_keyboard,
     feedback_menu_keyboard,
     item_keyboard,
-    item_navigation_keyboard,
+    item_list_keyboard,
     item_sources_keyboard,
     proactive_reminder_keyboard,
 )
+from app.bot.presentation import ItemNavigationEntry
 from app.domain.enums import ItemState, ItemType, ProcessingStatus, SourceType
 from app.services import feedback as feedback_service
 from app.services.feedback import correct_item_category
@@ -331,25 +332,20 @@ def test_original_action_is_hidden_without_capture_or_owner_chat():
     assert "item:original:8" not in _callback_data(item_keyboard(item))
 
 
-def test_numbered_item_navigation_preserves_order_and_callback_bounds():
+def test_title_item_navigation_preserves_order_and_callback_bounds():
     item_ids = [9, 20, 31, 2**63 - 1]
-    markup = item_navigation_keyboard(item_ids)
+    entries = [
+        ItemNavigationEntry(item_id, f"Saved item {index}")
+        for index, item_id in enumerate(item_ids)
+    ]
+    markup = item_list_keyboard(entries)
     buttons = [button for row in markup.inline_keyboard for button in row]
 
     assert [(button.text, button.callback_data) for button in buttons] == [
-        (str(index), f"item:view:{item_id}") for index, item_id in enumerate(item_ids, 1)
+        (entry.label, f"item:view:{entry.item_id}") for entry in entries
     ]
     assert all(len(button.callback_data.encode("utf-8")) <= 64 for button in buttons)
-    assert (
-        len(
-            [
-                button
-                for row in item_navigation_keyboard(list(range(1, 30))).inline_keyboard
-                for button in row
-            ]
-        )
-        == 20
-    )
+    assert all(len(row) == 1 for row in markup.inline_keyboard)
     high_id = 2**63 - 1
     item = Item(
         id=high_id,
@@ -579,7 +575,13 @@ def test_non_ready_keyboard_does_not_expose_feedback_controls():
 
 def test_category_callback_tokens_fit_telegram_limit_for_long_unicode_values():
     category = "Очень длинная категория для проверки Unicode " * 2
-    markup = feedback_category_keyboard(9_223_372_036_854_775_807, [category])
+    markup = feedback_category_keyboard(
+        9_223_372_036_854_775_807,
+        [category],
+        page=0,
+        has_previous=False,
+        has_next=False,
+    )
     button = markup.inline_keyboard[0][0]
 
     assert button.callback_data == (
@@ -589,10 +591,17 @@ def test_category_callback_tokens_fit_telegram_limit_for_long_unicode_values():
     assert len(button.text) <= 64
 
 
-def test_category_keyboard_bounds_the_number_of_choices():
-    markup = feedback_category_keyboard(7, [f"Category {index}" for index in range(30)])
+def test_category_keyboard_projects_the_bounded_page_without_dropping_choices():
+    markup = feedback_category_keyboard(
+        7,
+        [f"Category {index}" for index in range(30)],
+        page=0,
+        has_previous=False,
+        has_next=True,
+    )
 
-    assert len(markup.inline_keyboard) == 21
+    assert len(markup.inline_keyboard) == 32
+    assert markup.inline_keyboard[-2][0].callback_data == "feedback:category_menu:7:page:1"
 
 
 async def test_feedback_back_returns_to_more_hierarchy_without_events(settings, session_factory):
@@ -854,7 +863,13 @@ async def test_category_callback_corrects_item_and_keeps_feedback_menu_open(
     await _create_category_item(session_factory, "AI")
     message = FakeCallbackMessage(
         text="Old result",
-        reply_markup=feedback_category_keyboard(item_id, ["Programming", "AI"]),
+        reply_markup=feedback_category_keyboard(
+            item_id,
+            ["Programming", "AI"],
+            page=0,
+            has_previous=False,
+            has_next=False,
+        ),
     )
     callback = FakeCallback(
         42,
@@ -876,6 +891,36 @@ async def test_category_callback_corrects_item_and_keeps_feedback_menu_open(
     assert f"feedback:back:{item_id}" in _callback_data(message.reply_markup)
     assert f"feedback:useful:{item_id}" in _callback_data(message.reply_markup)
     assert callback.answers == ["Категория изменена"]
+
+
+async def test_feedback_category_choices_page_through_all_categories(settings, session_factory):
+    item_id = await _create_ready_item(session_factory, category="Base category")
+    for index in range(20):
+        await _create_category_item(session_factory, f"Feedback category {index:02}")
+
+    message = FakeCallbackMessage(text="Feedback", reply_markup=None)
+    first = FakeCallback(42, f"feedback:category_menu:{item_id}")
+    first.message = message
+    await on_feedback_callback(first, settings, session_factory)
+    pages = []
+    pages.append(message.reply_markup)
+
+    for page in (1, 2):
+        callback = FakeCallback(42, f"feedback:category_menu:{item_id}:page:{page}")
+        callback.message = message
+        await on_feedback_callback(callback, settings, session_factory)
+        pages.append(message.reply_markup)
+
+    categories = [
+        button.callback_data
+        for markup in pages
+        for row in markup.inline_keyboard
+        for button in row
+        if button.callback_data.startswith(f"feedback:category:{item_id}:")
+    ]
+    assert len(categories) == len(set(categories)) == 21
+    assert len(pages[0].inline_keyboard) == 12
+    assert len(pages[-1].inline_keyboard) == 3
 
 
 async def test_replayed_category_callback_keeps_feedback_menu_without_reapplying(
@@ -900,7 +945,13 @@ async def test_replayed_category_callback_keeps_feedback_menu_without_reapplying
     )
     message = FakeCallbackMessage(
         text="stale result",
-        reply_markup=feedback_category_keyboard(item_id, ["AI", "Piano"]),
+        reply_markup=feedback_category_keyboard(
+            item_id,
+            ["AI", "Piano"],
+            page=0,
+            has_previous=False,
+            has_next=False,
+        ),
     )
     callback = FakeCallback(
         42,
@@ -1077,7 +1128,13 @@ async def test_category_noop_closes_menu_without_editing_summary(settings, sessi
                 interest_level=2,
             )
         ),
-        reply_markup=feedback_category_keyboard(item_id, ["Programming"]),
+        reply_markup=feedback_category_keyboard(
+            item_id,
+            ["Programming"],
+            page=0,
+            has_previous=False,
+            has_next=False,
+        ),
     )
     callback = FakeCallback(
         42,

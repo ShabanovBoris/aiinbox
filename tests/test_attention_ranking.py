@@ -795,7 +795,7 @@ def test_attention_reason_is_deterministic_and_grounded_in_score_components():
 
     assert reason == format_attention_reason(rank)
     assert reason == "Не показывался 19 дн.; Высокий приоритет; Высокий интерес"
-    assert "Без названия" in formatted
+    assert "Текстовая заметка" in formatted
     assert "Внимание:" not in formatted
     assert "Приоритет:" not in formatted
     assert "Интерес:" not in formatted

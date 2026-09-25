@@ -5,7 +5,9 @@ from collections.abc import Sequence
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from app.bot.presentation import (
+    ItemNavigationEntry,
     ItemReferenceProjection,
+    bound_item_button_label,
     bound_source_button_label,
     item_reference_projection,
     item_type_label,
@@ -16,7 +18,6 @@ from app.domain.enums import ItemState, ItemType, ProcessingStatus, SourceType
 from app.domain.models import AskReference
 from app.storage.models import Item, ItemSource
 
-_MAX_CATEGORY_CHOICES = 20
 _MAX_CATEGORY_LABEL_LENGTH = 64
 _MAX_PRIMARY_SOURCE_ACTIONS = 2
 _MAX_SOURCE_MENU_ACTIONS = 12
@@ -113,6 +114,33 @@ def main_menu_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+def help_keyboard() -> InlineKeyboardMarkup:
+    """Keep explicit format choice in Help while the common menu action stays compact."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="📦 Компактный экспорт", callback_data="export:mode:COMPACT"
+                )
+            ],
+            [InlineKeyboardButton(text="📦 Полный экспорт", callback_data="export:mode:FULL")],
+            [InlineKeyboardButton(text="☰ Главное меню", callback_data="nav:menu")],
+        ]
+    )
+
+
+# ❌ Удалена export_mode_keyboard из главного меню: общий экспорт сразу означает
+# Compact, а явный выбор обоих режимов теперь принадлежит экрану Help.
+def profile_keyboard() -> InlineKeyboardMarkup:
+    """Expose the existing durable ProfileUpdateJob flow from the profile projection."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="✏️ Настроить профиль", callback_data="nav:profile:edit")],
+            [InlineKeyboardButton(text="← Меню", callback_data="nav:menu")],
+        ]
+    )
+
+
 def input_cancel_keyboard() -> InlineKeyboardMarkup:
     """Give one-shot Ask/Search input an exit without adding durable chat state."""
     return InlineKeyboardMarkup(
@@ -120,30 +148,34 @@ def input_cancel_keyboard() -> InlineKeyboardMarkup:
     )
 
 
-def export_mode_keyboard() -> InlineKeyboardMarkup:
-    """Offer the two existing durable export modes from one chooser message."""
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(text="Compact", callback_data="export:mode:COMPACT"),
-                InlineKeyboardButton(text="Full", callback_data="export:mode:FULL"),
-            ],
-            [InlineKeyboardButton(text="← Меню", callback_data="nav:menu")],
-        ]
-    )
-
-
-def category_navigation_keyboard(categories: Sequence[str]) -> InlineKeyboardMarkup:
-    """Resolve bounded owner-supplied category labels through stable short tokens."""
+def category_navigation_keyboard(
+    categories: Sequence[tuple[str, int]],
+    *,
+    page: int,
+    has_previous: bool,
+    has_next: bool,
+) -> InlineKeyboardMarkup:
+    """Keep category choices pageable while callbacks carry only owner-resolved tokens."""
     rows = [
         [
             InlineKeyboardButton(
                 text=_category_button_label(category),
-                callback_data=f"nav:category:{category_callback_token(category)}",
+                callback_data=f"nav:category:{category_callback_token(category)}:page:0",
             )
         ]
-        for category in categories[:_MAX_CATEGORY_CHOICES]
+        for category, _count in categories
     ]
+    page_actions = []
+    if has_previous:
+        page_actions.append(
+            InlineKeyboardButton(text="← Назад", callback_data=f"nav:categories:page:{page - 1}")
+        )
+    if has_next:
+        page_actions.append(
+            InlineKeyboardButton(text="Ещё →", callback_data=f"nav:categories:page:{page + 1}")
+        )
+    if page_actions:
+        rows.append(page_actions)
     rows.append([InlineKeyboardButton(text="← Меню", callback_data="nav:menu")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -255,16 +287,36 @@ def ask_sources_keyboard(
     return InlineKeyboardMarkup(inline_keyboard=rows) if rows else None
 
 
-def item_navigation_keyboard(item_ids: Sequence[int]) -> InlineKeyboardMarkup | None:
-    """Numbered selectors preserve the visible order without expanding list cards."""
-    buttons = [
-        InlineKeyboardButton(text=str(index), callback_data=f"item:view:{item_id}")
-        for index, item_id in enumerate(item_ids[:20], start=1)
+# ❌ Удалена числовая сетка item_navigation_keyboard: заголовок сам открывает
+# owner-scoped item:view, поэтому список остаётся понятным и ограниченным строками.
+def item_list_keyboard(
+    entries: Sequence[ItemNavigationEntry],
+    *,
+    previous_callback: str | None = None,
+    next_callback: str | None = None,
+    back_label: str | None = None,
+    back_callback: str = "nav:menu",
+) -> InlineKeyboardMarkup | None:
+    """Render one bounded full-width Item action per visible result."""
+    rows = [
+        [
+            InlineKeyboardButton(
+                text=bound_item_button_label(entry.label),
+                callback_data=f"item:view:{entry.item_id}",
+            )
+        ]
+        for entry in entries
     ]
-    if not buttons:
-        return None
-    rows = [buttons[index : index + 5] for index in range(0, len(buttons), 5)]
-    return InlineKeyboardMarkup(inline_keyboard=rows)
+    page_actions = []
+    if previous_callback:
+        page_actions.append(InlineKeyboardButton(text="← Назад", callback_data=previous_callback))
+    if next_callback:
+        page_actions.append(InlineKeyboardButton(text="Ещё →", callback_data=next_callback))
+    if page_actions:
+        rows.append(page_actions)
+    if back_label:
+        rows.append([InlineKeyboardButton(text=back_label, callback_data=back_callback)])
+    return InlineKeyboardMarkup(inline_keyboard=rows) if rows else None
 
 
 def _source_action_buttons(
@@ -511,8 +563,15 @@ def _category_button_label(category: str) -> str:
     return f"{category[:prefix_length]}…{category[-12:]}"
 
 
-def feedback_category_keyboard(item_id: int, categories: Sequence[str]) -> InlineKeyboardMarkup:
-    """Expose bounded, user-scoped category choices using short stable tokens."""
+def feedback_category_keyboard(
+    item_id: int,
+    categories: Sequence[str],
+    *,
+    page: int,
+    has_previous: bool,
+    has_next: bool,
+) -> InlineKeyboardMarkup:
+    """Expose pageable owner categories while correction keeps its existing token boundary."""
     rows = [
         [
             InlineKeyboardButton(
@@ -520,8 +579,23 @@ def feedback_category_keyboard(item_id: int, categories: Sequence[str]) -> Inlin
                 callback_data=(f"feedback:category:{item_id}:{category_callback_token(category)}"),
             )
         ]
-        for category in categories[:_MAX_CATEGORY_CHOICES]
+        for category in categories
     ]
+    page_actions = []
+    if has_previous:
+        page_actions.append(
+            InlineKeyboardButton(
+                text="← Назад", callback_data=f"feedback:category_menu:{item_id}:page:{page - 1}"
+            )
+        )
+    if has_next:
+        page_actions.append(
+            InlineKeyboardButton(
+                text="Ещё →", callback_data=f"feedback:category_menu:{item_id}:page:{page + 1}"
+            )
+        )
+    if page_actions:
+        rows.append(page_actions)
     rows.append([InlineKeyboardButton(text="← Назад", callback_data=f"feedback:menu:{item_id}")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 

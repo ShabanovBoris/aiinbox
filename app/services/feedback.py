@@ -8,8 +8,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.sql import text
 
-from app.domain.category_tokens import category_token
 from app.domain.enums import ItemType, ProcessingStatus
+from app.services.retrieval import resolve_category_token
 from app.storage.models import Event, FeedbackCallbackReceipt, Item, User
 
 _FEEDBACK_EVENT_TYPES = {
@@ -265,25 +265,14 @@ async def correct_item_category_by_token(
             await session.commit()
             return item, False
 
-        categories = list(
-            (
-                await session.scalars(
-                    select(Item.category)
-                    .where(Item.user_id == item.user_id, Item.category.is_not(None))
-                    .distinct()
-                )
-            ).all()
-        )
-        matches = [
-            category
-            for category in categories
-            if category_token(category) == selected_category_token
-        ]
-        if len(matches) != 1:
+        # ❌ Удалён неограниченный DISTINCT scan: общий resolver читает категории
+        # владельца bounded-порциями и отклоняет токены с несколькими совпадениями.
+        category = await resolve_category_token(session, item.user_id, selected_category_token)
+        if category is None:
             await session.commit()
             return None
 
-        category = matches[0].strip()
+        category = category.strip()
         if not category or len(category) > _MAX_CATEGORY_LENGTH:
             await session.commit()
             return None

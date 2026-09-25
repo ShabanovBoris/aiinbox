@@ -6,20 +6,44 @@
 """
 
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.domain.category_tokens import category_token
 from app.domain.enums import ACTIONABLE_ITEM_TYPES, ContentKind, ItemState, ProcessingStatus
-from app.storage.models import Content, Item
+from app.storage.models import Content, Item, ItemSource
 
 _FTS_TABLE = "item_search"
-_DEFAULT_INBOX_LIMIT = 20
 _DEFAULT_SEARCH_LIMIT = 10
-_MAX_SEARCH_LIMIT = 20
+_MAX_SEARCH_RESULTS = 20
+_DEFAULT_PAGE_SIZE = 10
+_MAX_PAGE_SIZE = 12
+_CATEGORY_RESOLUTION_PAGE_SIZE = 100
 _DEFAULT_ASK_LIMIT = 8
 _MAX_ASK_LIMIT = 10
+
+
+@dataclass(frozen=True, slots=True)
+class ItemPage:
+    """One bounded owner-scoped slice; the page boundary is not a storage quota."""
+
+    items: tuple[Item, ...]
+    page: int
+    has_previous: bool
+    has_next: bool
+
+
+@dataclass(frozen=True, slots=True)
+class CategoryPage:
+    """A bounded category chooser slice with a stable caller-selected ordering."""
+
+    categories: tuple[tuple[str, int], ...]
+    page: int
+    has_previous: bool
+    has_next: bool
 
 
 async def ensure_search_index(session: AsyncSession) -> None:
@@ -117,41 +141,166 @@ class TodayService:
         return list(result.all())
 
 
-async def list_inbox(
-    session: AsyncSession, user_id: int, limit: int = _DEFAULT_INBOX_LIMIT
-) -> list[Item]:
-    """Последние Items; lifecycle-фильтр отсутствует намеренно."""
-    limit = max(0, min(limit, _MAX_SEARCH_LIMIT))
-    result = await session.scalars(
-        select(Item)
-        .where(Item.user_id == user_id)
-        .order_by(Item.created_at.desc(), Item.id.desc())
-        .limit(limit)
+# ❌ Удалены list_inbox/list_category_items с общим max=20: Items остаются доступны
+# через SQL-ограниченные страницы, а page size ограничивает один запрос, не Inbox.
+async def list_inbox_page(
+    session: AsyncSession,
+    user_id: int,
+    *,
+    page: int = 0,
+    page_size: int = _DEFAULT_PAGE_SIZE,
+) -> ItemPage:
+    """Return a page in Inbox order without imposing a total accessible-item cap."""
+    size = _page_size(page_size)
+    total = int(
+        await session.scalar(select(func.count(Item.id)).where(Item.user_id == user_id)) or 0
     )
-    return list(result.all())
+    current_page = _page_for_total(page, total, size)
+    rows = list(
+        (
+            await session.scalars(
+                select(Item)
+                .where(Item.user_id == user_id)
+                .order_by(Item.created_at.desc(), Item.id.desc())
+                .limit(size + 1)
+                .offset(current_page * size)
+            )
+        ).all()
+    )
+    return ItemPage(
+        items=tuple(rows[:size]),
+        page=current_page,
+        has_previous=current_page > 0,
+        has_next=len(rows) > size,
+    )
 
 
-async def list_categories(session: AsyncSession, user_id: int) -> list[tuple[str, int]]:
+async def list_categories_page(
+    session: AsyncSession,
+    user_id: int,
+    *,
+    page: int = 0,
+    page_size: int = _DEFAULT_PAGE_SIZE,
+    by_frequency: bool = False,
+) -> CategoryPage:
+    """Return bounded category choices; each grouped query emits at most 13 rows."""
+    size = _page_size(page_size)
+    grouped = (
+        select(Item.category.label("category"))
+        .where(Item.user_id == user_id, Item.category.is_not(None))
+        .group_by(Item.category)
+    )
+    total = int(await session.scalar(select(func.count()).select_from(grouped.subquery())) or 0)
+    current_page = _page_for_total(page, total, size)
+    ordering = (
+        (func.count(Item.id).desc(), Item.category.asc())
+        if by_frequency
+        else (Item.category.asc(),)
+    )
     rows = await session.execute(
         select(Item.category, func.count(Item.id))
         .where(Item.user_id == user_id, Item.category.is_not(None))
         .group_by(Item.category)
-        .order_by(Item.category.asc())
+        .order_by(*ordering)
+        .limit(size + 1)
+        .offset(current_page * size)
     )
-    return [(category, count) for category, count in rows.all()]
+    categories = list(rows.all())
+    return CategoryPage(
+        categories=tuple((name, int(count)) for name, count in categories[:size]),
+        page=current_page,
+        has_previous=current_page > 0,
+        has_next=len(categories) > size,
+    )
 
 
-async def list_category_items(
-    session: AsyncSession, user_id: int, category: str, limit: int = _DEFAULT_INBOX_LIMIT
-) -> list[Item]:
-    limit = max(0, min(limit, _MAX_SEARCH_LIMIT))
-    result = await session.scalars(
-        select(Item)
-        .where(Item.user_id == user_id, Item.category == category)
-        .order_by(Item.priority_score.desc(), Item.created_at.desc(), Item.id.desc())
-        .limit(limit)
+async def resolve_category_token(session: AsyncSession, user_id: int, token: str) -> str | None:
+    """Resolve a current owner category in bounded batches and reject token collisions."""
+    if not re.fullmatch(r"[0-9a-f]{20}", token):
+        return None
+    matches: list[str] = []
+    offset = 0
+    while True:
+        rows = await session.scalars(
+            select(Item.category)
+            .where(Item.user_id == user_id, Item.category.is_not(None))
+            .group_by(Item.category)
+            .order_by(Item.category.asc())
+            .limit(_CATEGORY_RESOLUTION_PAGE_SIZE)
+            .offset(offset)
+        )
+        categories = list(rows.all())
+        matches.extend(name for name in categories if category_token(name) == token)
+        if len(matches) > 1 or len(categories) < _CATEGORY_RESOLUTION_PAGE_SIZE:
+            break
+        offset += _CATEGORY_RESOLUTION_PAGE_SIZE
+    return matches[0] if len(matches) == 1 else None
+
+
+async def list_category_items_page(
+    session: AsyncSession,
+    user_id: int,
+    category: str,
+    *,
+    page: int = 0,
+    page_size: int = _DEFAULT_PAGE_SIZE,
+) -> ItemPage:
+    """Return a bounded priority-ordered page for one exact owner category."""
+    size = _page_size(page_size)
+    condition = (Item.user_id == user_id, Item.category == category)
+    total = int(await session.scalar(select(func.count(Item.id)).where(*condition)) or 0)
+    current_page = _page_for_total(page, total, size)
+    rows = list(
+        (
+            await session.scalars(
+                select(Item)
+                .where(*condition)
+                .order_by(Item.priority_score.desc(), Item.created_at.desc(), Item.id.desc())
+                .limit(size + 1)
+                .offset(current_page * size)
+            )
+        ).all()
     )
-    return list(result.all())
+    return ItemPage(
+        items=tuple(rows[:size]),
+        page=current_page,
+        has_previous=current_page > 0,
+        has_next=len(rows) > size,
+    )
+
+
+async def load_item_sources_by_item(
+    session: AsyncSession, item_ids: Sequence[int]
+) -> dict[int, list[ItemSource]]:
+    """Batch the page's source metadata so title projections never issue N+1 reads."""
+    grouped = {item_id: [] for item_id in item_ids}
+    if not grouped:
+        return grouped
+    sources = (
+        await session.scalars(
+            select(ItemSource)
+            .where(ItemSource.item_id.in_(tuple(grouped)))
+            .order_by(ItemSource.item_id, ItemSource.source_index, ItemSource.id)
+        )
+    ).all()
+    for source in sources:
+        grouped[source.item_id].append(source)
+    return grouped
+
+
+def _page_size(value: int) -> int:
+    """Enforce the service's fixed upper bound before constructing any SQL page query."""
+    if not isinstance(value, int) or isinstance(value, bool):
+        return _DEFAULT_PAGE_SIZE
+    return max(1, min(value, _MAX_PAGE_SIZE))
+
+
+def _page_for_total(requested: int, total: int, page_size: int) -> int:
+    """Clamp stale or huge callback pages to the last reachable offset for this owner."""
+    last_page = max(0, (total - 1) // page_size)
+    if not isinstance(requested, int) or isinstance(requested, bool):
+        return 0
+    return max(0, min(requested, last_page))
 
 
 def _fts_query(query: str) -> str:
@@ -211,7 +360,7 @@ async def search_items(
     match = _fts_query(query)
     if not match:
         return []
-    limit = max(0, min(limit, _MAX_SEARCH_LIMIT))
+    limit = max(0, min(limit, _MAX_SEARCH_RESULTS))
     await rebuild_user_search_index(session, user_id)
     rows = await session.execute(
         text(

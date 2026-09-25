@@ -653,3 +653,27 @@ Consequences: Slash commands remain stable. No general conversation memory is
 added. Database failures continue to fail fast. Delivery retries never
 recompute completed Ask answers. PM-14+ remains paused until a separate quality
 review.
+
+## D-043 — Saved Item lists are pageable and Item identity survives failed processing
+
+Context: real-user review after POLISH-05 found that Inbox and category browsing
+silently stopped at 20 Items, numbered selector grids did not scale, and failed
+Items could show `Без названия` with raw internal failure codes. Main-menu Export
+also required an unnecessary mode step, and Profile had no visible edit action.
+
+Decision: saved Item collections have no presentation-level total cap. Telegram
+uses bounded SQL pages and full-width title actions that reuse the existing
+owner-scoped `item:view` callback. The analyzed `Item.title` stays canonical;
+when missing, presentation derives a deterministic local fallback from safe
+persisted source metadata without changing the Item. Main-menu Export means
+COMPACT, explicit FULL remains in Help and `/export full`, and Profile editing is
+a one-shot prompt over the durable `ProfileUpdateJob`.
+
+Reason: users should be able to recognize and reach every saved object without
+unbounded Telegram messages, numeric button walls, or dependence on successful
+AI processing.
+
+Consequences: each retrieval page remains bounded while the owner's total
+accessible Inbox is not. Fallback titles do not alter analysis, search or export
+fields. Failure copy does not expose internal error codes. No storage quota,
+migration, dependency, queue or parallel Item identity system is introduced.

@@ -1,6 +1,6 @@
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 
-from app.bot.presentation import item_type_label
+from app.bot.presentation import item_display_title, item_navigation_entries, item_type_label
 from app.domain.enums import SourceType
 from app.domain.models import AskReference, UserProfile
 from app.services.attention_ranking import AttentionRank
@@ -92,7 +92,7 @@ def format_ready_item_compact(item: Item, sources: Sequence[ItemSource] | None =
     """Project a READY Item as saved content plus only material trust warnings."""
     # ❌ Удалены строки категории, типа, рейтинга, интереса и внутренних пояснений:
     # эти canonical metadata доступны по запросу через Details и не заслоняют summary.
-    lines = ["✓ Сохранено", "", f"🎯 {item.title or 'Без названия'}"]
+    lines = ["✓ Сохранено", "", f"🎯 {item_display_title(item, sources or ())}"]
     if item.summary and item.summary.strip():
         lines.extend(["", item.summary.strip()])
     warnings = _analysis_completeness_warning(item, sources)
@@ -139,39 +139,94 @@ def format_item_details(item: Item) -> str:
 
 
 def format_item_failure(item: Item, sources: Sequence[ItemSource]) -> str:
-    """Rebuild the existing FAILED delivery text when a submenu returns to its card."""
+    """Show a recognizable saved Item and explain failure without internal error codes."""
     failed_sources = [source for source in sources if source.extraction_status == "FAILED"]
     instagram_failure = next(
         (source for source in failed_sources if source.source_type is SourceType.INSTAGRAM), None
     )
-    error_code = instagram_failure.error_code if instagram_failure else item.error_code
+    failure_source = instagram_failure or (failed_sources[0] if failed_sources else None)
+    llm_failure = item.error_code in {
+        "LLM_TIMEOUT",
+        "LLM_RATE_LIMITED",
+        "LLM_AUTH_FAILED",
+        "LLM_CONFIG_FAILED",
+        "LLM_FAILED",
+        "INVALID_LLM_OUTPUT",
+    }
+    error_code = (
+        item.error_code
+        if llm_failure or failure_source is None
+        else failure_source.error_code or item.error_code
+    )
+    source_type = (
+        item.source_type if llm_failure or failure_source is None else failure_source.source_type
+    )
     retryable = (
         item.processing_stage != "EXTRACTING"
         or not failed_sources
         or any(not source.failure_is_permanent for source in failed_sources)
     )
+    reason = _failure_copy(error_code, source_type)
     if instagram_failure and error_code == "AUTH_REQUIRED":
-        return (
+        reason = (
             "Не удалось получить Reel: "
             f"{format_instagram_failure_reason(error_code)}. Ссылка сохранена; "
             "после настройки INSTAGRAM_COOKIES_FILE нажмите Retry."
         )
-    if instagram_failure and error_code == "RATE_LIMITED":
-        return (
+    elif instagram_failure and error_code == "RATE_LIMITED":
+        reason = (
             f"Не удалось получить Reel: {format_instagram_failure_reason(error_code)}. "
             "Ссылка сохранена; попробуйте Retry позже."
         )
-    if instagram_failure and error_code == "UNSUPPORTED_SOURCE":
-        return (
+    elif instagram_failure and error_code == "UNSUPPORTED_SOURCE":
+        reason = (
             f"Не удалось получить Reel: {format_instagram_failure_reason(error_code)}. "
             "Отправьте ссылку на конкретный Reel."
         )
-    message = f"Не удалось обработать Item ({item.error_code or 'ошибка'})."
-    if retryable:
+    elif retryable:
+        reason += "\nМожно повторить попытку."
+    return f"⚠️ {item_display_title(item, sources)}\n\n{reason}"
+
+
+def _failure_copy(error_code: str | None, source_type: SourceType) -> str:
+    """Translate persisted technical outcomes into short user-facing explanations."""
+    llm_failures = {
+        "LLM_TIMEOUT",
+        "LLM_RATE_LIMITED",
+        "LLM_AUTH_FAILED",
+        "LLM_CONFIG_FAILED",
+        "LLM_FAILED",
+        "INVALID_LLM_OUTPUT",
+    }
+    if error_code in llm_failures:
+        return "Источник сохранён, но AI-анализ не завершился."
+    if error_code == "TOO_LARGE":
+        return "Файл слишком большой для обработки."
+    if error_code == "UNSUPPORTED_SOURCE":
+        return "Этот источник пока не удалось обработать."
+    if error_code == "SECURITY_REJECTED":
+        return "Ссылку не удалось безопасно открыть."
+    if error_code == "TRANSCRIPTION_FAILED":
         return (
-            f"Не удалось обработать Item. Можно повторить попытку ({item.error_code or 'ошибка'})."
+            "Не удалось распознать речь в видео."
+            if source_type in {SourceType.VIDEO, SourceType.YOUTUBE}
+            else "Не удалось распознать речь."
         )
-    return message
+    if error_code in {"DOWNLOAD_FAILED", "TIMEOUT"}:
+        if source_type is SourceType.WEB:
+            return "Не удалось загрузить содержимое ссылки."
+        if source_type is SourceType.DOCUMENT:
+            return "Не удалось обработать документ."
+        if source_type is SourceType.VOICE:
+            return "Не удалось получить голосовое сообщение."
+        if source_type is SourceType.AUDIO:
+            return "Не удалось получить аудиофайл."
+        if source_type in {SourceType.VIDEO, SourceType.YOUTUBE, SourceType.INSTAGRAM}:
+            return "Не удалось получить содержимое видео."
+        return "Не удалось загрузить содержимое источника."
+    if error_code == "EXTRACTION_FAILED" and source_type is SourceType.DOCUMENT:
+        return "Не удалось обработать документ."
+    return "Не удалось обработать сохранение."
 
 
 def format_profile(profile: UserProfile) -> str:
@@ -197,13 +252,17 @@ def format_profile(profile: UserProfile) -> str:
     return _fit_message(lines)
 
 
-def format_today(items: list[Item]) -> str:
+def format_today(
+    items: list[Item], sources_by_item: Mapping[int, Sequence[ItemSource]] | None = None
+) -> str:
     """Показывает actionable-срез с полями, нужными для решения «что делать»."""
     if not items:
         return "Сегодня нет подходящих задач."
     lines = ["Сегодня:"]
-    for index, item in enumerate(items, start=1):
-        lines.append(f"{index}. {item.title or 'Без названия'} — {item.priority_score or 0}/100")
+    for index, (item, entry) in enumerate(
+        zip(items, item_navigation_entries(items, sources_by_item), strict=True), start=1
+    ):
+        lines.append(f"{index}. {entry.label} — {item.priority_score or 0}/100")
         if item.estimated_action_minutes is not None:
             lines.append(f"   ~{item.estimated_action_minutes} мин")
         if item.next_action:
@@ -211,7 +270,9 @@ def format_today(items: list[Item]) -> str:
     return _fit_message(lines)
 
 
-def format_weekly_review(review: WeeklyReview) -> str:
+def format_weekly_review(
+    review: WeeklyReview, item_titles_by_id: Mapping[int, str] | None = None
+) -> str:
     """Render the read model as one compact message, keeping actions ahead of themes."""
     flow = review.flow
     backlog = review.backlog
@@ -283,7 +344,11 @@ def format_weekly_review(review: WeeklyReview) -> str:
     if review.recommendations:
         lines.extend(("", "На следующую неделю:"))
         for index, recommendation in enumerate(review.recommendations[:3], start=1):
-            title = _bounded_weekly_label(recommendation.title)
+            title = _bounded_weekly_label(
+                (item_titles_by_id or {}).get(recommendation.item_id)
+                or recommendation.title
+                or "Сохранение"
+            )
             if recommendation.kind == "RETURN_OLD_IMPORTANT":
                 lines.append(f"{index}. Вернуться: {title}")
             elif recommendation.kind == "QUICK_WIN":
@@ -371,11 +436,17 @@ def format_attention_reason(rank: AttentionRank) -> str:
     return "; ".join(reasons[:3]) or "По рассчитанному рейтингу"
 
 
-def format_attention_item(index: int, count: int, item: Item, rank: AttentionRank) -> str:
+def format_attention_item(
+    index: int,
+    count: int,
+    item: Item,
+    rank: AttentionRank,
+    sources: Sequence[ItemSource] = (),
+) -> str:
     """Show ranked content with a bounded persisted summary, leaving scores internal."""
     # ❌ Удалены score, возраст и ranking reason из ручной карточки: это диагностика
     # ранжирования, а preview должен помогать узнать сохранённый материал.
-    title = item.title or "Без названия"
+    title = item_display_title(item, sources)
     summary = " ".join((item.summary or "").split())
     if len(summary) > _ATTENTION_SUMMARY_PREVIEW_LENGTH:
         summary = summary[: _ATTENTION_SUMMARY_PREVIEW_LENGTH - 1].rstrip() + "…"
@@ -385,11 +456,15 @@ def format_attention_item(index: int, count: int, item: Item, rank: AttentionRan
     return _fit_message(lines)
 
 
-def format_proactive_attention_reminder(item: Item, hook_text: str | None = None) -> str:
+def format_proactive_attention_reminder(
+    item: Item,
+    hook_text: str | None = None,
+    sources: Sequence[ItemSource] = (),
+) -> str:
     """Project an Item reminder as title plus hook, summary fallback, or title alone."""
     # ❌ Удалены wrapper, ranking reason, scores, interest and age from reminder copy:
     # они объясняли выбор планировщика вместо содержательной причины открыть материал.
-    lines = [f"🎯 {item.title or 'Без названия'}"]
+    lines = [f"🎯 {item_display_title(item, sources)}"]
     content = (hook_text or "").strip()
     if not content:
         # Item.summary is presentation fallback only; AttentionHookService never reads it.
@@ -401,14 +476,19 @@ def format_proactive_attention_reminder(item: Item, hook_text: str | None = None
     return _fit_message(lines)
 
 
-def format_item_list(items: list[Item], heading: str) -> str:
-    """Общий компактный список для inbox/category/search."""
+def format_item_list(
+    items: list[Item],
+    heading: str,
+    sources_by_item: Mapping[int, Sequence[ItemSource]] | None = None,
+) -> str:
+    """Render the same bounded title projections used as full-width list buttons."""
     if not items:
         return f"{heading}\n\nНичего не найдено."
     lines = [heading]
-    for index, item in enumerate(items, start=1):
+    entries = item_navigation_entries(items, sources_by_item)
+    for item, entry in zip(items, entries, strict=True):
         score = f" — {item.priority_score}/100" if item.priority_score is not None else ""
-        lines.append(f"{index}. {item.title or 'Без названия'}{score}")
+        lines.append(f"• {entry.label}{score}")
     return _fit_message(lines)
 
 
@@ -419,15 +499,17 @@ def format_ask_answer(answer: str, references: Sequence[AskReference]) -> str:
     if references:
         lines.extend(("", "Источники:"))
         for index, reference in enumerate(references[:5], start=1):
-            title = _bounded_weekly_label(reference.title or "Без названия", 120)
+            title = _bounded_weekly_label(reference.title or "Сохранение", 120)
             if reference.source_type:
                 title += f" — {reference.source_type[:16]}"
             lines.append(f"[{index}] {title}")
     return _fit_message(lines)
 
 
-def format_categories(categories: list[tuple[str, int]]) -> str:
-    """Форматирует список категорий; выбор категории остаётся текстовой командой."""
+def format_categories(categories: Sequence[tuple[str, int]], *, page: int = 0) -> str:
+    """Format one category page while the keyboard carries the bounded choices."""
     if not categories:
         return "Категории пока пусты."
-    return _fit_message(["Категории:"] + [f"{name} — {count}" for name, count in categories])
+    return _fit_message(
+        [f"Категории · {page + 1}"] + [f"{name} — {count}" for name, count in categories]
+    )

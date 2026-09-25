@@ -342,7 +342,7 @@ class WeeklyReviewService:
             ):
                 recommendations.append(
                     WeeklyRecommendation(
-                        "RETURN_OLD_IMPORTANT", item.id, item.title or "Без названия"
+                        "RETURN_OLD_IMPORTANT", item.id, item.title or "Сохранение"
                     )
                 )
                 selected_ids.add(item.id)
@@ -360,7 +360,7 @@ class WeeklyReviewService:
                     WeeklyRecommendation(
                         "QUICK_WIN",
                         item.id,
-                        item.title or "Без названия",
+                        item.title or "Сохранение",
                         item.estimated_action_minutes,
                     )
                 )
@@ -402,7 +402,7 @@ class WeeklyReviewService:
                 WeeklyRecommendation(
                     "CLEANUP_REVIEW",
                     item_id,
-                    title or "Без названия",
+                    title or "Сохранение",
                     estimated_action_minutes,
                 )
             )

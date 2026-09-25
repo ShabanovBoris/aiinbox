@@ -1,17 +1,19 @@
 """Pure, persisted-data-only projections shared by Telegram surfaces."""
 
 import re
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from ipaddress import ip_address
 from urllib.parse import urlsplit
 
 from app.bot.provenance import forward_original_url
 from app.domain.enums import ItemType, ProcessingStatus, SourceType
+from app.extractors.document import safe_document_file_name
 from app.services.url_security import is_public_ip_address
 from app.storage.models import Item, ItemSource
 
 _MAX_SOURCE_LABEL_LENGTH = 64
+_MAX_ITEM_BUTTON_LABEL_LENGTH = 60
 
 ITEM_TYPE_LABELS = {
     ItemType.ACTION: "Действие",
@@ -43,6 +45,115 @@ class ItemReferenceProjection:
     title: str
     original_available: bool
     source_actions: tuple[SourceReferenceAction, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ItemNavigationEntry:
+    """Small immutable row contract shared by every Item-list Telegram surface."""
+
+    item_id: int
+    label: str
+
+
+def item_display_title(item: Item, sources: Sequence[ItemSource] = ()) -> str:
+    """Project a recognizable local title without mutating Item or doing I/O.
+
+    The canonical analyzed title wins. Before analysis or after failure, only
+    already-persisted source identity is used so rendering stays available offline.
+    """
+    title = _single_line(item.title)
+    if title:
+        return title
+
+    ordered_sources = sorted(
+        sources,
+        key=lambda source: (source.source_index, source.id if source.id is not None else 0),
+    )
+    if ordered_sources:
+        identities = [_source_fallback_title(source) for source in ordered_sources]
+        if len(identities) > 1:
+            return " + ".join(identities[:2])
+        return identities[0]
+    return _legacy_source_fallback(item)
+
+
+def item_navigation_entry(item: Item, sources: Sequence[ItemSource] = ()) -> ItemNavigationEntry:
+    """Convert one canonical Item to the bounded callback-row projection."""
+    return ItemNavigationEntry(
+        item_id=item.id,
+        label=bound_item_button_label(item_display_title(item, sources)),
+    )
+
+
+def item_navigation_entries(
+    items: Sequence[Item],
+    sources_by_item: Mapping[int, Sequence[ItemSource]] | None = None,
+) -> tuple[ItemNavigationEntry, ...]:
+    """Share title fallback and callback ordering across all list-producing surfaces."""
+    grouped_sources = sources_by_item or {}
+    return tuple(item_navigation_entry(item, grouped_sources.get(item.id, ())) for item in items)
+
+
+def bound_item_button_label(title: str) -> str:
+    """Normalize untrusted title whitespace and bound one full-width Telegram row."""
+    normalized = " ".join(title.split()) or "Сохранение"
+    if len(normalized) <= _MAX_ITEM_BUTTON_LABEL_LENGTH:
+        return normalized
+    return normalized[: _MAX_ITEM_BUTTON_LABEL_LENGTH - 1].rstrip() + "…"
+
+
+def _single_line(value: str | None) -> str:
+    """Keep names safe for plain Telegram text and single-line button labels."""
+    return " ".join(value.split()) if isinstance(value, str) else ""
+
+
+def _source_fallback_title(source: ItemSource) -> str:
+    """Use one persisted source identity as a deterministic presentation fallback."""
+    if source.error_code == "SECURITY_REJECTED" and source.source_url:
+        return "Ссылка"
+    if source.source_type is SourceType.WEB:
+        return safe_url_host(source.source_url) or "Ссылка"
+    if source.source_type is SourceType.YOUTUBE:
+        return "YouTube-видео"
+    if source.source_type is SourceType.INSTAGRAM:
+        return "Instagram Reel"
+    if source.source_type is SourceType.VIDEO:
+        return "Видео"
+    if source.source_type is SourceType.VOICE:
+        return "Голосовое"
+    if source.source_type is SourceType.AUDIO:
+        return "Аудио"
+    if source.source_type is SourceType.DOCUMENT:
+        metadata = source.metadata_json if isinstance(source.metadata_json, dict) else {}
+        file_name = metadata.get("file_name")
+        safe_name = safe_document_file_name(file_name if isinstance(file_name, str) else None)
+        return f"Документ — {safe_name}" if safe_name else "Документ"
+    # ❌ Удалён `_note_fallback`: user_note — приватное содержимое, не идентичность источника.
+    return "Текстовая заметка"
+
+
+def _legacy_source_fallback(item: Item) -> str:
+    """Retain useful title projection for pre-ItemSource rows without new reads."""
+    if item.source_type is SourceType.WEB:
+        if item.error_code == "SECURITY_REJECTED" and item.source_url:
+            return "Ссылка"
+        return safe_url_host(item.source_url) or "Ссылка"
+    if item.source_type is SourceType.YOUTUBE:
+        return "YouTube-видео"
+    if item.source_type is SourceType.INSTAGRAM:
+        return "Instagram Reel"
+    if item.source_type is SourceType.VIDEO:
+        return "Видео"
+    if item.source_type is SourceType.VOICE:
+        return "Голосовое"
+    if item.source_type is SourceType.AUDIO:
+        return "Аудио"
+    if item.source_type is SourceType.DOCUMENT:
+        metadata = item.source_metadata_json if isinstance(item.source_metadata_json, dict) else {}
+        file_name = metadata.get("file_name")
+        safe_name = safe_document_file_name(file_name if isinstance(file_name, str) else None)
+        return f"Документ — {safe_name}" if safe_name else "Документ"
+    return "Текстовая заметка"
 
 
 def item_reference_projection(
@@ -150,7 +261,7 @@ def item_reference_projection(
 
     return ItemReferenceProjection(
         item_id=item.id,
-        title=item.title or "Без названия",
+        title=item_display_title(item, ordered_sources),
         original_available=owner_chat_available and item.telegram_message_id is not None,
         source_actions=tuple(actions),
     )
@@ -170,6 +281,27 @@ def bound_source_button_label(label: str) -> str:
 
 def source_url_label(source_type: SourceType, url: str) -> str | None:
     """Project a persisted HTTP(S) destination to a bounded label without fetching it."""
+    host = safe_url_host(url)
+    if host is None:
+        return None
+
+    if source_type is SourceType.YOUTUBE:
+        label = "↗ YouTube"
+    elif source_type is SourceType.INSTAGRAM:
+        label = "↗ Instagram Reel"
+    elif source_type is SourceType.WEB and (host == "github.com" or host.endswith(".github.com")):
+        label = "↗ GitHub"
+    elif source_type is SourceType.WEB:
+        label = f"↗ Статья — {host}"
+    elif source_type is SourceType.DOCUMENT:
+        label = f"↗ Документ — {host}"
+    else:
+        label = f"↗ {host}"
+    return bound_source_button_label(label)
+
+
+def safe_url_host(url: str | None) -> str | None:
+    """Reuse source-button URL validation to expose only a public persisted host."""
     if not isinstance(url, str) or not url:
         return None
     try:
@@ -219,16 +351,4 @@ def source_url_label(source_type: SourceType, url: str) -> str | None:
     if not host:
         return None
 
-    if source_type is SourceType.YOUTUBE:
-        label = "↗ YouTube"
-    elif source_type is SourceType.INSTAGRAM:
-        label = "↗ Instagram Reel"
-    elif source_type is SourceType.WEB and (host == "github.com" or host.endswith(".github.com")):
-        label = "↗ GitHub"
-    elif source_type is SourceType.WEB:
-        label = f"↗ Статья — {host}"
-    elif source_type is SourceType.DOCUMENT:
-        label = f"↗ Документ — {host}"
-    else:
-        label = f"↗ {host}"
-    return bound_source_button_label(label)
+    return host

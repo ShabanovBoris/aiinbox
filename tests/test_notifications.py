@@ -211,7 +211,7 @@ async def test_digest_claim_becomes_successful_only_after_telegram_accepts(sessi
         button for row in bot.messages[0][2]["reply_markup"].inline_keyboard for button in row
     ]
     assert [(button.text, button.callback_data) for button in buttons] == [
-        ("1", f"item:view:{item_id}")
+        ("Сделать задачу", f"item:view:{item_id}")
     ]
     async with session_factory() as session:
         reminder = await session.scalar(select(Reminder).where(Reminder.type == DAILY_DIGEST))

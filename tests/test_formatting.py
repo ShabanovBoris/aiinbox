@@ -6,14 +6,18 @@ import pytest
 from app.bot.formatting import (
     format_categories,
     format_item_details,
+    format_item_failure,
     format_item_list,
     format_ready_item,
+    format_today,
 )
-from app.domain.enums import ItemType, SourceType
+from app.bot.keyboards import item_keyboard
+from app.bot.presentation import item_display_title
+from app.domain.enums import ItemType, ProcessingStatus, SourceType
 from app.domain.models import DEFAULT_PROFILE, AnalysisResult, NormalizedContent
 from app.llm.base import LlmError
 from app.llm.openai import OpenAiProvider
-from app.storage.models import Item
+from app.storage.models import Item, ItemSource
 from tests.fakes import invalid_analysis_json, make_analysis
 
 
@@ -51,6 +55,20 @@ def test_default_ready_card_prioritizes_title_and_summary():
         assert hidden_field not in text
 
 
+def test_ready_card_uses_safe_source_title_when_analysis_title_is_missing():
+    item = make_ready_item()
+    item.title = None
+    source = ItemSource(
+        item_id=item.id,
+        source_index=0,
+        source_type=SourceType.WEB,
+        source_url="https://www.avito.ru/item?private=1",
+    )
+
+    assert "🎯 avito.ru" in format_ready_item(item, [source])
+    assert "private" not in format_ready_item(item, [source])
+
+
 def test_youtube_transcript_only_is_explicit_in_user_output():
     item = make_ready_item()
     item.source_type = SourceType.YOUTUBE
@@ -59,6 +77,173 @@ def test_youtube_transcript_only_is_explicit_in_user_output():
     text = format_ready_item(item)
 
     assert "⚠️ Анализ по транскрипту — без визуальной части." in text
+
+
+def test_display_title_prefers_canonical_title_without_mutating_item():
+    item = make_ready_item()
+    original_title = item.title
+    source = ItemSource(
+        item_id=item.id,
+        source_index=0,
+        source_type=SourceType.WEB,
+        source_url="https://www.avito.ru/item?private=1",
+    )
+
+    assert item_display_title(item, [source]) == original_title
+    assert item.title == original_title
+
+
+def test_display_title_uses_safe_web_host_and_hides_rejected_or_local_url():
+    item = make_ready_item()
+    item.title = None
+    public = ItemSource(
+        item_id=item.id,
+        source_index=0,
+        source_type=SourceType.WEB,
+        source_url="https://www.avito.ru/item?private=1#secret",
+    )
+    rejected = ItemSource(
+        item_id=item.id,
+        source_index=0,
+        source_type=SourceType.WEB,
+        source_url="https://internal.example/item",
+        error_code="SECURITY_REJECTED",
+    )
+    local = ItemSource(
+        item_id=item.id,
+        source_index=0,
+        source_type=SourceType.WEB,
+        source_url="http://127.0.0.1/admin",
+    )
+
+    assert item_display_title(item, [public]) == "avito.ru"
+    assert "private" not in item_display_title(item, [public])
+    assert item_display_title(item, [rejected]) == "Ссылка"
+    assert item_display_title(item, [local]) == "Ссылка"
+
+
+def test_display_title_uses_persisted_safe_document_filename():
+    item = make_ready_item()
+    item.title = None
+    source = ItemSource(
+        item_id=item.id,
+        source_index=0,
+        source_type=SourceType.DOCUMENT,
+        metadata_json={"file_name": "../roadmap.pdf"},
+    )
+
+    assert item_display_title(item, [source]) == "Документ — roadmap.pdf"
+
+
+@pytest.mark.parametrize(
+    ("source_type", "expected"),
+    [
+        (SourceType.VOICE, "Голосовое"),
+        (SourceType.AUDIO, "Аудио"),
+        (SourceType.VIDEO, "Видео"),
+        (SourceType.YOUTUBE, "YouTube-видео"),
+        (SourceType.INSTAGRAM, "Instagram Reel"),
+        (SourceType.DOCUMENT, "Документ"),
+        (SourceType.TEXT, "Текстовая заметка"),
+    ],
+)
+def test_display_title_has_deterministic_source_type_fallbacks(source_type, expected):
+    item = make_ready_item()
+    item.title = None
+    item.source_type = source_type
+
+    assert item_display_title(item) == expected
+
+
+def test_display_title_never_exposes_private_note_content_and_composes_sources():
+    item = make_ready_item()
+    item.title = None
+    item.source_type = SourceType.TEXT
+    item.user_note = "PRIVATE NOTE CONTENT\nsecond line"
+    assert item_display_title(item) == "Текстовая заметка"
+    text_source = ItemSource(item_id=item.id, source_index=0, source_type=SourceType.TEXT)
+    assert item_display_title(item, [text_source]) == "Текстовая заметка"
+    assert "PRIVATE NOTE CONTENT" not in item_display_title(item, [text_source])
+    web = ItemSource(
+        item_id=item.id,
+        source_index=0,
+        source_type=SourceType.WEB,
+        source_url="https://avito.ru/item",
+    )
+    youtube = ItemSource(
+        item_id=item.id,
+        source_index=1,
+        source_type=SourceType.YOUTUBE,
+        source_url="https://youtube.com/watch?v=abc",
+    )
+    assert item_display_title(item, [web, youtube]) == "avito.ru + YouTube-видео"
+
+
+def test_failed_copy_uses_recognizable_title_and_hides_download_code():
+    item = make_ready_item()
+    item.title = None
+    item.processing_status = ProcessingStatus.FAILED
+    item.processing_stage = "EXTRACTING"
+    item.source_type = SourceType.WEB
+    item.telegram_message_id = 123
+    item.error_code = "DOWNLOAD_FAILED"
+    source = ItemSource(
+        item_id=item.id,
+        source_index=0,
+        source_type=SourceType.WEB,
+        source_url="https://avito.ru/item",
+        extraction_status="FAILED",
+        error_code="DOWNLOAD_FAILED",
+        metadata_json={"failure_permanent": False},
+    )
+
+    text = format_item_failure(item, [source])
+
+    assert text.startswith("⚠️ avito.ru\n\n")
+    assert "Не удалось загрузить содержимое ссылки." in text
+    assert "Можно повторить попытку." in text
+    assert "DOWNLOAD_FAILED" not in text
+    callbacks = {
+        button.callback_data
+        for row in item_keyboard(item, [source]).inline_keyboard
+        for button in row
+    }
+    assert "item:original:1" in callbacks
+    assert "item:retry:1" in callbacks
+    assert any(
+        button.text == "↗ Статья — avito.ru"
+        for row in item_keyboard(item, [source]).inline_keyboard
+        for button in row
+    )
+
+
+def test_failed_copy_localizes_transcription_and_keeps_retry_policy():
+    item = make_ready_item()
+    item.title = None
+    item.processing_status = ProcessingStatus.FAILED
+    item.processing_stage = "EXTRACTING"
+    item.source_type = SourceType.VOICE
+    item.error_code = "TRANSCRIPTION_FAILED"
+    source = ItemSource(
+        item_id=item.id,
+        source_index=0,
+        source_type=SourceType.VOICE,
+        extraction_status="FAILED",
+        error_code="TRANSCRIPTION_FAILED",
+        metadata_json={"failure_permanent": True},
+    )
+
+    text = format_item_failure(item, [source])
+    assert text.startswith("⚠️ Голосовое")
+    assert "Не удалось распознать речь." in text
+    assert "TRANSCRIPTION_FAILED" not in text
+    assert "Можно повторить попытку." not in text
+    callbacks = {
+        button.callback_data
+        for row in item_keyboard(item, [source]).inline_keyboard
+        for button in row
+    }
+    assert "item:retry:1" not in callbacks
 
 
 @pytest.mark.parametrize(
@@ -141,6 +326,20 @@ def test_item_list_format_stays_within_telegram_limit():
         item.title = "x" * 300
     text = format_item_list(items, "Входящие:")
     assert len(text) <= 4096
+
+
+def test_today_uses_source_derived_title_instead_of_missing_analysis_placeholder():
+    item = make_ready_item()
+    item.title = None
+    item.source_type = SourceType.WEB
+    source = ItemSource(
+        item_id=item.id,
+        source_index=0,
+        source_type=SourceType.WEB,
+        source_url="https://www.avito.ru/item",
+    )
+
+    assert "1. avito.ru" in format_today([item], {item.id: [source]})
 
 
 def test_category_format_stays_within_telegram_limit():

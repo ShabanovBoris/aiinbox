@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from aiogram import Bot, Dispatcher
@@ -27,6 +27,7 @@ from app.bot.handlers import (
     on_help,
     on_inbox,
     on_navigation_callback,
+    on_profile,
     on_search,
     on_settings,
     on_settings_open_callback,
@@ -34,13 +35,13 @@ from app.bot.handlers import (
     on_text,
     on_today,
 )
-from app.bot.keyboards import main_menu_keyboard
+from app.bot.keyboards import help_keyboard, main_menu_keyboard, profile_keyboard
 from app.bot.navigation import BOT_COMMANDS, configure_bot_commands
 from app.domain.category_tokens import category_token
 from app.domain.enums import ItemState, ItemType, ProcessingStatus, SourceType
 from app.services.ask_inbox import MAX_ASK_QUESTION_CHARS
 from app.services.notifications import get_notification_settings
-from app.storage.models import AskJob, Content, Event, ExportJob, Item, User
+from app.storage.models import AskJob, Content, Event, ExportJob, Item, ProfileUpdateJob, User
 
 
 def make_message(user_id: int, message_id: int = 1, text: str = "hello") -> Message:
@@ -146,6 +147,58 @@ async def test_help_is_compact_task_oriented_and_has_inline_menu(settings, monke
     assert "Настройки" in sent[0]
     assert "Slash-команды тоже работают." in sent[0]
     assert len(sent[0]) < 500
+
+
+def test_profile_and_help_keyboards_expose_edit_and_explicit_export_modes():
+    profile_callbacks = {
+        button.callback_data for row in profile_keyboard().inline_keyboard for button in row
+    }
+    help_callbacks = {
+        button.callback_data for row in help_keyboard().inline_keyboard for button in row
+    }
+
+    assert "nav:profile:edit" in profile_callbacks
+    assert {"export:mode:COMPACT", "export:mode:FULL"} <= help_callbacks
+    assert "nav:export" not in help_callbacks
+
+
+async def test_help_handler_keeps_compact_and_full_export_actions(settings, monkeypatch):
+    responses = []
+
+    async def answer_message(self, text, **kwargs):
+        responses.append((text, kwargs.get("reply_markup")))
+
+    monkeypatch.setattr(Message, "answer", answer_message)
+    await on_help(make_message(42), settings)
+
+    callbacks = {button.callback_data for row in responses[0][1].inline_keyboard for button in row}
+    assert {"export:mode:COMPACT", "export:mode:FULL"} <= callbacks
+
+
+async def test_profile_command_and_menu_share_the_edit_keyboard(
+    settings, session_factory, monkeypatch
+):
+    sent = []
+
+    async def answer_message(self, text, **kwargs):
+        sent.append((text, kwargs.get("reply_markup")))
+
+    async def answer_callback(self, text=None, **kwargs):
+        return None
+
+    monkeypatch.setattr(Message, "answer", answer_message)
+    monkeypatch.setattr(CallbackQuery, "answer", answer_callback)
+
+    await on_profile(make_message(42), settings, session_factory)
+    await on_navigation_callback(
+        make_callback(42, "nav:profile"), settings, session_factory, FakeFSMContext()
+    )
+
+    assert len(sent) == 2
+    for _text, markup in sent:
+        assert "nav:profile:edit" in {
+            button.callback_data for row in markup.inline_keyboard for button in row
+        }
 
 
 def test_bot_commands_are_bounded_and_main_menu_is_inline():
@@ -255,7 +308,7 @@ async def test_today_records_shown_event_after_successful_send(
     assert sent[0][0] == "Сегодня:\n1. Do it — 80/100"
     buttons = [button for row in sent[0][1]["reply_markup"].inline_keyboard for button in row]
     assert [(button.text, button.callback_data) for button in buttons] == [
-        ("1", f"item:view:{item_id}")
+        ("Do it", f"item:view:{item_id}")
     ]
     async with session_factory() as session:
         assert (
@@ -529,16 +582,21 @@ async def test_category_navigation_is_bounded_owner_scoped_and_selectable(
         await session.commit()
 
     sent = []
+    edited = []
     callback_answers = []
 
     async def answer_message(self, text, **kwargs):
         sent.append((text, kwargs))
+
+    async def edit_message(self, text, **kwargs):
+        edited.append((text, kwargs))
 
     async def answer_callback(self, text=None, **kwargs):
         callback_answers.append(text)
         return None
 
     monkeypatch.setattr(Message, "answer", answer_message)
+    monkeypatch.setattr(Message, "edit_text", edit_message)
     monkeypatch.setattr(CallbackQuery, "answer", answer_callback)
     await on_navigation_callback(
         make_callback(42, "nav:categories"), settings, session_factory, FakeFSMContext()
@@ -550,7 +608,7 @@ async def test_category_navigation_is_bounded_owner_scoped_and_selectable(
         for button in row
         if button.callback_data.startswith("nav:category:")
     )
-    assert category_button.callback_data == f"nav:category:{category_token('Android')}"
+    assert category_button.callback_data == f"nav:category:{category_token('Android')}:page:0"
     assert "Secrets" not in sent[0][0]
 
     await on_navigation_callback(
@@ -559,8 +617,8 @@ async def test_category_navigation_is_bounded_owner_scoped_and_selectable(
         session_factory,
         FakeFSMContext(),
     )
-    assert "My Android notes" in sent[-1][0]
-    assert "Private other notes" not in sent[-1][0]
+    assert "My Android notes" in edited[-1][0]
+    assert "Private other notes" not in edited[-1][0]
 
     await on_navigation_callback(
         make_callback(42, "nav:category:stale-token"),
@@ -569,6 +627,291 @@ async def test_category_navigation_is_bounded_owner_scoped_and_selectable(
         FakeFSMContext(),
     )
     assert callback_answers[-1] == "Категория больше недоступна"
+
+
+async def test_category_chooser_pages_past_twenty_categories(
+    settings, session_factory, monkeypatch
+):
+    async with session_factory() as session:
+        user = User(telegram_user_id=42, telegram_chat_id=42)
+        session.add(user)
+        await session.flush()
+        session.add_all(
+            [
+                Item(
+                    user_id=user.id,
+                    processing_status=ProcessingStatus.READY,
+                    state=ItemState.ACTIVE,
+                    source_type=SourceType.TEXT,
+                    processing_stage="READY",
+                    user_note="",
+                    title=f"Item {index}",
+                    category=f"Category {index:02}",
+                )
+                for index in range(25)
+            ]
+        )
+        await session.commit()
+
+    sent = []
+    edited = []
+
+    async def answer_message(self, text, **kwargs):
+        sent.append((text, kwargs))
+
+    async def edit_message(self, text, **kwargs):
+        edited.append((text, kwargs))
+
+    async def answer_callback(self, text=None, **kwargs):
+        return None
+
+    monkeypatch.setattr(Message, "answer", answer_message)
+    monkeypatch.setattr(Message, "edit_text", edit_message)
+    monkeypatch.setattr(CallbackQuery, "answer", answer_callback)
+
+    await on_category(make_message(42), settings, session_factory, "")
+    assert (
+        len(
+            [
+                button
+                for row in sent[0][1]["reply_markup"].inline_keyboard
+                for button in row
+                if button.callback_data.startswith("nav:category:")
+            ]
+        )
+        == 10
+    )
+    assert "первые 20" not in sent[0][0].lower()
+
+    for page in (1, 2):
+        await on_navigation_callback(
+            make_callback(42, f"nav:categories:page:{page}"),
+            settings,
+            session_factory,
+            FakeFSMContext(),
+        )
+    category_callbacks = []
+    for _text, kwargs in [sent[0], *edited]:
+        category_callbacks.extend(
+            button.callback_data
+            for row in kwargs["reply_markup"].inline_keyboard
+            for button in row
+            if button.callback_data.startswith("nav:category:")
+        )
+    assert len(category_callbacks) == len(set(category_callbacks)) == 25
+    assert (
+        len(
+            [
+                button
+                for row in edited[-1][1]["reply_markup"].inline_keyboard
+                for button in row
+                if button.callback_data.startswith("nav:categories:page:")
+            ]
+        )
+        == 1
+    )
+
+
+async def test_inbox_rows_page_through_all_twenty_seven_items(
+    settings, session_factory, monkeypatch
+):
+    async with session_factory() as session:
+        user = User(telegram_user_id=42, telegram_chat_id=42)
+        session.add(user)
+        await session.flush()
+        session.add_all(
+            [
+                Item(
+                    user_id=user.id,
+                    telegram_message_id=index,
+                    source_index=0,
+                    processing_status=ProcessingStatus.READY,
+                    state=ItemState.ACTIVE,
+                    source_type=SourceType.TEXT,
+                    processing_stage="READY",
+                    user_note="",
+                    title=f"Item {index:02}",
+                    created_at=datetime(2026, 9, 1) + timedelta(days=index),
+                )
+                for index in range(27)
+            ]
+        )
+        await session.commit()
+        expected_ids = list(
+            (
+                await session.scalars(
+                    select(Item.id)
+                    .where(Item.user_id == user.id)
+                    .order_by(Item.created_at.desc(), Item.id.desc())
+                )
+            ).all()
+        )
+
+    sent = []
+    edited = []
+
+    async def answer_message(self, text, **kwargs):
+        sent.append((text, kwargs))
+
+    async def edit_message(self, text, **kwargs):
+        edited.append((text, kwargs))
+
+    async def answer_callback(self, text=None, **kwargs):
+        return None
+
+    monkeypatch.setattr(Message, "answer", answer_message)
+    monkeypatch.setattr(Message, "edit_text", edit_message)
+    monkeypatch.setattr(CallbackQuery, "answer", answer_callback)
+
+    await on_inbox(make_message(42), settings, session_factory)
+    assert (
+        len(
+            [
+                button
+                for row in sent[0][1]["reply_markup"].inline_keyboard
+                for button in row
+                if button.callback_data.startswith("item:view:")
+            ]
+        )
+        == 10
+    )
+
+    next_callback = next(
+        button.callback_data
+        for row in sent[0][1]["reply_markup"].inline_keyboard
+        for button in row
+        if button.callback_data.startswith("nav:inbox:page:")
+    )
+    for _ in range(2):
+        await on_navigation_callback(
+            make_callback(42, next_callback), settings, session_factory, FakeFSMContext()
+        )
+        next_buttons = [
+            button.callback_data
+            for row in edited[-1][1]["reply_markup"].inline_keyboard
+            for button in row
+            if button.callback_data.startswith("nav:inbox:page:")
+        ]
+        next_callback = next_buttons[-1] if next_buttons else ""
+
+    seen_ids = []
+    for _text, kwargs in [sent[0], *edited]:
+        seen_ids.extend(
+            int(button.callback_data.removeprefix("item:view:"))
+            for row in kwargs["reply_markup"].inline_keyboard
+            for button in row
+            if button.callback_data.startswith("item:view:")
+        )
+    assert seen_ids == expected_ids
+    assert len(set(seen_ids)) == 27
+
+
+async def test_category_item_callbacks_page_through_all_twenty_seven_items(
+    settings, session_factory, monkeypatch
+):
+    async with session_factory() as session:
+        user = User(telegram_user_id=42, telegram_chat_id=42)
+        session.add(user)
+        await session.flush()
+        session.add_all(
+            [
+                Item(
+                    user_id=user.id,
+                    telegram_message_id=index,
+                    source_index=0,
+                    processing_status=ProcessingStatus.READY,
+                    state=ItemState.ACTIVE,
+                    source_type=SourceType.TEXT,
+                    processing_stage="READY",
+                    user_note="",
+                    title=f"Shared item {index:02}",
+                    category="Shared",
+                    priority_score=50,
+                    created_at=datetime(2026, 9, 1) + timedelta(days=index),
+                )
+                for index in range(27)
+            ]
+        )
+        await session.commit()
+
+    sent = []
+    edited = []
+
+    async def answer_message(self, text, **kwargs):
+        sent.append((text, kwargs))
+
+    async def edit_message(self, text, **kwargs):
+        edited.append((text, kwargs))
+
+    async def answer_callback(self, text=None, **kwargs):
+        return None
+
+    monkeypatch.setattr(Message, "answer", answer_message)
+    monkeypatch.setattr(Message, "edit_text", edit_message)
+    monkeypatch.setattr(CallbackQuery, "answer", answer_callback)
+
+    await on_category(make_message(42), settings, session_factory, "Shared")
+    visible_ids = []
+    current_markup = sent[0][1]["reply_markup"]
+    for page in range(3):
+        visible_ids.extend(
+            button.callback_data
+            for row in current_markup.inline_keyboard
+            for button in row
+            if button.callback_data.startswith("item:view:")
+        )
+        next_callback = next(
+            (
+                button.callback_data
+                for row in current_markup.inline_keyboard
+                for button in row
+                if button.text == "Ещё →"
+            ),
+            None,
+        )
+        if next_callback is None:
+            break
+        await on_navigation_callback(
+            make_callback(42, next_callback), settings, session_factory, FakeFSMContext()
+        )
+        current_markup = edited[-1][1]["reply_markup"]
+
+    assert len(visible_ids) == len(set(visible_ids)) == 27
+    assert not any(
+        button.text == "Ещё →" for row in current_markup.inline_keyboard for button in row
+    )
+
+
+async def test_malformed_page_callbacks_fail_safely_and_huge_pages_clamp(
+    settings, session_factory, monkeypatch
+):
+    answers = []
+    edits = []
+
+    async def answer_callback(self, text=None, **kwargs):
+        answers.append(text)
+
+    async def edit_message(self, text, **kwargs):
+        edits.append((text, kwargs))
+
+    monkeypatch.setattr(CallbackQuery, "answer", answer_callback)
+    monkeypatch.setattr(Message, "edit_text", edit_message)
+
+    await on_navigation_callback(
+        make_callback(42, "nav:inbox:page:not-a-page"),
+        settings,
+        session_factory,
+        FakeFSMContext(),
+    )
+    assert answers[-1] == "Страница больше недоступна"
+
+    await on_navigation_callback(
+        make_callback(42, "nav:inbox:page:999999999999999999"),
+        settings,
+        session_factory,
+        FakeFSMContext(),
+    )
+    assert edits[-1][0].startswith("📥 Inbox · 1\n\nНичего не найдено.")
 
 
 async def test_menu_settings_exposes_attention_and_back_navigation(
@@ -639,7 +982,7 @@ async def test_ask_prompt_cancel_clears_ephemeral_state_without_job(
         assert await session.scalar(select(func.count()).select_from(AskJob)) == 0
 
 
-async def test_export_chooser_uses_one_idempotency_key_and_reports_stored_mode(
+async def test_main_menu_export_is_compact_and_help_modes_remain_explicit(
     settings, session_factory, monkeypatch
 ):
     edited = []
@@ -659,28 +1002,34 @@ async def test_export_chooser_uses_one_idempotency_key_and_reports_stored_mode(
         session_factory,
         FakeFSMContext(),
     )
-    chooser = edited[-1]
-    modes = [
-        button.callback_data for row in chooser[1]["reply_markup"].inline_keyboard for button in row
-    ]
-    assert "export:mode:COMPACT" in modes and "export:mode:FULL" in modes
+    assert edited[-1] == ("Готовлю компактный экспорт…", {"reply_markup": None})
+    await on_navigation_callback(
+        make_callback(42, "nav:export", message_id=817),
+        settings,
+        session_factory,
+        FakeFSMContext(),
+    )
+    assert edited[-1] == ("Готовлю компактный экспорт…", {"reply_markup": None})
+
+    help_callbacks = {
+        button.callback_data for row in help_keyboard().inline_keyboard for button in row
+    }
+    assert {"export:mode:COMPACT", "export:mode:FULL"} <= help_callbacks
 
     await on_export_mode_callback(
-        make_callback(42, "export:mode:COMPACT", message_id=817), settings, session_factory
+        make_callback(42, "export:mode:FULL", message_id=818), settings, session_factory
     )
     await on_export_mode_callback(
-        make_callback(42, "export:mode:FULL", message_id=817), settings, session_factory
+        make_callback(42, "export:mode:FULL", message_id=818), settings, session_factory
     )
-    assert [entry[0] for entry in edited[-2:]] == [
-        "Готовлю компактный экспорт…",
-        "Готовлю компактный экспорт…",
-    ]
+    assert edited[-1][0] == "Готовлю полный экспорт…"
     assert edited[-1][1]["reply_markup"] is None
     async with session_factory() as session:
         jobs = list((await session.scalars(select(ExportJob))).all())
-        assert len(jobs) == 1
-        assert jobs[0].telegram_message_id == 817
-        assert jobs[0].mode == "COMPACT"
+        assert {(job.telegram_message_id, job.mode) for job in jobs} == {
+            (817, "COMPACT"),
+            (818, "FULL"),
+        }
 
 
 @pytest.mark.parametrize(
@@ -707,7 +1056,7 @@ async def test_first_read_only_command_persists_user(
 async def test_inbox_category_and_search_selectors_match_visible_list_order(
     settings, session_factory, monkeypatch
 ):
-    from app.services.retrieval import list_category_items, list_inbox, search_items
+    from app.services.retrieval import list_category_items_page, list_inbox_page, search_items
 
     async with session_factory() as session:
         user = User(telegram_user_id=42, telegram_chat_id=42)
@@ -738,8 +1087,8 @@ async def test_inbox_category_and_search_selectors_match_visible_list_order(
             item.created_at = created_at
         await session.commit()
         expected = {
-            "Входящие:": await list_inbox(session, user.id),
-            "Категория: Shared": await list_category_items(session, user.id, "Shared"),
+            "📥 Inbox": (await list_inbox_page(session, user.id)).items,
+            "Категория: Shared": (await list_category_items_page(session, user.id, "Shared")).items,
             "Результаты поиска:": await search_items(session, user.id, "needle"),
         }
 
@@ -757,15 +1106,18 @@ async def test_inbox_category_and_search_selectors_match_visible_list_order(
         heading = next(key for key in expected if text.startswith(key))
         visible_items = expected[heading]
         assert [
-            line.split(". ", 1)[1].split(" — ", 1)[0] for line in text.splitlines() if ". " in line
+            line[2:].split(" — ", 1)[0] for line in text.splitlines() if line.startswith("• ")
         ] == [item.title for item in visible_items]
-        buttons = [button for row in markup.inline_keyboard for button in row]
+        buttons = [
+            button
+            for row in markup.inline_keyboard
+            for button in row
+            if button.callback_data.startswith("item:view:")
+        ]
         assert [button.callback_data for button in buttons] == [
             f"item:view:{item.id}" for item in visible_items
         ]
-        assert [button.text for button in buttons] == [
-            str(index) for index in range(1, len(visible_items) + 1)
-        ]
+        assert [button.text for button in buttons] == [item.title for item in visible_items]
 
 
 async def test_settings_command_persists_minimal_notification_settings(
@@ -881,6 +1233,7 @@ def test_production_router_composition_builds(settings, session_factory):
         and "settings_command" in names
         and "menu_command" in names
         and "guided_ask" in names
+        and "guided_profile" in names
         and "guided_search" in names
     )
     assert {"help_command", "today", "attention", "inbox", "category", "search"} <= set(names)
@@ -1010,6 +1363,31 @@ async def test_router_fsm_guidance_precedes_capture_and_commands_escape(
             assert len(jobs) == 2
             assert jobs[-1].telegram_message_id == 806
             assert await session.scalar(select(func.count()).select_from(Item)) == 2
+
+        await tap(9, "nav:profile:edit")
+        await message(10, 807, "сместить фокус профиля на локальные модели")
+        async with session_factory() as session:
+            profile_job = await session.scalar(select(ProfileUpdateJob))
+            assert profile_job is not None
+            assert profile_job.instruction == "сместить фокус профиля на локальные модели"
+            assert profile_job.status == "PENDING"
+            assert await session.scalar(select(func.count()).select_from(Item)) == 2
+
+        await tap(11, "nav:profile:edit")
+        await message(12, 808, "/today")
+        async with session_factory() as session:
+            jobs = list((await session.scalars(select(ProfileUpdateJob))).all())
+            assert len(jobs) == 1
+            assert jobs[0].instruction != "/today"
+            assert await session.scalar(select(func.count()).select_from(Item)) == 2
+
+        await message(13, 809, "ordinary capture after profile command escape")
+        await tap(14, "nav:profile:edit")
+        await tap(15, "nav:input:cancel")
+        await message(16, 810, "ordinary capture after profile cancel")
+        async with session_factory() as session:
+            assert await session.scalar(select(func.count()).select_from(ProfileUpdateJob)) == 1
+            assert await session.scalar(select(func.count()).select_from(Item)) == 4
     finally:
         await bot.session.close()
 

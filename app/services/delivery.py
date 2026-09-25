@@ -19,6 +19,7 @@ from sqlalchemy.sql import text
 from app.bot.formatting import format_ask_answer
 from app.bot.keyboards import ask_sources_keyboard
 from app.bot.notify import send_item_failure, send_item_result
+from app.bot.presentation import item_display_title
 from app.domain.enums import ProcessingStatus, SourceType
 from app.domain.models import AskDeliveryPayload, AskReference
 from app.errors import AppError, MediaTooLargeError
@@ -323,7 +324,7 @@ async def _load_ask_references(session, user_id: int, payload: AskDeliveryPayloa
             AskReference(
                 item_id=item.id,
                 source_id=citation.source_id,
-                title=(item.title or "(untitled)")[:120],
+                title=item_display_title(item, sources_by_item[item.id])[:120],
                 source_type=source_type,
                 source_url=source_url,
                 # `_send` already requires the owning User's current chat before

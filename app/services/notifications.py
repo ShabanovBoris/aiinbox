@@ -25,10 +25,11 @@ from app.bot.formatting import (
 )
 from app.bot.keyboards import (
     item_keyboard,
-    item_navigation_keyboard,
+    item_list_keyboard,
     motivation_reminder_keyboard,
     proactive_reminder_keyboard,
 )
+from app.bot.presentation import item_display_title, item_navigation_entries
 from app.domain.enums import ACTIONABLE_ITEM_TYPES, ItemState, ProcessingStatus
 from app.domain.models import MotivationCandidate
 from app.services.attention_hooks import AttentionHookService
@@ -40,7 +41,7 @@ from app.services.reminder_feedback import (
     ReminderFeedbackService,
     record_reminder_event,
 )
-from app.services.retrieval import TodayService
+from app.services.retrieval import TodayService, load_item_sources_by_item
 from app.storage.models import Event, Item, ItemSource, Reminder, User
 
 log = logging.getLogger(__name__)
@@ -465,13 +466,14 @@ class ReminderWorker:
             if claim_generation is None:
                 return 0
             items = await TodayService().list_items(session, user.id)
+            sources_by_item = await load_item_sources_by_item(session, [item.id for item in items])
             await session.commit()
         try:
             await self._send_with_retry(
                 user.telegram_chat_id,
-                format_today(items),
+                format_today(items, sources_by_item),
                 claimed_at=lease_now,
-                reply_markup=item_navigation_keyboard([item.id for item in items]),
+                reply_markup=item_list_keyboard(item_navigation_entries(items, sources_by_item)),
             )
         except Exception:
             log.exception("daily digest delivery failed user_id=%s", user_id)
@@ -1383,6 +1385,7 @@ class ReminderWorker:
                     hook_text=(
                         hook_presentation.rendered_text if hook_presentation is not None else None
                     ),
+                    sources=sources,
                 ),
                 claimed_at=claimed_at,
                 reply_markup=proactive_reminder_keyboard(
@@ -1884,7 +1887,7 @@ class ReminderWorker:
                 reminder.scheduled_at,
                 reminder.claim_generation,
                 claimed_at,
-                item.title or "Без названия",
+                item_display_title(item, sources),
                 user.telegram_chat_id,
                 keyboard,
             )

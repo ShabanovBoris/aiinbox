@@ -201,6 +201,7 @@ def _item_header(item: Item, item_url: str | None, *, max_chars: int) -> str:
         f"CREATED_AT: {item.created_at.isoformat() if item.created_at else ''}",
     ]
     fields = [
+        # Keep the existing model-context placeholder; Telegram display fallbacks stay local.
         ("TITLE_JSON", (item.title or "(untitled)")[:300], 250),
         ("SUMMARY_JSON", (item.summary or "")[:1200], 500),
         ("CATEGORY_JSON", (item.category or "")[:100], 110),
