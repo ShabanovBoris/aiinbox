@@ -346,3 +346,23 @@ Preserve existing Content.
   when it has an existing open/send action. Normal Item keyboards keep their
   existing order. `ATTENTION_HOOK` is excluded from FTS while original Content
   remains searchable.
+
+## 23. POLISH-04 current behavior
+
+POLISH-04 increments the generator to version 2. Existing version-1 hook rows
+remain historical derived Content and are ignored for reuse; new version-2 hooks
+are generated lazily when an eligible reminder has no reusable hook. The
+structured candidate text is capped at 280 characters and the exact evidence
+excerpt remains capped at 300. At most one stored candidate per hook type is
+kept, so unused slots are not filled with same-frame paraphrases.
+
+Long original Content still uses the existing 12,000-character global context,
+four 1,500-character chunks per source, source round-robin, and content-kind
+fairness. For sufficiently long Content the representative regions are now
+start, roughly one-third, roughly two-thirds, and end. The LLM chooses which
+excerpt supports a hook; the ending is not preferred automatically.
+
+Proactive reminders render the v2 hook directly. When no current valid hook is
+available, `Item.summary` is a bounded display fallback only; it is never added
+to hook context or accepted as evidence. Provider timeout/failure and zero valid
+candidates leave the normal reminder path available.
