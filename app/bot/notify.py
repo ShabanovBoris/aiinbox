@@ -5,7 +5,7 @@ from aiogram.types import ReplyParameters
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
-from app.bot.formatting import format_instagram_failure_reason, format_ready_item
+from app.bot.formatting import format_item_failure, format_ready_item_compact
 from app.bot.keyboards import item_keyboard
 from app.domain.enums import SourceType
 from app.storage.models import Item, ItemSource, User
@@ -52,7 +52,7 @@ async def send_item_result(bot: Bot, session_factory: async_sessionmaker, item: 
         return
     await bot.send_message(
         chat_id,
-        format_ready_item(item, sources),
+        format_ready_item_compact(item, sources),
         reply_markup=item_keyboard(item, sources),
         reply_parameters=_video_source_reply_parameters(item, sources),
     )
@@ -75,39 +75,9 @@ async def send_item_failure(bot: Bot, session_factory: async_sessionmaker, item:
     if chat_id is None:
         log.warning("no chat_id for failure delivery item_id=%s user_id=%s", item.id, item.user_id)
         return
-    failed_sources = [source for source in sources if source.extraction_status == "FAILED"]
-    instagram_failure = next(
-        (source for source in failed_sources if source.source_type is SourceType.INSTAGRAM), None
-    )
-    error_code = instagram_failure.error_code if instagram_failure else item.error_code
-    retryable = (
-        item.processing_stage != "EXTRACTING"
-        or not failed_sources
-        or any(not source.failure_is_permanent for source in failed_sources)
-    )
-    if instagram_failure and error_code == "AUTH_REQUIRED":
-        message = (
-            "Не удалось получить Reel: "
-            f"{format_instagram_failure_reason(error_code)}. Ссылка сохранена; "
-            "после настройки INSTAGRAM_COOKIES_FILE нажмите Retry."
-        )
-    elif instagram_failure and error_code == "RATE_LIMITED":
-        message = (
-            f"Не удалось получить Reel: {format_instagram_failure_reason(error_code)}. "
-            "Ссылка сохранена; попробуйте Retry позже."
-        )
-    elif instagram_failure and error_code == "UNSUPPORTED_SOURCE":
-        message = (
-            f"Не удалось получить Reel: {format_instagram_failure_reason(error_code)}. "
-            "Отправьте ссылку на конкретный Reel."
-        )
-    else:
-        message = f"Не удалось обработать Item ({item.error_code or 'ошибка'})."
-        if retryable:
-            message = (
-                "Не удалось обработать Item. Можно повторить попытку "
-                f"({item.error_code or 'ошибка'})."
-            )
+    # ❌ Удалено локальное дублирование failure-copy: чистый formatter нужен и
+    # доставке, и кнопке Back, чтобы обе проекции восстанавливали один текст.
+    message = format_item_failure(item, sources)
     await bot.send_message(
         chat_id,
         message,

@@ -382,7 +382,7 @@ async def test_video_without_audio_is_analyzed_from_visual_notes_and_restored(
         source = await session.scalar(select(ItemSource).where(ItemSource.item_id == item.id))
         assert item.processing_status is ProcessingStatus.READY
         assert item.analysis_completeness == "VISUAL_ONLY"
-        assert "только по визуальным кадрам" in format_ready_item(item)
+        assert "⚠️ Анализ только по кадрам — транскрипт недоступен." in format_ready_item(item)
         assert source.extraction_status == "READY"
         assert source.metadata_json["video_visual_only"] is True
         assert (

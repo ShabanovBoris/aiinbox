@@ -8,13 +8,23 @@ from aiogram.types import CallbackQuery, Message
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
-from app.bot.formatting import format_attention_item, format_ready_item, format_weekly_review
+from app.bot.formatting import (
+    format_attention_item,
+    format_item_details,
+    format_item_failure,
+    format_ready_item_compact,
+    format_weekly_review,
+)
 from app.bot.keyboards import (
     attention_settings_keyboard,
     feedback_category_keyboard,
     feedback_menu_keyboard,
     feedback_type_keyboard,
+    item_details_keyboard,
+    item_interest_keyboard,
     item_keyboard,
+    item_more_keyboard,
+    item_sources_keyboard,
     proactive_reminder_keyboard,
     reminder_snooze_keyboard,
 )
@@ -569,6 +579,55 @@ async def on_item_callback(
     except ValueError:
         await callback.answer("Некорректный Item")
         return
+    if item_id < 1:
+        await callback.answer("Некорректный Item")
+        return
+
+    if action in {"more", "details", "sources", "interest_menu", "back"}:
+        if len(parts) != 3:
+            await callback.answer("Некорректное действие")
+            return
+        projection = await _load_item_ui_projection(session_factory, user.id, item_id)
+        if projection is None:
+            await callback.answer("Item недоступен")
+            return
+        item, sources = projection
+        if action == "more":
+            await _edit_reply_markup_if_changed(callback.message, item_more_keyboard(item))
+        elif action == "interest_menu":
+            if item.processing_status is not ProcessingStatus.READY or item.state not in {
+                ItemState.ACTIVE,
+                ItemState.SNOOZED,
+            }:
+                await callback.answer("Item недоступен")
+                return
+            await _edit_reply_markup_if_changed(callback.message, item_interest_keyboard(item))
+        elif action == "details":
+            if item.processing_status is not ProcessingStatus.READY:
+                await callback.answer("Детали пока недоступны")
+                return
+            await _edit_item_message_if_changed(
+                callback.message,
+                format_item_details(item),
+                item_details_keyboard(item.id),
+            )
+        elif action == "sources":
+            await _edit_reply_markup_if_changed(
+                callback.message, item_sources_keyboard(item, sources)
+            )
+        else:
+            if item.processing_status is ProcessingStatus.READY:
+                text = format_ready_item_compact(item, sources)
+            elif item.processing_status is ProcessingStatus.FAILED:
+                text = format_item_failure(item, sources)
+            else:
+                text = "Item пока обрабатывается."
+            await _edit_item_message_if_changed(
+                callback.message, text, item_keyboard(item, sources)
+            )
+        await callback.answer()
+        return
+
     if action == "video":
         if len(parts) != 4:
             await callback.answer("Некорректный источник видео")
@@ -603,26 +662,22 @@ async def on_item_callback(
         if level not in {1, 2, 3}:
             await callback.answer("Некорректный уровень интереса")
             return
+        projection = await _load_item_ui_projection(session_factory, user.id, item_id)
+        if projection is None or projection[0].processing_status is not ProcessingStatus.READY:
+            await callback.answer("Item недоступен")
+            return
+        if projection[0].state not in {ItemState.ACTIVE, ItemState.SNOOZED}:
+            await callback.answer("Item недоступен")
+            return
         result = await set_item_interest(session_factory, user.id, item_id, level)
         if result is None:
-            await callback.answer("Item не найден")
+            await callback.answer("Item недоступен")
             return
         item, changed = result
-        if changed and callback.message:
-            async with session_factory() as session:
-                sources = list(
-                    (
-                        await session.scalars(
-                            select(ItemSource)
-                            .where(ItemSource.item_id == item.id)
-                            .order_by(ItemSource.source_index, ItemSource.id)
-                        )
-                    ).all()
-                )
-            await callback.message.edit_text(
-                format_ready_item(item), reply_markup=item_keyboard(item, sources)
-            )
-        await callback.answer()
+        # ❌ Удалён возврат к полной карточке после смены интереса: submenu сохраняет
+        # контекст, а обновлённый чекмарк строится из canonical Item.
+        await _edit_reply_markup_if_changed(callback.message, item_interest_keyboard(item))
+        await callback.answer("Интерес обновлён" if changed else "Уже выбран этот уровень")
         return
     if action == "later":
         from app.bot.keyboards import snooze_keyboard
@@ -799,7 +854,17 @@ async def on_reminder_callback(
 async def _load_ready_feedback_projection(
     session_factory: async_sessionmaker, telegram_user_id: int, item_id: int
 ) -> tuple[Item, list[ItemSource]] | None:
-    """Build a source-aware keyboard projection after checking Item ownership."""
+    """Keep existing feedback actions restricted to owner-scoped READY Items."""
+    projection = await _load_item_ui_projection(session_factory, telegram_user_id, item_id)
+    if projection is None or projection[0].processing_status is not ProcessingStatus.READY:
+        return None
+    return projection
+
+
+async def _load_item_ui_projection(
+    session_factory: async_sessionmaker, telegram_user_id: int, item_id: int
+) -> tuple[Item, list[ItemSource]] | None:
+    """Reload one owner-scoped Item and its stable source order for Telegram projections."""
     async with session_factory() as session:
         item = await session.scalar(
             select(Item)
@@ -807,7 +872,6 @@ async def _load_ready_feedback_projection(
             .where(
                 User.telegram_user_id == telegram_user_id,
                 Item.id == item_id,
-                Item.processing_status == ProcessingStatus.READY,
             )
         )
         if item is None:
@@ -844,18 +908,25 @@ async def _edit_reply_markup_if_changed(message, reply_markup) -> None:
             raise
 
 
-async def _present_corrected_feedback_item(message, item: Item, sources: list[ItemSource]) -> None:
-    """Refresh only stale result text; duplicate/no-op callbacks update markup alone."""
-    markup = item_keyboard(item, sources)
-    result_text = format_ready_item(item, sources)
-    if (
-        message is not None
-        and hasattr(message, "edit_text")
-        and getattr(message, "text", None) != result_text
-    ):
-        await message.edit_text(result_text, reply_markup=markup)
+# ❌ Удалена перерисовка READY-карточки после correction callbacks: изменённые поля
+# остаются доступны в Details, а пользователь остаётся в Feedback submenu.
+async def _edit_item_message_if_changed(message, text: str, reply_markup) -> None:
+    """Idempotently switch between compact text projections and their matching keyboards."""
+    if message is None or not hasattr(message, "edit_text"):
         return
-    await _edit_reply_markup_if_changed(message, markup)
+    if (
+        getattr(message, "text", None) == text
+        and getattr(message, "reply_markup", None) == reply_markup
+    ):
+        return
+    if getattr(message, "text", None) == text:
+        await _edit_reply_markup_if_changed(message, reply_markup)
+        return
+    try:
+        await message.edit_text(text, reply_markup=reply_markup)
+    except TelegramBadRequest as exc:
+        if "message is not modified" not in str(exc).casefold():
+            raise
 
 
 async def on_feedback_callback(
@@ -905,7 +976,7 @@ async def on_feedback_callback(
                 item_id, [category for category, _count in categories]
             )
         else:
-            markup = item_keyboard(item, sources)
+            markup = item_more_keyboard(item)
         await _edit_reply_markup_if_changed(callback.message, markup)
         await callback.answer()
         return
@@ -951,9 +1022,9 @@ async def on_feedback_callback(
             session_factory, callback.from_user.id, item_id
         )
         if projection is not None:
-            current_item, sources = projection
+            current_item, _sources = projection
             await _edit_reply_markup_if_changed(
-                callback.message, item_keyboard(current_item, sources)
+                callback.message, feedback_menu_keyboard(current_item.id)
             )
         confirmations = {
             "priority_higher": "Записал сигнал о приоритете",
@@ -995,8 +1066,10 @@ async def on_feedback_callback(
             session_factory, callback.from_user.id, item_id
         )
         if current is not None:
-            current_item, sources = current
-            await _present_corrected_feedback_item(callback.message, current_item, sources)
+            current_item, _sources = current
+            await _edit_reply_markup_if_changed(
+                callback.message, feedback_menu_keyboard(current_item.id)
+            )
         await callback.answer("Категория изменена" if changed else "Категория без изменений")
         return
 
@@ -1028,8 +1101,10 @@ async def on_feedback_callback(
             session_factory, callback.from_user.id, item_id
         )
         if current is not None:
-            current_item, sources = current
-            await _present_corrected_feedback_item(callback.message, current_item, sources)
+            current_item, _sources = current
+            await _edit_reply_markup_if_changed(
+                callback.message, feedback_menu_keyboard(current_item.id)
+            )
         await callback.answer("Тип изменён" if changed else "Тип без изменений")
         return
 

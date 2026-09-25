@@ -5,6 +5,7 @@ from sqlalchemy import func, select
 
 from app.bot.keyboards import (
     item_keyboard,
+    item_more_keyboard,
     motivation_reminder_keyboard,
     proactive_reminder_keyboard,
     reminder_snooze_keyboard,
@@ -735,8 +736,15 @@ def test_reminder_keyboards_are_compact_identity_preserving_and_bounded(session_
     assert {"reminder:ok:456", "reminder:less:456"} <= set(_callback_data(motivation))
     assert "reminder:snooze:456:tomorrow" in _callback_data(snooze)
 
-    normal = _callback_data(item_keyboard(item, [source]))
-    assert f"item:done:{item.id}" in normal
-    assert f"item:later:{item.id}" in normal
-    assert f"item:archive:{item.id}" in normal
-    assert any(value.startswith("feedback:") for value in normal)
+    primary = _callback_data(item_keyboard(item, [source]))
+    assert f"item:video:{item.id}:{source.id}" in primary
+    assert f"item:more:{item.id}" in primary
+    assert not any(
+        value.startswith(("feedback:", "item:done:", "item:later:", "item:archive:"))
+        for value in primary
+    )
+    secondary = _callback_data(item_more_keyboard(item))
+    assert f"item:done:{item.id}" in secondary
+    assert f"item:later:{item.id}" in secondary
+    assert f"item:archive:{item.id}" in secondary
+    assert f"feedback:menu:{item.id}" in secondary

@@ -568,3 +568,20 @@ Consequences: new analysis and explicit retries can produce more specific topics
 outcome-first summaries; historical READY Items and manual category corrections are
 not rewritten. Any future change to chunk-summary semantics must increment its
 generator version. No schema migration is required.
+
+## D-039 — Telegram Item cards separate saved content from controls
+
+Context: READY cards accumulated category/type/ranking fields and every available
+action, making the saved material harder to scan and reopen.
+
+Decision: default cards show confirmation, title, outcome-first summary and only
+material completeness warnings. Source/resend actions stay primary; lifecycle,
+interest, feedback and metadata move into ephemeral inline submenus that reload
+owner-scoped canonical Item state.
+
+Reason: the default surface should help the user understand and return to content,
+while internal scoring and administration remain available on demand.
+
+Consequences: menu navigation writes no database state or Events. Source labels use
+bounded HTTP(S) destinations, and callback handlers reject stale/unavailable or
+cross-owner projections without changing lifecycle, feedback or delivery semantics.

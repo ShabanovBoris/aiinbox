@@ -3,7 +3,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.bot.formatting import format_categories, format_item_list, format_ready_item
+from app.bot.formatting import (
+    format_categories,
+    format_item_details,
+    format_item_list,
+    format_ready_item,
+)
 from app.domain.enums import ItemType, SourceType
 from app.domain.models import DEFAULT_PROFILE, AnalysisResult, NormalizedContent
 from app.llm.base import LlmError
@@ -30,16 +35,20 @@ def make_ready_item() -> Item:
     )
 
 
-def test_format_contains_key_fields():
+def test_default_ready_card_prioritizes_title_and_summary():
     text = format_ready_item(make_ready_item())
+    assert "✓ Сохранено" in text
     assert "🎯 Архитектура AI-агентов" in text
-    assert "Категория: AI" in text
-    assert f"Тип: {ItemType.LEARN.value}" in text
-    assert "Приоритет: 82/100" in text
-    assert "Интерес: 2/3" in text
     assert "Разбор подходов к оркестрации агентов." in text
-    assert "Следующее действие: Посмотреть блок про tool orchestration" in text
-    assert "Почему: Сильно связано с профессиональными целями" in text
+    for hidden_field in (
+        "Категория:",
+        "Тип:",
+        "Приоритет:",
+        "Интерес:",
+        "Следующее действие:",
+        "Почему:",
+    ):
+        assert hidden_field not in text
 
 
 def test_youtube_transcript_only_is_explicit_in_user_output():
@@ -49,7 +58,81 @@ def test_youtube_transcript_only_is_explicit_in_user_output():
 
     text = format_ready_item(item)
 
-    assert "Анализ: по транскрипту, без визуальной части" in text
+    assert "⚠️ Анализ по транскрипту — без визуальной части." in text
+
+
+@pytest.mark.parametrize(
+    ("completeness", "source_type", "warning"),
+    [
+        (
+            "VISUAL_ONLY",
+            SourceType.VIDEO,
+            "⚠️ Анализ только по кадрам — транскрипт недоступен.",
+        ),
+        (
+            "CAPTION_ONLY",
+            SourceType.INSTAGRAM,
+            "⚠️ Анализ только по подписи — речь не распознана.",
+        ),
+        (
+            "TRANSCRIPT_ONLY",
+            SourceType.YOUTUBE,
+            "⚠️ Анализ по транскрипту — без визуальной части.",
+        ),
+        (
+            "PARTIAL",
+            SourceType.WEB,
+            "⚠️ Анализ частичный — часть источников не обработана.",
+        ),
+    ],
+)
+def test_completeness_warnings_remain_visible(completeness, source_type, warning):
+    item = make_ready_item()
+    item.source_type = source_type
+    item.analysis_completeness = completeness
+
+    assert warning in format_ready_item(item)
+
+
+def test_complete_ready_card_has_no_unnecessary_warning():
+    item = make_ready_item()
+    item.analysis_completeness = "TRANSCRIPT_AND_VISUAL"
+
+    assert "⚠️" not in format_ready_item(item)
+
+
+def test_details_localize_item_type_and_show_available_system_fields():
+    text = format_item_details(make_ready_item())
+
+    assert "ℹ️ Детали" in text
+    assert "Категория: AI" in text
+    assert "Тип: Изучить" in text
+    assert "Приоритет: 82/100" in text
+    assert "Интерес: 2/3" in text
+    assert "Следующее действие:\nПосмотреть блок про tool orchestration" in text
+    assert "Почему приоритет:\nСильно связано с профессиональными целями" in text
+    assert "LEARN" not in text
+
+
+def test_details_omit_missing_optional_fields():
+    item = Item(
+        id=2,
+        user_id=1,
+        source_type=SourceType.TEXT,
+        title="Sparse",
+        category=None,
+        item_type=None,
+        priority_score=None,
+        interest_level=None,
+        analysis_completeness=None,
+        next_action=None,
+        priority_reason=None,
+    )
+
+    text = format_item_details(item)
+    assert text == "ℹ️ Детали"
+    assert "None" not in text
+    assert "—" not in text
 
 
 def test_item_list_format_stays_within_telegram_limit():

@@ -382,7 +382,7 @@ async def test_caption_only_is_durable_and_retry_skips_yt_dlp(tmp_path, session_
     assert provider.calls[0][0].text == caption
     assert len(calls) == 1 and calls[0][1] is False
     assert extractor.transcriber.calls == 0
-    assert "подписи Reel" in format_ready_item(stored)
+    assert "⚠️ Анализ только по подписи — речь не распознана." in format_ready_item(stored)
 
 
 async def test_visual_only_reel_reuses_frames_and_profile_language(

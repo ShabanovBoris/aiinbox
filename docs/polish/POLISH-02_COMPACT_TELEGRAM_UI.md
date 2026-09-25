@@ -3,7 +3,7 @@
 Type: Stabilization / Telegram UX specification  
 Depends on: POLISH-01  
 Blocks: POLISH-03/04 presentation integration  
-Status: PLANNED
+Status: IN_REVIEW
 
 ## 1. Problem
 

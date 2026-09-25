@@ -1,6 +1,6 @@
 from collections.abc import Sequence
 
-from app.bot.provenance import forward_source_label
+from app.bot.presentation import item_type_label
 from app.domain.enums import SourceType
 from app.domain.models import AskReference, UserProfile
 from app.services.attention_ranking import AttentionRank
@@ -8,6 +8,7 @@ from app.services.weekly_review import WeeklyReview
 from app.storage.models import Item, ItemSource
 
 _TELEGRAM_MAX_MESSAGE_LENGTH = 4096
+_ATTENTION_SUMMARY_PREVIEW_LENGTH = 520
 
 
 def format_instagram_failure_reason(error_code: str | None) -> str:
@@ -51,53 +52,125 @@ def _bounded_weekly_label(value: str, limit: int = 120) -> str:
     return normalized[: limit - 1] + "…"
 
 
-def format_ready_item(item: Item, sources: Sequence[ItemSource] | None = None) -> str:
-    """Компактный результат анализа для Telegram (PRODUCT_SPEC §14): без перегруза."""
-    lines = ["✓ Сохранено", "", f"🎯 {item.title}"]
-    lines.append(f"Категория: {item.category}")
-    lines.append(f"Тип: {item.item_type.value if item.item_type else '—'}")
-    if item.priority_score is not None:
-        lines.append(f"Приоритет: {item.priority_score}/100")
-    lines.append(f"Интерес: {item.interest_level}/3")
-    source_label = forward_source_label(item.source_metadata_json)
-    if source_label:
-        lines.append(f"Источник: {source_label}")
-    if item.analysis_completeness == "VISUAL_ONLY":
-        lines.append("Анализ: только по визуальным кадрам — транскрипт недоступен")
-    elif item.analysis_completeness == "CAPTION_ONLY":
-        lines.append("Анализ: только по подписи Reel — транскрипт речи недоступен")
-    elif (
+def _analysis_completeness_warning(
+    item: Item, sources: Sequence[ItemSource] | None = None
+) -> list[str]:
+    """Keep only trust-relevant extraction limits beside the user's saved summary."""
+    completeness = item.analysis_completeness
+    if completeness == "VISUAL_ONLY":
+        return ["⚠️ Анализ только по кадрам — транскрипт недоступен."]
+    if completeness == "CAPTION_ONLY":
+        return ["⚠️ Анализ только по подписи — речь не распознана."]
+    if completeness == "TRANSCRIPT_ONLY" and (
         item.source_type in (SourceType.YOUTUBE, SourceType.VIDEO, SourceType.INSTAGRAM)
         or any(
             source.source_type in (SourceType.YOUTUBE, SourceType.VIDEO, SourceType.INSTAGRAM)
             for source in sources or ()
         )
-    ) and item.analysis_completeness == "TRANSCRIPT_ONLY":
-        lines.append("Анализ: по транскрипту, без визуальной части")
-    elif item.analysis_completeness == "PARTIAL":
-        lines.append("Анализ: частичный — не весь вложенный контент удалось обработать")
-        instagram_failure = next(
-            (
-                source
-                for source in sources or ()
-                if source.source_type is SourceType.INSTAGRAM
-                and source.extraction_status == "FAILED"
-            ),
-            None,
-        )
-        if instagram_failure:
-            reason = format_instagram_failure_reason(instagram_failure.error_code)
-            lines.append(f"Reel: {reason}.")
-    if item.summary:
-        lines.append("")
-        lines.append(item.summary)
-    if item.next_action:
-        lines.append("")
-        lines.append(f"Следующее действие: {item.next_action}")
-    if item.priority_reason:
-        lines.append("")
-        lines.append(f"Почему: {item.priority_reason}")
+    ):
+        return ["⚠️ Анализ по транскрипту — без визуальной части."]
+    if completeness != "PARTIAL":
+        return []
+
+    warnings = ["⚠️ Анализ частичный — часть источников не обработана."]
+    instagram_failure = next(
+        (
+            source
+            for source in sources or ()
+            if source.source_type is SourceType.INSTAGRAM and source.extraction_status == "FAILED"
+        ),
+        None,
+    )
+    if instagram_failure:
+        reason = format_instagram_failure_reason(instagram_failure.error_code)
+        warnings.append(f"Reel: {reason}.")
+    return warnings
+
+
+def format_ready_item_compact(item: Item, sources: Sequence[ItemSource] | None = None) -> str:
+    """Project a READY Item as saved content plus only material trust warnings."""
+    # ❌ Удалены строки категории, типа, рейтинга, интереса и внутренних пояснений:
+    # эти canonical metadata доступны по запросу через Details и не заслоняют summary.
+    lines = ["✓ Сохранено", "", f"🎯 {item.title or 'Без названия'}"]
+    if item.summary and item.summary.strip():
+        lines.extend(["", item.summary.strip()])
+    warnings = _analysis_completeness_warning(item, sources)
+    if warnings:
+        lines.extend(["", *warnings])
     return _fit_message(lines)
+
+
+def format_ready_item(item: Item, sources: Sequence[ItemSource] | None = None) -> str:
+    """Compatibility name for callers that still use the pre-compact formatter API."""
+    return format_ready_item_compact(item, sources)
+
+
+def format_item_details(item: Item) -> str:
+    """Render canonical system metadata only when the user explicitly opens Details."""
+    lines = ["ℹ️ Детали"]
+    if item.category and item.category.strip():
+        lines.append(f"Категория: {item.category.strip()}")
+    type_label = item_type_label(item.item_type)
+    if type_label:
+        lines.append(f"Тип: {type_label}")
+    if item.priority_score is not None:
+        lines.append(f"Приоритет: {item.priority_score}/100")
+    if item.interest_level is not None:
+        lines.append(f"Интерес: {item.interest_level}/3")
+
+    completeness_labels = {
+        "COMPLETE": "полный",
+        "FULL_TEXT": "текст",
+        "TRANSCRIPT_AND_VISUAL": "транскрипт и кадры",
+        "TRANSCRIPT_ONLY": "только транскрипт",
+        "VISUAL_ONLY": "только кадры",
+        "CAPTION_ONLY": "только подпись",
+        "PARTIAL": "частичный",
+    }
+    completeness_label = completeness_labels.get(item.analysis_completeness)
+    if completeness_label:
+        lines.append(f"Полнота анализа: {completeness_label}")
+    if item.next_action and item.next_action.strip():
+        lines.extend(["", "Следующее действие:", item.next_action.strip()])
+    if item.priority_reason and item.priority_reason.strip():
+        lines.extend(["", "Почему приоритет:", item.priority_reason.strip()])
+    return _fit_message(lines)
+
+
+def format_item_failure(item: Item, sources: Sequence[ItemSource]) -> str:
+    """Rebuild the existing FAILED delivery text when a submenu returns to its card."""
+    failed_sources = [source for source in sources if source.extraction_status == "FAILED"]
+    instagram_failure = next(
+        (source for source in failed_sources if source.source_type is SourceType.INSTAGRAM), None
+    )
+    error_code = instagram_failure.error_code if instagram_failure else item.error_code
+    retryable = (
+        item.processing_stage != "EXTRACTING"
+        or not failed_sources
+        or any(not source.failure_is_permanent for source in failed_sources)
+    )
+    if instagram_failure and error_code == "AUTH_REQUIRED":
+        return (
+            "Не удалось получить Reel: "
+            f"{format_instagram_failure_reason(error_code)}. Ссылка сохранена; "
+            "после настройки INSTAGRAM_COOKIES_FILE нажмите Retry."
+        )
+    if instagram_failure and error_code == "RATE_LIMITED":
+        return (
+            f"Не удалось получить Reel: {format_instagram_failure_reason(error_code)}. "
+            "Ссылка сохранена; попробуйте Retry позже."
+        )
+    if instagram_failure and error_code == "UNSUPPORTED_SOURCE":
+        return (
+            f"Не удалось получить Reel: {format_instagram_failure_reason(error_code)}. "
+            "Отправьте ссылку на конкретный Reel."
+        )
+    message = f"Не удалось обработать Item ({item.error_code or 'ошибка'})."
+    if retryable:
+        return (
+            f"Не удалось обработать Item. Можно повторить попытку ({item.error_code or 'ошибка'})."
+        )
+    return message
 
 
 def format_profile(profile: UserProfile) -> str:
@@ -298,16 +371,16 @@ def format_attention_reason(rank: AttentionRank) -> str:
 
 
 def format_attention_item(index: int, count: int, item: Item, rank: AttentionRank) -> str:
-    """Project one ranked Item into its own Telegram card, preserving room for actions."""
-    lines = [
-        f"{index}/{count} — {item.title or 'Без названия'}",
-        f"Внимание: {rank.score}/100",
-        f"Приоритет: {rank.priority_score}/100",
-        f"Интерес: {item.interest_level}/3",
-        f"Возраст: {int(rank.age_days)} дн.",
-        "",
-        f"Почему сейчас: {format_attention_reason(rank)}",
-    ]
+    """Show ranked content with a bounded persisted summary, leaving scores internal."""
+    # ❌ Удалены score, возраст и ranking reason из ручной карточки: это диагностика
+    # ранжирования, а preview должен помогать узнать сохранённый материал.
+    title = item.title or "Без названия"
+    summary = " ".join((item.summary or "").split())
+    if len(summary) > _ATTENTION_SUMMARY_PREVIEW_LENGTH:
+        summary = summary[: _ATTENTION_SUMMARY_PREVIEW_LENGTH - 1].rstrip() + "…"
+    lines = [f"{index}/{count} — {title}"]
+    if summary:
+        lines.extend(["", summary])
     return _fit_message(lines)
 
 
