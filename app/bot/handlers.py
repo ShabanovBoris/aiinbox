@@ -21,23 +21,25 @@ from app.bot.formatting import (
 from app.bot.keyboards import (
     attention_settings_keyboard,
     category_navigation_keyboard,
-    export_mode_keyboard,
     feedback_category_keyboard,
     feedback_menu_keyboard,
     feedback_type_keyboard,
+    help_keyboard,
     input_cancel_keyboard,
     item_details_keyboard,
     item_interest_keyboard,
     item_keyboard,
+    item_list_keyboard,
     item_more_keyboard,
-    item_navigation_keyboard,
     item_sources_keyboard,
     main_menu_keyboard,
     proactive_reminder_keyboard,
+    profile_keyboard,
     reminder_more_keyboard,
     reminder_snooze_keyboard,
     reminder_sources_keyboard,
 )
+from app.bot.presentation import item_display_title, item_navigation_entries
 from app.bot.provenance import normalize_forward_origin, text_with_entity_urls
 from app.config import Settings
 from app.domain.category_tokens import category_token
@@ -67,9 +69,11 @@ from app.services.profile import enqueue_profile_update
 from app.services.reminder_feedback import ReminderFeedbackService
 from app.services.retrieval import (
     TodayService,
-    list_categories,
-    list_category_items,
-    list_inbox,
+    list_categories_page,
+    list_category_items_page,
+    list_inbox_page,
+    load_item_sources_by_item,
+    resolve_category_token,
     search_items,
 )
 from app.services.url_parsing import find_urls
@@ -92,7 +96,9 @@ HELP_TEXT = (
     "Управлять\n"
     "• 👤 Профиль\n"
     "• ⚙️ Настройки\n"
-    "• 📦 Экспорт\n\n"
+    "\nЭкспорт\n"
+    "• Компактный — Items, источники, профиль и история\n"
+    "• Полный — дополнительно тексты и транскрипты\n\n"
     "Slash-команды тоже работают."
 )
 
@@ -102,6 +108,7 @@ class GuidedInput(StatesGroup):
 
     ask = State()
     search = State()
+    profile = State()
 
 
 class ClearGuidedInputOnCommandMiddleware(BaseMiddleware):
@@ -148,7 +155,7 @@ async def on_help(message: Message, settings: Settings) -> None:
     """Expose the stable Telegram command surface without business logic."""
     if not settings.is_allowed(message.from_user.id if message.from_user else None):
         return
-    await message.answer(HELP_TEXT, reply_markup=main_menu_keyboard())
+    await message.answer(HELP_TEXT, reply_markup=help_keyboard())
 
 
 async def on_menu(message: Message, settings: Settings) -> None:
@@ -589,6 +596,10 @@ def make_router(
     async def guided_ask(message: Message, state: FSMContext) -> None:
         await on_guided_ask_input(message, settings, session_factory, state)
 
+    @router.message(GuidedInput.profile, ~F.forward_origin, F.text, ~F.text.startswith("/"))
+    async def guided_profile(message: Message, state: FSMContext) -> None:
+        await on_guided_profile_input(message, settings, session_factory, state)
+
     @router.message(GuidedInput.search, ~F.forward_origin, F.text, ~F.text.startswith("/"))
     async def guided_search(message: Message, state: FSMContext) -> None:
         await on_guided_search_input(message, settings, session_factory, state)
@@ -784,7 +795,7 @@ async def on_item_callback(
             elif item.processing_status is ProcessingStatus.FAILED:
                 text = format_item_failure(item, sources)
             else:
-                text = f"⏳ Обрабатывается: {item.title or 'Без названия'}"
+                text = f"⏳ Обрабатывается: {item_display_title(item, sources)}"
             if callback.message is not None:
                 await callback.message.answer(
                     text,
@@ -1257,7 +1268,15 @@ async def on_feedback_callback(
         return
 
     if action in {"menu", "category_menu", "type_menu", "back"}:
-        if len(parts) != 3:
+        if action == "category_menu" and len(parts) == 5 and parts[3] == "page":
+            category_page_number = _page_callback_value(parts[4])
+        elif action == "category_menu" and len(parts) == 3:
+            category_page_number = 0
+        else:
+            category_page_number = None
+        if (action == "category_menu" and category_page_number is None) or (
+            action != "category_menu" and len(parts) != 3
+        ):
             await callback.answer("Некорректное действие")
             return
         projection = await _load_ready_feedback_projection(
@@ -1273,12 +1292,18 @@ async def on_feedback_callback(
             markup = feedback_type_keyboard(item_id)
         elif action == "category_menu":
             async with session_factory() as session:
-                categories = await list_categories(session, item.user_id)
-            # Frequency order keeps the keyboard's bounded choices useful without
-            # introducing pagination state or callback payloads containing text.
-            categories = sorted(categories, key=lambda row: (-row[1], row[0].casefold()))
+                categories = await list_categories_page(
+                    session,
+                    item.user_id,
+                    page=category_page_number,
+                    by_frequency=True,
+                )
             markup = feedback_category_keyboard(
-                item_id, [category for category, _count in categories]
+                item_id,
+                [category for category, _count in categories.categories],
+                page=categories.page,
+                has_previous=categories.has_previous,
+                has_next=categories.has_next,
             )
         else:
             markup = item_more_keyboard(item)
@@ -1590,7 +1615,7 @@ async def _send_profile_for_actor(
         )
         await session.commit()
         profile = await get_profile(session, user.id)
-    await send(format_profile(profile))
+    await send(format_profile(profile), reply_markup=profile_keyboard())
 
 
 async def on_profile_update(
@@ -1653,11 +1678,12 @@ async def _send_today_for_actor(
         )
         user_id = user.id
         items = await TodayService().list_items(session, user.id)
-        response = format_today(items)
+        sources_by_item = await load_item_sources_by_item(session, [item.id for item in items])
+        response = format_today(items, sources_by_item)
         await session.commit()
     await send(
         response,
-        reply_markup=item_navigation_keyboard([item.id for item in items]),
+        reply_markup=item_list_keyboard(item_navigation_entries(items, sources_by_item)),
     )
 
     # PM-07 treats this history as exposure, so a failed Telegram send must not
@@ -1701,13 +1727,36 @@ async def _send_weekly_for_actor(
             log.warning("invalid timezone for weekly review user_id=%s; using default", user.id)
             zone = parse_timezone(settings.default_timezone)
         review = await WeeklyReviewService().build(session, user.id, zone=zone)
-        response = format_weekly_review(review)
+        recommendation_ids = [entry.item_id for entry in review.recommendations]
+        recommendations = (
+            list(
+                (
+                    await session.scalars(
+                        select(Item).where(
+                            Item.user_id == user.id,
+                            Item.id.in_(recommendation_ids),
+                        )
+                    )
+                ).all()
+            )
+            if recommendation_ids
+            else []
+        )
+        item_by_id = {item.id: item for item in recommendations}
+        ordered_items = [
+            item_by_id[item_id] for item_id in recommendation_ids if item_id in item_by_id
+        ]
+        sources_by_item = await load_item_sources_by_item(
+            session, [item.id for item in ordered_items]
+        )
+        titles_by_id = {
+            item.id: item_display_title(item, sources_by_item[item.id]) for item in ordered_items
+        }
+        response = format_weekly_review(review, titles_by_id)
         await session.commit()
     await send(
         response,
-        reply_markup=item_navigation_keyboard(
-            [recommendation.item_id for recommendation in review.recommendations]
-        ),
+        reply_markup=item_list_keyboard(item_navigation_entries(ordered_items, sources_by_item)),
     )
 
 
@@ -1787,7 +1836,7 @@ async def _send_attention_for_actor(
     count = len(ranked)
     for index, (item, rank) in enumerate(ranked, start=1):
         await send(
-            format_attention_item(index, count, item, rank),
+            format_attention_item(index, count, item, rank, sources_by_item[item.id]),
             reply_markup=item_keyboard(
                 item,
                 sources_by_item[item.id],
@@ -1814,9 +1863,15 @@ async def on_inbox(message: Message, settings: Settings, session_factory) -> Non
 
 
 async def _send_inbox_for_actor(
-    *, telegram_user_id: int, chat_id: int, settings: Settings, session_factory, send
+    *,
+    telegram_user_id: int,
+    chat_id: int,
+    settings: Settings,
+    session_factory,
+    send,
+    page: int = 0,
 ) -> None:
-    """Project the same owner-scoped Inbox list for slash commands and inline navigation."""
+    """Project one shared, bounded Inbox page for slash and inline entry points."""
     if not settings.is_allowed(telegram_user_id):
         return
     from app.bot.formatting import format_item_list
@@ -1829,11 +1884,25 @@ async def _send_inbox_for_actor(
             chat_id=chat_id,
             timezone=settings.default_timezone,
         )
+        item_page = await list_inbox_page(session, user.id, page=page)
+        sources_by_item = await load_item_sources_by_item(
+            session, [item.id for item in item_page.items]
+        )
         await session.commit()
-        items = await list_inbox(session, user.id)
+    entries = item_navigation_entries(item_page.items, sources_by_item)
+    keyboard = item_list_keyboard(
+        entries,
+        previous_callback=(
+            f"nav:inbox:page:{item_page.page - 1}" if item_page.has_previous else None
+        ),
+        next_callback=(f"nav:inbox:page:{item_page.page + 1}" if item_page.has_next else None),
+        back_label="← Меню",
+    )
     await send(
-        format_item_list(items, "Входящие:"),
-        reply_markup=item_navigation_keyboard([item.id for item in items]),
+        format_item_list(
+            list(item_page.items), f"📥 Inbox · {item_page.page + 1}", sources_by_item
+        ),
+        reply_markup=keyboard,
     )
 
 
@@ -1850,23 +1919,30 @@ async def on_category(message: Message, settings: Settings, session_factory, cat
             send=message.answer,
         )
         return
-    from app.bot.formatting import format_categories
-
-    categories = await _load_categories_for_actor(
+    await _send_categories_page_for_actor(
         telegram_user_id=message.from_user.id,
         chat_id=message.chat.id,
         settings=settings,
         session_factory=session_factory,
+        send=message.answer,
     )
-    await message.answer(format_categories(categories))
 
 
-async def _load_categories_for_actor(
-    *, telegram_user_id: int, chat_id: int, settings: Settings, session_factory
-) -> list[tuple[str, int]]:
-    """Read dynamic categories only from the authorized user's current Items."""
+# ❌ Удален _load_categories_for_actor, который отдавал все категории сразу:
+# общий owner-scoped путь теперь загружает только одну ограниченную страницу.
+async def _send_categories_page_for_actor(
+    *,
+    telegram_user_id: int,
+    chat_id: int,
+    settings: Settings,
+    session_factory,
+    send,
+    page: int = 0,
+) -> None:
+    """Render owner-scoped category choices through bounded alphabetical pages."""
     if not settings.is_allowed(telegram_user_id):
-        return []
+        return
+    from app.bot.formatting import format_categories
     from app.services.ingestion import get_or_create_user
 
     async with session_factory() as session:
@@ -1876,8 +1952,18 @@ async def _load_categories_for_actor(
             chat_id=chat_id,
             timezone=settings.default_timezone,
         )
+        category_page = await list_categories_page(session, user.id, page=page)
         await session.commit()
-        return await list_categories(session, user.id)
+    keyboard = category_navigation_keyboard(
+        category_page.categories,
+        page=category_page.page,
+        has_previous=category_page.has_previous,
+        has_next=category_page.has_next,
+    )
+    await send(
+        format_categories(category_page.categories, page=category_page.page),
+        reply_markup=keyboard,
+    )
 
 
 async def _send_category_items_for_actor(
@@ -1888,8 +1974,10 @@ async def _send_category_items_for_actor(
     settings: Settings,
     session_factory,
     send,
+    page: int = 0,
+    category_token_value: str | None = None,
 ) -> None:
-    """Keep category result ordering and Item navigation shared across both entry points."""
+    """Render one priority-ordered category page with its stable callback token."""
     if not settings.is_allowed(telegram_user_id):
         return
     from app.bot.formatting import format_item_list
@@ -1902,11 +1990,30 @@ async def _send_category_items_for_actor(
             chat_id=chat_id,
             timezone=settings.default_timezone,
         )
+        item_page = await list_category_items_page(session, user.id, category, page=page)
+        sources_by_item = await load_item_sources_by_item(
+            session, [item.id for item in item_page.items]
+        )
         await session.commit()
-        items = await list_category_items(session, user.id, category)
+    token = category_token_value or category_token(category)
+    entries = item_navigation_entries(item_page.items, sources_by_item)
+    keyboard = item_list_keyboard(
+        entries,
+        previous_callback=(
+            f"nav:category:{token}:page:{item_page.page - 1}" if item_page.has_previous else None
+        ),
+        next_callback=(
+            f"nav:category:{token}:page:{item_page.page + 1}" if item_page.has_next else None
+        ),
+        back_label="← Меню",
+    )
     await send(
-        format_item_list(items, f"Категория: {category}"),
-        reply_markup=item_navigation_keyboard([item.id for item in items]),
+        format_item_list(
+            list(item_page.items),
+            f"Категория: {category} · {item_page.page + 1}",
+            sources_by_item,
+        ),
+        reply_markup=keyboard,
     )
 
 
@@ -1949,11 +2056,12 @@ async def _send_search_for_actor(
             chat_id=chat_id,
             timezone=settings.default_timezone,
         )
-        await session.commit()
         items = await search_items(session, user.id, query)
+        sources_by_item = await load_item_sources_by_item(session, [item.id for item in items])
+        await session.commit()
     await send(
-        format_item_list(items, "Результаты поиска:"),
-        reply_markup=item_navigation_keyboard([item.id for item in items]),
+        format_item_list(items, "Результаты поиска:", sources_by_item),
+        reply_markup=item_list_keyboard(item_navigation_entries(items, sources_by_item)),
     )
 
 
@@ -2050,7 +2158,7 @@ async def _enqueue_export_for_actor(
     settings: Settings,
     session_factory,
 ):
-    """Use the existing message-keyed ExportJob boundary for command and chooser requests."""
+    """Use the existing message-keyed ExportJob boundary for command and menu requests."""
     if not settings.is_allowed(telegram_user_id):
         return None
     job = await enqueue_export(
@@ -2138,6 +2246,65 @@ async def on_guided_search_input(
     )
 
 
+async def on_guided_profile_input(
+    message: Message,
+    settings: Settings,
+    session_factory,
+    state: FSMContext,
+) -> None:
+    """Route one Profile prompt to the durable update queue, bypassing Item ingestion."""
+    telegram_user_id = message.from_user.id if message.from_user else None
+    if not settings.is_allowed(telegram_user_id):
+        await state.clear()
+        return
+    instruction = (message.text or "").strip()
+    if not instruction:
+        await message.answer("Напиши, что изменить в профиле.")
+        return
+    await enqueue_profile_update(
+        session_factory,
+        telegram_user_id=telegram_user_id,
+        chat_id=message.chat.id,
+        instruction=instruction,
+        default_timezone=settings.default_timezone,
+    )
+    await state.clear()
+    log.info("guided profile update queued user_id=%s", telegram_user_id)
+    await message.answer("Принял. Обновляю профиль…")
+
+
+def _page_callback_value(value: str) -> int | None:
+    """Validate compact page callback input before it reaches SQL OFFSET handling."""
+    if not value.isascii() or not value.isdecimal() or len(value) > 18:
+        return None
+    return int(value)
+
+
+async def _resolve_category_for_actor(
+    *,
+    telegram_user_id: int,
+    chat_id: int,
+    token: str,
+    settings: Settings,
+    session_factory,
+) -> str | None:
+    """Resolve a category token against only its current owner in the storage layer."""
+    if not settings.is_allowed(telegram_user_id):
+        return None
+    from app.services.ingestion import get_or_create_user
+
+    async with session_factory() as session:
+        user = await get_or_create_user(
+            session,
+            telegram_user_id=telegram_user_id,
+            chat_id=chat_id,
+            timezone=settings.default_timezone,
+        )
+        category = await resolve_category_token(session, user.id, token)
+        await session.commit()
+        return category
+
+
 async def on_navigation_callback(
     callback: CallbackQuery,
     settings: Settings,
@@ -2150,17 +2317,26 @@ async def on_navigation_callback(
         return
     telegram_user_id = callback.from_user.id
     if not settings.is_allowed(telegram_user_id):
-        if callback.data in {"nav:ask", "nav:search", "nav:input:cancel"}:
+        if callback.data in {
+            "nav:ask",
+            "nav:search",
+            "nav:profile:edit",
+            "nav:input:cancel",
+        }:
             await state.clear()
         await callback.answer()
         return
 
-    # Each navigation choice replaces any older one-shot prompt. Ask/Search
+    # Each navigation choice replaces any older one-shot prompt. Guided flows
     # below install their own state only after the prompt UI is successfully shown.
     await state.clear()
     chat_id = callback.message.chat.id
     send = callback.message.answer
     data = callback.data
+
+    async def edit_current_page(text: str, *, reply_markup=None) -> None:
+        """Keep pagination on one Telegram message and tolerate stale page callbacks."""
+        await _edit_item_message_if_changed(callback.message, text, reply_markup)
 
     if data == "nav:input:cancel":
         await _edit_item_message_if_changed(callback.message, "Отменено.", None)
@@ -2196,6 +2372,20 @@ async def on_navigation_callback(
             session_factory=session_factory,
             send=send,
         )
+    elif data.startswith("nav:inbox:page:"):
+        page = _page_callback_value(data.removeprefix("nav:inbox:page:"))
+        if page is None:
+            await callback.answer("Страница больше недоступна")
+            return
+        await callback.answer()
+        await _send_inbox_for_actor(
+            telegram_user_id=telegram_user_id,
+            chat_id=chat_id,
+            settings=settings,
+            session_factory=session_factory,
+            send=edit_current_page,
+            page=page,
+        )
     elif data == "nav:weekly":
         await callback.answer()
         await _send_weekly_for_actor(
@@ -2214,6 +2404,14 @@ async def on_navigation_callback(
             session_factory=session_factory,
             send=send,
         )
+    elif data == "nav:profile:edit":
+        await _edit_item_message_if_changed(
+            callback.message,
+            "✏️ Что изменить в профиле? Отправь одну инструкцию сообщением.",
+            input_cancel_keyboard(),
+        )
+        await state.set_state(GuidedInput.profile)
+        await callback.answer()
     elif data == "nav:settings":
         projection = await _build_settings_projection(
             telegram_user_id, chat_id, settings, session_factory
@@ -2222,43 +2420,61 @@ async def on_navigation_callback(
         if projection is not None:
             await send(projection[0], reply_markup=projection[1])
     elif data == "nav:categories":
-        categories = await _load_categories_for_actor(
+        await callback.answer()
+        await _send_categories_page_for_actor(
             telegram_user_id=telegram_user_id,
             chat_id=chat_id,
             settings=settings,
             session_factory=session_factory,
+            send=send,
         )
-        from app.bot.formatting import format_categories
-
-        choices = categories[:20]
-        text = format_categories(choices)
-        if len(categories) > len(choices):
-            text += "\nПоказаны первые 20 категорий."
+    elif data.startswith("nav:categories:page:"):
+        page = _page_callback_value(data.removeprefix("nav:categories:page:"))
+        if page is None:
+            await callback.answer("Страница больше недоступна")
+            return
         await callback.answer()
-        await send(
-            text,
-            reply_markup=category_navigation_keyboard([name for name, _ in choices]),
+        await _send_categories_page_for_actor(
+            telegram_user_id=telegram_user_id,
+            chat_id=chat_id,
+            settings=settings,
+            session_factory=session_factory,
+            send=edit_current_page,
+            page=page,
         )
     elif data.startswith("nav:category:"):
-        token = data.removeprefix("nav:category:")
-        categories = await _load_categories_for_actor(
+        parts = data.split(":")
+        if len(parts) == 3:
+            token, page = parts[2], 0
+        elif len(parts) == 5 and parts[3] == "page":
+            token = parts[2]
+            page = _page_callback_value(parts[4])
+        else:
+            await callback.answer("Категория больше недоступна")
+            return
+        if page is None:
+            await callback.answer("Страница больше недоступна")
+            return
+        category = await _resolve_category_for_actor(
             telegram_user_id=telegram_user_id,
             chat_id=chat_id,
+            token=token,
             settings=settings,
             session_factory=session_factory,
         )
-        matches = [name for name, _ in categories if category_token(name) == token]
-        if len(matches) != 1:
+        if category is None:
             await callback.answer("Категория больше недоступна")
             return
         await callback.answer()
         await _send_category_items_for_actor(
             telegram_user_id=telegram_user_id,
             chat_id=chat_id,
-            category=matches[0],
+            category=category,
             settings=settings,
             session_factory=session_factory,
-            send=send,
+            send=edit_current_page,
+            page=page,
+            category_token_value=token,
         )
     elif data == "nav:search":
         await _edit_item_message_if_changed(
@@ -2278,9 +2494,18 @@ async def on_navigation_callback(
         await state.set_state(GuidedInput.ask)
         await callback.answer()
     elif data == "nav:export":
-        await _edit_item_message_if_changed(
-            callback.message, "Выбери формат экспорта:", export_mode_keyboard()
+        job = await _enqueue_export_for_actor(
+            telegram_user_id=telegram_user_id,
+            chat_id=chat_id,
+            telegram_message_id=callback.message.message_id,
+            mode=COMPACT,
+            settings=settings,
+            session_factory=session_factory,
         )
+        if job is not None:
+            await _edit_item_message_if_changed(
+                callback.message, _export_acknowledgement(job.mode, job.status), None
+            )
         await callback.answer()
     else:
         await callback.answer("Действие больше недоступно")

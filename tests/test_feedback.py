@@ -10,7 +10,7 @@ from app.services.feedback import (
     correct_item_type,
     record_item_feedback,
 )
-from app.services.retrieval import TodayService, list_category_items
+from app.services.retrieval import TodayService, list_category_items_page
 from app.storage.models import Event, FeedbackCallbackReceipt, Item, User
 
 
@@ -305,8 +305,11 @@ async def test_category_correction_is_atomic_and_retrieval_uses_canonical_value(
             "to": "AI",
             "source": "telegram",
         }
-        assert await list_category_items(session, stored.user_id, "Programming") == []
-        assert {item.id for item in await list_category_items(session, stored.user_id, "AI")} == {
+        assert (await list_category_items_page(session, stored.user_id, "Programming")).items == ()
+        assert {
+            item.id
+            for item in (await list_category_items_page(session, stored.user_id, "AI")).items
+        } == {
             item_id,
             ai_item_id,
         }

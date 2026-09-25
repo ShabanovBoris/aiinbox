@@ -201,7 +201,7 @@ def _item_header(item: Item, item_url: str | None, *, max_chars: int) -> str:
         f"CREATED_AT: {item.created_at.isoformat() if item.created_at else ''}",
     ]
     fields = [
-        ("TITLE_JSON", (item.title or "(untitled)")[:300], 250),
+        ("TITLE_JSON", (item.title or "Сохранение")[:300], 250),
         ("SUMMARY_JSON", (item.summary or "")[:1200], 500),
         ("CATEGORY_JSON", (item.category or "")[:100], 110),
         ("USER_NOTE_JSON", (item.user_note or "")[:_MAX_USER_NOTE_CONTEXT_CHARS], 250),
@@ -427,7 +427,7 @@ def build_ask_context(
         item_reference = AskReference(
             item_id=item.id,
             source_id=None,
-            title=(item.title or "(untitled)")[:_MAX_REFERENCE_TITLE_CHARS],
+            title=(item.title or "Сохранение")[:_MAX_REFERENCE_TITLE_CHARS],
             source_type=None,
             source_url=item_url,
         )
@@ -455,7 +455,7 @@ def build_ask_context(
                 AskReference(
                     item_id=item_id,
                     source_id=source_id,
-                    title=(item.title or "(untitled)")[:_MAX_REFERENCE_TITLE_CHARS],
+                    title=(item.title or "Сохранение")[:_MAX_REFERENCE_TITLE_CHARS],
                     source_type=source.source_type.value,
                     source_url=safe_http_url(source.source_url),
                 )

@@ -96,20 +96,22 @@ All post-MVP work must preserve the current architecture:
 
 ## 3.2 Quality & UX Polish — current focus
 
-Before resuming PM-14+ feature expansion, complete the five stabilization PRs:
+Before resuming PM-14+ feature expansion, complete the six stabilization and
+corrective UX PRs:
 
 - [POLISH-01 — AI Analysis v2](../polish/POLISH-01_AI_ANALYSIS_V2.md)
 - [POLISH-02 — Compact Telegram Item UI](../polish/POLISH-02_COMPACT_TELEGRAM_UI.md)
 - [POLISH-03 — Unified Provenance & Original Access](../polish/POLISH-03_UNIFIED_PROVENANCE_ORIGINAL_ACCESS.md)
 - [POLISH-04 — Hooks & Notifications v2](../polish/POLISH-04_HOOKS_NOTIFICATIONS_V2.md)
 - [POLISH-05 — Telegram Navigation & AI Reliability](../polish/POLISH-05_NAVIGATION_AND_AI_RELIABILITY.md)
+- [POLISH-06 — Final Telegram UX Cleanup](../polish/POLISH-06_FINAL_TELEGRAM_UX.md)
 - [Milestone index and freeze policy](../polish/README.md)
 
 Current sequencing decision:
 
 ~~~text
 POLISH-01 → POLISH-02 → POLISH-03 → POLISH-04 → POLISH-05
-→ explicit quality review
+→ real-user review → POLISH-06 → explicit quality review
 → resume PM-14+
 ~~~
 
@@ -167,19 +169,21 @@ Goal: expose trends in attention, backlog growth, completion, neglect and catego
 - POLISH-02 Compact Telegram Item UI — DONE (PR #48 merged)
 - POLISH-03 Unified Provenance & Original Access — DONE (PR #49 merged)
 - POLISH-04 Hooks & Notifications v2 — DONE (PR #50 merged)
-- POLISH-05 Telegram Navigation & AI Reliability — IN_REVIEW
+- POLISH-05 Telegram Navigation & AI Reliability — DONE (PR #51 merged)
+- POLISH-06 Final Telegram UX Cleanup — IN_REVIEW
 
 Goal: make the existing AI understanding, Telegram presentation, source navigation,
 reminders and reliability worth extending before new capability is added.
 
-The next gate is a separate explicit quality review across POLISH-01…05. PM-14
-and PM-16+ remain ON HOLD until that review passes; this implementation PR does
-not resume roadmap expansion.
+POLISH-06 is the corrective PR produced by real-user review after POLISH-05.
+The next gate is acceptance of POLISH-06 followed by the separate explicit
+quality review across POLISH-01…06. PM-14 and PM-16+ remain ON HOLD until that
+review passes; this implementation PR does not resume roadmap expansion.
 
 ### Milestone G — Knowledge
 
 - PM-13 Ask My Inbox — DONE (PR #42 merged)
-- PM-14 Hybrid Semantic Search — ON HOLD until POLISH-01…05 quality review; still evidence-gated
+- PM-14 Hybrid Semantic Search — ON HOLD until POLISH-01…06 quality review; still evidence-gated
 
 Goal: make stored material queryable as a personal knowledge base.
 
@@ -483,7 +487,7 @@ Answers must identify source Items so hallucinated “memory” cannot silently 
 
 ## 18. PM-14 — Hybrid Semantic Search
 
-Status: ON HOLD until POLISH-01…05 quality review. After the hold is lifted, start only after PM-13 usage records concrete vocabulary-mismatch
+Status: ON HOLD until POLISH-01…06 quality review. After the hold is lifted, start only after PM-13 usage records concrete vocabulary-mismatch
 queries where relevant saved Items are not usefully retrieved by FTS5.
 
 Keep FTS5 and add one rebuildable Item-level embedding projection stored in SQLite.

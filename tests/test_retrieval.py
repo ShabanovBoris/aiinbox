@@ -8,9 +8,10 @@ from app.services.analysis import Analyzer
 from app.services.processing import ProcessingPipeline
 from app.services.retrieval import (
     TodayService,
-    list_categories,
-    list_category_items,
-    list_inbox,
+    list_categories_page,
+    list_category_items_page,
+    list_inbox_page,
+    resolve_category_token,
     search_items,
 )
 from app.storage.models import Content, Item, User
@@ -156,14 +157,80 @@ async def test_inbox_and_categories_are_user_scoped(session_factory):
             make_item(other_id, title="other user", category="AI", created_at=datetime.now())
         )
         await session.commit()
-        assert [item.title for item in await list_inbox(session, user_id)] == [
+        inbox_page = await list_inbox_page(session, user_id)
+        assert [item.title for item in inbox_page.items] == [
             "other category",
             "mine",
         ]
-        assert await list_categories(session, user_id) == [("AI", 1), ("Piano", 1)]
-        assert [item.title for item in await list_category_items(session, user_id, "AI")] == [
-            "mine"
+        categories = await list_categories_page(session, user_id)
+        assert categories.categories == (("AI", 1), ("Piano", 1))
+        category_items = await list_category_items_page(session, user_id, "AI")
+        assert [item.title for item in category_items.items] == ["mine"]
+        assert await resolve_category_token(session, user_id, "malformed") is None
+
+
+async def test_inbox_category_item_and_category_pages_have_no_total_twenty_cap(session_factory):
+    user_id = await make_user(session_factory)
+    now = datetime(2026, 1, 1)
+    async with session_factory() as session:
+        session.add_all(
+            [
+                make_item(
+                    user_id,
+                    title=f"shared-{index}",
+                    score=index,
+                    category="Shared",
+                    created_at=now + timedelta(seconds=index),
+                )
+                for index in range(27)
+            ]
+            + [
+                make_item(
+                    user_id,
+                    title=f"category-{index}",
+                    category=f"Category {index:02}",
+                    created_at=now + timedelta(days=1, seconds=index),
+                )
+                for index in range(23)
+            ]
+        )
+        await session.commit()
+
+        inbox_pages = [await list_inbox_page(session, user_id, page=page) for page in range(5)]
+        inbox_items = [item for result in inbox_pages for item in result.items]
+        assert [len(result.items) for result in inbox_pages] == [10, 10, 10, 10, 10]
+        assert [result.has_next for result in inbox_pages] == [True, True, True, True, False]
+        assert len({item.id for item in inbox_items}) == 50
+        assert [item.title for item in inbox_items] == [
+            item.title
+            for item in sorted(
+                inbox_items, key=lambda item: (item.created_at, item.id), reverse=True
+            )
         ]
+
+        category_pages = [
+            await list_categories_page(session, user_id, page=page) for page in range(3)
+        ]
+        all_categories = [name for result in category_pages for name, _ in result.categories]
+        assert [len(result.categories) for result in category_pages] == [10, 10, 4]
+        assert len(set(all_categories)) == 24
+
+        item_pages = [
+            await list_category_items_page(session, user_id, "Shared", page=page)
+            for page in range(3)
+        ]
+        shared_items = [item for result in item_pages for item in result.items]
+        assert [len(result.items) for result in item_pages] == [10, 10, 7]
+        assert len({item.id for item in shared_items}) == 27
+        assert item_pages[-1].has_previous and not item_pages[-1].has_next
+
+        # Stale and oversized callbacks resolve to the last valid page before OFFSET.
+        stale = await list_inbox_page(session, user_id, page=10**40)
+        assert stale.page == 4
+        assert len(stale.items) == 10
+        oversized_page = await list_inbox_page(session, user_id, page_size=10**6)
+        assert len(oversized_page.items) <= 12
+        assert (await list_category_items_page(session, user_id, "Shared", page=-1)).page == 0
 
 
 async def test_processing_ready_commit_updates_fts_projection(session_factory):

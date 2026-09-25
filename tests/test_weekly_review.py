@@ -818,7 +818,7 @@ async def test_weekly_handler_sends_one_message_and_falls_back_from_invalid_user
     assert "Быстрый шаг: Quick step" in message.responses[0]
     buttons = [button for row in message.reply_markups[0].inline_keyboard for button in row]
     assert [button.callback_data for button in buttons] == [f"item:view:{quick_win_id}"]
-    assert [button.text for button in buttons] == ["1"]
+    assert [button.text for button in buttons] == ["Quick step"]
     assert any(command.command == "weekly" for command in BOT_COMMANDS)
 
 

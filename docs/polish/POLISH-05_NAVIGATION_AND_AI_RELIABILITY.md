@@ -3,7 +3,7 @@
 Type: Stabilization / Operability specification  
 Depends on: POLISH-01…04 preferred  
 Blocks: resuming PM-14+ product expansion  
-Status: IN_REVIEW
+Status: DONE (PR #51 merged)
 
 ## 1. Problem
 
@@ -418,7 +418,7 @@ Do not start PM-14 in this PR.
 
 POLISH-05 is complete when users can discover AIInbox's main functions without memorizing slash commands and repeated AI failures can be diagnosed and retried safely without weakening durable job semantics or leaking private content.
 
-## 31. Current implementation (IN_REVIEW)
+## 31. Current implementation (DONE — PR #51 merged)
 
 - Code registers the bounded Russian BotCommand list at Telegram startup. A
   temporary `set_my_commands` failure logs only the operation and exception
