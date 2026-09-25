@@ -1,3 +1,4 @@
+import json
 import logging
 from types import SimpleNamespace
 
@@ -140,6 +141,35 @@ async def test_profile_schema_error_does_not_embed_private_model_output():
     assert PRIVATE_MARKER not in str(caught.value)
     assert caught.value.__cause__ is None
     assert caught.value.__suppress_context__ is True
+
+
+async def test_ask_validation_log_excludes_untrusted_extra_field_names(monkeypatch, caplog):
+    async def no_wait(_seconds):
+        return None
+
+    monkeypatch.setattr("app.llm.openai.asyncio.sleep", no_wait)
+    private_field_name = "PRIVATE_ASK_QUESTION_7f1a"
+    provider = OpenAiProvider("unused", "test-model")
+    provider._client = _StaticCompletionClient(
+        json.dumps(
+            {
+                "answer": "A safe response.",
+                "citations": [],
+                "insufficient_context": True,
+                private_field_name: "untrusted value",
+            }
+        )
+    )
+
+    with caplog.at_level(logging.WARNING, logger="app.llm.openai"):
+        with pytest.raises(LlmError) as caught:
+            await provider.answer_inbox(
+                "private question", "private context", preferred_language="ru"
+            )
+
+    assert caught.value.code == "INVALID_LLM_OUTPUT"
+    assert private_field_name not in caplog.text
+    assert "validation_error_count=1" in caplog.text
 
 
 @pytest.mark.parametrize(

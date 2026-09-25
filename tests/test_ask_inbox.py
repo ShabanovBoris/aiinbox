@@ -1048,7 +1048,7 @@ async def test_provider_invalid_json_has_only_one_structured_retry(monkeypatch, 
     assert "another private response" not in caplog.text
     assert "content_type=str" in caplog.text
     assert "content_chars=" in caplog.text
-    assert "validation=" in caplog.text
+    assert "validation_error_count=" in caplog.text
 
 
 def test_ask_format_and_keyboard_bound_references_and_validate_urls():

@@ -581,20 +581,18 @@ class OpenAiProvider:
             try:
                 return _parse_ask_result(raw)
             except ValidationError as exc:
-                validation = ",".join(
-                    f"{'/'.join(map(str, error['loc']))}:{error['type']}"
-                    for error in exc.errors(include_input=False, include_context=False)
-                )
+                # Extra JSON field names are untrusted and can contain private prompt text.
+                validation_error_count = len(exc.errors(include_input=False, include_context=False))
                 log.warning(
                     "ask provider returned invalid structured output provider=%s "
                     "finish_reason=%s refusal=%s content_type=%s content_chars=%s "
-                    "validation=%s retry=%s/1",
+                    "validation_error_count=%s retry=%s/1",
                     self._provider_name,
                     getattr(choice, "finish_reason", "unknown"),
                     bool(getattr(message, "refusal", None)),
                     type(content).__name__ if content is not None else "none",
                     len(raw),
-                    validation or "unknown",
+                    validation_error_count,
                     attempt,
                 )
                 if attempt == 1:
