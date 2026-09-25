@@ -15,7 +15,7 @@ from app.storage.models import Content, Item, ItemSource, Reminder
 
 log = logging.getLogger(__name__)
 
-ATTENTION_HOOK_GENERATOR_VERSION = 1
+ATTENTION_HOOK_GENERATOR_VERSION = 2
 MAX_HOOK_CONTEXT_CHARS = 12_000
 HOOK_CONTEXT_CHUNK_CHARS = 1_500
 MAX_HOOK_CHUNKS_PER_SOURCE = 4
@@ -31,11 +31,9 @@ _ALLOWED_EVIDENCE_KINDS = frozenset(
         ContentKind.DESCRIPTION,
     }
 )
-_HOOK_TEMPLATES = (
-    ("strong_thought_v1", "Одна сильная мысль внутри:\n{hook}"),
-    ("reason_to_return_v1", "Причина вернуться к этому:\n{hook}"),
-    ("saved_long_ago_v1", "Ты давно это сохранил. Вот одна мысль внутри:\n{hook}"),
-)
+# ❌ Удалены три общие обёртки: они добавляли слова, но не давали новой причины
+# открыть материал; история Reminder теперь ротирует сами grounded hooks.
+_HOOK_TEMPLATES = (("direct_v2", "{hook}"),)
 
 
 @dataclass(frozen=True)
@@ -495,7 +493,7 @@ def _representative_chunks(value: str) -> list[str]:
     if len(chunks) <= MAX_HOOK_CHUNKS_PER_SOURCE:
         indices = range(len(chunks))
     else:
-        indices = sorted({0, len(chunks) // 3, len(chunks) // 2, len(chunks) - 1})
+        indices = sorted({0, len(chunks) // 3, 2 * len(chunks) // 3, len(chunks) - 1})
     selected: list[str] = []
     seen: set[str] = set()
     for index in indices:
@@ -538,7 +536,7 @@ def _validated_candidates(
             or not excerpt_normalized
             or len(excerpt) > 300
             or not hook_text
-            or len(hook_text) > 320
+            or len(hook_text) > 280
             or excerpt_normalized not in _normalize_whitespace(evidence.text)
             or not any(
                 excerpt_normalized in _normalize_whitespace(supplied_excerpt)
@@ -579,7 +577,7 @@ def _stored_hook(
         or not 0 < len(evidence_excerpt) <= 300
         or type(generator_version) is not int
         or not row.text.strip()
-        or len(row.text) > 320
+        or len(row.text) > 280
     ):
         return None
     try:
@@ -613,7 +611,7 @@ def _stored_hook(
 
 
 def _diverse_candidates(candidates: list[_ValidatedCandidate]) -> list[_ValidatedCandidate]:
-    """Deduplicate wording and prefer different semantic frames within the three-hook cap."""
+    """Persist at most one hook per semantic frame instead of filling slots with paraphrases."""
     unique: list[_ValidatedCandidate] = []
     seen_text: set[str] = set()
     for candidate in candidates:
@@ -629,11 +627,8 @@ def _diverse_candidates(candidates: list[_ValidatedCandidate]) -> list[_Validate
             seen_types.add(candidate.hook_type)
             if len(selected) == MAX_STORED_HOOKS:
                 return selected
-    for candidate in unique:
-        if candidate not in selected:
-            selected.append(candidate)
-            if len(selected) == MAX_STORED_HOOKS:
-                break
+    # ❌ Удалено заполнение квоты однотипными кандидатами: дополнительные места
+    # полезнее оставить пустыми, чем закрепить несколько перефразировок одного frame.
     return selected
 
 
