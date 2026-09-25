@@ -1,11 +1,15 @@
-"""Pure display labels shared by independent Telegram text and keyboard projections."""
+"""Pure, persisted-data-only projections shared by Telegram surfaces."""
 
 import re
+from collections.abc import Sequence
+from dataclasses import dataclass
 from ipaddress import ip_address
 from urllib.parse import urlsplit
 
-from app.domain.enums import ItemType, SourceType
+from app.bot.provenance import forward_original_url
+from app.domain.enums import ItemType, ProcessingStatus, SourceType
 from app.services.url_security import is_public_ip_address
+from app.storage.models import Item, ItemSource
 
 _MAX_SOURCE_LABEL_LENGTH = 64
 
@@ -18,6 +22,138 @@ ITEM_TYPE_LABELS = {
     ItemType.REFERENCE: "Справка",
     ItemType.SOMEDAY: "Когда-нибудь",
 }
+
+
+@dataclass(frozen=True, slots=True)
+class SourceReferenceAction:
+    """A trusted URL or source-specific resend derived from persisted Item data."""
+
+    source_id: int | None
+    source_type: SourceType
+    label: str
+    url: str | None = None
+    can_resend_media: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class ItemReferenceProjection:
+    """One immutable navigation view shared by cards, lists, and reminders."""
+
+    item_id: int
+    title: str
+    original_available: bool
+    source_actions: tuple[SourceReferenceAction, ...]
+
+
+def item_reference_projection(
+    item: Item,
+    sources: Sequence[ItemSource] | None = None,
+    *,
+    owner_chat_available: bool,
+    focus_source_id: int | None = None,
+) -> ItemReferenceProjection:
+    """Project only safe persisted provenance; never fetch or infer a destination."""
+    ordered_sources = sorted(
+        sources or (),
+        key=lambda source: (source.source_index, source.id if source.id is not None else 0),
+    )
+    if focus_source_id is not None and any(
+        source.id == focus_source_id for source in ordered_sources
+    ):
+        ordered_sources.sort(key=lambda source: source.id != focus_source_id)
+
+    security_rejected_urls = {
+        source.source_url
+        for source in ordered_sources
+        if source.error_code == "SECURITY_REJECTED" and source.source_url
+    }
+    actions: list[SourceReferenceAction] = []
+    if item.processing_status is ProcessingStatus.READY:
+        video_sources = [
+            source
+            for source in ordered_sources
+            if source.id is not None
+            and source.source_type in {SourceType.YOUTUBE, SourceType.INSTAGRAM}
+            and source.extraction_status == "READY"
+            and source.source_url
+            and source_url_label(source.source_type, source.source_url)
+        ]
+        totals = {
+            source_type: sum(source.source_type is source_type for source in video_sources)
+            for source_type in (SourceType.YOUTUBE, SourceType.INSTAGRAM)
+        }
+        ranks = {SourceType.YOUTUBE: 0, SourceType.INSTAGRAM: 0}
+        for source in video_sources:
+            ranks[source.source_type] += 1
+            label = "YouTube" if source.source_type is SourceType.YOUTUBE else "Reel"
+            if totals[source.source_type] > 1:
+                label += f" {ranks[source.source_type]}"
+            actions.append(
+                SourceReferenceAction(
+                    source_id=source.id,
+                    source_type=source.source_type,
+                    label=f"📩 Прислать {label}",
+                    can_resend_media=True,
+                )
+            )
+
+    source_urls: list[tuple[str, SourceType, int | None]] = []
+    seen_urls: set[str] = set()
+    for source in ordered_sources:
+        if (
+            source.source_url
+            and source.source_url not in security_rejected_urls
+            and source.source_url not in seen_urls
+            and source_url_label(source.source_type, source.source_url)
+        ):
+            source_urls.append((source.source_url, source.source_type, source.id))
+            seen_urls.add(source.source_url)
+    if (
+        item.source_url
+        and item.source_url not in security_rejected_urls
+        and item.source_url not in seen_urls
+        and source_url_label(item.source_type, item.source_url)
+    ):
+        source_urls.insert(0, (item.source_url, item.source_type, None))
+
+    public_forward_url = forward_original_url(item.source_metadata_json)
+    if public_forward_url:
+        source_urls = [entry for entry in source_urls if entry[0] != public_forward_url]
+
+    labels = [source_url_label(source_type, url) for url, source_type, _ in source_urls]
+    label_counts = {label: labels.count(label) for label in labels}
+    label_indexes: dict[str, int] = {}
+    for (url, source_type, source_id), base_label in zip(source_urls, labels, strict=True):
+        if base_label is None:
+            continue
+        label = base_label
+        if label_counts[base_label] > 1:
+            label_indexes[base_label] = label_indexes.get(base_label, 0) + 1
+            label = bound_source_button_label(f"{label} {label_indexes[base_label]}")
+        actions.append(
+            SourceReferenceAction(
+                source_id=source_id,
+                source_type=source_type,
+                label=label,
+                url=url,
+            )
+        )
+    if public_forward_url:
+        actions.append(
+            SourceReferenceAction(
+                source_id=None,
+                source_type=SourceType.TEXT,
+                label="↗ Оригинальный пост",
+                url=public_forward_url,
+            )
+        )
+
+    return ItemReferenceProjection(
+        item_id=item.id,
+        title=item.title or "Без названия",
+        original_available=owner_chat_available and item.telegram_message_id is not None,
+        source_actions=tuple(actions),
+    )
 
 
 def item_type_label(item_type: ItemType | None) -> str | None:

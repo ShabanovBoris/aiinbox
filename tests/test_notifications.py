@@ -88,6 +88,7 @@ async def make_ready_item(
     state=ItemState.ACTIVE,
     snoozed_until=None,
     attention_enabled=False,
+    telegram_message_id=None,
 ):
     async with session_factory() as session:
         user = User(
@@ -100,6 +101,7 @@ async def make_ready_item(
         await session.flush()
         item = Item(
             user_id=user.id,
+            telegram_message_id=telegram_message_id,
             processing_status=ProcessingStatus.READY,
             state=state,
             source_type=SourceType.TEXT,
@@ -171,7 +173,7 @@ async def test_timezone_digest_is_once_per_local_day(session_factory):
 
 
 async def test_digest_claim_becomes_successful_only_after_telegram_accepts(session_factory):
-    await make_ready_item(session_factory)
+    _, item_id = await make_ready_item(session_factory, telegram_message_id=731)
     now = datetime(2026, 9, 14, 6, 30)
 
     class InspectClaimBot(FakeBot):
@@ -184,7 +186,15 @@ async def test_digest_claim_becomes_successful_only_after_telegram_accepts(sessi
                 assert reminder.sent_at is None
             await super().send_message(chat_id, text, **kwargs)
 
-    assert await ReminderWorker(session_factory, InspectClaimBot()).process_once(now) == 1
+    bot = InspectClaimBot()
+    assert await ReminderWorker(session_factory, bot).process_once(now) == 1
+    assert len(bot.messages) == 1
+    buttons = [
+        button for row in bot.messages[0][2]["reply_markup"].inline_keyboard for button in row
+    ]
+    assert [(button.text, button.callback_data) for button in buttons] == [
+        ("1", f"item:view:{item_id}")
+    ]
     async with session_factory() as session:
         reminder = await session.scalar(select(Reminder).where(Reminder.type == DAILY_DIGEST))
         assert reminder.status == "SENT"
@@ -514,7 +524,12 @@ async def test_transient_notification_failure_retries_before_terminal_failure(se
 
 async def test_snoozed_item_becomes_active_and_notifies(session_factory):
     until = datetime(2026, 9, 14, 6, 0)
-    _, item_id = await make_ready_item(session_factory, state=ItemState.ACTIVE, snoozed_until=None)
+    _, item_id = await make_ready_item(
+        session_factory,
+        state=ItemState.ACTIVE,
+        snoozed_until=None,
+        telegram_message_id=732,
+    )
     await apply_item_action(session_factory, 42, item_id, "snooze", until)
     await update_notification_settings(session_factory, 42, daily_digest_enabled=False)
 
@@ -540,6 +555,13 @@ async def test_snoozed_item_becomes_active_and_notifies(session_factory):
         assert item.snoozed_until is None
         assert reminder.status == "SENT"
     assert "Вернулся" in bot.messages[0][1]
+    callbacks = {
+        button.callback_data
+        for row in bot.messages[0][2]["reply_markup"].inline_keyboard
+        for button in row
+        if button.callback_data
+    }
+    assert f"item:original:{item_id}" in callbacks
 
 
 async def test_failed_snooze_send_does_not_start_proactive_minimum_gap(session_factory):
@@ -731,7 +753,9 @@ async def test_generic_motivation_setting_is_strict_and_independent(session_fact
 
 
 async def test_proactive_delivery_persists_reminder_and_exposure(session_factory):
-    user_id, item_id = await make_ready_item(session_factory, attention_enabled=True)
+    user_id, item_id = await make_ready_item(
+        session_factory, attention_enabled=True, telegram_message_id=733
+    )
     await update_notification_settings(
         session_factory, 42, daily_digest_enabled=False, attention_enabled=True
     )
@@ -766,11 +790,18 @@ async def test_proactive_delivery_persists_reminder_and_exposure(session_factory
     urls = {
         button.url for row in kwargs["reply_markup"].inline_keyboard for button in row if button.url
     }
+    assert all(
+        button.callback_data is None
+        for row in kwargs["reply_markup"].inline_keyboard
+        for button in row
+        if button.url
+    )
     assert any(value.startswith("reminder:done:") for value in callbacks)
     assert any(value.startswith("reminder:later:") for value in callbacks)
     assert any(value.startswith("reminder:dismiss:") for value in callbacks)
     assert any(value.startswith("reminder:less:") for value in callbacks)
     assert any(value.startswith("reminder:open:") for value in callbacks)
+    assert any(value.startswith("reminder:original:") for value in callbacks)
     assert not any(value.startswith("item:done:") for value in callbacks)
     assert not any(value.startswith("item:archive:") for value in callbacks)
     assert "https://www.youtube.com/watch?v=example" in urls
@@ -788,6 +819,15 @@ async def test_proactive_delivery_persists_reminder_and_exposure(session_factory
         )
         assert reminder.user_id == user_id
         assert reminder.item_id == item_id
+        assert (
+            await session.scalar(
+                select(Event.id).where(
+                    Event.reminder_id == reminder.id,
+                    Event.event_type == "REMINDER_OPENED",
+                )
+            )
+            is None
+        )
         assert reminder.status == "SENT"
         assert reminder.sent_at == now
         assert reminder.payload_json["policy_level"] == 3

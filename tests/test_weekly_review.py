@@ -783,9 +783,11 @@ class _Message:
         self.from_user = SimpleNamespace(id=user_id)
         self.chat = SimpleNamespace(id=user_id)
         self.responses: list[str] = []
+        self.reply_markups = []
 
-    async def answer(self, text: str):
+    async def answer(self, text: str, **kwargs):
         self.responses.append(text)
+        self.reply_markups.append(kwargs.get("reply_markup"))
 
 
 @pytest.mark.asyncio
@@ -795,6 +797,15 @@ async def test_weekly_handler_sends_one_message_and_falls_back_from_invalid_user
     async with session_factory() as session:
         user = await _user(session, timezone="Not/A_Zone")
         await _item(session, user.id, title="Current task")
+        quick_win = await _item(
+            session,
+            user.id,
+            title="Quick step",
+            created_at=datetime.now(UTC) - timedelta(days=1),
+            priority=90,
+            minutes=10,
+        )
+        quick_win_id = quick_win.id
         await session.commit()
 
     message = _Message(42)
@@ -802,7 +813,11 @@ async def test_weekly_handler_sends_one_message_and_falls_back_from_invalid_user
 
     assert len(message.responses) == 1
     assert "Неделя" in message.responses[0]
-    assert "Активных actionable: 1" in message.responses[0]
+    assert "Активных actionable: 2" in message.responses[0]
+    assert "Быстрый шаг: Quick step" in message.responses[0]
+    buttons = [button for row in message.reply_markups[0].inline_keyboard for button in row]
+    assert [button.callback_data for button in buttons] == [f"item:view:{quick_win_id}"]
+    assert [button.text for button in buttons] == ["1"]
     assert "/weekly" in HELP_TEXT
 
 

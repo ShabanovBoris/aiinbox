@@ -886,3 +886,45 @@ def test_ask_format_and_keyboard_bound_references_and_validate_urls():
         ask_sources_keyboard([AskReference(1, 1, "unsafe", "WEB", "javascript:alert(1)")]) is None
     )
     assert ask_sources_keyboard([AskReference(1, None, "document", None, None)]) is None
+
+
+def test_ask_citations_show_destination_and_original_only_for_validated_items():
+    keyboard = ask_sources_keyboard(
+        [
+            AskReference(
+                42,
+                101,
+                "A cited video",
+                "YOUTUBE",
+                "https://www.youtube.com/watch?v=abc",
+                original_available=True,
+            ),
+            AskReference(
+                42,
+                None,
+                "The same composite Item",
+                None,
+                None,
+                original_available=True,
+            ),
+        ]
+    )
+
+    assert keyboard is not None
+    buttons = [button for row in keyboard.inline_keyboard for button in row]
+    assert [(button.text, button.url, button.callback_data) for button in buttons] == [
+        ("[1] ↗ YouTube", "https://www.youtube.com/watch?v=abc", None),
+        ("[1] ↩️ Оригинал", None, "item:original:42"),
+    ]
+
+
+def test_ask_composite_reference_keeps_original_without_guessing_a_source():
+    keyboard = ask_sources_keyboard(
+        [AskReference(43, None, "Composite", None, None, original_available=True)]
+    )
+
+    assert keyboard is not None
+    assert [button.callback_data for row in keyboard.inline_keyboard for button in row] == [
+        "item:original:43"
+    ]
+    assert not [button for row in keyboard.inline_keyboard for button in row if button.url]

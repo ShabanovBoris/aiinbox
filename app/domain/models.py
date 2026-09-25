@@ -165,13 +165,14 @@ class AskInboxResult(BaseModel):
 
 @dataclass(frozen=True, slots=True)
 class AskReference:
-    """Trusted presentation projection built from validated persisted Item/source rows."""
+    """Trusted citation projection; navigation is limited to accepted persisted references."""
 
     item_id: int
     source_id: int | None
     title: str
     source_type: str | None
     source_url: str | None
+    original_available: bool = False
 
 
 class AskDeliveryPayload(BaseModel):

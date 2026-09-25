@@ -128,19 +128,20 @@ async def test_today_records_shown_event_after_successful_send(
         user = User(telegram_user_id=42, telegram_chat_id=42)
         session.add(user)
         await session.flush()
-        session.add(
-            Item(
-                user_id=user.id,
-                processing_status=ProcessingStatus.READY,
-                state=ItemState.ACTIVE,
-                source_type=SourceType.TEXT,
-                processing_stage="READY",
-                user_note="today",
-                item_type=ItemType.ACTION,
-                title="Do it",
-                priority_score=80,
-            )
+        item = Item(
+            user_id=user.id,
+            processing_status=ProcessingStatus.READY,
+            state=ItemState.ACTIVE,
+            source_type=SourceType.TEXT,
+            processing_stage="READY",
+            user_note="today",
+            item_type=ItemType.ACTION,
+            title="Do it",
+            priority_score=80,
         )
+        session.add(item)
+        await session.flush()
+        item_id = item.id
         await session.commit()
 
     async def answer_after_send(self, text, **kwargs):
@@ -149,11 +150,15 @@ async def test_today_records_shown_event_after_successful_send(
                 await session.scalar(select(Event.id).where(Event.event_type == "TODAY_SHOWN"))
                 is None
             )
-        sent.append(text)
+        sent.append((text, kwargs))
 
     monkeypatch.setattr(Message, "answer", answer_after_send)
     await on_today(make_message(42), settings, session_factory)
-    assert sent == ["Сегодня:\n1. Do it — 80/100"]
+    assert sent[0][0] == "Сегодня:\n1. Do it — 80/100"
+    buttons = [button for row in sent[0][1]["reply_markup"].inline_keyboard for button in row]
+    assert [(button.text, button.callback_data) for button in buttons] == [
+        ("1", f"item:view:{item_id}")
+    ]
     async with session_factory() as session:
         assert (
             await session.scalar(select(Event.event_type).where(Event.event_type == "TODAY_SHOWN"))
@@ -216,6 +221,70 @@ async def test_first_read_only_command_persists_user(
         user = await session.scalar(select(User).where(User.telegram_user_id == 42))
         assert user is not None
         assert user.telegram_chat_id == 42
+
+
+async def test_inbox_category_and_search_selectors_match_visible_list_order(
+    settings, session_factory, monkeypatch
+):
+    from app.services.retrieval import list_category_items, list_inbox, search_items
+
+    async with session_factory() as session:
+        user = User(telegram_user_id=42, telegram_chat_id=42)
+        session.add(user)
+        await session.flush()
+        items = [
+            Item(
+                user_id=user.id,
+                telegram_message_id=index,
+                source_index=0,
+                processing_status=ProcessingStatus.READY,
+                state=ItemState.ACTIVE,
+                source_type=SourceType.TEXT,
+                processing_stage="READY",
+                user_note="needle",
+                title=title,
+                category="Shared",
+                item_type=ItemType.ACTION,
+                priority_score=priority,
+            )
+            for index, title, priority in ((1001, "Needle older", 40), (1002, "Needle newer", 80))
+        ]
+        session.add_all(items)
+        await session.commit()
+        for item, created_at in zip(
+            items, (datetime(2026, 9, 24), datetime(2026, 9, 25)), strict=True
+        ):
+            item.created_at = created_at
+        await session.commit()
+        expected = {
+            "Входящие:": await list_inbox(session, user.id),
+            "Категория: Shared": await list_category_items(session, user.id, "Shared"),
+            "Результаты поиска:": await search_items(session, user.id, "needle"),
+        }
+
+    sent = []
+
+    async def capture(self, text, **kwargs):
+        sent.append((text, kwargs.get("reply_markup")))
+
+    monkeypatch.setattr(Message, "answer", capture)
+    await on_inbox(make_message(42), settings, session_factory)
+    await on_category(make_message(42), settings, session_factory, "Shared")
+    await on_search(make_message(42), settings, session_factory, "needle")
+
+    for text, markup in sent:
+        heading = next(key for key in expected if text.startswith(key))
+        visible_items = expected[heading]
+        assert [
+            line.split(". ", 1)[1].split(" — ", 1)[0] for line in text.splitlines() if ". " in line
+        ] == [item.title for item in visible_items]
+        buttons = [button for row in markup.inline_keyboard for button in row]
+        assert [button.callback_data for button in buttons] == [
+            f"item:view:{item.id}" for item in visible_items
+        ]
+        assert [button.text for button in buttons] == [
+            str(index) for index in range(1, len(visible_items) + 1)
+        ]
 
 
 async def test_settings_command_persists_minimal_notification_settings(

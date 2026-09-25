@@ -12,7 +12,10 @@ from aiogram.methods import SendVideo
 from aiogram.types import ReplyParameters
 from sqlalchemy import select
 
-from app.domain.enums import ItemType, ProcessingStatus, SourceType
+from app.bot.keyboards import ask_sources_keyboard
+from app.bot.notify import send_item_failure, send_item_result
+from app.domain.enums import ItemState, ItemType, ProcessingStatus, SourceType
+from app.domain.models import AskDeliveryPayload, AskInboxCitation
 from app.errors import AppError, MediaTooLargeError
 from app.extractors import subprocess_runner
 from app.extractors import youtube as youtube_module
@@ -26,24 +29,30 @@ from app.services.delivery import (
     PROFILE_UPDATED,
     TELEGRAM_MAX_UPLOAD_BYTES,
     DeliveryWorker,
+    _load_ask_references,
     enqueue_item_delivery,
     enqueue_item_video_delivery,
     enqueue_profile_delivery,
     requeue_sending_deliveries,
 )
 from app.services.ingestion import ingest_message
-from app.storage.models import Delivery, Item, ItemSource, ProfileUpdateJob
+from app.storage.models import Delivery, Item, ItemSource, ProfileUpdateJob, User
 from tests.fakes import FakeTranscriber
 
 
 class FakeBot:
-    def __init__(self, failures: int = 0):
+    def __init__(self, failures: int = 0, send_errors=None):
         self.failures = failures
+        self.send_errors = list(send_errors or ())
         self.messages: list[tuple[int, str]] = []
         self.message_kwargs: list[dict] = []
+        self.message_calls: list[tuple[int, str, dict]] = []
         self.media_sends: list[tuple[int, str, object, dict]] = []
 
     async def send_message(self, chat_id, text, **kwargs):
+        self.message_calls.append((chat_id, text, kwargs))
+        if self.send_errors:
+            raise self.send_errors.pop(0)
         if self.failures:
             self.failures -= 1
             raise RuntimeError("telegram unavailable")
@@ -148,7 +157,7 @@ async def test_delivery_worker_sends_ready_item_and_marks_sent(session_factory):
         for row in bot.message_kwargs[0]["reply_markup"].inline_keyboard
         for button in row
     }
-    assert labels == {"••• Ещё"}
+    assert labels == {"↩️ Оригинал", "••• Ещё"}
 
     async with session_factory() as session:
         delivery = await session.scalar(select(Delivery))
@@ -802,6 +811,72 @@ async def test_video_result_replies_to_input_and_keeps_forward_origin_link(
     assert original_links == ([expected_original_url] if expected_original_url else [])
 
 
+@pytest.mark.parametrize(
+    ("status", "send"),
+    [
+        (ProcessingStatus.READY, send_item_result),
+        (ProcessingStatus.FAILED, send_item_failure),
+    ],
+)
+@pytest.mark.parametrize(
+    "source_type",
+    [
+        SourceType.TEXT,
+        SourceType.WEB,
+        SourceType.VOICE,
+        SourceType.AUDIO,
+        SourceType.VIDEO,
+        SourceType.YOUTUBE,
+        SourceType.INSTAGRAM,
+        SourceType.DOCUMENT,
+    ],
+)
+async def test_all_telegram_item_types_reply_to_capture(session_factory, status, send, source_type):
+    item = await make_item(session_factory, status=status)
+    async with session_factory() as session:
+        stored = await session.get(Item, item.id)
+        stored.source_type = source_type
+        await session.commit()
+    bot = FakeBot()
+
+    await send(bot, session_factory, item)
+
+    assert len(bot.message_calls) == 1
+    assert bot.message_calls[0][2]["reply_parameters"] == ReplyParameters(
+        message_id=1,
+        allow_sending_without_reply=True,
+    )
+
+
+async def test_deleted_reply_target_retries_once_without_reply_parameters(session_factory):
+    item = await make_item(session_factory)
+    bot = FakeBot(
+        send_errors=[
+            TelegramBadRequest(method=None, message="Bad Request: reply message not found")
+        ]
+    )
+
+    await send_item_result(bot, session_factory, item)
+
+    assert len(bot.message_calls) == 2
+    assert bot.message_calls[0][2]["reply_parameters"].message_id == 1
+    assert "reply_parameters" not in bot.message_calls[1][2]
+    assert len(bot.messages) == 1
+
+
+async def test_generic_telegram_bad_request_does_not_retry_unanchored(session_factory):
+    item = await make_item(session_factory)
+    bot = FakeBot(
+        send_errors=[TelegramBadRequest(method=None, message="Bad Request: chat not found")]
+    )
+
+    with pytest.raises(TelegramBadRequest, match="chat not found"):
+        await send_item_result(bot, session_factory, item)
+
+    assert len(bot.message_calls) == 1
+    assert bot.messages == []
+
+
 async def test_delivery_worker_retries_telegram_failure_without_losing_intent(session_factory):
     item = await make_item(session_factory, status=ProcessingStatus.FAILED)
     async with session_factory() as session:
@@ -896,3 +971,76 @@ async def test_profile_delivery_uses_telegram_chat_and_stable_payload(session_fa
     async with session_factory() as session:
         delivery = await session.scalar(select(Delivery).where(Delivery.type == PROFILE_UPDATED))
         assert delivery.status == "SENT"
+
+
+async def test_ask_navigation_resolves_only_cited_sources_and_never_guesses_composite_url(
+    session_factory,
+):
+    async with session_factory() as session:
+        user = await session.scalar(select(User).where(User.telegram_user_id == 42))
+        if user is None:
+            user = User(telegram_user_id=42, telegram_chat_id=42)
+            session.add(user)
+            await session.flush()
+        cited = Item(
+            user_id=user.id,
+            telegram_message_id=902,
+            source_index=0,
+            processing_status=ProcessingStatus.READY,
+            state=ItemState.ACTIVE,
+            source_type=SourceType.WEB,
+            processing_stage="READY",
+            user_note="",
+            title="Cited composite",
+        )
+        uncited = Item(
+            user_id=user.id,
+            telegram_message_id=903,
+            source_index=0,
+            processing_status=ProcessingStatus.READY,
+            state=ItemState.ACTIVE,
+            source_type=SourceType.WEB,
+            processing_stage="READY",
+            user_note="",
+            title="Not cited",
+        )
+        session.add_all([cited, uncited])
+        await session.flush()
+        first_source = ItemSource(
+            item_id=cited.id,
+            source_index=0,
+            source_type=SourceType.WEB,
+            source_url="https://example.com/first",
+            extraction_status="READY",
+        )
+        second_source = ItemSource(
+            item_id=cited.id,
+            source_index=1,
+            source_type=SourceType.WEB,
+            source_url="https://example.org/second",
+            extraction_status="READY",
+        )
+        session.add_all([first_source, second_source])
+        await session.flush()
+        payload = AskDeliveryPayload(
+            answer="Answer",
+            references=[
+                AskInboxCitation(item_id=cited.id, source_id=first_source.id),
+                AskInboxCitation(item_id=cited.id, source_id=None),
+            ],
+        )
+        refs = await _load_ask_references(session, user.id, payload)
+
+        assert [reference.item_id for reference in refs] == [cited.id, cited.id]
+        assert refs[0].source_url == "https://example.com/first"
+        assert refs[1].source_url is None
+        assert all(reference.original_available for reference in refs)
+        markup = ask_sources_keyboard(refs)
+        await session.commit()
+
+    buttons = [button for row in markup.inline_keyboard for button in row]
+    assert [button.url for button in buttons if button.url] == ["https://example.com/first"]
+    assert [button.callback_data for button in buttons if button.callback_data] == [
+        f"item:original:{cited.id}"
+    ]
+    assert all("903" not in (button.callback_data or "") for button in buttons)

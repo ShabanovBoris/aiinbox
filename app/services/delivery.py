@@ -313,6 +313,9 @@ async def _load_ask_references(session, user_id: int, payload: AskDeliveryPayloa
                 title=(item.title or "(untitled)")[:120],
                 source_type=source_type,
                 source_url=source_url,
+                # `_send` already requires the owning User's current chat before
+                # resolving references, so this Item identity can be copied safely.
+                original_available=item.telegram_message_id is not None,
             )
         )
     return tuple(references)

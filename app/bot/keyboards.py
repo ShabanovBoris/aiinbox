@@ -4,8 +4,13 @@ from collections.abc import Sequence
 
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
-from app.bot.presentation import bound_source_button_label, item_type_label, source_url_label
-from app.bot.provenance import forward_original_url
+from app.bot.presentation import (
+    ItemReferenceProjection,
+    bound_source_button_label,
+    item_reference_projection,
+    item_type_label,
+    source_url_label,
+)
 from app.domain.category_tokens import category_token as category_callback_token
 from app.domain.enums import ItemState, ItemType, ProcessingStatus, SourceType
 from app.domain.models import AskReference
@@ -21,16 +26,29 @@ def item_keyboard(
     item: Item,
     sources: Sequence[ItemSource] | None = None,
     focus_source_id: int | None = None,
+    *,
+    original_available: bool | None = None,
 ) -> InlineKeyboardMarkup:
     """Keep the primary surface focused on source access and explicit recovery."""
     # ❌ Удалены постоянные lifecycle, interest and feedback rows: они открываются
     # из ephemeral More/Feedback projections, а их durable semantics остаются прежними.
-    rows = []
-    source_actions = _source_action_buttons(
+    reference = item_reference_projection(
         item,
         sources,
-        focus_source_id,
-        video_callback_prefix=f"item:video:{item.id}:",
+        owner_chat_available=(
+            item.telegram_message_id is not None
+            if original_available is None
+            else original_available
+        ),
+        focus_source_id=focus_source_id,
+    )
+    rows = []
+    if reference.original_available:
+        rows.append(
+            [InlineKeyboardButton(text="↩️ Оригинал", callback_data=f"item:original:{item.id}")]
+        )
+    source_actions = _reference_action_buttons(
+        reference, video_callback_prefix=f"item:video:{item.id}:"
     )
     failed_sources = [source for source in sources or () if source.extraction_status == "FAILED"]
     has_retryable_source_failure = any(not source.failure_is_permanent for source in failed_sources)
@@ -154,25 +172,45 @@ def ask_sources_keyboard(
 ) -> InlineKeyboardMarkup | None:
     """Expose only persisted HTTP(S) URLs for citations already validated by Ask."""
     rows = []
+    original_item_ids = set()
     for index, reference in enumerate(references[:5], start=1):
-        if not reference.source_url:
-            continue
-        try:
-            source_type = SourceType(reference.source_type)
-        except (TypeError, ValueError):
-            source_type = SourceType.TEXT
-        label = source_url_label(source_type, reference.source_url)
-        if label is None:
-            continue
-        rows.append(
-            [
-                InlineKeyboardButton(
-                    text=bound_source_button_label(f"[{index}] {label}"),
-                    url=reference.source_url,
+        row = []
+        if reference.source_url:
+            try:
+                source_type = SourceType(reference.source_type)
+            except (TypeError, ValueError):
+                source_type = SourceType.TEXT
+            label = source_url_label(source_type, reference.source_url)
+            if label is not None:
+                row.append(
+                    InlineKeyboardButton(
+                        text=bound_source_button_label(f"[{index}] {label}"),
+                        url=reference.source_url,
+                    )
                 )
-            ]
-        )
+        if reference.original_available and reference.item_id not in original_item_ids:
+            row.append(
+                InlineKeyboardButton(
+                    text=f"[{index}] ↩️ Оригинал",
+                    callback_data=f"item:original:{reference.item_id}",
+                )
+            )
+            original_item_ids.add(reference.item_id)
+        if row:
+            rows.append(row)
     return InlineKeyboardMarkup(inline_keyboard=rows) if rows else None
+
+
+def item_navigation_keyboard(item_ids: Sequence[int]) -> InlineKeyboardMarkup | None:
+    """Numbered selectors preserve the visible order without expanding list cards."""
+    buttons = [
+        InlineKeyboardButton(text=str(index), callback_data=f"item:view:{item_id}")
+        for index, item_id in enumerate(item_ids[:20], start=1)
+    ]
+    if not buttons:
+        return None
+    rows = [buttons[index : index + 5] for index in range(0, len(buttons), 5)]
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def _source_action_buttons(
@@ -182,95 +220,30 @@ def _source_action_buttons(
     *,
     video_callback_prefix: str,
 ) -> list[InlineKeyboardButton]:
-    """Build safe, destination-labeled source actions from the persisted projection."""
-    buttons = []
-    ordered_sources = sorted(
-        sources or (),
-        key=lambda source: (source.source_index, source.id if source.id is not None else 0),
+    """Keep Bot API callback construction at the keyboard edge."""
+    # ❌ Удалена отдельная сборка URL/media действий из keyboards: единая
+    # provenance projection не даёт READY, Ask и Reminder расходиться по labels.
+    reference = item_reference_projection(
+        item, sources, owner_chat_available=False, focus_source_id=focus_source_id
     )
-    if focus_source_id is not None and any(
-        source.id == focus_source_id for source in ordered_sources
-    ):
-        ordered_sources.sort(key=lambda source: source.id != focus_source_id)
-    security_rejected_urls = {
-        source.source_url
-        for source in ordered_sources
-        if source.error_code == "SECURITY_REJECTED" and source.source_url
-    }
+    return _reference_action_buttons(reference, video_callback_prefix=video_callback_prefix)
 
-    if item.processing_status is ProcessingStatus.READY:
-        video_sources = [
-            source
-            for source in ordered_sources
-            if source.id is not None
-            and source.source_type in {SourceType.YOUTUBE, SourceType.INSTAGRAM}
-            and source.extraction_status == "READY"
-            and source.source_url
-            and source_url_label(source.source_type, source.source_url)
-        ]
-        totals = {
-            source_type: sum(source.source_type is source_type for source in video_sources)
-            for source_type in (SourceType.YOUTUBE, SourceType.INSTAGRAM)
-        }
-        ranks = {SourceType.YOUTUBE: 0, SourceType.INSTAGRAM: 0}
-        source_ranks = {}
-        for source in video_sources:
-            ranks[source.source_type] += 1
-            source_ranks[id(source)] = ranks[source.source_type]
-        for source in video_sources:
-            label = "YouTube" if source.source_type is SourceType.YOUTUBE else "Reel"
-            if totals[source.source_type] > 1:
-                label += f" {source_ranks[id(source)]}"
-            # A composite Item may contain several clips; each callback names its
-            # exact ItemSource so the delivery worker never guesses which one to send.
+
+def _reference_action_buttons(
+    reference: ItemReferenceProjection, *, video_callback_prefix: str
+) -> list[InlineKeyboardButton]:
+    """Translate stable provenance facts into this surface's callback namespace."""
+    buttons = []
+    for action in reference.source_actions:
+        if action.can_resend_media and action.source_id is not None:
             buttons.append(
                 InlineKeyboardButton(
-                    text=f"📩 Прислать {label}",
-                    callback_data=f"{video_callback_prefix}{source.id}",
+                    text=action.label,
+                    callback_data=f"{video_callback_prefix}{action.source_id}",
                 )
             )
-
-    source_urls: list[tuple[str, SourceType]] = []
-    seen_urls: set[str] = set()
-    for source in ordered_sources:
-        if (
-            source.source_url
-            and source.source_url not in security_rejected_urls
-            and source.source_url not in seen_urls
-            and source_url_label(source.source_type, source.source_url)
-        ):
-            source_urls.append((source.source_url, source.source_type))
-            seen_urls.add(source.source_url)
-    # ❌ Удалено общее имя «Открыть N»: URL действия теперь называют назначение,
-    # а идентичные URL схлопываются без потери отдельных source-specific resend actions.
-    if (
-        item.source_url
-        and item.source_url not in security_rejected_urls
-        and item.source_url not in seen_urls
-    ):
-        if source_url_label(item.source_type, item.source_url):
-            source_urls.insert(0, (item.source_url, item.source_type))
-
-    original_url = forward_original_url(item.source_metadata_json)
-    if original_url:
-        # Prefer the explicit provenance label and avoid two buttons for one URL.
-        source_urls = [
-            (url, source_type) for url, source_type in source_urls if url != original_url
-        ]
-
-    base_labels = [source_url_label(source_type, url) for url, source_type in source_urls]
-    label_counts = {label: base_labels.count(label) for label in base_labels}
-    label_indexes: dict[str, int] = {}
-    for (source_url, source_type), base_label in zip(source_urls, base_labels, strict=True):
-        if base_label is None:
-            continue
-        label = base_label
-        if label_counts[base_label] > 1:
-            label_indexes[base_label] = label_indexes.get(base_label, 0) + 1
-            label = bound_source_button_label(f"{label} {label_indexes[base_label]}")
-        buttons.append(InlineKeyboardButton(text=label, url=source_url))
-    if original_url:
-        buttons.append(InlineKeyboardButton(text="↗ Оригинальный пост", url=original_url))
+        elif action.url is not None:
+            buttons.append(InlineKeyboardButton(text=action.label, url=action.url))
     return buttons
 
 
@@ -299,13 +272,33 @@ def proactive_reminder_keyboard(
     sources: Sequence[ItemSource] | None = None,
     *,
     focus_source_id: int | None = None,
+    original_available: bool | None = None,
 ) -> InlineKeyboardMarkup:
     """Project a focused reaction surface whose callbacks retain Reminder identity."""
-    rows = _source_action_rows(
+    reference = item_reference_projection(
         item,
         sources,
-        focus_source_id,
-        video_callback_prefix=f"reminder:open:{reminder_id}:",
+        owner_chat_available=(
+            item.telegram_message_id is not None
+            if original_available is None
+            else original_available
+        ),
+        focus_source_id=focus_source_id,
+    )
+    rows = []
+    if reference.original_available:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text="↩️ Оригинал", callback_data=f"reminder:original:{reminder_id}"
+                )
+            ]
+        )
+    rows.extend(
+        [button]
+        for button in _reference_action_buttons(
+            reference, video_callback_prefix=f"reminder:open:{reminder_id}:"
+        )[:_MAX_SOURCE_MENU_ACTIONS]
     )
     rows.extend(
         [
@@ -330,6 +323,23 @@ def proactive_reminder_keyboard(
         ]
     )
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def reminder_sources_keyboard(
+    reminder_id: int,
+    item: Item,
+    sources: Sequence[ItemSource] | None = None,
+    *,
+    focus_source_id: int | None = None,
+) -> InlineKeyboardMarkup | None:
+    """Keep fallback source resends attributed to their proactive Reminder."""
+    rows = _source_action_rows(
+        item,
+        sources,
+        focus_source_id,
+        video_callback_prefix=f"reminder:open:{reminder_id}:",
+    )[:_MAX_SOURCE_MENU_ACTIONS]
+    return InlineKeyboardMarkup(inline_keyboard=rows) if rows else None
 
 
 def motivation_reminder_keyboard(reminder_id: int) -> InlineKeyboardMarkup:
