@@ -93,6 +93,30 @@ All post-MVP work must preserve the current architecture:
 - [PM-20 — Calendar-aware Attention](PM-20_CALENDAR_AWARE_ATTENTION.md)
 - [PM-14…PM-20 — Remaining roadmap index](PM-14_PM-20_INDEX.md)
 
+
+## 3.2 Quality & UX Polish — current focus
+
+Before resuming PM-14+ feature expansion, complete the five stabilization PRs:
+
+- [POLISH-01 — AI Analysis v2](../polish/POLISH-01_AI_ANALYSIS_V2.md)
+- [POLISH-02 — Compact Telegram Item UI](../polish/POLISH-02_COMPACT_TELEGRAM_UI.md)
+- [POLISH-03 — Unified Provenance & Original Access](../polish/POLISH-03_UNIFIED_PROVENANCE_ORIGINAL_ACCESS.md)
+- [POLISH-04 — Hooks & Notifications v2](../polish/POLISH-04_HOOKS_NOTIFICATIONS_V2.md)
+- [POLISH-05 — Telegram Navigation & AI Reliability](../polish/POLISH-05_NAVIGATION_AND_AI_RELIABILITY.md)
+- [Milestone index and freeze policy](../polish/README.md)
+
+Current sequencing decision:
+
+~~~text
+POLISH-01 → POLISH-02 → POLISH-03 → POLISH-04 → POLISH-05
+→ explicit quality review
+→ resume PM-14+
+~~~
+
+PM-14 and PM-16+ are ON HOLD during this milestone. This is a product-quality
+sequencing decision, not a hard technical dependency. Reliability/security fixes
+remain allowed. PM-15 is already merged and remains supported.
+
 ## 4. Milestone grouping
 
 ### Milestone A — Capture Intent
@@ -137,24 +161,35 @@ Goal: make resurfacing useful and engaging rather than repetitive.
 
 Goal: expose trends in attention, backlog growth, completion, neglect and category balance.
 
+### Milestone P — Quality & UX Polish — CURRENT FOCUS
+
+- POLISH-01 AI Analysis v2 — PLANNED
+- POLISH-02 Compact Telegram Item UI — PLANNED
+- POLISH-03 Unified Provenance & Original Access — PLANNED
+- POLISH-04 Hooks & Notifications v2 — PLANNED
+- POLISH-05 Telegram Navigation & AI Reliability — PLANNED
+
+Goal: make the existing AI understanding, Telegram presentation, source navigation,
+reminders and reliability worth extending before new capability is added.
+
 ### Milestone G — Knowledge
 
 - PM-13 Ask My Inbox — DONE (PR #42 merged)
-- PM-14 Hybrid Semantic Search — PLANNED, evidence-gated
+- PM-14 Hybrid Semantic Search — ON HOLD until POLISH-01…05 quality review; still evidence-gated
 
 Goal: make stored material queryable as a personal knowledge base.
 
 ### Milestone H — Portability & Cost
 
-PM-15 Export / Ownership  
-PM-16 LLM Routing  
-PM-17 Ollama
+- PM-15 Export / Ownership — DONE (PR #44 merged)
+- PM-16 LLM Routing — ON HOLD until polish milestone review
+- PM-17 Ollama — ON HOLD; depends on PM-16
 
 ### Milestone I — Additional Clients & Context
 
-PM-18 HTTP API  
-PM-19 Android  
-PM-20 Calendar-aware Attention
+- PM-18 HTTP API — ON HOLD until polish milestone review
+- PM-19 Android — ON HOLD; depends on PM-18
+- PM-20 Calendar-aware Attention — ON HOLD until the current core is polished
 
 ## 5. PM-01 — User Interest Level
 
@@ -438,7 +473,7 @@ Answers must identify source Items so hallucinated “memory” cannot silently 
 
 ## 18. PM-14 — Hybrid Semantic Search
 
-Status: PLANNED. Start only after PM-13 usage records concrete vocabulary-mismatch
+Status: ON HOLD until POLISH-01…05 quality review. After the hold is lifted, start only after PM-13 usage records concrete vocabulary-mismatch
 queries where relevant saved Items are not usefully retrieved by FTS5.
 
 Keep FTS5 and add one rebuildable Item-level embedding projection stored in SQLite.
@@ -453,7 +488,7 @@ Detailed specification: [PM-14_HYBRID_SEMANTIC_SEARCH.md](PM-14_HYBRID_SEMANTIC_
 
 ## 19. PM-15 — Export / Ownership
 
-Status: IN_REVIEW.
+Status: DONE. PM-15 was implemented and merged to main in PR #44.
 
 Backup restores AIInbox; export gives the user portable data outside AIInbox.
 Add durable background `/export` generation with compact/full modes, a versioned
@@ -467,7 +502,7 @@ Detailed specification: [PM-15_EXPORT_OWNERSHIP.md](PM-15_EXPORT_OWNERSHIP.md).
 
 ## 20. PM-16 — Per-operation LLM Routing
 
-Status: PLANNED.
+Status: ON HOLD until the Quality & UX Polish milestone is reviewed.
 
 Route explicit operation classes such as FINAL_ANALYSIS, CHUNK_SUMMARY, VISION,
 TRANSCRIPTION, PROFILE_PATCH, ATTENTION_HOOK, ASK_INBOX and EMBEDDING through a
@@ -482,7 +517,7 @@ Detailed specification: [PM-16_PER_OPERATION_LLM_ROUTING.md](PM-16_PER_OPERATION
 
 ## 21. PM-17 — Ollama / Local Models
 
-Status: PLANNED. Depends on PM-16.
+Status: ON HOLD. Depends on PM-16 and the Quality & UX Polish milestone review.
 
 Add `ollama` as an optional routed provider for selected low-risk/private
 operations. Initial targets are CHUNK_SUMMARY, ATTENTION_HOOK and EMBEDDING.
@@ -496,7 +531,7 @@ Detailed specification: [PM-17_OLLAMA_LOCAL_MODELS.md](PM-17_OLLAMA_LOCAL_MODELS
 
 ## 22. PM-18 — HTTP API
 
-Status: PLANNED.
+Status: ON HOLD until the Quality & UX Polish milestone is reviewed.
 
 Expose existing application services through an authenticated versioned FastAPI
 `/v1` interface. API endpoints remain thin adapters; they do not duplicate
@@ -510,7 +545,7 @@ Detailed specification: [PM-18_HTTP_API.md](PM-18_HTTP_API.md).
 
 ## 23. PM-19 — Android Client
 
-Status: PLANNED. Depends on PM-18.
+Status: ON HOLD. Depends on PM-18 and the Quality & UX Polish milestone review.
 
 Build a native thin Android client over `/v1`: Share Sheet text/URL capture,
 offline retry, Inbox/detail, Today, Attention, Search, Ask, Weekly, lifecycle
@@ -524,7 +559,7 @@ Detailed specification: [PM-19_ANDROID_CLIENT.md](PM-19_ANDROID_CLIENT.md).
 
 ## 24. PM-20 — Calendar-aware Attention
 
-Status: PLANNED. Depends on the Attention engine; PM-18/19 provide the recommended
+Status: ON HOLD until the Quality & UX Polish milestone is reviewed. Depends on the Attention engine; PM-18/19 provide the recommended
 initial calendar transport.
 
 Use optional fresh busy/free windows together with Attention score and
