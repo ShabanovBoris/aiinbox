@@ -443,6 +443,12 @@ Items и подавление недавно показанных Items. Каж�
 записывается `ATTENTION_SHOWN`; автоматических сообщений команда не планирует.
 `/today` и daily digest остаются основаны на `priority_score`.
 
+Ручные карточки `/attention` показывают позицию, title и ограниченный preview
+сохранённого summary. Attention/priority score, интерес, возраст и ranking reason
+не выводятся в карточке. Обычные source actions остаются доступны через компактную
+клавиатуру Item; `ATTENTION_SHOWN` по-прежнему записывается только после успешной
+отправки каждой карточки.
+
 ### `/weekly`
 
 On-demand read-only обзор последних семи локальных календарных дней, включая
@@ -748,11 +754,25 @@ No unbounded in-memory/media fan-out.
 Ingestion отвечает быстро. Длинная работа идёт в фоне; результат приходит после READY.
 Если vision недоступен, UI должен честно обозначить transcript-only analysis.
 
-## 70. Open button
+## 70. Telegram Item presentation
 
-Item с URL-источником получает Telegram `🔗 Открыть`, ведущую на source URL.
-Forwarded public channel message получает отдельную кнопку `↗ Открыть оригинал`
-только если Telegram дал public username канала и original message id.
+По умолчанию READY result показывает сохранённое подтверждение, title и
+outcome-first summary. Существенное ограничение полноты анализа остаётся коротким
+предупреждением; category, type, priority, interest, next action и priority reason
+показываются только через `ℹ️ Детали`.
+
+Первичная inline-клавиатура отдаёт приоритет возврату к содержимому: кнопки
+открытия и повторной отправки источника и `••• Ещё`. Жизненный цикл Item, уровень интереса,
+явная обратная связь и Details находятся за дополнительным меню. Interest,
+feedback, lifecycle Events, retry и durable video Delivery сохраняют прежние
+application-service semantics. Навигация по меню — read-only projection и не
+создаёт в SQLite состояние открытого меню.
+
+URL source action показывается только для корректного HTTP(S) URL с hostname; на
+кнопке отображается bounded destination label без query/path. Public forwarded
+channel получает `↗ Оригинальный пост` только если Telegram дал public username и
+original message id. Private-origin navigation относится к POLISH-03.
+
 READY/FAILED уведомление по Item с VIDEO отправляется ответом на сообщение,
 которое пользователь отправил или переслал боту. Reply preview возвращает к
 копии видео в чате с ботом; для публичного пересланного поста кнопка выше ведёт

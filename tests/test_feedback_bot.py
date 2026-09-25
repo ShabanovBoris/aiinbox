@@ -12,6 +12,7 @@ from app.bot.keyboards import (
     feedback_category_keyboard,
     feedback_menu_keyboard,
     item_keyboard,
+    item_sources_keyboard,
 )
 from app.domain.enums import ItemState, ItemType, ProcessingStatus, SourceType
 from app.services import feedback as feedback_service
@@ -163,7 +164,7 @@ def _callback_data(markup) -> list[str]:
     ]
 
 
-def test_ready_keyboard_keeps_existing_actions_and_adds_compact_feedback():
+def test_ready_primary_keyboard_keeps_only_bounded_content_actions_and_more():
     item = Item(
         id=7,
         user_id=1,
@@ -218,16 +219,19 @@ def test_ready_keyboard_keeps_existing_actions_and_adds_compact_feedback():
     callbacks = _callback_data(markup)
     labels = [button.text for row in markup.inline_keyboard for button in row]
 
-    assert labels[0:3] == ["1", "2 ✓", "3"]
-    assert labels[3:6] == ["👍 Полезно", "👎 Не моё", "⚙ Исправить"]
-    assert "item:done:7" in callbacks
-    assert "item:later:7" in callbacks
-    assert "item:archive:7" in callbacks
+    assert "••• Ещё" in labels
+    assert not {"1", "2 ✓", "3", "👍 Полезно", "👎 Не моё", "⚙ Исправить"} & set(labels)
+    assert not {"item:done:7", "item:later:7", "item:archive:7"} & set(callbacks)
     assert "item:video:7:11" in callbacks
+    assert "item:sources:7" in callbacks
     assert "item:retry:7" in callbacks
     assert "https://t.me/public_channel/42" in [
-        button.url for row in markup.inline_keyboard for button in row if button.url
+        button.url
+        for row in item_sources_keyboard(item, sources).inline_keyboard
+        for button in row
+        if button.url
     ]
+    assert not any(label.startswith("🔗 Открыть") for label in labels)
 
 
 def test_non_ready_keyboard_does_not_expose_feedback_controls():
@@ -265,9 +269,7 @@ def test_category_keyboard_bounds_the_number_of_choices():
     assert len(markup.inline_keyboard) == 21
 
 
-async def test_feedback_menu_back_restores_source_aware_item_keyboard_without_events(
-    settings, session_factory
-):
+async def test_feedback_back_returns_to_more_hierarchy_without_events(settings, session_factory):
     item_id = await _create_ready_item(session_factory, completeness="PARTIAL")
     async with session_factory() as session:
         session.add_all(
@@ -334,13 +336,11 @@ async def test_feedback_menu_back_restores_source_aware_item_keyboard_without_ev
     await on_feedback_callback(back, settings, session_factory)
 
     callbacks = _callback_data(message.reply_markup)
-    assert f"item:interest:{item_id}:2" in callbacks
-    assert f"feedback:useful:{item_id}" in callbacks
-    assert f"item:video:{item_id}:{sources[0].id}" in callbacks
-    assert f"item:retry:{item_id}" in callbacks
-    assert "https://www.youtube.com/watch?v=ready" in [
-        button.url for row in message.reply_markup.inline_keyboard for button in row if button.url
-    ]
+    assert f"item:interest_menu:{item_id}" in callbacks
+    assert f"feedback:menu:{item_id}" in callbacks
+    assert f"item:details:{item_id}" in callbacks
+    assert f"item:back:{item_id}" in callbacks
+    assert not any(value.startswith("item:video:") for value in callbacks)
     assert await _event_count(session_factory, item_id) == 0
 
 
@@ -450,7 +450,7 @@ async def test_primary_feedback_clicks_with_different_ids_remain_distinct(
         assert [event.event_type for event in events] == ["USEFUL", "USEFUL"]
 
 
-async def test_category_callback_corrects_item_and_refreshes_canonical_result(
+async def test_category_callback_corrects_item_and_keeps_feedback_menu_open(
     settings, session_factory
 ):
     item_id = await _create_ready_item(session_factory, category="Programming")
@@ -475,12 +475,13 @@ async def test_category_callback_corrects_item_and_refreshes_canonical_result(
         assert event.event_type == "CATEGORY_CORRECTED"
         assert event.payload_json["from"] == "Programming"
         assert event.payload_json["to"] == "AI"
-    assert "Категория: AI" in message.text
-    assert f"feedback:menu:{item_id}" in _callback_data(message.reply_markup)
+    assert message.text == "Old result"
+    assert f"feedback:back:{item_id}" in _callback_data(message.reply_markup)
+    assert f"feedback:useful:{item_id}" in _callback_data(message.reply_markup)
     assert callback.answers == ["Категория изменена"]
 
 
-async def test_replayed_category_callback_refreshes_latest_value_without_reapplying(
+async def test_replayed_category_callback_keeps_feedback_menu_without_reapplying(
     settings, session_factory
 ):
     item_id = await _create_ready_item(session_factory, category="Programming")
@@ -527,7 +528,8 @@ async def test_replayed_category_callback_refreshes_latest_value_without_reapply
         )
         assert stored.category == "Piano"
         assert len(corrections) == 2
-    assert "Категория: Piano" in message.text
+    assert message.text == "stale result"
+    assert f"feedback:back:{item_id}" in _callback_data(message.reply_markup)
     assert callback.answers == ["Категория без изменений"]
 
 
@@ -609,13 +611,12 @@ async def test_type_callback_updates_today_and_keeps_priority(settings, session_
         assert stored.priority_score == 72
         assert [item.id for item in today] == [item_id]
         assert event.event_type == "TYPE_CORRECTED"
-    assert "Тип: LEARN" in message.text
+    assert message.text is None
+    assert f"feedback:back:{item_id}" in _callback_data(message.reply_markup)
     assert callback.answers == ["Тип изменён"]
 
 
-async def test_priority_feedback_from_menu_closes_menu_without_changing_score(
-    settings, session_factory
-):
+async def test_priority_feedback_stays_in_menu_without_changing_score(settings, session_factory):
     item_id = await _create_ready_item(session_factory)
     message = FakeCallbackMessage(reply_markup=feedback_menu_keyboard(item_id))
     callback = FakeCallback(42, f"feedback:priority_higher:{item_id}", "priority-higher")
@@ -630,8 +631,8 @@ async def test_priority_feedback_from_menu_closes_menu_without_changing_score(
         assert event.event_type == "PRIORITY_HIGHER"
         assert event.payload_json["priority_score_at_feedback"] == 72
     callbacks = _callback_data(message.reply_markup)
-    assert f"feedback:menu:{item_id}" in callbacks
-    assert f"feedback:priority_higher:{item_id}" not in callbacks
+    assert f"feedback:back:{item_id}" in callbacks
+    assert f"feedback:priority_higher:{item_id}" in callbacks
     assert callback.answers == ["Записал сигнал о приоритете"]
 
 

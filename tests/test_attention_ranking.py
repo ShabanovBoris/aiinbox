@@ -722,9 +722,11 @@ async def test_attention_preview_keeps_item_source_actions_and_canonical_state(
         item = await session.get(Item, item_id)
         events = (await session.scalars(select(Event).where(Event.item_id == item_id))).all()
 
-    assert "Внимание:" in card and "Приоритет: 80/100" in card
-    assert "Интерес: 3/3" in card and "Возраст:" in card and "Почему сейчас:" in card
-    assert {"✅ Done", "⏰ Later", "🗄 Archive", "📹 Отправить YouTube", "🔗 Открыть"} <= labels
+    assert "Video source" in card
+    assert "Внимание:" not in card and "Приоритет:" not in card
+    assert "Интерес:" not in card and "Возраст:" not in card and "Почему сейчас:" not in card
+    assert {"📩 Прислать YouTube", "↗ YouTube", "••• Ещё"} <= labels
+    assert not {"✅ Готово", "⏰ Позже", "🗄 Архив"} & labels
     assert item.priority_score == 80
     assert item.interest_level == 3
     assert item.state is ItemState.ACTIVE
@@ -794,11 +796,11 @@ def test_attention_reason_is_deterministic_and_grounded_in_score_components():
     assert reason == format_attention_reason(rank)
     assert reason == "Не показывался 19 дн.; Высокий приоритет; Высокий интерес"
     assert "Без названия" in formatted
-    assert "Внимание: 91/100" in formatted
-    assert "Приоритет: 82/100" in formatted
-    assert "Интерес: 3/3" in formatted
-    assert "Возраст: 47 дн." in formatted
-    assert reason in formatted
+    assert "Внимание:" not in formatted
+    assert "Приоритет:" not in formatted
+    assert "Интерес:" not in formatted
+    assert "Возраст:" not in formatted
+    assert "Почему сейчас:" not in formatted
 
 
 # The fallback must identify a calculated score without claiming it is high.

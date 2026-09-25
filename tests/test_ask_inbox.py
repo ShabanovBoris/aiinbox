@@ -881,6 +881,7 @@ def test_ask_format_and_keyboard_bound_references_and_validate_urls():
     assert keyboard is not None
     assert len(keyboard.inline_keyboard) == 1
     assert keyboard.inline_keyboard[0][0].url == "https://example.com/source"
+    assert keyboard.inline_keyboard[0][0].text == "[1] ↗ Статья — example.com"
     assert (
         ask_sources_keyboard([AskReference(1, 1, "unsafe", "WEB", "javascript:alert(1)")]) is None
     )

@@ -578,7 +578,7 @@ def test_partial_source_prompt_names_missing_source_and_forbids_inference():
     assert "only successfully extracted sources" in prompt
 
 
-def test_forwarded_ready_item_shows_source_and_public_original_link_only_when_complete():
+def test_forwarded_ready_item_keeps_public_original_link_without_verbose_source_metadata():
     metadata = normalize_forward_origin(_channel_origin())
     item = Item(
         id=1,
@@ -593,10 +593,10 @@ def test_forwarded_ready_item_shows_source_and_public_original_link_only_when_co
         source_metadata_json=metadata,
     )
 
-    assert "Источник: Android Developers" in format_ready_item(item)
+    assert "Источник:" not in format_ready_item(item)
     buttons = [button for row in item_keyboard(item).inline_keyboard for button in row]
     assert any(
-        button.text == "↗ Открыть оригинал" and button.url == "https://t.me/androiddev/8712"
+        button.text == "↗ Оригинальный пост" and button.url == "https://t.me/androiddev/8712"
         for button in buttons
     )
 
@@ -605,7 +605,36 @@ def test_forwarded_ready_item_shows_source_and_public_original_link_only_when_co
     assert forward_original_url(incomplete) is None
     item.source_metadata_json = incomplete
     buttons = [button for row in item_keyboard(item).inline_keyboard for button in row]
-    assert all(button.text != "↗ Открыть оригинал" for button in buttons)
+    assert all(button.text != "↗ Оригинальный пост" for button in buttons)
+
+
+def test_public_original_button_deduplicates_an_identical_source_url():
+    metadata = normalize_forward_origin(_channel_origin())
+    original_url = forward_original_url(metadata)
+    item = Item(
+        id=1,
+        user_id=1,
+        processing_status=ProcessingStatus.READY,
+        source_type=SourceType.WEB,
+        user_note="",
+        title="Forwarded post",
+        source_url=original_url,
+        source_metadata_json=metadata,
+    )
+    source = ItemSource(
+        id=19,
+        item_id=1,
+        source_index=0,
+        source_type=SourceType.WEB,
+        source_url=original_url,
+        extraction_status="READY",
+    )
+
+    buttons = [button for row in item_keyboard(item, [source]).inline_keyboard for button in row]
+    original_buttons = [button for button in buttons if button.url == original_url]
+
+    assert len(original_buttons) == 1
+    assert original_buttons[0].text == "↗ Оригинальный пост"
 
 
 async def test_unsupported_forwarded_media_fails_gracefully(settings, monkeypatch):
