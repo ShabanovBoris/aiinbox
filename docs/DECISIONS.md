@@ -449,36 +449,44 @@ stable template attribution stored in the Reminder payload.
 
 ## D-033 — Generic motivation is a durable PM-08 intervention
 
-Context: backlog-level nudges have no single Item, but remain unsolicited
-notifications subject to the same interruption policy as proactive reminders.
+Context: deterministic motivation signals remain useful, but each new user-facing
+interruption must return one concrete saved material while retaining a
+user-level Reminder claim.
 
-Decision: derive generic candidates only from deterministic Item/Event facts.
-Persist each intent as `MOTIVATION_NUDGE` with `item_id=NULL` and a local-day
-slot identity guarded by partial unique indexes. Share PM-08's daily budget,
-minimum gap, quiet hours and cross-type claim reservation; apply a separate
-intensity-based generic cap. Prefer proactive at levels 1–3 and alternate
-proactive/generic at levels 4–5. Recompute candidate facts at final preparation.
+Decision: derive generic candidates from deterministic Item/Event facts and pair
+each candidate with the best eligible Item in PM-07 order. Persist each intent as
+`MOTIVATION_NUDGE` with `item_id=NULL` and a local-day slot identity guarded by
+partial unique indexes; store the selected `focus_item_id` in its payload. Share
+PM-08's daily budget, minimum gap, quiet hours and cross-type claim reservation;
+apply a separate intensity-based generic cap. Prefer proactive at levels 1–3;
+at levels 4–5 a generic candidate may compete again after four hours without an
+intervening proactive send. Recompute candidate facts and revalidate the focus at
+final preparation.
 
 Reason: one durable ReminderWorker arbitration path prevents generic motivation
 from becoming a second scheduler or bypassing notification fatigue controls.
 
-Consequences: only successful delivery consumes budget/gap; generic rows contain
-bounded facts and template identity and do not use PM-09 hooks. PM-11 records
-delivery and explicit reminder feedback independently. The existing
-Telegram/SQLite at-least-once boundary still allows a duplicate after a crash
-between accepted Telegram send and finalization.
+Consequences: only successful delivery consumes budget/gap; new generic rows
+contain bounded facts and a focus id and do not use PM-09 hooks. No eligible
+focus means no send. Historical focusless claims remain valid. PM-11 records
+delivery and explicit reminder feedback independently. The existing Telegram/SQLite
+at-least-once boundary still allows a duplicate after a crash between accepted
+Telegram send and finalization.
 
 ## D-034 — Reminder Events carry explicit delivery identity
 
 Context: Item Events alone cannot distinguish an Item's ordinary lifecycle from
-the outcome of one specific reminder, and generic motivation has no Item.
+the outcome of one specific reminder. New focused motivation reminders also need
+to attribute their delivery and callbacks to the selected Item; historical
+focusless reminders remain valid.
 
-Decision: Reminder Events store `reminder_id` explicitly; Item reminders also
-store `item_id`, while generic nudge events may rely on Reminder alone. Record
-`REMINDER_SENT` with the successful Reminder finalization. Derive bounded
-preference and fatigue adjustments from Event history rather than mutable Item
-fields or persisted counters. Record `REMINDER_OPENED` only for bot-mediated
-actions with an observable callback.
+Decision: Reminder Events store `reminder_id` explicitly. Item reminders and
+newly focused motivation Events also store the relevant `item_id`; historical
+focusless motivation Events may rely on Reminder alone. Record `REMINDER_SENT`
+with the successful Reminder finalization. Derive bounded preference and fatigue
+adjustments from Event history rather than mutable Item fields or persisted
+counters. Record `REMINDER_OPENED` only for bot-mediated actions with an
+observable callback.
 
 Reason: reminder attribution remains stable across mutable Item changes, generic
 notifications fit the same event model, and Telegram URL clicks cannot be
@@ -618,8 +626,9 @@ grounded v2 hook, the outcome-first summary as a bounded presentation fallback,
 or the title alone. Ranking values stay in scheduling and Reminder attribution,
 not default Telegram copy. Hook templates are direct; source/original access
 stays primary and PM-11 reactions move into an ephemeral More menu. Generic
-motivation remains deterministic over existing facts and rotates through
-maintained variants in SENT-history order.
+motivation facts select a focus Item as specified by D-045; its user-facing copy
+uses that saved title and summary with the same source and lifecycle actions.
+Aggregate motivation text and template rotation are not part of new sends.
 
 Reason: the interruption should earn attention through the saved content or a
 truthful computed fact, not expose the machinery that selected it.
@@ -627,7 +636,8 @@ truthful computed fact, not expose the machinery that selected it.
 Consequences: changing hook semantics increments the generator version, while
 old hooks remain historical and lazy generation continues. PM-08 pacing,
 PM-11 feedback, source provenance, hook evidence validation, and the existing
-motivation facts and scores remain unchanged. No schema migration is required.
+motivation facts and scores remain unchanged. D-045 supersedes this decision's
+prior aggregate-copy presentation details. No schema migration is required.
 
 ## D-042 — Telegram navigation is additive and AI failures are classified at adapter boundaries
 

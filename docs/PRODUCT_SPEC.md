@@ -676,8 +676,8 @@ Generic intent хранится как Reminder с `item_id=NULL`. `scheduled_at
 Event хранит bounded snapshot отправки, а не source content. Delivery сохраняет
 текущую PM-08 at-least-once семантику при сбое между Telegram и SQLite.
 
-Proactive reminder позволяет Done, Later, Not now и Fewer like this через More;
-generic nudge открывает три материала Attention и сохраняет Fewer like this.
+Proactive и focused motivation reminders используют keyboard выбранного
+сохранения: Original/source actions и PM-11 actions в More.
 Reminder Done/Snooze фиксируют дополнительный
 outcome в транзакции с canonical lifecycle event; normal Item Done/Snooze не
 приписываются задним числом к напоминанию. Не наблюдаемый Telegram URL-click не
@@ -1078,10 +1078,11 @@ Attention intensity changes candidate eligibility thresholds to 60/60/60/55/50
 for Calm/Light/Normal/Active/Aggressive without changing AttentionRank scoring.
 Generic motivational reminders retain their caps and minimum gap; a second
 generic reminder may compete after four hours without requiring an intervening
-proactive reminder. Generic copy remains fact-based and LLM-free, and its
-`🎯 Показать` action opens three Attention items. Reminder polling uses the
-independent `REMINDER_POLL_SECONDS` setting, defaulting to 30 seconds. No schema
-migration or dependency is introduced.
+proactive reminder. Generic copy remains fact-based and LLM-free; each message
+uses its selected saved material and the same source and lifecycle actions as a
+proactive reminder. Reminder polling uses the independent
+`REMINDER_POLL_SECONDS` setting, defaulting to 30 seconds. No schema migration
+or dependency is introduced.
 
 ## 104. POLISH-08 — Human-facing reminders and Russian object-centric UX
 
