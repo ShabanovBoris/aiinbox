@@ -1,5 +1,5 @@
 import asyncio
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
@@ -784,6 +784,47 @@ async def test_attention_status_shares_quiet_gate_and_is_read_only(session_facto
             await session.scalar(select(func.count(Item.id))),
         )
     assert before == after
+
+
+@pytest.mark.parametrize(
+    ("now", "quiet_end", "expected_release"),
+    [
+        (
+            datetime(2026, 3, 8, 6, 59),
+            "02:30",
+            datetime(2026, 3, 8, 7, 0, tzinfo=UTC),
+        ),
+        (
+            datetime(2026, 11, 1, 6, 10),
+            "01:30",
+            datetime(2026, 11, 1, 6, 30, tzinfo=UTC),
+        ),
+    ],
+)
+async def test_attention_status_projects_dst_quiet_release_to_scheduler_boundary(
+    session_factory, now, quiet_end, expected_release
+):
+    await make_ready_item(session_factory, attention_enabled=True)
+    await update_notification_settings(
+        session_factory,
+        42,
+        timezone="America/New_York",
+        quiet_hours_start="22:30",
+        quiet_hours_end=quiet_end,
+    )
+
+    quiet = await get_attention_status(session_factory, 42, now=now)
+    released = await get_attention_status(
+        session_factory, 42, now=expected_release.replace(tzinfo=None)
+    )
+
+    assert quiet.block_reasons == ("quiet_hours",)
+    assert quiet.next_possible_at.astimezone(UTC) == expected_release
+    assert (
+        quiet.next_possible_at.utcoffset()
+        == expected_release.astimezone(ZoneInfo("America/New_York")).utcoffset()
+    )
+    assert "quiet_hours" not in released.block_reasons
 
 
 @pytest.mark.parametrize(

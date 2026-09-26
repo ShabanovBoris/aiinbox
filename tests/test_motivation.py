@@ -9,7 +9,13 @@ from sqlalchemy import func, select
 from app.domain.enums import ItemState, ItemType, MotivationKind, ProcessingStatus, SourceType
 from app.services.calendar_windows import local_day_window
 from app.services.motivation import _TEMPLATES, MotivationService, _next_template
-from app.services.notifications import MOTIVATION_NUDGE, PROACTIVE_ATTENTION, ReminderWorker
+from app.services.notifications import (
+    MOTIVATION_NUDGE,
+    PROACTIVE_ATTENTION,
+    ReminderWorker,
+    format_attention_status,
+    get_attention_status,
+)
 from app.storage.models import Event, Item, Reminder, User
 
 
@@ -872,8 +878,25 @@ async def test_level_five_second_generic_uses_four_hour_gap_without_intervening_
         first = await session.scalar(select(Reminder).where(Reminder.type == MOTIVATION_NUDGE))
         assert first.payload_json["kind"] == "COMPLETION_STREAK"
 
+    repeat_boundary = now + timedelta(hours=4)
+    early = await get_attention_status(session_factory, 42, now=now + timedelta(minutes=30))
+    assert {"minimum_gap", "generic_repeat_gap"} <= set(early.block_reasons)
+    assert early.next_possible_at.astimezone(UTC) == repeat_boundary.replace(tzinfo=UTC)
+
+    blocked = await get_attention_status(
+        session_factory, 42, now=now + timedelta(hours=3, minutes=59)
+    )
+    assert blocked.generic_candidates > 0
+    assert "generic_repeat_gap" in blocked.block_reasons
+    assert blocked.next_possible_at.astimezone(UTC) == repeat_boundary.replace(tzinfo=UTC)
+    assert "Следующее возможно не раньше: 16:00" in format_attention_status(blocked)
+    assert "четырёхчасовой интервал общих напоминаний" in format_attention_status(blocked)
+
     assert await worker.process_once(now + timedelta(hours=3, minutes=59)) == 0
     assert len(bot.messages) == 1
+
+    ready = await get_attention_status(session_factory, 42, now=repeat_boundary)
+    assert ready.block_reasons == ("ready",)
 
     assert await worker.process_once(now + timedelta(hours=4)) == 1
     async with session_factory() as session:

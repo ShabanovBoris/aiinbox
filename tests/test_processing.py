@@ -12,7 +12,9 @@ from app.domain.models import (
     UserProfile,
 )
 from app.domain.priority import PriorityEngine
+from app.errors import AppError
 from app.llm.base import LlmError
+from app.services.actions import apply_item_action
 from app.services.analysis import CHUNK_SUMMARY_GENERATOR_VERSION, Analyzer, split_text
 from app.services.delivery import ITEM_FAILED, ITEM_READY
 from app.services.ingestion import ingest_message
@@ -127,16 +129,98 @@ async def test_persisted_category_uses_isolated_topic_result(session_factory):
     assert categories == ["Android-разработка"]
 
 
+async def test_failed_source_note_is_not_used_as_topic_evidence(session_factory):
+    marker = "посмотреть для Android-проекта"
+    item = await seed(
+        session_factory,
+        text=f"{marker} https://example.com/fails",
+    )
+
+    class FailedWebExtractor:
+        async def extract(self, source):
+            raise AppError("DOWNLOAD_FAILED", "page unavailable")
+
+    provider = FakeLlmProvider()
+    worker = ProcessingWorker(
+        session_factory,
+        ProcessingPipeline(
+            Analyzer(provider), PriorityEngine(), web_extractor=FailedWebExtractor()
+        ),
+    )
+
+    assert await worker.process_one() is True
+
+    stored = await get_item(session_factory, item.id)
+    assert stored.processing_status is ProcessingStatus.READY
+    assert stored.processing_stage == "READY"
+    assert stored.error_code is None
+    assert stored.category is None
+    assert stored.user_note == marker
+    assert len(provider.calls) == 1
+    assert marker in provider.calls[0][0].text
+    assert provider.topic_calls == []
+
+
+async def test_forwarded_source_context_remains_topic_evidence_after_source_failure(
+    session_factory,
+):
+    item = (
+        await ingest_message(
+            session_factory,
+            telegram_user_id=42,
+            chat_id=42,
+            message_id=901,
+            text="Авторский контекст https://example.com/fails",
+            source_metadata={"forwarded": True},
+        )
+    ).items[0]
+
+    class FailedWebExtractor:
+        async def extract(self, source):
+            raise AppError("DOWNLOAD_FAILED", "page unavailable")
+
+    provider = FakeLlmProvider()
+    worker = ProcessingWorker(
+        session_factory,
+        ProcessingPipeline(
+            Analyzer(provider), PriorityEngine(), web_extractor=FailedWebExtractor()
+        ),
+    )
+
+    assert await worker.process_one() is True
+
+    stored = await get_item(session_factory, item.id)
+    assert stored.processing_status is ProcessingStatus.READY
+    topic_content, _categories = provider.topic_calls[0]
+    assert topic_content.text == ""
+    assert topic_content.user_note is None
+    assert topic_content.source_context == "Авторский контекст"
+    assert topic_content.metadata == {"source_count": 1, "successful_source_count": 0}
+
+
 async def test_isolated_topic_failure_does_not_fall_back_to_analysis_category(session_factory):
     item = await seed(session_factory, text="Docker deployment")
     provider = FakeLlmProvider(
         result=make_analysis(category="Android-разработка"),
+        topic_result=TopicClassificationResult(category="DevOps"),
         topic_error=LlmError("LLM_FAILED", "topic request failed"),
     )
     assert await make_worker(session_factory, provider).process_one() is True
     stored = await get_item(session_factory, item.id)
     assert stored.processing_status is ProcessingStatus.FAILED
+    assert stored.processing_stage == "TOPIC_CLASSIFYING"
+    assert stored.title == provider.result.title
     assert stored.category is None
+
+    assert await apply_item_action(session_factory, 42, item.id, "retry") is not None
+    provider.topic_error = None
+    assert await make_worker(session_factory, provider).process_one() is True
+
+    stored = await get_item(session_factory, item.id)
+    assert stored.processing_status is ProcessingStatus.READY
+    assert stored.category == "DevOps"
+    assert len(provider.calls) == 1
+    assert len(provider.topic_calls) == 2
 
 
 def test_split_text_preserves_all_content():
@@ -478,13 +562,11 @@ async def test_analyzer_releases_category_read_before_provider_call(session_fact
     provider = TransactionCheckingProvider()
     async with session_factory() as session:
         provider.session = session
-        await Analyzer(provider).analyze(
-            NormalizedContent(source_type=item.source_type, text="short"),
-            session,
-            item.user_id,
-            DEFAULT_PROFILE,
-            item.id,
-        )
+        analyzer = Analyzer(provider)
+        content = NormalizedContent(source_type=item.source_type, text="short")
+        prepared = await analyzer.prepare_content(content, session, item.id)
+        await analyzer.analyze(prepared, session, item.user_id, DEFAULT_PROFILE, item.id)
+        await analyzer.classify_topic(prepared, session, item.user_id)
 
 
 async def test_invalid_llm_output_fails_item_without_losing_text(session_factory):

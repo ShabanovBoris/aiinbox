@@ -1529,6 +1529,7 @@ async def test_router_fsm_guidance_precedes_capture_and_commands_escape(
     settings, session_factory, monkeypatch
 ):
     bot = Bot("123456:TEST")
+    bot._me = TgUser(id=bot.id, is_bot=True, first_name="AIInbox", username="aiinboxbot")
     dispatcher = Dispatcher(storage=MemoryStorage(), events_isolation=SimpleEventIsolation())
     dispatcher.include_router(make_router(settings, session_factory))
     sent = []
@@ -1666,6 +1667,29 @@ async def test_router_fsm_guidance_precedes_capture_and_commands_escape(
         async with session_factory() as session:
             assert await session.scalar(select(func.count()).select_from(ProfileUpdateJob)) == 1
             assert await session.scalar(select(func.count()).select_from(Item)) == 4
+
+        await message(17, 811, "/search@aiinboxbot")
+        assert "Напиши запрос." in sent[-1][1]
+        await message(18, 812, "forwarded")
+        assert sent[-1][1].startswith("Результаты поиска:")
+        await message(19, 813, "/search@aiinboxbot forwarded")
+        assert sent[-1][1].startswith("Результаты поиска:")
+
+        await message(20, 814, "/profile_update@aiinboxbot")
+        assert "Что изменить в профиле?" in sent[-1][1]
+        await message(21, 815, "Сместить профиль к Android")
+        await message(22, 816, "/profile_update@aiinboxbot Сместить профиль к Rust")
+        async with session_factory() as session:
+            profile_jobs = list(
+                (
+                    await session.scalars(select(ProfileUpdateJob).order_by(ProfileUpdateJob.id))
+                ).all()
+            )
+            assert [job.instruction for job in profile_jobs] == [
+                "сместить фокус профиля на локальные модели",
+                "Сместить профиль к Android",
+                "Сместить профиль к Rust",
+            ]
     finally:
         await bot.session.close()
 

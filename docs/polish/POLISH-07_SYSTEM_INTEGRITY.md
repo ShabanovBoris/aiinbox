@@ -31,9 +31,13 @@
   retrieval не заявляется.
 - Отдельный строгий `TopicClassificationResult` получает только сохранённый
   контент, контекст источника и список категорий как подсказок. `UserProfile` и
-  `user_note` не попадают в этот запрос.
+  `user_note` не попадают в этот запрос; после неудачи всех child sources заметка
+  не заменяет отсутствующий source evidence. Без extracted content и forwarded
+  source context classifier пропускается, primary result остаётся без категории.
 - Категория отдельного classifier становится канонической; ошибка классификации
   проходит существующий путь ошибки и не использует категорию общего анализа.
+  `TOPIC_CLASSIFYING` сохраняет остальные поля primary analysis, чтобы retry
+  повторял только незавершённую classification-стадию.
 - Реальный lexical miss `Андроид` → `Android` записан как evidence для PM-14;
   runtime semantic search и embeddings не добавляются.
 
@@ -56,7 +60,7 @@
 
 - `ruff check .` — passed.
 - `ruff format --check .` — passed (138 files).
-- `pytest -q` — 954 passed.
+- `pytest -q` — 958 passed.
 - `alembic heads` — одна голова `9c2e7a4d1b63`; миграция не нужна.
 - `git diff --check` — passed.
 - Новых зависимостей и runtime PM-14 нет.

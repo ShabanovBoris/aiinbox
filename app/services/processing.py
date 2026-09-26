@@ -33,12 +33,12 @@ _VISUAL_ONLY_VIDEO_CONTEXT = "Транскрипт видео недоступе
 
 
 class ProcessingPipeline:
-    """Один канонический пайплайн: extract → analyze → prioritize → persist.
+    """Один канонический пайплайн: extract → analyze → topic → prioritize → persist.
 
-    Resumable-семантика (D-001): каждая стадия коммитится до внешнего вызова,
-    дорогой LLM-результат персистится в том же commit, что ставит checkpoint
-    PRIORITIZING; resume после падения продолжается с durable стадии и не
-    повторяет успешный LLM-вызов. Источники добавляются в extract-шаге своих фаз.
+    Resumable-семантика (D-001): профиль-aware result коммитится без категории
+    перед независимым topic-вызовом на стадии TOPIC_CLASSIFYING. Resume повторяет
+    только незавершённый LLM-шаг; категория становится canonical после classifier.
+    Источники добавляются в extract-шаге своих фаз.
     """
 
     def __init__(
@@ -68,26 +68,27 @@ class ProcessingPipeline:
         self.visual_scene_threshold = visual_scene_threshold
 
     async def run(self, session: AsyncSession, item: Item) -> None:
+        checkpoint_stage = item.processing_stage
         analysis = None
-        if item.processing_stage == "PRIORITIZING":
-            # Checkpoint после дорогих вызовов: analysis уже персистен —
-            # пересчитываем только приоритет, LLM не вызываем.
+        if checkpoint_stage in ("TOPIC_CLASSIFYING", "PRIORITIZING"):
+            # The primary result is durable before topic classification; PRIORITIZING
+            # stores the completed canonical category and needs no LLM work.
             try:
                 analysis = self._restored_analysis(item)
             except ValidationError:
                 analysis = None  # неполный checkpoint — честно начинаем анализ заново
 
+        content = None
+        if checkpoint_stage in ("ANALYZING", "TOPIC_CLASSIFYING"):
+            content = await self._restored_content(session, item)
+
         if analysis is None:
-            content = None
-            if item.processing_stage == "ANALYZING":
-                # Resume из ANALYZING: для WEB дорогой extraction уже выполнен —
-                # WEB_TEXT персистен, повторная загрузка не нужна (ТЗ §59).
-                content = await self._restored_content(session, item)
             if content is None:
                 item.processing_stage = "EXTRACTING"
                 await session.commit()
                 content = await self._extract(session, item)
             content = await self._attach_source_context(session, item, content)
+            topic_content = self.analyzer.topic_classification_content(content)
 
             item.processing_stage = "ANALYZING"
             await session.commit()
@@ -95,6 +96,7 @@ class ProcessingPipeline:
             visual_notes = await self._visual_analysis(session, item, content)
             if visual_notes:
                 content.metadata["visual_notes"] = visual_notes
+            content = await self.analyzer.prepare_content(content, session, item.id)
             # Phase 8: персональный профиль пользователя из БД.
             profile = await get_profile(session, item.user_id)
             analysis = await self.analyzer.analyze(
@@ -102,10 +104,36 @@ class ProcessingPipeline:
             )
             item.analysis_completeness = self._completeness(content, visual_notes)
 
+            self._apply_analysis_signals(item, analysis)
+            item.category = None
+            item.processing_stage = (
+                "TOPIC_CLASSIFYING" if topic_content is not None else "PRIORITIZING"
+            )
+            # ❌ Удалён forced FAILED path при отсутствии topic evidence: primary
+            # остаётся доступным, а неподтверждённая категория не сохраняется.
+            # Persist primary fields before the independent category call; a retry
+            # repeats only classification when source evidence exists.
+            await session.commit()
+        elif checkpoint_stage == "TOPIC_CLASSIFYING":
+            if content is None:
+                item.processing_stage = "EXTRACTING"
+                await session.commit()
+                content = await self._extract(session, item)
+            content = await self._attach_source_context(session, item, content)
+            topic_content = self.analyzer.topic_classification_content(content)
+            if topic_content is None:
+                item.processing_stage = "PRIORITIZING"
+                await session.commit()
+            else:
+                content = await self.analyzer.prepare_content(content, session, item.id)
+                item.processing_stage = "TOPIC_CLASSIFYING"
+
+        if item.processing_stage == "TOPIC_CLASSIFYING":
+            topic = await self.analyzer.classify_topic(content, session, item.user_id)
+            if topic is not None:
+                analysis = analysis.model_copy(update={"category": topic.category})
+                item.category = topic.category
             item.processing_stage = "PRIORITIZING"
-            # Дорогой результат пишется ДО checkpoint-commit: падение после
-            # commit не теряет его, и retry не тянет LLM повторно.
-            self._apply_analysis(item, analysis)
             await session.commit()
 
         item.priority_score = self.priority.score(analysis)
@@ -848,9 +876,15 @@ class ProcessingPipeline:
     ) -> NormalizedContent:
         """Combine all successful source payloads into one Analyzer input for the Item."""
         if not extracted:
+            forwarded = (item.source_metadata_json or {}).get("forwarded") is True
+            source_context = None
+            if forwarded and message_text:
+                source_note, _ = parse_message(message_text)
+                source_context = source_note or None
             return NormalizedContent(
                 source_type=SourceType.TEXT,
                 text=message_text or item.user_note,
+                source_context=source_context,
                 metadata={
                     "source_count": len(sources),
                     "successful_source_count": 0,
@@ -1055,6 +1089,14 @@ class ProcessingPipeline:
         """Attach forwarded source text to URL/media without turning it into user intent."""
         metadata = item.source_metadata_json or {}
         if item.source_type is SourceType.TEXT or metadata.get("forwarded") is not True:
+            return content
+        if (
+            content.metadata.get("source_count", 0) > 0
+            and content.metadata.get("successful_source_count") == 0
+            and content.source_context
+        ):
+            # All sources failed; retain only the parsed forwarded author text,
+            # not the raw Telegram message containing its failed URL.
             return content
         source_text = await ProcessingPipeline._stored_source_text(session, item.id)
         if source_text:
@@ -1326,10 +1368,14 @@ class ProcessingPipeline:
 
     @staticmethod
     def _restored_analysis(item: Item) -> AnalysisResult:
+        category = item.category
+        if item.processing_stage in ("TOPIC_CLASSIFYING", "PRIORITIZING") and not category:
+            # The durable primary checkpoint intentionally has no canonical category yet.
+            category = "TOPIC_PENDING"
         return AnalysisResult(
             title=item.title,
             summary=item.summary or "",
-            category=item.category or "",
+            category=category or "",
             item_type=item.item_type,
             tags=item.tags_json or [],
             importance=item.importance or 0.0,
@@ -1346,10 +1392,12 @@ class ProcessingPipeline:
         )
 
     @staticmethod
-    def _apply_analysis(item: Item, analysis: AnalysisResult) -> None:
+    def _apply_analysis_signals(item: Item, analysis: AnalysisResult) -> None:
+        """Persist the validated primary result without making its category canonical."""
         item.title = analysis.title
         item.summary = analysis.summary
-        item.category = analysis.category
+        # ❌ Удалено сохранение primary-категории в checkpoint: только отдельный
+        # source-only classifier может устанавливать каноническую Item.category.
         item.item_type = analysis.item_type
         item.tags_json = analysis.tags
         item.importance = analysis.importance

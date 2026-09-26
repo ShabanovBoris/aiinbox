@@ -698,11 +698,17 @@ poll cadence is configurable independently.
 
 Reason: the user-facing explanation and the scheduler's actual decisions should
 agree, while profile context must not influence the content category. Existing
-queues, persistence, and delivery semantics can support these flows without new
-state or infrastructure.
+SQLite Item fields can checkpoint the profile-aware analysis before the topic
+classifier without storing its non-canonical category or adding a migration.
 
 Consequences: classifier failure remains a controlled processing failure and
-cannot silently use the profile-aware category. Attention diagnostics perform
-read-only queries. PM-14 evidence is confirmed, but semantic retrieval stays on
-hold pending both requested POLISH-07 reviews. No migration or dependency is
-required; the existing scoring formula and reminder caps remain unchanged.
+cannot silently use the profile-aware category. `TOPIC_CLASSIFYING` resumes from
+the saved primary signals and extracted/chunk-summary content, so a classifier
+retry does not repeat the successful analysis call. If every child source failed
+and no forwarded source context remains, classification is skipped and the
+useful primary result may still become READY with no category; a user note never
+fills the missing classifier evidence. Attention diagnostics perform read-only
+queries through the same generic cap/repeat gate as the scheduler. PM-14 evidence
+is confirmed, but semantic retrieval stays on hold pending both requested
+POLISH-07 reviews. No migration or dependency is required; the existing scoring
+formula and reminder caps remain unchanged.

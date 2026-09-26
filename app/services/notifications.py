@@ -111,6 +111,16 @@ class AttentionStatus:
     block_reasons: tuple[str, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class GenericMotivationGate:
+    """Read-only generic eligibility shared by ReminderWorker and Attention status."""
+
+    enabled: bool
+    daily_cap: int
+    sent_today: int
+    repeat_release_at: datetime | None
+
+
 ATTENTION_POLICIES: Mapping[int, AttentionIntensityPolicy] = MappingProxyType(
     {
         1: AttentionIntensityPolicy(1, "Calm", 1, timedelta(hours=8), timedelta(hours=72), 60),
@@ -192,13 +202,37 @@ def _quiet_hours_state(local_time: time, start: time, end: time) -> str:
 def _quiet_hours_release(
     local_now: datetime, start: time, end: time, zone: ZoneInfo
 ) -> datetime | None:
-    """Project the current quiet window's end in the configured IANA timezone."""
+    """Project a scheduler quiet-window boundary into its next valid local instant."""
     if not in_quiet_hours(local_now.time(), start, end) or start == end:
         return None
     local_date = local_now.date()
     if start > end and local_now.time() >= start:
         local_date += timedelta(days=1)
-    return datetime.combine(local_date, end, tzinfo=zone)
+
+    boundary = datetime.combine(local_date, end)
+    candidates = {boundary.replace(tzinfo=zone, fold=fold).astimezone(UTC) for fold in (0, 1)}
+    exact = sorted(
+        candidate
+        for candidate in candidates
+        if candidate.astimezone(zone).replace(tzinfo=None) == boundary
+    )
+    now_utc = local_now.astimezone(UTC)
+    if exact:
+        future = [candidate for candidate in exact if candidate >= now_utc]
+        return min(future or exact).astimezone(zone)
+
+    # A nonexistent wall time lies inside a forward clock jump. The two
+    # fold projections bracket that jump; locate the first instant at which
+    # the scheduler's local wall clock has crossed the configured boundary.
+    low, high = sorted(candidates)
+    while high - low > timedelta(microseconds=1):
+        middle = low + (high - low) / 2
+        local_middle = middle.astimezone(zone).replace(tzinfo=None)
+        if local_middle >= boundary:
+            high = middle
+        else:
+            low = middle
+    return high.astimezone(zone)
 
 
 def digest_target_date(
@@ -366,6 +400,7 @@ def format_attention_status(status: AttentionStatus) -> str:
         "attention_off": "Attention выключен",
         "quiet_hours": "сейчас тихие часы",
         "daily_cap": "достигнут дневной лимит",
+        "generic_repeat_gap": "не прошёл четырёхчасовой интервал общих напоминаний",
         "minimum_gap": "не прошёл минимальный интервал",
         "delivery_in_progress": "уже готовится отправка",
         "no_proactive_candidate": "нет подходящих материалов",
@@ -825,6 +860,7 @@ class ReminderWorker:
                 quiet_start = parse_clock(_DEFAULT_SETTINGS["quiet_hours_start"])
                 quiet_end = parse_clock(_DEFAULT_SETTINGS["quiet_hours_end"])
             _, day_start, day_end = _local_day_window(instant, zone)
+            generic_gate = await self._generic_motivation_gate(session, user, policy, zone, instant)
             budget_used = int(
                 await session.scalar(
                     select(func.count(Reminder.id)).where(
@@ -838,19 +874,7 @@ class ReminderWorker:
                 )
                 or 0
             )
-            generic_used = int(
-                await session.scalar(
-                    select(func.count(Reminder.id)).where(
-                        Reminder.user_id == user.id,
-                        Reminder.type == MOTIVATION_NUDGE,
-                        Reminder.status == "SENT",
-                        Reminder.sent_at.is_not(None),
-                        Reminder.sent_at >= day_start,
-                        Reminder.sent_at < day_end,
-                    )
-                )
-                or 0
-            )
+            generic_used = generic_gate.sent_today
             latest_reminder = await session.scalar(
                 select(Reminder)
                 .where(
@@ -865,12 +889,31 @@ class ReminderWorker:
             qualified, proactive = await self._proactive_candidate_projection(
                 session, user.id, policy, instant
             )
-            motivation = await self._motivation_candidates(session, user, policy, zone, instant)
+            can_project_generic_facts = (
+                generic_gate.enabled
+                and generic_gate.daily_cap > 0
+                and generic_gate.sent_today < generic_gate.daily_cap
+            )
+            generic_facts = (
+                await self._motivation_facts(session, user.id, zone, instant)
+                if can_project_generic_facts
+                else []
+            )
+            motivation = generic_facts if generic_gate.repeat_release_at is None else []
 
+            selected = None
             if user.telegram_chat_id is None:
                 block_reasons = ("no_delivery_target",)
             elif blocked is not None:
-                block_reasons = ("attention_off" if blocked == "disabled" else blocked,)
+                reasons = ["attention_off" if blocked == "disabled" else blocked]
+                if (
+                    blocked != "disabled"
+                    and generic_gate.repeat_release_at is not None
+                    and generic_facts
+                    and not proactive
+                ):
+                    reasons.append("generic_repeat_gap")
+                block_reasons = tuple(reasons)
             else:
                 latest_attention = await self._latest_sent_type(
                     session, user.id, _ATTENTION_FAMILY_TYPES
@@ -886,7 +929,9 @@ class ReminderWorker:
                         reasons.append("no_proactive_candidate")
                     elif not proactive:
                         reasons.append("candidate_cooldown")
-                    if not motivation:
+                    if generic_gate.repeat_release_at is not None:
+                        reasons.append("generic_repeat_gap")
+                    elif not generic_facts:
                         reasons.append("no_generic_candidate")
                     block_reasons = tuple(reasons or ("no_proactive_candidate",))
 
@@ -900,6 +945,14 @@ class ReminderWorker:
                 latest_sent_at = _utc_naive(latest_reminder.sent_at)
                 if instant - latest_sent_at < policy.minimum_gap:
                     releases.append((latest_sent_at + policy.minimum_gap).replace(tzinfo=UTC))
+            if (
+                generic_gate.repeat_release_at is not None
+                and generic_facts
+                and not proactive
+                and user.telegram_chat_id is not None
+                and blocked != "disabled"
+            ):
+                releases.append(generic_gate.repeat_release_at)
             lease_now = _utc_now()
             active_claims = list(
                 (
@@ -929,7 +982,7 @@ class ReminderWorker:
                 policy=policy,
                 budget_used=budget_used,
                 generic_used=generic_used,
-                generic_cap=GENERIC_MOTIVATION_DAILY_CAPS[policy.level],
+                generic_cap=generic_gate.daily_cap,
                 latest_type=latest_reminder.type if latest_reminder is not None else None,
                 latest_sent_at=(
                     _utc_naive(latest_reminder.sent_at)
@@ -938,7 +991,7 @@ class ReminderWorker:
                 ),
                 next_possible_at=next_possible_at,
                 proactive_candidates=len(proactive),
-                generic_candidates=len(motivation),
+                generic_candidates=len(generic_facts),
                 block_reasons=block_reasons,
             )
 
@@ -1074,35 +1127,38 @@ class ReminderWorker:
             .limit(1)
         )
 
-    async def _motivation_candidates(
+    async def _generic_motivation_gate(
         self,
         session,
         user: User,
         policy: AttentionIntensityPolicy,
         zone: ZoneInfo,
         now: datetime,
-    ):
-        """Apply only the generic opt-in/cap before asking the fact service for candidates."""
+    ) -> GenericMotivationGate:
+        """Project generic opt-in, daily cap, and repeat timing for all read-only owners."""
         settings = settings_for(user)
-        if type(settings.get("generic_motivation_enabled")) is not bool:
+        setting = settings.get("generic_motivation_enabled")
+        if type(setting) is not bool:
             log.warning("invalid generic motivation setting user_id=%s; treating as OFF", user.id)
-            return []
         generic_cap = GENERIC_MOTIVATION_DAILY_CAPS[policy.level]
-        if not settings["generic_motivation_enabled"] or generic_cap == 0:
-            return []
-        local_date, day_start, day_end = _local_day_window(now, zone)
-        sent_today = await session.scalar(
-            select(func.count(Reminder.id)).where(
-                Reminder.user_id == user.id,
-                Reminder.type == MOTIVATION_NUDGE,
-                Reminder.status == "SENT",
-                Reminder.sent_at.is_not(None),
-                Reminder.sent_at >= day_start,
-                Reminder.sent_at < day_end,
+        enabled = setting is True
+        _, day_start, day_end = _local_day_window(now, zone)
+        sent_today = int(
+            await session.scalar(
+                select(func.count(Reminder.id)).where(
+                    Reminder.user_id == user.id,
+                    Reminder.type == MOTIVATION_NUDGE,
+                    Reminder.status == "SENT",
+                    Reminder.sent_at.is_not(None),
+                    Reminder.sent_at >= day_start,
+                    Reminder.sent_at < day_end,
+                )
             )
+            or 0
         )
-        if sent_today >= generic_cap:
-            return []
+        if not enabled or generic_cap == 0 or sent_today >= generic_cap:
+            return GenericMotivationGate(enabled, generic_cap, sent_today, None)
+
         latest_generic = await session.scalar(
             select(func.max(Reminder.sent_at)).where(
                 Reminder.user_id == user.id,
@@ -1111,18 +1167,44 @@ class ReminderWorker:
                 Reminder.sent_at.is_not(None),
             )
         )
+        release_at = None
+        if latest_generic is not None:
+            latest_generic_utc = _utc_naive(latest_generic)
+            repeat_release = latest_generic_utc + GENERIC_REPEAT_GAP
+            if _utc_naive(now) < repeat_release:
+                release_at = repeat_release.replace(tzinfo=UTC)
+        return GenericMotivationGate(enabled, generic_cap, sent_today, release_at)
+
+    async def _motivation_facts(
+        self, session, user_id: int, zone: ZoneInfo, now: datetime
+    ) -> list[MotivationCandidate]:
+        """Read deterministic generic facts without deciding when the scheduler may send."""
+        candidates = await MotivationService().candidates(session, user_id, zone=zone, now=now)
+        suppressed = await ReminderFeedbackService.suppressed_motivation_kinds(
+            session, user_id, now=now
+        )
+        return [candidate for candidate in candidates if candidate.kind not in suppressed]
+
+    async def _motivation_candidates(
+        self,
+        session,
+        user: User,
+        policy: AttentionIntensityPolicy,
+        zone: ZoneInfo,
+        now: datetime,
+    ) -> list[MotivationCandidate]:
+        """Apply the shared generic eligibility gate before projecting candidate facts."""
+        gate = await self._generic_motivation_gate(session, user, policy, zone, now)
         if (
-            latest_generic is not None
-            and _utc_naive(now) - _utc_naive(latest_generic) < GENERIC_REPEAT_GAP
+            not gate.enabled
+            or gate.daily_cap == 0
+            or gate.sent_today >= gate.daily_cap
+            or gate.repeat_release_at is not None
         ):
             return []
         # ❌ Удалено чередование типов как условие следующего generic reminder:
         # проверяется явный четырёхчасовой интервал, а cap остаётся отдельным.
-        candidates = await MotivationService().candidates(session, user.id, zone=zone, now=now)
-        suppressed = await ReminderFeedbackService.suppressed_motivation_kinds(
-            session, user.id, now=now
-        )
-        return [candidate for candidate in candidates if candidate.kind not in suppressed]
+        return await self._motivation_facts(session, user.id, zone, now)
 
     @staticmethod
     def _choose_attention_intervention(

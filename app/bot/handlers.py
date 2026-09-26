@@ -4,7 +4,7 @@ from datetime import UTC, datetime, timedelta
 from aiogram import F, Router
 from aiogram.dispatcher.middlewares.base import BaseMiddleware
 from aiogram.exceptions import TelegramBadRequest
-from aiogram.filters import Command, CommandStart
+from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
@@ -778,10 +778,10 @@ def make_router(
         await on_settings(message, settings, session_factory, arguments)
 
     @router.message(Command("profile_update"))
-    async def profile_update(message: Message, state: FSMContext) -> None:
+    async def profile_update(message: Message, state: FSMContext, command: CommandObject) -> None:
         if not settings.is_allowed(message.from_user.id if message.from_user else None):
             return
-        instruction = (message.text or "").removeprefix("/profile_update").strip()
+        instruction = command.args or ""
         await on_profile_update(message, settings, session_factory, instruction, state)
 
     @router.message(Command("today"))
@@ -809,8 +809,8 @@ def make_router(
         await on_category(message, settings, session_factory, value)
 
     @router.message(Command("search"))
-    async def search(message: Message, state: FSMContext) -> None:
-        value = (message.text or "").removeprefix("/search").strip()
+    async def search(message: Message, state: FSMContext, command: CommandObject) -> None:
+        value = command.args or ""
         await on_search_with_state(message, settings, session_factory, value, state)
 
     @router.message(Command("ask"))

@@ -727,6 +727,12 @@ Retry продолжает с максимально глубокого compatib
 
 `processing_stage` отражает глубину прогресса отдельно от status.
 Resume обязан использовать persisted content/analysis вместо повторения дорогих calls.
+`TOPIC_CLASSIFYING` означает, что профиль-aware analysis уже сохранён без
+канонической категории; повторный запуск восстанавливает его и повторяет только
+строгий source-only classifier. При отсутствии успешно извлечённого source
+контента пользовательская заметка не используется как замена evidence: если
+нет и forwarded source context, Item может завершить primary analysis без вызова
+classifier и сохранить `category = NULL`.
 
 ## 61. Content deduplication
 
