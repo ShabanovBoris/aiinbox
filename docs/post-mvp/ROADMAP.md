@@ -94,7 +94,7 @@ All post-MVP work must preserve the current architecture:
 - [PM-14…PM-20 — Remaining roadmap index](PM-14_PM-20_INDEX.md)
 
 
-## 3.2 Quality & UX Polish — current focus
+## 3.2 Quality & UX Polish — review gate
 
 Before resuming PM-14+ feature expansion, complete all eight stabilization and
 corrective UX PRs:
@@ -118,13 +118,49 @@ POLISH-01 → POLISH-02 → POLISH-03 → POLISH-04 → POLISH-05
 → review real usage → explicitly decide whether to resume PM-14
 ~~~
 
-PM-14 runtime and PM-16+ are ON HOLD until all eight polish PRs are accepted
-through their requested reviews. POLISH-08 approval does not automatically
-resume PM-14: review real usage after the polish gate and explicitly decide
-whether to resume it. PM-16+ remains on hold pending a separate sequencing
-decision. PM-14 has a documented real lexical-miss case; embeddings and semantic
-retrieval remain out of scope for POLISH-08. Reliability/security fixes remain
-allowed. PM-15 is already merged and remains supported.
+POLISH-08 remains the final review gate for the corrective Telegram/quality work.
+The previous blanket hold on PM-16+ is superseded by the explicit current product
+priority below: PM-18 HTTP API may proceed while POLISH-08 review closes. PM-14
+semantic retrieval and PM-16/17 model-routing work remain independently gated
+until explicitly resumed. PM-15 is already merged and remains supported.
+
+
+## 3.3 Current execution focus — API, browser capture, external sync
+
+Current sequencing decision:
+
+~~~text
+PM-18 HTTP API
+    ↓
+PM-33 Browser Extension
+    ↓
+Integration Sync Foundation
+    ↓
+Miro one-way sync
+    ↓
+additional outbound destinations
+~~~
+
+PM numbers after PM-20 are stable opportunity identifiers, not execution order.
+PM-33 is intentionally promoted ahead of lower-numbered future candidates because
+browser capture is now a concrete product priority.
+
+Key boundaries:
+
+- AIInbox remains canonical; external platforms are projections;
+- Miro is the first outbound connector;
+- synchronization is one-way in v1;
+- sync network work is durable/restart-safe and never blocks ingestion;
+- browser capture uses PM-18 idempotent HTTP writes;
+- server-side connectors call application services/read models directly rather
+  than making self-HTTP requests;
+- PM-14 and PM-16/17 remain separately gated.
+
+Detailed direction:
+
+- [Current focus — API, Browser Capture, External Sync](CURRENT_FOCUS_API_BROWSER_INTEGRATIONS.md)
+- [External Integration Sync Architecture](INTEGRATION_SYNC_ARCHITECTURE.md)
+- [Future Roadmap Registry — PM-21…PM-50](FUTURE_ROADMAP_PM21_PM50.md)
 
 ## 4. Milestone grouping
 
@@ -170,7 +206,7 @@ Goal: make resurfacing useful and engaging rather than repetitive.
 
 Goal: expose trends in attention, backlog growth, completion, neglect and category balance.
 
-### Milestone P — Quality & UX Polish — CURRENT FOCUS
+### Milestone P — Quality & UX Polish — FINAL REVIEW GATE
 
 - POLISH-01 AI Analysis v2 — DONE (PR #46 merged)
 - POLISH-02 Compact Telegram Item UI — DONE (PR #48 merged)
@@ -187,9 +223,9 @@ reminders and reliability worth extending before new capability is added.
 POLISH-06 is the corrective PR produced by real-user review after POLISH-05.
 POLISH-07 records the confirmed `Андроид` → `Android` lexical miss and fixes
 interaction parity, classifier isolation, and Attention diagnostics. POLISH-08
-is the current review gate for Russian, object-centric daily, weekly, and
-reminder presentation. PM-14 and PM-16+ remain ON HOLD through its two requested
-reviews; approving POLISH-08 does not resume roadmap expansion automatically.
+is the final review gate for Russian, object-centric daily, weekly, and reminder
+presentation. Its review may close in parallel with PM-18 API work. It no longer
+blocks the explicitly prioritized API/browser/integration track.
 
 ### Milestone G — Knowledge
 
@@ -206,9 +242,24 @@ Goal: make stored material queryable as a personal knowledge base.
 
 ### Milestone I — Additional Clients & Context
 
-- PM-18 HTTP API — ON HOLD until polish milestone review
-- PM-19 Android — ON HOLD; depends on PM-18
-- PM-20 Calendar-aware Attention — ON HOLD until the current core is polished
+- PM-18 HTTP API — CURRENT IMPLEMENTATION FOCUS
+- PM-19 Android — DEFERRED; depends on PM-18
+- PM-20 Calendar-aware Attention — DEFERRED
+
+### Milestone J — Browser & External Integrations — CURRENT DIRECTION
+
+- PM-33 Browser Extension — promoted immediately after the minimal PM-18 contract
+- Integration Sync Foundation — planned after browser capture
+- Miro one-way sync — first concrete outbound connector
+- Additional destinations — choose from real workflow after Miro
+
+Goal: make capture available outside Telegram and project canonical AIInbox saves
+into external workspaces without turning those systems into hidden sources of truth.
+
+See:
+[CURRENT_FOCUS_API_BROWSER_INTEGRATIONS.md](CURRENT_FOCUS_API_BROWSER_INTEGRATIONS.md)
+and
+[INTEGRATION_SYNC_ARCHITECTURE.md](INTEGRATION_SYNC_ARCHITECTURE.md).
 
 ## 5. PM-01 — User Interest Level
 
@@ -564,7 +615,9 @@ Detailed specification: [PM-17_OLLAMA_LOCAL_MODELS.md](PM-17_OLLAMA_LOCAL_MODELS
 
 ## 22. PM-18 — HTTP API
 
-Status: ON HOLD until the Quality & UX Polish milestone is reviewed.
+Status: CURRENT IMPLEMENTATION FOCUS. The explicit product sequencing decision
+supersedes the previous polish hold for PM-18; POLISH-08 review may close in
+parallel.
 
 Expose existing application services through an authenticated versioned FastAPI
 `/v1` interface. API endpoints remain thin adapters; they do not duplicate
@@ -578,7 +631,8 @@ Detailed specification: [PM-18_HTTP_API.md](PM-18_HTTP_API.md).
 
 ## 23. PM-19 — Android Client
 
-Status: ON HOLD. Depends on PM-18 and the Quality & UX Polish milestone review.
+Status: DEFERRED. Depends on PM-18. Browser capture and outbound integrations are
+currently prioritized before the Android client.
 
 Build a native thin Android client over `/v1`: Share Sheet text/URL capture,
 offline retry, Inbox/detail, Today, Attention, Search, Ask, Weekly, lifecycle
@@ -592,8 +646,8 @@ Detailed specification: [PM-19_ANDROID_CLIENT.md](PM-19_ANDROID_CLIENT.md).
 
 ## 24. PM-20 — Calendar-aware Attention
 
-Status: ON HOLD until the Quality & UX Polish milestone is reviewed. Depends on the Attention engine; PM-18/19 provide the recommended
-initial calendar transport.
+Status: DEFERRED. Depends on the Attention engine; PM-18/19 provide the recommended
+initial calendar transport. The current priority is API/browser/external sync.
 
 Use optional fresh busy/free windows together with Attention score and
 estimated_action_minutes. Initial privacy-first integration should let Android
@@ -605,6 +659,36 @@ existing PM-08 caps, gaps, quiet hours and fatigue policies remain authoritative
 Core ranking remains fully usable when no calendar is connected.
 
 Detailed specification: [PM-20_CALENDAR_AWARE_ATTENTION.md](PM-20_CALENDAR_AWARE_ATTENTION.md).
+
+
+## 24.1 Future opportunity registry and promoted integration track
+
+The broader post-PM-20 opportunity set is preserved in:
+
+- [Future Roadmap Registry — PM-21…PM-50](FUTURE_ROADMAP_PM21_PM50.md)
+
+The current execution priority is intentionally not numeric. PM-33 Browser
+Extension is promoted because it directly benefits from PM-18 and removes capture
+friction. Outbound synchronization is tracked as an integration stream rather
+than forcing premature PM renumbering.
+
+Current integration direction:
+
+~~~text
+AIInbox canonical Item
+    ↓
+durable projection/sync job
+    ↓
+Miro first
+    ↓
+other destinations after real usage
+~~~
+
+V1 external synchronization is one-way. Remote edits/deletions must not silently
+mutate or delete canonical AIInbox data.
+
+Detailed architecture:
+[INTEGRATION_SYNC_ARCHITECTURE.md](INTEGRATION_SYNC_ARCHITECTURE.md).
 
 ## 25. Target data-model evolution
 
