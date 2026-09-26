@@ -9,7 +9,13 @@ from sqlalchemy import func, select
 from app.domain.enums import ItemState, ItemType, MotivationKind, ProcessingStatus, SourceType
 from app.services.calendar_windows import local_day_window
 from app.services.motivation import _TEMPLATES, MotivationService, _next_template
-from app.services.notifications import MOTIVATION_NUDGE, PROACTIVE_ATTENTION, ReminderWorker
+from app.services.notifications import (
+    MOTIVATION_NUDGE,
+    PROACTIVE_ATTENTION,
+    ReminderWorker,
+    format_attention_status,
+    get_attention_status,
+)
 from app.storage.models import Event, Item, Reminder, User
 
 
@@ -485,6 +491,7 @@ def test_motivation_templates_use_only_their_known_facts_and_rotate_in_order():
             rendered = template.text.format(**fact_contracts[kind])
             assert len(rendered) <= 180
             assert all(str(fact_contracts[kind][field]) in rendered for field in fields)
+            assert not any(jargon in rendered.casefold() for jargon in ("done", "item", "inbox"))
 
         ids = [template.template_id for template in templates]
         assert _next_template(templates, None).template_id == ids[0]
@@ -512,7 +519,7 @@ async def test_worker_sends_generic_claim_with_feedback_controls_and_send_attrib
     callbacks = {
         button.callback_data for row in kwargs["reply_markup"].inline_keyboard for button in row
     }
-    assert any(value.startswith("reminder:ok:") for value in callbacks)
+    assert "nav:attention:show:3" in callbacks
     assert any(value.startswith("reminder:less:") for value in callbacks)
     assert hooks.calls == 0
 
@@ -527,7 +534,7 @@ async def test_worker_sends_generic_claim_with_feedback_controls_and_send_attrib
         assert reminder.payload_json == {
             "kind": "INBOX_GROWTH",
             "facts": {"created": 3, "resolved": 0, "net": 3},
-            "template_id": "inbox_growth_v3",
+            "template_id": "inbox_growth_v7_a",
             "policy_level": 3,
             "local_date": "2026-09-24",
             "slot": 1,
@@ -543,7 +550,7 @@ async def test_worker_sends_generic_claim_with_feedback_controls_and_send_attrib
             "reminder_type": "MOTIVATION_NUDGE",
             "policy_level": 3,
             "motivation_kind": "INBOX_GROWTH",
-            "template_id": "inbox_growth_v3",
+            "template_id": "inbox_growth_v7_a",
             "local_date": "2026-09-24",
             "slot": 1,
         }
@@ -842,7 +849,7 @@ async def test_preparation_rechecks_both_opt_out_settings(session_factory, setti
         assert reminder.status == "CANCELLED"
 
 
-async def test_level_five_allows_two_generic_kinds_but_not_a_third_in_one_local_day(
+async def test_level_five_second_generic_uses_four_hour_gap_without_intervening_attention(
     session_factory,
 ):
     now = datetime(2026, 9, 24, 12)
@@ -871,13 +878,25 @@ async def test_level_five_allows_two_generic_kinds_but_not_a_third_in_one_local_
         first = await session.scalar(select(Reminder).where(Reminder.type == MOTIVATION_NUDGE))
         assert first.payload_json["kind"] == "COMPLETION_STREAK"
 
-    await add_proactive_item(session_factory, user_id, now, title="Intervening Item")
-    assert await worker.process_once(now + timedelta(hours=2)) == 1
-    async with session_factory() as session:
-        proactive = await session.scalar(
-            select(Reminder).where(Reminder.type == PROACTIVE_ATTENTION)
-        )
-        assert proactive.status == "SENT"
+    repeat_boundary = now + timedelta(hours=4)
+    early = await get_attention_status(session_factory, 42, now=now + timedelta(minutes=30))
+    assert {"minimum_gap", "generic_repeat_gap"} <= set(early.block_reasons)
+    assert early.next_possible_at.astimezone(UTC) == repeat_boundary.replace(tzinfo=UTC)
+
+    blocked = await get_attention_status(
+        session_factory, 42, now=now + timedelta(hours=3, minutes=59)
+    )
+    assert blocked.generic_candidates > 0
+    assert "generic_repeat_gap" in blocked.block_reasons
+    assert blocked.next_possible_at.astimezone(UTC) == repeat_boundary.replace(tzinfo=UTC)
+    assert "Следующее возможно не раньше: 16:00" in format_attention_status(blocked)
+    assert "четырёхчасовой интервал общих напоминаний" in format_attention_status(blocked)
+
+    assert await worker.process_once(now + timedelta(hours=3, minutes=59)) == 0
+    assert len(bot.messages) == 1
+
+    ready = await get_attention_status(session_factory, 42, now=repeat_boundary)
+    assert ready.block_reasons == ("ready",)
 
     assert await worker.process_once(now + timedelta(hours=4)) == 1
     async with session_factory() as session:
@@ -888,10 +907,15 @@ async def test_level_five_allows_two_generic_kinds_but_not_a_third_in_one_local_
                 .order_by(Reminder.sent_at, Reminder.id)
             )
         ).all()
-        assert [row.payload_json["kind"] for row in nudges] == [
-            "COMPLETION_STREAK",
-            "STALE_IMPORTANT",
-        ]
+        assert len(nudges) == 2
+        assert nudges[0].payload_json["kind"] == "COMPLETION_STREAK"
+        assert nudges[1].payload_json["kind"] != "COMPLETION_STREAK"
+        assert (
+            await session.scalar(
+                select(func.count(Reminder.id)).where(Reminder.type == PROACTIVE_ATTENTION)
+            )
+            == 0
+        )
 
         session.add(
             Reminder(
@@ -904,8 +928,8 @@ async def test_level_five_allows_two_generic_kinds_but_not_a_third_in_one_local_
             )
         )
         await session.commit()
-    assert await worker.process_once(now + timedelta(hours=6)) == 0
-    assert len(bot.messages) == 3
+    assert await worker.process_once(now + timedelta(hours=8)) == 0
+    assert len(bot.messages) == 2
     async with session_factory() as session:
         assert (
             await session.scalar(

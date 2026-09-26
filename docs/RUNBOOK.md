@@ -563,12 +563,18 @@ sqlite3 data/app.db \
 ```
 
 Digest, snooze, proactive Attention и motivation nudge используют разные типы
-Reminder. PM-08/PM-10 настройки находятся в `/settings attention`;
+Reminder. PM-08/PM-10 настройки доступны в кнопках Настроек и через
+`/settings attention`;
 существующие пользователи после PM-08 получают Attention OFF, а после PM-10 —
 Generic motivation OFF, если ключ отсутствовал. Новые пользователи получают
 Attention ON / Normal (3) и Generic motivation ON.
 Настройки живут в `users.settings_json`; бюджет, cooldown и minimum gap
 вычисляются из Reminder history и не требуют сбрасываемых счётчиков.
+`REMINDER_POLL_SECONDS` задаёт отдельную частоту опроса ReminderWorker (по
+умолчанию 30 секунд); она не меняет расписание digest или правила eligibility.
+Кнопка статуса Attention использует те же gates и candidate projection, что и
+worker, но выполняет только SELECT-запросы: она не создаёт claim, Reminder,
+Event или изменение Item.
 
 Digest переходит в `CLAIMED` до Telegram-вызова и в `SENT` только после
 успешного ответа. Interrupted `CLAIMED` сохраняет текущую защиту digest от
@@ -606,8 +612,9 @@ generic cap, minimum gap и kind/template history. Только успешный
 новый claim. Между принятым Telegram сообщением и SQLite финализацией остаётся
 узкое at-least-once окно с возможным дублем; exactly-once не гарантируется.
 Generic nudge не пишет `ATTENTION_SHOWN`. Успешная доставка создаёт
-`REMINDER_SENT` в той же транзакции, которая фиксирует `SENT`; реакции
-`Ок` не создаёт outcome Event, а `Меньше таких` ссылается на этот Reminder.
+`REMINDER_SENT` в той же транзакции, которая фиксирует `SENT`; показ кнопки
+`🎯 Показать` ведёт к ручному списку Attention, а `Меньше таких` ссылается на
+этот Reminder.
 Proactive reminder, digest и snooze resurfacing также получают
 `REMINDER_SENT` только после успешного ответа Telegram. У Telegram URL-кнопки
 нет наблюдаемого callback, поэтому она не создаёт `REMINDER_OPENED`.

@@ -333,7 +333,7 @@ async def _archive_bytes(path: Path) -> bytes:
 
 
 @pytest.mark.asyncio
-async def test_export_command_defaults_to_compact_and_deduplicates_telegram_message(
+async def test_export_command_requires_mode_and_explicit_compact_deduplicates_message(
     settings, session_factory
 ):
     message = _telegram_message("/export", message_id=12)
@@ -342,10 +342,19 @@ async def test_export_command_defaults_to_compact_and_deduplicates_telegram_mess
 
     async with session_factory() as session:
         jobs = list((await session.scalars(select(ExportJob))).all())
+        assert jobs == []
+    assert message.answer.await_args.args == ("📦 Экспорт",)
+    assert message.answer.await_args.kwargs["reply_markup"].inline_keyboard
+
+    compact = _telegram_message("/export compact", message_id=13)
+    await on_export(compact, settings, session_factory)
+    await on_export(_telegram_message("/export compact", message_id=13), settings, session_factory)
+    async with session_factory() as session:
+        jobs = list((await session.scalars(select(ExportJob))).all())
         assert len(jobs) == 1
         assert jobs[0].mode == COMPACT
         assert jobs[0].status == "PENDING"
-    assert message.answer.await_args.args == ("Готовлю компактный экспорт…",)
+    assert compact.answer.await_args.args == ("Готовлю компактный экспорт…",)
 
 
 @pytest.mark.asyncio

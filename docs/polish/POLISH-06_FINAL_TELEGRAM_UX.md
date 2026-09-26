@@ -1,6 +1,6 @@
 # POLISH-06 — Final Telegram UX Cleanup
 
-Status: IN_REVIEW
+Status: DONE (PR #52 merged)
 
 ## Why this corrective PR exists
 

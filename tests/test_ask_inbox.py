@@ -508,7 +508,8 @@ async def test_ask_handler_validates_and_deduplicates_telegram_message(settings,
     await on_ask(message, settings, session_factory, "  ")
     await on_ask(message, settings, session_factory, "x" * (MAX_ASK_QUESTION_CHARS + 1))
     assert message.responses == [
-        "Использование: /ask <вопрос>",
+        "🧠 Ask отвечает по найденным сохранённым материалам.\n\n"
+        "Напиши вопрос одним сообщением. Например: «Что я сохранял про Kotlin?»",
         f"Вопрос слишком длинный. Максимум {MAX_ASK_QUESTION_CHARS} символов.",
     ]
     async with session_factory() as session:

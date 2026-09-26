@@ -7,6 +7,7 @@ from app.domain.models import (
     AnalysisResult,
     AttentionHookGeneration,
     NormalizedContent,
+    TopicClassificationResult,
     UserProfile,
 )
 from app.errors import AppError
@@ -42,7 +43,9 @@ class FakeLlmProvider:
     def __init__(
         self,
         result: AnalysisResult | None = None,
+        topic_result: TopicClassificationResult | None = None,
         error: LlmError | None = None,
+        topic_error: LlmError | None = None,
         vision: bool = False,
         describe_notes: str | None = None,
         describe_fail: bool = False,
@@ -56,8 +59,11 @@ class FakeLlmProvider:
         from app.llm.base import LlmCapabilities
 
         self.result = result or make_analysis()
+        self.topic_result = topic_result or TopicClassificationResult(category=self.result.category)
         self.error = error
+        self.topic_error = topic_error
         self.calls: list[tuple[NormalizedContent, UserProfile, list[str]]] = []
+        self.topic_calls: list[tuple[NormalizedContent, list[str]]] = []
         self.summarize_calls: list[str] = []
         self.capabilities = LlmCapabilities(structured_output=True, vision=vision)
         self.describe_notes = describe_notes or "На слайдах диаграмма оркестрации."
@@ -84,6 +90,13 @@ class FakeLlmProvider:
         if self.error is not None:
             raise self.error
         return self.result
+
+    async def classify_topic(self, content: NormalizedContent, categories: list[str]):
+        """Keep tests modelling the isolated classifier as a separate provider call."""
+        self.topic_calls.append((content, list(categories)))
+        if self.topic_error is not None:
+            raise self.topic_error
+        return self.topic_result
 
     async def summarize_chunk(self, text: str) -> str:
         self.summarize_calls.append(text)

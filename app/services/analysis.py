@@ -4,7 +4,12 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.enums import ContentKind
-from app.domain.models import AnalysisResult, NormalizedContent, UserProfile
+from app.domain.models import (
+    AnalysisResult,
+    NormalizedContent,
+    TopicClassificationResult,
+    UserProfile,
+)
 from app.llm.base import LlmError, LlmProvider
 from app.storage.models import Content, Item
 
@@ -42,17 +47,18 @@ def split_text(text: str, chunk_size_chars: int, overlap_chars: int = 0) -> list
 
 
 class Analyzer:
-    """Сервис анализа: NormalizedContent + профиль + существующие категории → AnalysisResult.
+    """Own bounded analysis and isolated topic-classification provider boundaries.
 
-    Здесь собирается персональный контекст; смена LLM-провайдера на сервис не влияет.
+    Profile relevance and canonical topic evidence stay separate so either LLM
+    stage can resume without repeating the other.
     """
 
     def __init__(
         self, provider: LlmProvider, chunk_size_chars: int = 12_000, overlap_chars: int = 0
     ):
         self.provider = provider
-        # Chunking belongs to the application boundary: providers summarize
-        # bounded fragments, while the final classification stays one call.
+        # Chunking belongs to the application boundary; both final LLM stages
+        # receive the same persisted, bounded evidence projection.
         self.chunk_size_chars = chunk_size_chars
         self.overlap_chars = overlap_chars
 
@@ -64,6 +70,20 @@ class Analyzer:
         profile: UserProfile,
         item_id: int | None = None,
     ) -> AnalysisResult:
+        content = await self.prepare_content(content, session, item_id)
+        categories = await existing_categories(session, user_id)
+        # The provider call can take seconds; finish the read transaction first so
+        # another worker can claim/update its SQLite outbox rows while analysis runs.
+        await session.commit()
+        return await self.provider.analyze(content, profile, categories)
+
+    async def prepare_content(
+        self,
+        content: NormalizedContent,
+        session: AsyncSession,
+        item_id: int | None = None,
+    ) -> NormalizedContent:
+        """Prepare one bounded, durable evidence projection shared by both LLM stages."""
         if len(content.text) > self.chunk_size_chars:
             if item_id is None:
                 raise ValueError("item_id is required for durable long-content analysis")
@@ -78,11 +98,47 @@ class Analyzer:
                     },
                 }
             )
+        return content
+
+    @staticmethod
+    def topic_classification_content(
+        content: NormalizedContent,
+    ) -> NormalizedContent | None:
+        """Keep user intent out of the canonical category evidence boundary."""
+        metadata = {
+            key: content.metadata[key]
+            for key in ("visual_notes", "source_count", "successful_source_count")
+            if key in content.metadata
+        }
+        source_count = content.metadata.get("source_count")
+        successful_source_count = content.metadata.get("successful_source_count")
+        if (
+            type(source_count) is int
+            and source_count > 0
+            and type(successful_source_count) is int
+            and successful_source_count == 0
+        ):
+            if content.source_context and content.source_context.strip():
+                return content.model_copy(
+                    update={"text": "", "user_note": None, "metadata": metadata}
+                )
+            return None
+        return content.model_copy(update={"user_note": None, "metadata": metadata})
+
+    async def classify_topic(
+        self,
+        content: NormalizedContent,
+        session: AsyncSession,
+        user_id: int,
+    ) -> TopicClassificationResult | None:
+        """Run the independent category stage after its primary analysis checkpoint."""
+        topic_content = self.topic_classification_content(content)
+        if topic_content is None:
+            return None
         categories = await existing_categories(session, user_id)
-        # The provider call can take seconds; finish the read transaction first so
-        # another worker can claim/update its SQLite outbox rows while analysis runs.
+        # End the category read transaction before the independent provider call.
         await session.commit()
-        return await self.provider.analyze(content, profile, categories)
+        return await self.provider.classify_topic(topic_content, categories)
 
     async def _durable_chunk_summaries(
         self, session: AsyncSession, item_id: int, chunks: list[str]

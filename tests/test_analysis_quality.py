@@ -6,10 +6,16 @@ import pytest
 from pydantic import ValidationError
 
 from app.domain.enums import ItemType, SourceType
-from app.domain.models import AnalysisResult, NormalizedContent, UserProfile
+from app.domain.models import (
+    AnalysisResult,
+    NormalizedContent,
+    TopicClassificationResult,
+    UserProfile,
+)
 from app.llm.openai import (
     CHUNK_SUMMARY_SYSTEM_PROMPT,
     SYSTEM_PROMPT,
+    TOPIC_CLASSIFICATION_SYSTEM_PROMPT,
     OpenAiProvider,
     build_user_message,
     strict_json_schema,
@@ -171,6 +177,65 @@ async def test_provider_keeps_system_contract_and_user_data_at_the_adapter_bound
 
     assert request["messages"][0] == {"role": "system", "content": expected_system_prompt}
     assert request["messages"][1]["role"] == "user"
+
+
+async def test_topic_classification_request_has_no_profile_or_user_note_bytes():
+    """The provider boundary itself proves category input is physically profile-free."""
+
+    class FakeCompletions:
+        def __init__(self):
+            self.requests = []
+
+        async def create(self, **kwargs):
+            self.requests.append(kwargs)
+            return SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(
+                            content=TopicClassificationResult(category="DevOps").model_dump_json()
+                        ),
+                        finish_reason="stop",
+                    )
+                ]
+            )
+
+    provider = OpenAiProvider(api_key="test", model="test-model")
+    completions = FakeCompletions()
+    provider._client = SimpleNamespace(chat=SimpleNamespace(completions=completions))
+    content = NormalizedContent(
+        source_type=SourceType.WEB,
+        title="Docker Hub deployment",
+        text="Docker containers and deployment pipeline with security scanning.",
+        source_context="Captured source title context",
+        user_note="USER_NOTE_ONLY_MARKER",
+    )
+
+    result = await provider.classify_topic(content, ["Android-разработка"])
+
+    assert result.category == "DevOps"
+    request = completions.requests[0]
+    assert request["messages"][0] == {
+        "role": "system",
+        "content": TOPIC_CLASSIFICATION_SYSTEM_PROMPT,
+    }
+    assert request["response_format"]["json_schema"]["strict"] is True
+    assert request["response_format"]["json_schema"]["schema"]["additionalProperties"] is False
+    request_text = request["messages"][1]["content"]
+    for expected in (
+        "Docker containers and deployment pipeline",
+        "Docker Hub deployment",
+        "Captured source title context",
+        "Android-разработка",
+    ):
+        assert expected in request_text
+    for forbidden in (
+        "USER_NOTE_ONLY_MARKER",
+        "Android developer",
+        "PROFILE_GOALS_MARKER",
+        "PROFILE_INTERESTS_MARKER",
+        "PROFILE_FREE_TEXT_MARKER",
+    ):
+        assert forbidden not in request_text
 
 
 def test_analysis_schema_remains_strict_and_keeps_compatibility_fields():

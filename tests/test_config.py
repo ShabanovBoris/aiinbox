@@ -9,6 +9,7 @@ from app.config import Settings
     [
         ("processing_concurrency", 0),
         ("processing_poll_seconds", 0),
+        ("reminder_poll_seconds", 0),
         ("processing_timeout_seconds", 0),
         ("shutdown_timeout_seconds", 0),
         ("backup_keep", 0),

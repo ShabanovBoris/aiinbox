@@ -184,6 +184,14 @@ class AskDeliveryPayload(BaseModel):
     references: list[AskInboxCitation] = Field(default_factory=list, max_length=5)
 
 
+class TopicClassificationResult(BaseModel):
+    """Strict content-topic result kept separate from profile-aware analysis signals."""
+
+    model_config = {"extra": "forbid"}
+
+    category: str = Field(min_length=1, max_length=100)
+
+
 class AnalysisResult(BaseModel):
     """Строгая схема ответа LLM; валидируется Pydantic до попадания в БД.
 

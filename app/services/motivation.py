@@ -40,8 +40,9 @@ class _Template:
     text: str
 
 
-# ❌ Удалены краткие v1/v2 формулировки, звучавшие как telemetry; новые семейства
-# короче и по-прежнему используют только факты из MotivationCandidate.
+# ❌ Удалены краткие v1/v2 формулировки, звучавшие как telemetry, и англоязычные
+# Done/Item/Inbox слова; новые варианты говорят с пользователем на обычном языке,
+# сохраняя те же факты из MotivationCandidate.
 _TEMPLATES: Mapping[MotivationKind, tuple[_Template, ...]] = MappingProxyType(
     {
         MotivationKind.STALE_IMPORTANT: (
@@ -50,12 +51,12 @@ _TEMPLATES: Mapping[MotivationKind, tuple[_Template, ...]] = MappingProxyType(
                 "Важные сохранения старше месяца: {count}. Что открыть?",
             ),
             _Template(
-                "stale_important_v4",
-                "Приоритетные Items старше месяца: {count}. Вернуть один в фокус?",
+                "stale_important_v7_b",
+                "Приоритетные сохранения старше месяца: {count}. Вернуть одно в фокус?",
             ),
             _Template(
-                "stale_important_v5",
-                "Старые важные сохранения в Inbox: {count}. С чего начать?",
+                "stale_important_v7_c",
+                "Старые важные сохранения в списке: {count}. С чего начать?",
             ),
             _Template(
                 "stale_important_v6",
@@ -101,13 +102,14 @@ _TEMPLATES: Mapping[MotivationKind, tuple[_Template, ...]] = MappingProxyType(
         ),
         MotivationKind.INBOX_GROWTH: (
             _Template(
-                "inbox_growth_v3",
+                "inbox_growth_v7_a",
                 "Сегодня +{net} к списку: {created} новых, {resolved} завершено или архивировано. "
                 "Разгрузить один?",
             ),
             _Template(
-                "inbox_growth_v4",
-                "Inbox вырос на {net}: добавлено {created}, завершено или архивировано {resolved}. "
+                "inbox_growth_v7_b",
+                "Список вырос на {net}: добавлено {created}, завершено или архивировано "
+                "{resolved}. "
                 "С чего начать?",
             ),
             _Template(
@@ -116,45 +118,47 @@ _TEMPLATES: Mapping[MotivationKind, tuple[_Template, ...]] = MappingProxyType(
                 "прирост {net}. Открыть один?",
             ),
             _Template(
-                "inbox_growth_v6",
-                "Сегодня в Inbox стало на {net} записей больше: +{created} и −{resolved}. "
+                "inbox_growth_v7_c",
+                "Сегодня в списке стало на {net} записей больше: +{created} и −{resolved}. "
                 "Разобрать одну?",
             ),
         ),
         MotivationKind.COMPLETION_STREAK: (
             _Template(
-                "completion_streak_v3",
-                "Дни подряд с хотя бы одним Done: {days}. Продолжить серию?",
+                "completion_streak_v7_a",
+                "Дней подряд с завершёнными делами: {days}. Продолжить серию?",
             ),
             _Template(
-                "completion_streak_v4",
-                "Done шёл подряд {days} календарных дней. Что станет следующим?",
+                "completion_streak_v7_b",
+                "Есть хотя бы одно завершение {days} дней подряд. Выбрать следующий шаг?",
             ),
             _Template(
-                "completion_streak_v5",
-                "Длина серии дней с Done: {days}. Выбрать следующий шаг?",
+                "completion_streak_v7_c",
+                "Серия дней с завершёнными делами: {days}. Продолжить?",
             ),
             _Template(
-                "completion_streak_v6",
-                "Текущая серия Done — {days} подряд. Продолжить в удобном темпе?",
+                "completion_streak_v7_d",
+                "Зафиксированы завершения {days} дней подряд. Продолжить в удобном темпе?",
             ),
         ),
         MotivationKind.WEEKLY_PROGRESS: (
             _Template(
-                "weekly_progress_v3",
-                "Done за последние {days} дней: {completed}. Какой Item станет следующим?",
+                "weekly_progress_v7_a",
+                "За последние {days} дней закрыто {completed} сохранений. Что вернуть в фокус?",
             ),
             _Template(
-                "weekly_progress_v4",
-                "Завершений за {days}-дневный период: {completed}. Есть что закрыть следующим?",
+                "weekly_progress_v7_b",
+                "За {days}-дневный период закрыто {completed} сохранений. "
+                "Показать, что продолжить?",
             ),
             _Template(
-                "weekly_progress_v5",
-                "Done за последние {days} дней: {completed}. Выбрать следующий?",
+                "weekly_progress_v7_c",
+                "За последние {days} дней завершено сохранений: {completed}. "
+                "Показать следующий шаг?",
             ),
             _Template(
-                "weekly_progress_v6",
-                "Завершения за последние {days} дней: {completed}. Продолжить с одним?",
+                "weekly_progress_v7_d",
+                "За последние {days} дней закрыто {completed} сохранений. Что продолжить?",
             ),
         ),
     }

@@ -25,7 +25,7 @@ Current user testing shows that the next constraint is not missing capability bu
 
 The milestone therefore pauses major feature expansion and polishes the existing core first.
 
-## Six implementation PRs, including the final corrective follow-up
+## Stabilization PRs
 
 1. [POLISH-01 — AI Analysis v2](POLISH-01_AI_ANALYSIS_V2.md)
 2. [POLISH-02 — Compact Telegram Item UI](POLISH-02_COMPACT_TELEGRAM_UI.md)
@@ -33,6 +33,7 @@ The milestone therefore pauses major feature expansion and polishes the existing
 4. [POLISH-04 — Hooks & Notifications v2](POLISH-04_HOOKS_NOTIFICATIONS_V2.md)
 5. [POLISH-05 — Telegram Navigation & AI Reliability](POLISH-05_NAVIGATION_AND_AI_RELIABILITY.md)
 6. [POLISH-06 — Final Telegram UX Cleanup](POLISH-06_FINAL_TELEGRAM_UX.md)
+7. [POLISH-07 — System Integrity](POLISH-07_SYSTEM_INTEGRITY.md)
 
 ## Recommended implementation order
 
@@ -57,7 +58,10 @@ real-user review found final navigation and failure-copy gaps
 POLISH-06
 final Telegram UX cleanup
         ↓
-explicit quality review
+POLISH-07
+interaction, category isolation, and Attention calibration
+        ↓
+two independent quality reviews
         ↓
 resume PM-14+
 ~~~
@@ -71,13 +75,15 @@ Some implementation work may overlap, but each PR should remain independently re
 - POLISH-03 — DONE (PR #49 merged)
 - POLISH-04 — DONE (PR #50 merged)
 - POLISH-05 — DONE (PR #51 merged)
-- POLISH-06 — IN_REVIEW
+- POLISH-06 — DONE (PR #52 merged)
+- POLISH-07 — IN_REVIEW
 
-POLISH-06 is the corrective PR produced by the explicit real-user quality review
-after POLISH-05. It closes the remaining Inbox/category reachability, Item-row
-navigation, failed-Item identity, Export shortcut, and Profile editing gaps.
-PM-14 and PM-16+ stay ON HOLD until POLISH-06 is accepted and the separate
-Quality & UX review explicitly passes.
+POLISH-06 closed the Inbox/category reachability, Item-row navigation,
+failed-Item identity, Export shortcut, and Profile editing gaps. POLISH-07
+captures follow-up failures from real user testing: guided command parity,
+content-only topic classification, lexical Search disclosure, visible local
+time, and explainable Attention eligibility. PM-14 remains ON HOLD until
+POLISH-07 is accepted by both requested review conversations.
 
 ## Product invariant after the milestone
 
@@ -104,7 +110,7 @@ remain available to the system and, where useful, behind Details. They are not t
 
 ## Freeze policy
 
-Until POLISH-01…06 are accepted and reviewed together:
+Until POLISH-01…07 are accepted and reviewed together:
 
 - PM-14 Hybrid Semantic Search: ON HOLD;
 - PM-16+ feature expansion: ON HOLD;
@@ -113,11 +119,11 @@ Until POLISH-01…06 are accepted and reviewed together:
 
 This is a product sequencing decision, not a hard technical dependency.
 
-After POLISH-06, review real usage and explicitly decide whether to resume PM-14.
+After POLISH-07, review real usage and explicitly decide whether to resume PM-14.
 
 ## Cross-PR invariants
 
-All six PRs must preserve:
+All seven PRs must preserve:
 
 - SQLite as canonical storage;
 - thin Telegram handlers;
@@ -147,3 +153,4 @@ The milestone is complete when:
 10. repeated Ask/provider failures can be safely diagnosed;
 11. real user review confirms the current core is worth extending before PM-14 resumes.
 12. every saved Item remains reachable through bounded pages, even when processing or AI analysis fails.
+13. menu and no-argument commands use the same guided interaction; topic classification cannot receive UserProfile; Attention status reports the scheduler's actual gates and candidates.
