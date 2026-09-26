@@ -19,8 +19,11 @@ from app.bot.formatting import (
     format_weekly_review,
 )
 from app.bot.keyboards import (
+    attention_chooser_keyboard,
     attention_settings_keyboard,
+    attention_status_keyboard,
     category_navigation_keyboard,
+    export_chooser_keyboard,
     feedback_category_keyboard,
     feedback_menu_keyboard,
     feedback_type_keyboard,
@@ -38,6 +41,8 @@ from app.bot.keyboards import (
     reminder_more_keyboard,
     reminder_snooze_keyboard,
     reminder_sources_keyboard,
+    search_empty_keyboard,
+    settings_keyboard,
 )
 from app.bot.presentation import item_display_title, item_navigation_entries
 from app.bot.provenance import normalize_forward_origin, text_with_entity_urls
@@ -59,7 +64,9 @@ from app.services.feedback import (
 from app.services.ingestion import ingest_media, ingest_message
 from app.services.notifications import (
     format_attention_settings,
+    format_attention_status,
     format_settings,
+    get_attention_status,
     get_notification_settings,
     parse_timezone,
     update_notification_settings,
@@ -87,8 +94,8 @@ HELP_TEXT = (
     "Просто отправь\n"
     "• текст, ссылку, видео, документ или forward\n\n"
     "Найти\n"
-    "• 🔎 Поиск по сохранённому\n"
-    "• 🧠 Ask по своим материалам\n\n"
+    "• 🔎 Поиск по словам в сохранённом\n"
+    "• 🧠 Ask отвечает по найденным сохранённым материалам\n\n"
     "Вернуться\n"
     "• 🎯 Сегодня\n"
     "• ✨ Внимание\n"
@@ -104,11 +111,41 @@ HELP_TEXT = (
 
 
 class GuidedInput(StatesGroup):
-    """Ephemeral Telegram prompts only; durable Ask work remains in AskJob/AskWorker."""
+    """One-shot Telegram input; durable business operations remain in their workers."""
 
     ask = State()
     search = State()
     profile = State()
+    settings_timezone = State()
+    settings_digest_time = State()
+    settings_quiet_hours = State()
+
+
+_ASK_PROMPT = (
+    "🧠 Ask отвечает по найденным сохранённым материалам.\n\n"
+    "Напиши вопрос одним сообщением. Например: «Что я сохранял про Kotlin?»"
+)
+_SEARCH_PROMPT = (
+    "🔎 Поиск по словам\n\n"
+    "Ищу совпадения в заголовках, сводках, заметках и сохранённом тексте.\n\n"
+    "Поиск текстовый, не смысловой: синонимы, перевод и разные написания могут не совпасть.\n\n"
+    "Напиши запрос."
+)
+
+
+async def _begin_guided_input(
+    state: FSMContext,
+    input_state: State,
+    send,
+    prompt: str,
+) -> None:
+    """FSM routes only the next reply; durable work stays in existing services.
+
+    State is armed after Telegram accepts the prompt, so a failed edit cannot leave
+    the next ordinary message captured by an invisible guided flow.
+    """
+    await send(prompt, reply_markup=input_cancel_keyboard())
+    await state.set_state(input_state)
 
 
 class ClearGuidedInputOnCommandMiddleware(BaseMiddleware):
@@ -278,6 +315,98 @@ async def on_settings(
     await message.answer(
         format_settings(user, notification_settings),
         reply_markup=settings_keyboard(notification_settings["daily_digest_enabled"]),
+    )
+
+
+async def on_settings_edit_callback(
+    callback: CallbackQuery,
+    settings: Settings,
+    session_factory,
+    state: FSMContext,
+) -> None:
+    """Keep editing ephemeral and delegate validation/persistence to notification services."""
+    if (
+        not settings.is_allowed(callback.from_user.id)
+        or not callback.data
+        or callback.message is None
+    ):
+        await callback.answer()
+        return
+    choices = {
+        "settings:edit:timezone": (
+            GuidedInput.settings_timezone,
+            "🌍 Часовой пояс\nОтправь IANA timezone, например Europe/Moscow.",
+        ),
+        "settings:edit:digest_time": (
+            GuidedInput.settings_digest_time,
+            "🕘 Время digest\nОтправь время в формате HH:MM, например 09:00.",
+        ),
+        "settings:edit:quiet_hours": (
+            GuidedInput.settings_quiet_hours,
+            "🌙 Тихие часы\nОтправь диапазон HH:MM-HH:MM, например 22:30-08:00.",
+        ),
+    }
+    choice = choices.get(callback.data)
+    if choice is None:
+        await callback.answer("Настройка больше недоступна")
+        return
+    input_state, prompt = choice
+    await _begin_guided_input(
+        state,
+        input_state,
+        callback.message.edit_text,
+        prompt,
+    )
+    await callback.answer()
+
+
+async def on_guided_notification_setting_input(
+    message: Message,
+    settings: Settings,
+    session_factory,
+    state: FSMContext,
+    setting_name: str,
+) -> None:
+    """Validate through the notification service and retain state after invalid input."""
+    telegram_user_id = message.from_user.id if message.from_user else None
+    if not settings.is_allowed(telegram_user_id):
+        await state.clear()
+        return
+    value = (message.text or "").strip()
+    if not value:
+        return
+    try:
+        if setting_name == "timezone":
+            updated = await update_notification_settings(
+                session_factory, telegram_user_id, timezone=value
+            )
+        elif setting_name == "digest_time":
+            updated = await update_notification_settings(
+                session_factory, telegram_user_id, daily_digest_time=value
+            )
+        elif setting_name == "quiet_hours":
+            times = value.split("-", maxsplit=1)
+            if len(times) != 2:
+                raise ValueError("Диапазон должен быть в формате HH:MM-HH:MM")
+            updated = await update_notification_settings(
+                session_factory,
+                telegram_user_id,
+                quiet_hours_start=times[0].strip(),
+                quiet_hours_end=times[1].strip(),
+            )
+        else:
+            raise ValueError("Неизвестная настройка")
+    except ValueError as exc:
+        await message.answer(f"{exc}\nПопробуй ещё раз или нажми «Отмена».")
+        return
+    if updated is None:
+        await message.answer("Настройки не найдены. Открой их повторно через меню.")
+        return
+    await state.clear()
+    user, values = updated
+    await message.answer(
+        format_settings(user, values),
+        reply_markup=settings_keyboard(values["daily_digest_enabled"]),
     )
 
 
@@ -604,6 +733,33 @@ def make_router(
     async def guided_search(message: Message, state: FSMContext) -> None:
         await on_guided_search_input(message, settings, session_factory, state)
 
+    @router.message(
+        GuidedInput.settings_timezone, ~F.forward_origin, F.text, ~F.text.startswith("/")
+    )
+    async def guided_timezone(message: Message, state: FSMContext) -> None:
+        """Keep this validated setting reply ahead of ordinary text ingestion."""
+        await on_guided_notification_setting_input(
+            message, settings, session_factory, state, "timezone"
+        )
+
+    @router.message(
+        GuidedInput.settings_digest_time, ~F.forward_origin, F.text, ~F.text.startswith("/")
+    )
+    async def guided_digest_time(message: Message, state: FSMContext) -> None:
+        """Route digest-clock input into the shared notification validator."""
+        await on_guided_notification_setting_input(
+            message, settings, session_factory, state, "digest_time"
+        )
+
+    @router.message(
+        GuidedInput.settings_quiet_hours, ~F.forward_origin, F.text, ~F.text.startswith("/")
+    )
+    async def guided_quiet_hours(message: Message, state: FSMContext) -> None:
+        """Route quiet-hours input into the shared notification validator."""
+        await on_guided_notification_setting_input(
+            message, settings, session_factory, state, "quiet_hours"
+        )
+
     # Не-командный текст — источники TEXT/WEB; медиа-источники добавляются
     # в своих фазах и идут через тот же pipeline.
     @router.message(~F.forward_origin, F.text, ~F.text.startswith("/"))
@@ -622,11 +778,11 @@ def make_router(
         await on_settings(message, settings, session_factory, arguments)
 
     @router.message(Command("profile_update"))
-    async def profile_update(message: Message) -> None:
+    async def profile_update(message: Message, state: FSMContext) -> None:
         if not settings.is_allowed(message.from_user.id if message.from_user else None):
             return
         instruction = (message.text or "").removeprefix("/profile_update").strip()
-        await on_profile_update(message, settings, session_factory, instruction)
+        await on_profile_update(message, settings, session_factory, instruction, state)
 
     @router.message(Command("today"))
     async def today(message: Message) -> None:
@@ -653,15 +809,15 @@ def make_router(
         await on_category(message, settings, session_factory, value)
 
     @router.message(Command("search"))
-    async def search(message: Message) -> None:
+    async def search(message: Message, state: FSMContext) -> None:
         value = (message.text or "").removeprefix("/search").strip()
-        await on_search(message, settings, session_factory, value)
+        await on_search_with_state(message, settings, session_factory, value, state)
 
     @router.message(Command("ask"))
-    async def ask(message: Message) -> None:
+    async def ask(message: Message, state: FSMContext) -> None:
         parts = (message.text or "").split(maxsplit=1)
         question = parts[1].strip() if len(parts) == 2 else ""
-        await on_ask(message, settings, session_factory, question)
+        await on_ask(message, settings, session_factory, question, state)
 
     @router.message(Command("export"))
     async def export(message: Message) -> None:
@@ -690,6 +846,11 @@ def make_router(
     @router.callback_query(F.data == "settings:digest")
     async def settings_digest(callback: CallbackQuery) -> None:
         await on_settings_callback(callback, settings, session_factory)
+
+    @router.callback_query(F.data.startswith("settings:edit:"))
+    async def settings_edit(callback: CallbackQuery, state: FSMContext) -> None:
+        """Translate one settings button into a bounded, one-shot input state."""
+        await on_settings_edit_callback(callback, settings, session_factory, state)
 
     @router.callback_query(F.data == "settings:open")
     async def settings_open(callback: CallbackQuery) -> None:
@@ -1525,6 +1686,19 @@ async def on_attention_settings_callback(
     if not settings.is_allowed(callback.from_user.id) or not callback.data:
         await callback.answer()
         return
+    if callback.data == "settings:attention:status":
+        if callback.message is not None:
+            await _send_attention_status_for_actor(
+                telegram_user_id=callback.from_user.id,
+                settings=settings,
+                session_factory=session_factory,
+                default_timezone=settings.default_timezone,
+                send=callback.message.edit_text,
+                back_callback="settings:attention:open",
+                refresh_callback="settings:attention:status",
+            )
+        await callback.answer()
+        return
     if callback.data == "settings:attention:open":
         if callback.message is not None:
             projection = await _build_settings_projection(
@@ -1585,6 +1759,33 @@ async def on_attention_settings_callback(
     await callback.answer()
 
 
+async def _send_attention_status_for_actor(
+    *,
+    telegram_user_id: int,
+    settings: Settings,
+    session_factory,
+    default_timezone: str,
+    send,
+    back_callback: str,
+    refresh_callback: str = "nav:attention:status",
+) -> None:
+    """Present scheduler-owned read-only eligibility without creating Reminder/Event rows."""
+    if not settings.is_allowed(telegram_user_id):
+        return
+    status = await get_attention_status(
+        session_factory,
+        telegram_user_id,
+        default_timezone=default_timezone,
+    )
+    if status is None:
+        await send("Настройки уведомлений не найдены.", reply_markup=None)
+        return
+    await send(
+        format_attention_status(status),
+        reply_markup=attention_status_keyboard(back_callback, refresh_callback),
+    )
+
+
 async def on_profile(message: Message, settings: Settings, session_factory) -> None:
     if not settings.is_allowed(message.from_user.id if message.from_user else None):
         return
@@ -1623,12 +1824,21 @@ async def on_profile_update(
     settings: Settings,
     session_factory,
     instruction: str,
+    state: FSMContext | None = None,
 ) -> None:
-    if not instruction:
-        await message.answer("Использование: /profile_update <что изменить>")
-        return
     user_id = message.from_user.id if message.from_user else None
     if not settings.is_allowed(user_id):
+        return
+    if not instruction:
+        if state is not None:
+            await _begin_guided_input(
+                state,
+                GuidedInput.profile,
+                message.answer,
+                "✏️ Что изменить в профиле? Отправь одну инструкцию сообщением.",
+            )
+        else:
+            await message.answer("Использование: /profile_update <что изменить>")
         return
     # Durable job + быстрый ACK: LLM/merge выполняет фоновый worker (ТЗ §14/§68).
     await enqueue_profile_update(
@@ -1764,6 +1974,12 @@ async def on_attention(
     message: Message, settings: Settings, session_factory, arguments: str = ""
 ) -> None:
     if not await _allowed(message, settings):
+        return
+    if not arguments.strip():
+        await message.answer(
+            "✨ Внимание\n\nСколько показать?",
+            reply_markup=attention_chooser_keyboard(),
+        )
         return
     await _send_attention_for_actor(
         telegram_user_id=message.from_user.id,
@@ -2018,7 +2234,24 @@ async def _send_category_items_for_actor(
 
 
 async def on_search(message: Message, settings: Settings, session_factory, query: str) -> None:
+    await on_search_with_state(message, settings, session_factory, query, None)
+
+
+async def on_search_with_state(
+    message: Message,
+    settings: Settings,
+    session_factory,
+    query: str,
+    state: FSMContext | None,
+) -> None:
+    """Share one-shot search entry while preserving direct lexical shortcuts."""
     if not await _allowed(message, settings):
+        return
+    if not query.strip():
+        if state is not None:
+            await _begin_guided_input(state, GuidedInput.search, message.answer, _SEARCH_PROMPT)
+        else:
+            await message.answer(_SEARCH_PROMPT)
         return
     await _send_search_for_actor(
         telegram_user_id=message.from_user.id,
@@ -2047,7 +2280,7 @@ async def _send_search_for_actor(
 
     query = query.strip()
     if not query:
-        await send("Использование: /search <запрос>")
+        await send(_SEARCH_PROMPT)
         return
     async with session_factory() as session:
         user = await get_or_create_user(
@@ -2059,19 +2292,36 @@ async def _send_search_for_actor(
         items = await search_items(session, user.id, query)
         sources_by_item = await load_item_sources_by_item(session, [item.id for item in items])
         await session.commit()
+    if not items:
+        await send(
+            "Ничего не найдено.\n\n"
+            "Поиск совпадает по словам и не понимает синонимы, перевод или транслитерацию.\n"
+            "Попробуй другое написание запроса.",
+            reply_markup=search_empty_keyboard(),
+        )
+        return
     await send(
         format_item_list(items, "Результаты поиска:", sources_by_item),
         reply_markup=item_list_keyboard(item_navigation_entries(items, sources_by_item)),
     )
 
 
-async def on_ask(message: Message, settings: Settings, session_factory, question: str) -> None:
+async def on_ask(
+    message: Message,
+    settings: Settings,
+    session_factory,
+    question: str,
+    state: FSMContext | None = None,
+) -> None:
     """Validate and durably enqueue one question; all retrieval and LLM work stays in AskWorker."""
     if not await _allowed(message, settings):
         return
     question = question.strip()
     if not question:
-        await message.answer("Использование: /ask <вопрос>")
+        if state is not None:
+            await _begin_guided_input(state, GuidedInput.ask, message.answer, _ASK_PROMPT)
+        else:
+            await message.answer(_ASK_PROMPT)
         return
     if error := _ask_question_length_error(question):
         await message.answer(error)
@@ -2128,7 +2378,10 @@ async def on_export(message: Message, settings: Settings, session_factory) -> No
     if len(arguments) > 1:
         await message.answer("Использование: /export [compact|full]")
         return
-    requested_mode = arguments[0].casefold() if arguments else "compact"
+    if not arguments:
+        await message.answer("📦 Экспорт", reply_markup=export_chooser_keyboard())
+        return
+    requested_mode = arguments[0].casefold()
     if requested_mode == "compact":
         mode = COMPACT
     elif requested_mode == "full":
@@ -2354,15 +2607,39 @@ async def on_navigation_callback(
             send=send,
         )
     elif data == "nav:attention":
+        # ❌ Удалён автоматический показ списка без выбора количества: menu и /attention
+        # теперь ведут в один chooser с конечными значениями.
+        await _edit_item_message_if_changed(
+            callback.message,
+            "✨ Внимание\n\nСколько показать?",
+            attention_chooser_keyboard(),
+        )
+        await callback.answer()
+    elif data.startswith("nav:attention:show:"):
+        value = data.removeprefix("nav:attention:show:")
+        if value not in {"1", "3", "5"}:
+            await callback.answer("Количество больше недоступно")
+            return
         await callback.answer()
         await _send_attention_for_actor(
             telegram_user_id=telegram_user_id,
             chat_id=chat_id,
-            arguments="",
+            arguments=value,
             settings=settings,
             session_factory=session_factory,
             send=send,
         )
+    elif data == "nav:attention:status":
+        await _send_attention_status_for_actor(
+            telegram_user_id=telegram_user_id,
+            settings=settings,
+            session_factory=session_factory,
+            default_timezone=settings.default_timezone,
+            send=edit_current_page,
+            back_callback="nav:attention",
+            refresh_callback="nav:attention:status",
+        )
+        await callback.answer()
     elif data == "nav:inbox":
         await callback.answer()
         await _send_inbox_for_actor(
@@ -2405,12 +2682,12 @@ async def on_navigation_callback(
             send=send,
         )
     elif data == "nav:profile:edit":
-        await _edit_item_message_if_changed(
-            callback.message,
+        await _begin_guided_input(
+            state,
+            GuidedInput.profile,
+            callback.message.edit_text,
             "✏️ Что изменить в профиле? Отправь одну инструкцию сообщением.",
-            input_cancel_keyboard(),
         )
-        await state.set_state(GuidedInput.profile)
         await callback.answer()
     elif data == "nav:settings":
         projection = await _build_settings_projection(
@@ -2477,35 +2754,21 @@ async def on_navigation_callback(
             category_token_value=token,
         )
     elif data == "nav:search":
-        await _edit_item_message_if_changed(
-            callback.message,
-            "🔎 Что найти в сохранённых материалах?",
-            input_cancel_keyboard(),
+        await _begin_guided_input(
+            state, GuidedInput.search, callback.message.edit_text, _SEARCH_PROMPT
         )
-        await state.set_state(GuidedInput.search)
         await callback.answer()
     elif data == "nav:ask":
-        await _edit_item_message_if_changed(
-            callback.message,
-            "🧠 Задай вопрос по сохранённым материалам.\n\n"
-            "Например: «Что я сохранял про локальные LLM?»",
-            input_cancel_keyboard(),
-        )
-        await state.set_state(GuidedInput.ask)
+        await _begin_guided_input(state, GuidedInput.ask, callback.message.edit_text, _ASK_PROMPT)
         await callback.answer()
     elif data == "nav:export":
-        job = await _enqueue_export_for_actor(
-            telegram_user_id=telegram_user_id,
-            chat_id=chat_id,
-            telegram_message_id=callback.message.message_id,
-            mode=COMPACT,
-            settings=settings,
-            session_factory=session_factory,
+        # ❌ Удалён немедленный Compact export из главного меню: пользовательский выбор
+        # формата снова доступен перед созданием durable ExportJob.
+        await _edit_item_message_if_changed(
+            callback.message,
+            "📦 Экспорт",
+            export_chooser_keyboard(),
         )
-        if job is not None:
-            await _edit_item_message_if_changed(
-                callback.message, _export_acknowledgement(job.mode, job.status), None
-            )
         await callback.answer()
     else:
         await callback.answer("Действие больше недоступно")

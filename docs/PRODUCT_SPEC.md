@@ -648,9 +648,10 @@ intervention. Новые пользователи получают generic motiv
 `MOTIVATION_NUDGE` входит в общий дневной budget и minimum gap, но имеет
 дополнительный предел: Calm — 0, Light/Normal/Active — 1, Aggressive — 2 за
 локальный день. Уровни 1–3 выбирают sendable Item-specific proactive reminder
-перед generic; на уровнях 4–5 proactive и generic чередуются по последней
-успешной Attention-family delivery. Worker выбирает не более одного
-Attention-family intervention за цикл.
+перед generic; на уровнях 4–5 arbitration учитывает последнюю успешную
+Attention-family delivery, но generic может конкурировать повторно после
+четырёх часов без обязательного proactive между отправками. Worker выбирает не
+более одного Attention-family intervention за цикл.
 
 Generic intent хранится как Reminder с `item_id=NULL`. `scheduled_at` кодирует
 локальную дату и номер слота, а partial unique indexes защищают слот и один
@@ -664,7 +665,8 @@ Event хранит bounded snapshot отправки, а не source content. De
 текущую PM-08 at-least-once семантику при сбое между Telegram и SQLite.
 
 Proactive reminder позволяет Done, Later, Not now и Fewer like this через More;
-generic nudge — OK и Fewer like this. Reminder Done/Snooze фиксируют дополнительный
+generic nudge открывает три материала Attention и сохраняет Fewer like this.
+Reminder Done/Snooze фиксируют дополнительный
 outcome в транзакции с canonical lifecycle event; normal Item Done/Snooze не
 приписываются задним числом к напоминанию. Не наблюдаемый Telegram URL-click не
 создаёт `REMINDER_OPENED`; этот Event означает только наблюдаемый bot-mediated
@@ -1023,3 +1025,40 @@ state remain unchanged. Main-menu Export queues COMPACT directly; Help and
 `/export full` keep explicit FULL choice. Profile exposes one-shot guided input
 over the existing durable `ProfileUpdateJob`; a command clears that prompt
 before normal command dispatch. POLISH-06 adds no migration or dependency.
+
+## 103. POLISH-07 — Interaction consistency and Attention diagnostics
+
+No-argument `/ask`, `/search`, and `/profile_update` open one-shot guided input;
+explicit arguments remain direct. Guided text continues through the existing
+Ask/Search/ProfileUpdate paths and does not fall through to Item ingestion.
+No-argument `/export` and the menu action use the same Compact/Full chooser;
+explicit modes remain direct. No-argument `/attention` and the menu action use
+the same count chooser, while explicit counts remain direct.
+
+Settings expose one-shot, validated editing for timezone, digest time, and quiet
+hours. The settings projection shows current local time from the persisted IANA
+timezone. Attention status is a read-only projection of the worker's gate,
+candidate qualification, and arbitration rules. It reports local time, quiet
+hours, intensity, caps, latest/next delivery context, eligible candidates, and
+blockers without creating Reminders, Events, claims, or Item changes.
+
+Search remains SQLite FTS5 lexical retrieval. Empty results explain vocabulary
+mismatch such as translation or transliteration; Ask states that its answer is
+grounded in found saved material and does not claim semantic retrieval. The
+confirmed `Андроид` → `Android` miss is recorded as PM-14 evidence, while
+embeddings and semantic runtime remain on hold.
+
+Analysis category is finalized by a dedicated structured topic classifier that
+receives saved source content and category hints, never `UserProfile` or
+`user_note`. Its result is authoritative, and classifier failure follows the
+normal analysis error path without falling back to the profile-aware analysis
+category.
+
+Attention intensity changes candidate eligibility thresholds to 60/60/60/55/50
+for Calm/Light/Normal/Active/Aggressive without changing AttentionRank scoring.
+Generic motivational reminders retain their caps and minimum gap; a second
+generic reminder may compete after four hours without requiring an intervening
+proactive reminder. Generic copy remains fact-based and LLM-free, and its
+`🎯 Показать` action opens three Attention items. Reminder polling uses the
+independent `REMINDER_POLL_SECONDS` setting, defaulting to 30 seconds. No schema
+migration or dependency is introduced.

@@ -11,6 +11,7 @@ from app.domain.models import (
     AttentionHookGeneration,
     NormalizedContent,
     ProfilePatch,
+    TopicClassificationResult,
     UserProfile,
 )
 from app.errors import AppError
@@ -94,6 +95,14 @@ class LlmProvider(Protocol):
         profile: UserProfile,
         categories: list[str],
     ) -> AnalysisResult: ...
+
+    async def classify_topic(
+        self,
+        content: NormalizedContent,
+        categories: list[str],
+    ) -> TopicClassificationResult:
+        """Classify captured subject without receiving profile or user-intent data."""
+        ...
 
     async def summarize_chunk(self, text: str) -> str:
         """Сжать один bounded fragment перед финальным анализом."""

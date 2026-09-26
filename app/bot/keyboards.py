@@ -129,8 +129,60 @@ def help_keyboard() -> InlineKeyboardMarkup:
     )
 
 
-# ❌ Удалена export_mode_keyboard из главного меню: общий экспорт сразу означает
-# Compact, а явный выбор обоих режимов теперь принадлежит экрану Help.
+def export_chooser_keyboard() -> InlineKeyboardMarkup:
+    """Keep the two durable export modes reachable from both menu and command."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="📦 Компактный", callback_data="export:mode:COMPACT")],
+            [InlineKeyboardButton(text="🗃 Полный", callback_data="export:mode:FULL")],
+            [InlineKeyboardButton(text="← Меню", callback_data="nav:menu")],
+        ]
+    )
+
+
+def attention_chooser_keyboard() -> InlineKeyboardMarkup:
+    """Expose the manual result limit and read-only scheduler status as finite choices."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="1", callback_data="nav:attention:show:1"),
+                InlineKeyboardButton(text="3", callback_data="nav:attention:show:3"),
+                InlineKeyboardButton(text="5", callback_data="nav:attention:show:5"),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="📊 Статус Attention", callback_data="nav:attention:status"
+                )
+            ],
+            [InlineKeyboardButton(text="⚙️ Настройки", callback_data="settings:attention:open")],
+            [InlineKeyboardButton(text="← Меню", callback_data="nav:menu")],
+        ]
+    )
+
+
+def attention_status_keyboard(
+    back_callback: str = "nav:attention",
+    refresh_callback: str = "nav:attention:status",
+) -> InlineKeyboardMarkup:
+    """Return from a read-only scheduler projection to its originating surface."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="↻ Обновить", callback_data=refresh_callback)],
+            [InlineKeyboardButton(text="← Назад", callback_data=back_callback)],
+        ]
+    )
+
+
+def search_empty_keyboard() -> InlineKeyboardMarkup:
+    """Offer a fresh lexical query and a clear exit when FTS has no result."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🔎 Новый поиск", callback_data="nav:search")],
+            [InlineKeyboardButton(text="← Меню", callback_data="nav:menu")],
+        ]
+    )
+
+
 def profile_keyboard() -> InlineKeyboardMarkup:
     """Expose the existing durable ProfileUpdateJob flow from the profile projection."""
     return InlineKeyboardMarkup(
@@ -480,15 +532,17 @@ def reminder_sources_keyboard(
 
 
 def motivation_reminder_keyboard(reminder_id: int) -> InlineKeyboardMarkup:
-    """Expose only the two factual nudge reactions; OK intentionally records no positive Event."""
+    """Offer a direct Attention view and preserve the existing negative feedback action."""
+    # ❌ Удалена кнопка «Ок»: она не открывала материал и не меняла полезное состояние;
+    # вместо неё сообщение ведёт сразу к ограниченному ручному Attention-списку.
     return InlineKeyboardMarkup(
         inline_keyboard=[
+            [InlineKeyboardButton(text="🎯 Показать", callback_data="nav:attention:show:3")],
             [
-                InlineKeyboardButton(text="👍 Ок", callback_data=f"reminder:ok:{reminder_id}"),
                 InlineKeyboardButton(
                     text="👎 Меньше таких", callback_data=f"reminder:less:{reminder_id}"
-                ),
-            ]
+                )
+            ],
         ]
     )
 
@@ -637,10 +691,17 @@ def snooze_keyboard(item_id: int) -> InlineKeyboardMarkup:
 
 
 def settings_keyboard(enabled: bool) -> InlineKeyboardMarkup:
-    """Expose digest and existing Attention settings in one compact projection."""
+    """Expose notification settings as direct controls, keeping slash forms secondary."""
     label = "🔕 Выключить digest" if enabled else "🔔 Включить digest"
     return InlineKeyboardMarkup(
         inline_keyboard=[
+            [InlineKeyboardButton(text="🌍 Часовой пояс", callback_data="settings:edit:timezone")],
+            [
+                InlineKeyboardButton(
+                    text="🕘 Время digest", callback_data="settings:edit:digest_time"
+                )
+            ],
+            [InlineKeyboardButton(text="🌙 Тихие часы", callback_data="settings:edit:quiet_hours")],
             [InlineKeyboardButton(text=label, callback_data="settings:digest")],
             [InlineKeyboardButton(text="⚡ Attention", callback_data="settings:attention:open")],
             [InlineKeyboardButton(text="← Меню", callback_data="nav:menu")],
@@ -665,7 +726,11 @@ def attention_settings_keyboard(
         callback_data="settings:attention:toggle",
     )
     motivation_toggle = InlineKeyboardButton(
-        text="💬 Motivation OFF" if motivation_enabled is True else "💬 Motivation ON",
+        text=(
+            "💬 Выключить общие напоминания"
+            if motivation_enabled is True
+            else "💬 Включить общие напоминания"
+        ),
         callback_data="settings:attention:motivation",
     )
     return InlineKeyboardMarkup(
@@ -675,6 +740,7 @@ def attention_settings_keyboard(
             levels[4:],
             [toggle],
             [motivation_toggle],
+            [InlineKeyboardButton(text="📊 Статус", callback_data="settings:attention:status")],
             [InlineKeyboardButton(text="← Настройки", callback_data="settings:open")],
         ]
     )

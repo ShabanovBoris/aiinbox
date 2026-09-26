@@ -1,5 +1,6 @@
 import asyncio
 from datetime import datetime, timedelta
+from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -16,7 +17,6 @@ from app.services.notifications import (
     ATTENTION_POLICIES,
     DAILY_DIGEST,
     GENERIC_MOTIVATION_DAILY_CAPS,
-    MIN_PROACTIVE_ATTENTION_SCORE,
     NOTIFICATION_SEND_TIMEOUT,
     PROACTIVE_ATTENTION,
     PROACTIVE_CLAIM_LEASE,
@@ -24,6 +24,9 @@ from app.services.notifications import (
     ReminderWorker,
     _local_day_window,
     attention_policy,
+    format_attention_status,
+    format_settings,
+    get_attention_status,
     get_notification_settings,
     settings_for,
     update_notification_settings,
@@ -695,11 +698,11 @@ async def test_notification_settings_validate_and_persist(session_factory):
 
 def test_attention_policy_table_and_validation_are_exact():
     expected = {
-        1: ("Calm", 1, timedelta(hours=8), timedelta(hours=72)),
-        2: ("Light", 2, timedelta(hours=5), timedelta(hours=48)),
-        3: ("Normal", 3, timedelta(hours=3), timedelta(hours=30)),
-        4: ("Active", 4, timedelta(hours=2), timedelta(hours=20)),
-        5: ("Aggressive", 6, timedelta(minutes=90), timedelta(hours=12)),
+        1: ("Calm", 1, timedelta(hours=8), timedelta(hours=72), 60),
+        2: ("Light", 2, timedelta(hours=5), timedelta(hours=48), 60),
+        3: ("Normal", 3, timedelta(hours=3), timedelta(hours=30), 60),
+        4: ("Active", 4, timedelta(hours=2), timedelta(hours=20), 55),
+        5: ("Aggressive", 6, timedelta(minutes=90), timedelta(hours=12), 50),
     }
     assert {
         level: (
@@ -707,6 +710,7 @@ def test_attention_policy_table_and_validation_are_exact():
             policy.daily_cap,
             policy.minimum_gap,
             policy.same_item_cooldown,
+            policy.minimum_proactive_score,
         )
         for level, policy in ATTENTION_POLICIES.items()
     } == expected
@@ -715,7 +719,183 @@ def test_attention_policy_table_and_validation_are_exact():
     for value in (0, 6, "high", True):
         with pytest.raises(ValueError):
             attention_policy(value)
-    assert MIN_PROACTIVE_ATTENTION_SCORE == 60
+
+
+async def test_intensity_threshold_changes_proactive_eligibility_not_rank_score(
+    session_factory, monkeypatch
+):
+    user_id, item_id = await make_ready_item(session_factory, attention_enabled=True)
+    async with session_factory() as session:
+        item = await session.get(Item, item_id)
+    rank = SimpleNamespace(item_id=item_id, score=55)
+
+    async def fixed_candidates(self, session, current_user_id, *, limit, now):
+        assert current_user_id == user_id
+        return [(item, rank)]
+
+    monkeypatch.setattr(AttentionRankingService, "list_candidates", fixed_candidates)
+    worker = ReminderWorker(session_factory, FakeBot())
+    now = datetime(2026, 9, 26, 12)
+    async with session_factory() as session:
+        normal = await worker._sendable_proactive_candidates(
+            session, user_id, attention_policy(3), now
+        )
+        aggressive = await worker._sendable_proactive_candidates(
+            session, user_id, attention_policy(5), now
+        )
+
+    assert normal == []
+    assert aggressive == [(item_id, rank)]
+    assert rank.score == 55
+
+
+async def test_attention_status_shares_quiet_gate_and_is_read_only(session_factory):
+    _user_id, _item_id = await make_ready_item(session_factory, attention_enabled=True)
+    await update_notification_settings(
+        session_factory,
+        42,
+        timezone="UTC",
+        quiet_hours_start="22:30",
+        quiet_hours_end="08:00",
+    )
+    async with session_factory() as session:
+        before = (
+            await session.scalar(select(func.count(Reminder.id))),
+            await session.scalar(select(func.count(Event.id))),
+            await session.scalar(select(func.count(Item.id))),
+        )
+
+    quiet = await get_attention_status(session_factory, 42, now=datetime(2026, 9, 26, 7, 59))
+    ready = await get_attention_status(session_factory, 42, now=datetime(2026, 9, 26, 8, 0))
+
+    assert quiet.block_reasons == ("quiet_hours",)
+    assert quiet.quiet_state == "идут"
+    assert ready.local_now.strftime("%H:%M") == "08:00"
+    assert ready.quiet_state == "закончились"
+    assert ready.block_reasons == ("ready",)
+    output = format_attention_status(ready)
+    assert "Тихие часы: 22:30–08:00 — закончились" in output
+    assert "Сейчас блокирует: ничего" in output
+    assert "Ручной просмотр Сегодня/Attention считается показом материала" in output
+    async with session_factory() as session:
+        after = (
+            await session.scalar(select(func.count(Reminder.id))),
+            await session.scalar(select(func.count(Event.id))),
+            await session.scalar(select(func.count(Item.id))),
+        )
+    assert before == after
+
+
+@pytest.mark.parametrize(
+    ("blocker", "expected"),
+    [
+        ("disabled", ("attention_off",)),
+        ("quiet", ("quiet_hours",)),
+        ("daily_cap", ("daily_cap",)),
+        ("minimum_gap", ("minimum_gap",)),
+        ("delivery_in_progress", ("delivery_in_progress",)),
+        ("no_candidates", ("no_proactive_candidate", "no_generic_candidate")),
+    ],
+)
+async def test_attention_status_reports_scheduler_blockers(
+    session_factory, monkeypatch, blocker, expected
+):
+    user_id, item_id = await make_ready_item(session_factory, attention_enabled=True)
+    now = datetime(2026, 9, 26, 12)
+    monkeypatch.setattr("app.services.notifications._utc_now", lambda: now)
+    await update_notification_settings(
+        session_factory,
+        42,
+        timezone="UTC",
+        quiet_hours_start="22:30",
+        quiet_hours_end="08:00",
+    )
+
+    async with session_factory() as session:
+        if blocker == "disabled":
+            user = await session.get(User, user_id)
+            user.settings_json = {**user.settings_json, "attention_enabled": False}
+        elif blocker == "quiet":
+            user = await session.get(User, user_id)
+            user.settings_json = {
+                **user.settings_json,
+                "quiet_hours_start": "11:00",
+                "quiet_hours_end": "13:00",
+            }
+        elif blocker == "daily_cap":
+            for slot in range(attention_policy(3).daily_cap):
+                sent_at = now - timedelta(minutes=slot + 1)
+                session.add(
+                    Reminder(
+                        user_id=user_id,
+                        item_id=None,
+                        type=DAILY_DIGEST,
+                        scheduled_at=sent_at,
+                        status="SENT",
+                        sent_at=sent_at,
+                    )
+                )
+        elif blocker == "minimum_gap":
+            sent_at = now - timedelta(hours=1)
+            session.add(
+                Reminder(
+                    user_id=user_id,
+                    item_id=None,
+                    type="MOTIVATION_NUDGE",
+                    scheduled_at=sent_at,
+                    status="SENT",
+                    sent_at=sent_at,
+                )
+            )
+        elif blocker == "delivery_in_progress":
+            session.add(
+                Reminder(
+                    user_id=user_id,
+                    item_id=item_id,
+                    type=PROACTIVE_ATTENTION,
+                    scheduled_at=now,
+                    status="CLAIMED",
+                    claimed_at=now,
+                )
+            )
+        elif blocker == "no_candidates":
+            user = await session.get(User, user_id)
+            user.settings_json = {
+                **user.settings_json,
+                "generic_motivation_enabled": False,
+            }
+            item = await session.get(Item, item_id)
+            item.item_type = ItemType.REFERENCE
+        await session.commit()
+
+    status = await get_attention_status(session_factory, 42, now=now)
+
+    assert status.block_reasons == expected
+
+
+async def test_settings_show_configured_local_time_for_dst_timezone(session_factory):
+    user_id, _item_id = await make_ready_item(session_factory, attention_enabled=True)
+    await update_notification_settings(
+        session_factory,
+        42,
+        timezone="America/New_York",
+    )
+    values = await get_notification_settings(session_factory, 42)
+    user, notification_settings = values
+    # The autumn transition's second 01:30 is resolved from the UTC instant.
+    rendered = format_settings(
+        user,
+        notification_settings,
+        now=datetime(2026, 11, 1, 6, 30, tzinfo=ZoneInfo("UTC")),
+    )
+    status = await get_attention_status(
+        session_factory,
+        42,
+        now=datetime(2026, 11, 1, 6, 30),
+    )
+    assert "🕒 Сейчас для уведомлений: 01:30" in rendered
+    assert status.local_now.strftime("%H:%M %Z") == "01:30 EST"
+    assert status.timezone_name == "America/New_York"
 
 
 async def test_attention_defaults_and_settings_validation(session_factory):
@@ -848,7 +1028,9 @@ async def test_proactive_delivery_persists_reminder_and_exposure(session_factory
         assert reminder.status == "SENT"
         assert reminder.sent_at == now
         assert reminder.payload_json["policy_level"] == 3
-        assert reminder.payload_json["attention_score"] >= MIN_PROACTIVE_ATTENTION_SCORE
+        assert (
+            reminder.payload_json["attention_score"] >= attention_policy(3).minimum_proactive_score
+        )
         assert len(str(reminder.payload_json)) < 500
         assert event.item_id == item_id
         assert event.payload_json == {
@@ -935,7 +1117,9 @@ async def test_proactive_hook_keeps_source_provenance_and_focuses_its_action(ses
         assert reminder.status == "SENT"
         assert reminder.payload_json["hook_content_id"] == hook.id
         assert reminder.payload_json["template_id"] == "direct_v2"
-        assert reminder.payload_json["attention_score"] >= MIN_PROACTIVE_ATTENTION_SCORE
+        assert (
+            reminder.payload_json["attention_score"] >= attention_policy(3).minimum_proactive_score
+        )
         assert reminder.payload_json["priority_score"] == 80
         assert "evidence_excerpt" not in reminder.payload_json
         assert (
@@ -1836,7 +2020,7 @@ async def test_current_pm07_score_is_revalidated_before_telegram_send(session_fa
     assert bot.messages == []
     async with session_factory() as session:
         current_ranked = await AttentionRankingService().list_candidates(session, user_id, now=now)
-        assert current_ranked[0][1].score < MIN_PROACTIVE_ATTENTION_SCORE
+        assert current_ranked[0][1].score < attention_policy(3).minimum_proactive_score
         reminder = await session.scalar(
             select(Reminder).where(Reminder.type == PROACTIVE_ATTENTION)
         )

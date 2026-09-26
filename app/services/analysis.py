@@ -82,7 +82,12 @@ class Analyzer:
         # The provider call can take seconds; finish the read transaction first so
         # another worker can claim/update its SQLite outbox rows while analysis runs.
         await session.commit()
-        return await self.provider.analyze(content, profile, categories)
+        analysis = await self.provider.analyze(content, profile, categories)
+        # The topic boundary receives captured source data only. User intent remains
+        # available to relevance analysis but cannot influence canonical category.
+        topic_content = content.model_copy(update={"user_note": None})
+        topic = await self.provider.classify_topic(topic_content, categories)
+        return analysis.model_copy(update={"category": topic.category})
 
     async def _durable_chunk_summaries(
         self, session: AsyncSession, item_id: int, chunks: list[str]

@@ -19,23 +19,36 @@ from app.bot.handlers import (
     GuidedInput,
     _item_action_label,
     make_router,
+    on_ask,
+    on_attention,
     on_attention_settings_callback,
     on_category,
+    on_export,
     on_export_mode_callback,
     on_guided_ask_input,
+    on_guided_notification_setting_input,
+    on_guided_profile_input,
     on_guided_search_input,
     on_help,
     on_inbox,
     on_navigation_callback,
     on_profile,
+    on_profile_update,
     on_search,
+    on_search_with_state,
     on_settings,
+    on_settings_edit_callback,
     on_settings_open_callback,
     on_start,
     on_text,
     on_today,
 )
-from app.bot.keyboards import help_keyboard, main_menu_keyboard, profile_keyboard
+from app.bot.keyboards import (
+    help_keyboard,
+    main_menu_keyboard,
+    profile_keyboard,
+    settings_keyboard,
+)
 from app.bot.navigation import BOT_COMMANDS, configure_bot_commands
 from app.domain.category_tokens import category_token
 from app.domain.enums import ItemState, ItemType, ProcessingStatus, SourceType
@@ -199,6 +212,41 @@ async def test_profile_command_and_menu_share_the_edit_keyboard(
         assert "nav:profile:edit" in {
             button.callback_data for row in markup.inline_keyboard for button in row
         }
+
+
+async def test_no_argument_profile_update_uses_guided_one_shot_flow(
+    settings, session_factory, monkeypatch
+):
+    sent = capture_answers(monkeypatch)
+    state = FakeFSMContext()
+    await on_profile_update(
+        make_message(42, text="/profile_update"), settings, session_factory, "", state
+    )
+    assert state.value == GuidedInput.profile.state
+    assert "Что изменить в профиле?" in sent[0]
+
+    await on_guided_profile_input(
+        make_message(42, message_id=823, text="Учитывай цель изучать Kotlin"),
+        settings,
+        session_factory,
+        state,
+    )
+    assert state.value is None
+    await on_profile_update(
+        make_message(42, message_id=824, text="/profile_update прямое изменение"),
+        settings,
+        session_factory,
+        "прямое изменение",
+    )
+    async with session_factory() as session:
+        jobs = list(
+            (await session.scalars(select(ProfileUpdateJob).order_by(ProfileUpdateJob.id))).all()
+        )
+        assert [job.instruction for job in jobs] == [
+            "Учитывай цель изучать Kotlin",
+            "прямое изменение",
+        ]
+        assert await session.scalar(select(func.count()).select_from(Item)) == 0
 
 
 def test_bot_commands_are_bounded_and_main_menu_is_inline():
@@ -463,6 +511,42 @@ async def test_guided_ask_uses_question_message_identity_and_is_one_shot(
         assert await session.scalar(select(func.count()).select_from(AskJob)) == 1
 
 
+async def test_no_argument_ask_prompt_and_direct_question_keep_same_durable_boundary(
+    settings, session_factory, monkeypatch
+):
+    sent = capture_answers(monkeypatch)
+    state = FakeFSMContext()
+
+    await on_ask(
+        make_message(42, message_id=819, text="/ask"), settings, session_factory, "", state
+    )
+
+    assert state.value == GuidedInput.ask.state
+    assert "по найденным сохранённым материалам" in sent[0]
+    async with session_factory() as session:
+        assert await session.scalar(select(func.count()).select_from(AskJob)) == 0
+        assert await session.scalar(select(func.count()).select_from(Item)) == 0
+
+    await on_guided_ask_input(
+        make_message(42, message_id=820, text="Что я сохранял про Kotlin?"),
+        settings,
+        session_factory,
+        state,
+    )
+    assert state.value is None
+    await on_ask(
+        make_message(42, message_id=821, text="/ask direct question"),
+        settings,
+        session_factory,
+        "direct question",
+    )
+    async with session_factory() as session:
+        jobs = list((await session.scalars(select(AskJob).order_by(AskJob.id))).all())
+        assert [job.question for job in jobs] == ["Что я сохранял про Kotlin?", "direct question"]
+        assert [job.telegram_message_id for job in jobs] == [820, 821]
+        assert await session.scalar(select(func.count()).select_from(Item)) == 0
+
+
 async def test_guided_search_uses_fts_without_ask_or_item_ingestion(
     settings, session_factory, monkeypatch
 ):
@@ -497,6 +581,29 @@ async def test_guided_search_uses_fts_without_ask_or_item_ingestion(
     async with session_factory() as session:
         assert await session.scalar(select(func.count()).select_from(AskJob)) == 0
         assert await session.scalar(select(func.count()).select_from(Item)) == 1
+
+
+async def test_no_argument_search_is_guided_and_explains_lexical_miss(
+    settings, session_factory, monkeypatch
+):
+    sent = capture_answers(monkeypatch)
+    state = FakeFSMContext()
+    await on_search_with_state(
+        make_message(42, text="/search"), settings, session_factory, "", state
+    )
+    assert state.value == GuidedInput.search.state
+    assert "Поиск по словам" in sent[0]
+    assert "не смысловой" in sent[0]
+
+    await on_guided_search_input(
+        make_message(42, message_id=822, text="Андроид"), settings, session_factory, state
+    )
+    assert state.value is None
+    assert "Ничего не найдено." in sent[-1]
+    assert "синонимы, перевод или транслитерацию" in sent[-1]
+    async with session_factory() as session:
+        assert await session.scalar(select(func.count()).select_from(AskJob)) == 0
+        assert await session.scalar(select(func.count()).select_from(Item)) == 0
 
 
 async def test_command_clears_ask_state_and_forwarded_slash_text_stays_ingestion(
@@ -940,18 +1047,41 @@ async def test_menu_settings_exposes_attention_and_back_navigation(
         button for row in sent[0][1]["reply_markup"].inline_keyboard for button in row
     ]
     assert any(button.callback_data == "settings:attention:open" for button in settings_buttons)
+    assert {
+        "settings:edit:timezone",
+        "settings:edit:digest_time",
+        "settings:edit:quiet_hours",
+        "settings:digest",
+    } <= {button.callback_data for button in settings_buttons}
 
     await on_attention_settings_callback(
         make_callback(42, "settings:attention:open"), settings, session_factory
     )
-    assert "Attention Manager" in edited[-1][0]
+    assert "🧠 Attention" in edited[-1][0]
     attention_buttons = [
         button for row in edited[-1][1]["reply_markup"].inline_keyboard for button in row
     ]
     assert any(button.callback_data == "settings:open" for button in attention_buttons)
+    assert any(button.callback_data == "settings:attention:status" for button in attention_buttons)
+
+    await on_attention_settings_callback(
+        make_callback(42, "settings:attention:status"), settings, session_factory
+    )
+    assert "📊 Attention сейчас" in edited[-1][0]
+    status_buttons = [
+        button for row in edited[-1][1]["reply_markup"].inline_keyboard for button in row
+    ]
+    assert any(
+        button.text == "← Назад" and button.callback_data == "settings:attention:open"
+        for button in status_buttons
+    )
+    assert any(
+        button.text == "↻ Обновить" and button.callback_data == "settings:attention:status"
+        for button in status_buttons
+    )
 
     await on_settings_open_callback(make_callback(42, "settings:open"), settings, session_factory)
-    assert "Ежедневный digest" in edited[-1][0]
+    assert "Ежедневная сводка" in edited[-1][0]
 
 
 async def test_ask_prompt_cancel_clears_ephemeral_state_without_job(
@@ -982,10 +1112,75 @@ async def test_ask_prompt_cancel_clears_ephemeral_state_without_job(
         assert await session.scalar(select(func.count()).select_from(AskJob)) == 0
 
 
-async def test_main_menu_export_is_compact_and_help_modes_remain_explicit(
+async def test_export_menu_and_no_argument_command_offer_both_modes(
     settings, session_factory, monkeypatch
 ):
     edited = []
+    sent = []
+
+    async def edit_message(self, text, **kwargs):
+        edited.append((text, kwargs))
+
+    async def answer_message(self, text, **kwargs):
+        sent.append((text, kwargs))
+
+    async def answer_callback(self, text=None, **kwargs):
+        return None
+
+    monkeypatch.setattr(Message, "edit_text", edit_message)
+    monkeypatch.setattr(Message, "answer", answer_message)
+    monkeypatch.setattr(CallbackQuery, "answer", answer_callback)
+
+    await on_export(make_message(42, message_id=816, text="/export"), settings, session_factory)
+    assert sent[-1][0] == "📦 Экспорт"
+    assert {
+        button.callback_data
+        for row in sent[-1][1]["reply_markup"].inline_keyboard
+        for button in row
+    } == {"export:mode:COMPACT", "export:mode:FULL", "nav:menu"}
+
+    await on_navigation_callback(
+        make_callback(42, "nav:export", message_id=817),
+        settings,
+        session_factory,
+        FakeFSMContext(),
+    )
+    assert edited[-1][0] == "📦 Экспорт"
+    assert {
+        button.callback_data
+        for row in edited[-1][1]["reply_markup"].inline_keyboard
+        for button in row
+    } == {"export:mode:COMPACT", "export:mode:FULL", "nav:menu"}
+
+    await on_export_mode_callback(
+        make_callback(42, "export:mode:FULL", message_id=817), settings, session_factory
+    )
+    assert edited[-1][0] == "Готовлю полный экспорт…"
+    assert edited[-1][1]["reply_markup"] is None
+    await on_export(
+        make_message(42, message_id=818, text="/export compact"), settings, session_factory
+    )
+    await on_export(
+        make_message(42, message_id=819, text="/export full"), settings, session_factory
+    )
+    async with session_factory() as session:
+        jobs = list((await session.scalars(select(ExportJob))).all())
+        assert {(job.telegram_message_id, job.mode) for job in jobs} == {
+            (817, "FULL"),
+            (818, "COMPACT"),
+            (819, "FULL"),
+        }
+
+
+async def test_attention_command_and_menu_share_chooser_and_count_projection(
+    settings, session_factory, monkeypatch
+):
+    sent = []
+    edited = []
+    selected_limits = []
+
+    async def answer_message(self, text, **kwargs):
+        sent.append((text, kwargs))
 
     async def edit_message(self, text, **kwargs):
         edited.append((text, kwargs))
@@ -993,43 +1188,41 @@ async def test_main_menu_export_is_compact_and_help_modes_remain_explicit(
     async def answer_callback(self, text=None, **kwargs):
         return None
 
+    async def capture_attention(*, arguments, **kwargs):
+        selected_limits.append(arguments)
+
+    monkeypatch.setattr(Message, "answer", answer_message)
     monkeypatch.setattr(Message, "edit_text", edit_message)
     monkeypatch.setattr(CallbackQuery, "answer", answer_callback)
+    monkeypatch.setattr("app.bot.handlers._send_attention_for_actor", capture_attention)
 
-    await on_navigation_callback(
-        make_callback(42, "nav:export", message_id=817),
-        settings,
-        session_factory,
-        FakeFSMContext(),
-    )
-    assert edited[-1] == ("Готовлю компактный экспорт…", {"reply_markup": None})
-    await on_navigation_callback(
-        make_callback(42, "nav:export", message_id=817),
-        settings,
-        session_factory,
-        FakeFSMContext(),
-    )
-    assert edited[-1] == ("Готовлю компактный экспорт…", {"reply_markup": None})
-
-    help_callbacks = {
-        button.callback_data for row in help_keyboard().inline_keyboard for button in row
+    await on_attention(make_message(42, text="/attention"), settings, session_factory)
+    assert sent[-1][0] == "✨ Внимание\n\nСколько показать?"
+    assert {
+        button.callback_data
+        for row in sent[-1][1]["reply_markup"].inline_keyboard
+        for button in row
+    } == {
+        "nav:attention:show:1",
+        "nav:attention:show:3",
+        "nav:attention:show:5",
+        "nav:attention:status",
+        "settings:attention:open",
+        "nav:menu",
     }
-    assert {"export:mode:COMPACT", "export:mode:FULL"} <= help_callbacks
+    await on_navigation_callback(
+        make_callback(42, "nav:attention"), settings, session_factory, FakeFSMContext()
+    )
+    assert edited[-1][0] == sent[-1][0]
+    assert len(edited[-1][1]["reply_markup"].inline_keyboard) == len(
+        sent[-1][1]["reply_markup"].inline_keyboard
+    )
 
-    await on_export_mode_callback(
-        make_callback(42, "export:mode:FULL", message_id=818), settings, session_factory
+    await on_attention(make_message(42, text="/attention 5"), settings, session_factory, "5")
+    await on_navigation_callback(
+        make_callback(42, "nav:attention:show:5"), settings, session_factory, FakeFSMContext()
     )
-    await on_export_mode_callback(
-        make_callback(42, "export:mode:FULL", message_id=818), settings, session_factory
-    )
-    assert edited[-1][0] == "Готовлю полный экспорт…"
-    assert edited[-1][1]["reply_markup"] is None
-    async with session_factory() as session:
-        jobs = list((await session.scalars(select(ExportJob))).all())
-        assert {(job.telegram_message_id, job.mode) for job in jobs} == {
-            (817, "COMPACT"),
-            (818, "FULL"),
-        }
+    assert selected_limits == ["5", "5"]
 
 
 @pytest.mark.parametrize(
@@ -1134,14 +1327,99 @@ async def test_settings_command_persists_minimal_notification_settings(
         assert user.settings_json["daily_digest_time"] == "08:30"
 
 
+async def test_settings_buttons_use_existing_validation_and_keep_invalid_input_state(
+    settings, session_factory, monkeypatch
+):
+    sent = capture_answers(monkeypatch)
+    edited = []
+
+    async def edit_text(self, text, **kwargs):
+        edited.append((text, kwargs))
+
+    async def answer_callback(self, text=None, **kwargs):
+        return None
+
+    monkeypatch.setattr(Message, "edit_text", edit_text)
+    monkeypatch.setattr(CallbackQuery, "answer", answer_callback)
+    await on_settings(make_message(42, text="/settings"), settings, session_factory)
+
+    setting_buttons = {
+        button.callback_data for row in settings_keyboard(True).inline_keyboard for button in row
+    }
+    assert {
+        "settings:edit:timezone",
+        "settings:edit:digest_time",
+        "settings:edit:quiet_hours",
+        "settings:digest",
+        "settings:attention:open",
+    } <= setting_buttons
+
+    timezone_state = FakeFSMContext()
+    await on_settings_edit_callback(
+        make_callback(42, "settings:edit:timezone"), settings, session_factory, timezone_state
+    )
+    assert timezone_state.value == GuidedInput.settings_timezone.state
+    assert "IANA timezone" in edited[-1][0]
+    await on_guided_notification_setting_input(
+        make_message(42, text="Mars/Phobos"),
+        settings,
+        session_factory,
+        timezone_state,
+        "timezone",
+    )
+    assert timezone_state.value == GuidedInput.settings_timezone.state
+    current = await get_notification_settings(session_factory, 42)
+    assert current[0].timezone == "UTC"
+    assert "Неизвестный часовой пояс" in sent[-1]
+
+    await on_guided_notification_setting_input(
+        make_message(42, text="Europe/Moscow"),
+        settings,
+        session_factory,
+        timezone_state,
+        "timezone",
+    )
+    assert timezone_state.value is None
+    assert "Europe/Moscow" in sent[-1]
+
+    for callback_data, state_name, value, setting_name in (
+        (
+            "settings:edit:digest_time",
+            GuidedInput.settings_digest_time,
+            "08:45",
+            "digest_time",
+        ),
+        (
+            "settings:edit:quiet_hours",
+            GuidedInput.settings_quiet_hours,
+            "22:30-08:00",
+            "quiet_hours",
+        ),
+    ):
+        state = FakeFSMContext()
+        await on_settings_edit_callback(
+            make_callback(42, callback_data), settings, session_factory, state
+        )
+        assert state.value == state_name.state
+        await on_guided_notification_setting_input(
+            make_message(42, text=value), settings, session_factory, state, setting_name
+        )
+        assert state.value is None
+
+    current = await get_notification_settings(session_factory, 42)
+    assert current[1]["daily_digest_time"] == "08:45"
+    assert current[1]["quiet_hours_start"] == "22:30"
+    assert current[1]["quiet_hours_end"] == "08:00"
+
+
 async def test_settings_attention_command_and_callbacks_preserve_current_choice(
     settings, session_factory, monkeypatch
 ):
     sent = capture_answers(monkeypatch)
     await on_settings(make_message(42), settings, session_factory, "attention")
-    assert "Attention Manager" in sent[0]
+    assert "🧠 Attention" in sent[0]
     assert "Normal" in sent[0]
-    assert "Generic motivation: ON" in sent[0]
+    assert "Общие напоминания: включены" in sent[0]
 
     answered = []
     edited = []
@@ -1187,7 +1465,7 @@ async def test_settings_attention_command_and_callbacks_preserve_current_choice(
         data="settings:attention:toggle",
     )
     await on_attention_settings_callback(toggle, settings, session_factory)
-    assert "Статус: OFF" in edited[-1][0]
+    assert "Статус: выключен" in edited[-1][0]
     updated = await get_notification_settings(session_factory, 42)
     assert updated[1]["attention_enabled"] is False
 
@@ -1199,7 +1477,7 @@ async def test_settings_attention_command_and_callbacks_preserve_current_choice(
         data="settings:attention:motivation",
     )
     await on_attention_settings_callback(motivation_toggle, settings, session_factory)
-    assert "Generic motivation: OFF" in edited[-1][0]
+    assert "Общие напоминания: выключены" in edited[-1][0]
     updated = await get_notification_settings(session_factory, 42)
     assert updated[1]["attention_enabled"] is False
     assert updated[1]["generic_motivation_enabled"] is False
@@ -1207,7 +1485,7 @@ async def test_settings_attention_command_and_callbacks_preserve_current_choice(
     buttons = [button for row in markup.inline_keyboard for button in row]
     assert any(
         button.callback_data == "settings:attention:motivation"
-        and button.text == "💬 Motivation ON"
+        and button.text == "💬 Включить общие напоминания"
         for button in buttons
     )
 

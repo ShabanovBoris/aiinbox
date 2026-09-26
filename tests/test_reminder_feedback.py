@@ -736,7 +736,7 @@ def test_reminder_keyboards_are_compact_identity_preserving_and_bounded(session_
     assert "reminder:more:456" in _callback_data(proactive)
     assert not proactive_actions & set(_callback_data(proactive))
     assert proactive_actions <= set(_callback_data(reminder_more_keyboard(456)))
-    assert {"reminder:ok:456", "reminder:less:456"} <= set(_callback_data(motivation))
+    assert {"nav:attention:show:3", "reminder:less:456"} <= set(_callback_data(motivation))
     assert "reminder:snooze:456:tomorrow" in _callback_data(snooze)
 
     primary = _callback_data(item_keyboard(item, [source]))

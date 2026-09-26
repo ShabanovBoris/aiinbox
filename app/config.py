@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     max_export_content_chars: int = Field(10_000_000, ge=1)
     processing_concurrency: int = Field(2, ge=1)
     processing_poll_seconds: float = Field(1.0, gt=0)
+    reminder_poll_seconds: float = Field(30.0, gt=0)
     processing_timeout_seconds: float = Field(900.0, gt=0)
     shutdown_timeout_seconds: float = Field(30.0, gt=0)
     default_timezone: str = "UTC"

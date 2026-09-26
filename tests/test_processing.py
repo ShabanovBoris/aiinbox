@@ -5,14 +5,19 @@ import pytest
 from sqlalchemy import select
 
 from app.domain.enums import ContentKind, ProcessingStatus
-from app.domain.models import DEFAULT_PROFILE, NormalizedContent
+from app.domain.models import (
+    DEFAULT_PROFILE,
+    NormalizedContent,
+    TopicClassificationResult,
+    UserProfile,
+)
 from app.domain.priority import PriorityEngine
 from app.llm.base import LlmError
 from app.services.analysis import CHUNK_SUMMARY_GENERATOR_VERSION, Analyzer, split_text
 from app.services.delivery import ITEM_FAILED, ITEM_READY
 from app.services.ingestion import ingest_message
 from app.services.processing import ProcessingPipeline
-from app.storage.models import Content, Delivery, Item
+from app.storage.models import Content, Delivery, Item, User
 from app.workers.processing import ProcessingWorker, requeue_stale
 from tests.fakes import FakeLlmProvider, make_analysis
 
@@ -70,6 +75,7 @@ async def test_text_pipeline_end_to_end(session_factory):
     assert profile == DEFAULT_PROFILE
     assert categories == []
     assert provider.summarize_calls == []
+    assert provider.topic_calls[0][0].user_note is None
 
     async with session_factory() as session:
         delivery = await session.scalar(
@@ -78,8 +84,59 @@ async def test_text_pipeline_end_to_end(session_factory):
                 Delivery.type == ITEM_READY,
             )
         )
-    assert delivery is not None
+        assert delivery is not None
     assert delivery.status == "PENDING"
+
+
+async def test_persisted_category_uses_isolated_topic_result(session_factory):
+    """Profile-aware relevance output cannot override content-only topic classification."""
+    item = await seed(
+        session_factory,
+        text=(
+            "Docker containers, deployment pipeline, prerender SEO, tests, "
+            "security scanning, Docker Hub"
+        ),
+        message_id=31,
+    )
+    category_hint = await seed(session_factory, text="Android lifecycle guide", message_id=32)
+    async with session_factory() as session:
+        stored = await session.get(Item, item.id)
+        stored.user_note = "посмотреть для Android-проекта"
+        category_hint_stored = await session.get(Item, category_hint.id)
+        category_hint_stored.category = "Android-разработка"
+        user = await session.get(User, item.user_id)
+        user.profile_json = UserProfile(
+            profession="Android developer",
+            interests=["Android"],
+            free_text="PROFILE_ONLY_MARKER",
+        ).model_dump()
+        await session.commit()
+
+    provider = FakeLlmProvider(
+        result=make_analysis(category="Android-разработка"),
+        topic_result=TopicClassificationResult(category="DevOps"),
+    )
+    assert await make_worker(session_factory, provider).process_one() is True
+
+    stored = await get_item(session_factory, item.id)
+    assert stored.category == "DevOps"
+    assert provider.calls[0][1].profession == "Android developer"
+    topic_content, categories = provider.topic_calls[0]
+    assert topic_content.user_note is None
+    assert "Docker containers" in topic_content.text
+    assert categories == ["Android-разработка"]
+
+
+async def test_isolated_topic_failure_does_not_fall_back_to_analysis_category(session_factory):
+    item = await seed(session_factory, text="Docker deployment")
+    provider = FakeLlmProvider(
+        result=make_analysis(category="Android-разработка"),
+        topic_error=LlmError("LLM_FAILED", "topic request failed"),
+    )
+    assert await make_worker(session_factory, provider).process_one() is True
+    stored = await get_item(session_factory, item.id)
+    assert stored.processing_status is ProcessingStatus.FAILED
+    assert stored.category is None
 
 
 def test_split_text_preserves_all_content():
@@ -414,6 +471,10 @@ async def test_analyzer_releases_category_read_before_provider_call(session_fact
             assert not self.session.in_transaction()
             return await super().analyze(content, profile, categories)
 
+        async def classify_topic(self, content, categories):
+            assert not self.session.in_transaction()
+            return await super().classify_topic(content, categories)
+
     provider = TransactionCheckingProvider()
     async with session_factory() as session:
         provider.session = session
@@ -479,6 +540,9 @@ class BlockingProvider:
         await self.release.wait()
         return make_analysis()
 
+    async def classify_topic(self, content, categories):
+        return TopicClassificationResult(category="AI")
+
 
 async def _wait_for_stage(session_factory, item_id, stage, attempts=100):
     for _ in range(attempts):
@@ -529,6 +593,9 @@ class CountingProvider:
     async def analyze(self, content, profile, categories):
         self.calls += 1
         return make_analysis()
+
+    async def classify_topic(self, content, categories):
+        return TopicClassificationResult(category="AI")
 
 
 async def test_checkpoint_resumable_llm_not_called_twice(session_factory):

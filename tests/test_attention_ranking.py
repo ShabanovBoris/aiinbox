@@ -280,7 +280,7 @@ async def test_attention_closes_database_session_before_telegram_send(
     sqlalchemy_event.listen(engine.sync_engine.pool, "checkout", checkout)
     sqlalchemy_event.listen(engine.sync_engine.pool, "checkin", checkin)
     try:
-        await on_attention(_message(42), settings, session_factory)
+        await on_attention(_message(42), settings, session_factory, "3")
     finally:
         sqlalchemy_event.remove(engine.sync_engine.pool, "checkout", checkout)
         sqlalchemy_event.remove(engine.sync_engine.pool, "checkin", checkin)
@@ -652,9 +652,9 @@ async def test_repeated_attention_suppresses_successfully_shown_items(
         sent.append(text)
 
     monkeypatch.setattr(Message, "answer", answer)
-    await on_attention(_message(42), settings, session_factory)
+    await on_attention(_message(42), settings, session_factory, "3")
     first_shown = {event.item_id for event in await _get_attention_events(session_factory)}
-    await on_attention(_message(42), settings, session_factory)
+    await on_attention(_message(42), settings, session_factory, "3")
     events = await _get_attention_events(session_factory)
     cards = [text for text in sent if "/3 —" in text]
     second_shown = {event.item_id for event in events} - first_shown
@@ -679,7 +679,7 @@ async def test_failed_telegram_card_does_not_record_its_exposure(
 
     monkeypatch.setattr(Message, "answer", answer)
     with pytest.raises(RuntimeError, match="Telegram send failed"):
-        await on_attention(_message(42), settings, session_factory)
+        await on_attention(_message(42), settings, session_factory, "3")
 
     events = await _get_attention_events(session_factory)
     assert len(events) == 1
@@ -715,7 +715,7 @@ async def test_attention_preview_keeps_item_source_actions_and_canonical_state(
         delivered.append((text, kwargs.get("reply_markup")))
 
     monkeypatch.setattr(Message, "answer", answer)
-    await on_attention(_message(42), settings, session_factory)
+    await on_attention(_message(42), settings, session_factory, "3")
     card, markup = next((text, markup) for text, markup in delivered if "Video source" in text)
     labels = {button.text for row in markup.inline_keyboard for button in row}
     async with session_factory() as session:
@@ -740,9 +740,9 @@ async def test_empty_attention_result_has_no_exposure_event(settings, session_fa
         sent.append(text)
 
     monkeypatch.setattr(Message, "answer", answer)
-    await on_attention(_message(42), settings, session_factory)
+    await on_attention(_message(42), settings, session_factory, "3")
 
-    assert sent == ["Сейчас нет подходящих Items."]
+    assert sent[-1] == "Сейчас нет подходящих Items."
     assert await _get_attention_events(session_factory) == []
 
 
@@ -846,7 +846,7 @@ async def test_attention_does_not_change_today_or_semantic_item_fields(
         sent.append(text)
 
     monkeypatch.setattr(Message, "answer", answer)
-    await on_attention(_message(42), settings, session_factory)
+    await on_attention(_message(42), settings, session_factory, "3")
     async with session_factory() as session:
         today = await TodayService().list_items(session, user_id)
         stored_new = await session.get(Item, new_item)
@@ -883,7 +883,7 @@ async def test_attention_loads_item_sources_in_one_batch_query(
     monkeypatch.setattr(Message, "answer", answer)
     sqlalchemy_event.listen(engine.sync_engine, "before_cursor_execute", count_source_selects)
     try:
-        await on_attention(_message(42), settings, session_factory)
+        await on_attention(_message(42), settings, session_factory, "3")
     finally:
         sqlalchemy_event.remove(engine.sync_engine, "before_cursor_execute", count_source_selects)
 

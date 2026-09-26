@@ -677,3 +677,32 @@ Consequences: each retrieval page remains bounded while the owner's total
 accessible Inbox is not. Fallback titles do not alter analysis, search or export
 fields. Failure copy does not expose internal error codes. No storage quota,
 migration, dependency, queue or parallel Item identity system is introduced.
+
+## D-044 — Topic classification is profile-isolated and Attention is diagnosable
+
+Context: command and menu flows diverged when arguments were omitted; lexical
+search could look broken when vocabulary differed; the profile-aware analysis
+could classify content based on the user's profession; and ReminderWorker's
+eligibility gates were not visible to the user.
+
+Decision: no-argument Ask, Search, Profile Update, Export, and Attention use
+guided or chooser flows that share existing direct-command operations. A
+dedicated topic-classification request receives source content and category
+hints without `UserProfile` or `user_note`, and its category is authoritative.
+Search is explicitly described as lexical until PM-14. Settings expose current
+stored-timezone local time and a read-only Attention status projection using the
+worker's eligibility logic. Active/Aggressive lower candidate thresholds to
+55/50 without changing ranking scores; generic repeat eligibility uses elapsed
+four-hour spacing rather than requiring an intervening proactive send. Reminder
+poll cadence is configurable independently.
+
+Reason: the user-facing explanation and the scheduler's actual decisions should
+agree, while profile context must not influence the content category. Existing
+queues, persistence, and delivery semantics can support these flows without new
+state or infrastructure.
+
+Consequences: classifier failure remains a controlled processing failure and
+cannot silently use the profile-aware category. Attention diagnostics perform
+read-only queries. PM-14 evidence is confirmed, but semantic retrieval stays on
+hold pending both requested POLISH-07 reviews. No migration or dependency is
+required; the existing scoring formula and reminder caps remain unchanged.

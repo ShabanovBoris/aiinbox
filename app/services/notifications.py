@@ -49,9 +49,11 @@ log = logging.getLogger(__name__)
 DAILY_DIGEST = "DAILY_DIGEST"
 SNOOZE_RESURFACE = "SNOOZE_RESURFACE"
 PROACTIVE_ATTENTION = "PROACTIVE_ATTENTION"
-MIN_PROACTIVE_ATTENTION_SCORE = 60
+# ❌ Удалён общий порог proactive Attention: доступность кандидата теперь
+# определяется выбранной политикой интенсивности, а формула ранжирования не меняется.
 ATTENTION_CANDIDATE_LIMIT = 10
 PROACTIVE_CLAIM_LEASE = timedelta(minutes=5)
+GENERIC_REPEAT_GAP = timedelta(hours=4)
 # This absolute send window starts at claim creation, leaving recovery time in
 # the longer lease even if a worker pauses before Telegram I/O.
 NOTIFICATION_SEND_TIMEOUT = timedelta(minutes=2)
@@ -60,7 +62,6 @@ ATTENTION_HOOK_SEND_SAFETY_SECONDS = 30.0
 _BUDGET_REMINDER_TYPES = (DAILY_DIGEST, PROACTIVE_ATTENTION, MOTIVATION_NUDGE)
 _GAP_REMINDER_TYPES = (DAILY_DIGEST, PROACTIVE_ATTENTION, SNOOZE_RESURFACE, MOTIVATION_NUDGE)
 _DELIVERY_CLAIM_TYPES = (DAILY_DIGEST, SNOOZE_RESURFACE, PROACTIVE_ATTENTION, MOTIVATION_NUDGE)
-_INTERRUPTING_REMINDER_TYPES = _GAP_REMINDER_TYPES
 _ATTENTION_FAMILY_TYPES = (PROACTIVE_ATTENTION, MOTIVATION_NUDGE)
 _OPEN_PROACTIVE_STATUSES = ("PENDING", "CLAIMED")
 _OPEN_MOTIVATION_STATUSES = ("PENDING", "CLAIMED")
@@ -86,15 +87,39 @@ class AttentionIntensityPolicy:
     daily_cap: int
     minimum_gap: timedelta
     same_item_cooldown: timedelta
+    minimum_proactive_score: int
+
+
+@dataclass(frozen=True, slots=True)
+class AttentionStatus:
+    """Read-only projection of the same gates and candidate sets used by ReminderWorker."""
+
+    timezone_name: str
+    local_now: datetime
+    quiet_start: time
+    quiet_end: time
+    quiet_state: str
+    policy: AttentionIntensityPolicy
+    budget_used: int
+    generic_used: int
+    generic_cap: int
+    latest_type: str | None
+    latest_sent_at: datetime | None
+    next_possible_at: datetime | None
+    proactive_candidates: int
+    generic_candidates: int
+    block_reasons: tuple[str, ...]
 
 
 ATTENTION_POLICIES: Mapping[int, AttentionIntensityPolicy] = MappingProxyType(
     {
-        1: AttentionIntensityPolicy(1, "Calm", 1, timedelta(hours=8), timedelta(hours=72)),
-        2: AttentionIntensityPolicy(2, "Light", 2, timedelta(hours=5), timedelta(hours=48)),
-        3: AttentionIntensityPolicy(3, "Normal", 3, timedelta(hours=3), timedelta(hours=30)),
-        4: AttentionIntensityPolicy(4, "Active", 4, timedelta(hours=2), timedelta(hours=20)),
-        5: AttentionIntensityPolicy(5, "Aggressive", 6, timedelta(minutes=90), timedelta(hours=12)),
+        1: AttentionIntensityPolicy(1, "Calm", 1, timedelta(hours=8), timedelta(hours=72), 60),
+        2: AttentionIntensityPolicy(2, "Light", 2, timedelta(hours=5), timedelta(hours=48), 60),
+        3: AttentionIntensityPolicy(3, "Normal", 3, timedelta(hours=3), timedelta(hours=30), 60),
+        4: AttentionIntensityPolicy(4, "Active", 4, timedelta(hours=2), timedelta(hours=20), 55),
+        5: AttentionIntensityPolicy(
+            5, "Aggressive", 6, timedelta(minutes=90), timedelta(hours=12), 50
+        ),
     }
 )
 
@@ -155,6 +180,27 @@ def in_quiet_hours(local_time: time, start: time, end: time) -> bool:
     return local_time >= start or local_time < end
 
 
+def _quiet_hours_state(local_time: time, start: time, end: time) -> str:
+    """Describe the configured window using the same predicate as scheduler gating."""
+    if in_quiet_hours(local_time, start, end):
+        return "идут"
+    if start < end and local_time < start:
+        return "ещё не начались"
+    return "закончились"
+
+
+def _quiet_hours_release(
+    local_now: datetime, start: time, end: time, zone: ZoneInfo
+) -> datetime | None:
+    """Project the current quiet window's end in the configured IANA timezone."""
+    if not in_quiet_hours(local_now.time(), start, end) or start == end:
+        return None
+    local_date = local_now.date()
+    if start > end and local_now.time() >= start:
+        local_date += timedelta(days=1)
+    return datetime.combine(local_date, end, tzinfo=zone)
+
+
 def digest_target_date(
     local_now: datetime, digest_time: time, quiet_start: time, quiet_end: time
 ) -> date | None:
@@ -175,6 +221,21 @@ async def get_notification_settings(
         if user is None:
             return None
         return user, settings_for(user)
+
+
+async def get_attention_status(
+    session_factory,
+    telegram_user_id: int,
+    *,
+    default_timezone: str = "UTC",
+    now: datetime | None = None,
+) -> AttentionStatus | None:
+    """Read scheduler diagnostics through ReminderWorker's existing eligibility rules."""
+    return await ReminderWorker(
+        session_factory,
+        bot=None,
+        default_timezone=default_timezone,
+    ).attention_status(telegram_user_id, now=now)
 
 
 async def update_notification_settings(
@@ -239,7 +300,7 @@ async def update_notification_settings(
         return user, settings
 
 
-def format_settings(user: User, settings: dict) -> str:
+def format_settings(user: User, settings: dict, now: datetime | None = None) -> str:
     enabled = "включён" if settings["daily_digest_enabled"] else "выключен"
     level = settings.get("attention_intensity", 3)
     if type(level) is not int or level not in ATTENTION_POLICIES:
@@ -247,16 +308,25 @@ def format_settings(user: User, settings: dict) -> str:
     policy = attention_policy(level)
     attention_enabled = settings.get("attention_enabled") is True
     attention_status = "ON" if attention_enabled else "OFF"
+    try:
+        instant = now or datetime.now(UTC)
+        if instant.tzinfo is None:
+            instant = instant.replace(tzinfo=UTC)
+        local_now = instant.astimezone(parse_timezone(user.timezone))
+        local_clock = local_now.strftime("%H:%M")
+    except ValueError:
+        local_clock = "недоступно"
+    # ❌ Удалены slash-примеры как основной способ редактирования; обычный экран
+    # ведёт к кнопкам guided input, а командный синтаксис остаётся запасным.
     return (
         "⚙️ Настройки уведомлений\n"
-        f"Часовой пояс: {user.timezone}\n"
-        f"Ежедневный digest: {enabled} ({settings['daily_digest_time']})\n"
+        f"🌍 Часовой пояс: {user.timezone}\n"
+        f"🕒 Сейчас для уведомлений: {local_clock}\n"
+        f"Ежедневная сводка: {enabled} ({settings['daily_digest_time']})\n"
         f"Тихие часы: {settings['quiet_hours_start']}–{settings['quiet_hours_end']}\n\n"
-        f"Attention Manager: {attention_status}, {policy.label} ({policy.level})\n\n"
-        "Изменить: /settings timezone Europe/Moscow\n"
-        "/settings time 09:00\n"
-        "/settings quiet 22:30-08:00\n"
-        "/settings attention"
+        f"Внимание: {'включено' if attention_status == 'ON' else 'выключено'}, "
+        f"{policy.label} ({policy.level})\n\n"
+        "Параметры можно изменить кнопками ниже. Команды /settings остаются доступны."
     )
 
 
@@ -267,19 +337,96 @@ def format_attention_settings(settings: dict) -> str:
         level = 3
     policy = attention_policy(level)
     status = "ON" if settings.get("attention_enabled") is True else "OFF"
-    motivation_status = "ON" if settings.get("generic_motivation_enabled") is True else "OFF"
+    motivation_status = (
+        "включены" if settings.get("generic_motivation_enabled") is True else "выключены"
+    )
     gap_seconds = int(policy.minimum_gap.total_seconds())
-    gap = f"{gap_seconds // 3600}h" if gap_seconds % 3600 == 0 else f"{gap_seconds // 60}m"
+    gap = f"{gap_seconds // 3600} ч" if gap_seconds % 3600 == 0 else f"{gap_seconds // 60} мин"
     cooldown_hours = int(policy.same_item_cooldown.total_seconds() // 3600)
     return (
-        "🧠 Attention Manager\n\n"
-        f"Статус: {status}\n"
+        "🧠 Attention\n\n"
+        f"Статус: {'включён' if status == 'ON' else 'выключен'}\n"
         f"Интенсивность: {policy.level} — {policy.label}\n"
-        f"Generic motivation: {motivation_status}\n"
-        f"Лимит: до {policy.daily_cap} уведомлений в день, включая digest\n"
+        f"Общие напоминания: {motivation_status}\n"
+        f"Лимит: до {policy.daily_cap} уведомлений в день, включая сводку\n"
         f"Минимальный интервал: {gap}\n"
-        f"Повтор того же Item: через {cooldown_hours}h"
+        f"Повтор материала: через {cooldown_hours} ч"
     )
+
+
+def format_attention_status(status: AttentionStatus) -> str:
+    """Render read-only scheduler facts with Russian user-facing blocker labels."""
+    latest_labels = {
+        DAILY_DIGEST: "Дайджест",
+        PROACTIVE_ATTENTION: "Attention",
+        SNOOZE_RESURFACE: "Отложенный материал",
+        MOTIVATION_NUDGE: "Общее напоминание",
+    }
+    blockers = {
+        "attention_off": "Attention выключен",
+        "quiet_hours": "сейчас тихие часы",
+        "daily_cap": "достигнут дневной лимит",
+        "minimum_gap": "не прошёл минимальный интервал",
+        "delivery_in_progress": "уже готовится отправка",
+        "no_proactive_candidate": "нет подходящих материалов",
+        "no_generic_candidate": "нет подходящего общего напоминания",
+        "candidate_cooldown": "ещё действует пауза повторного показа",
+        "ready": "ничего — вариант доступен в следующем цикле",
+        "no_delivery_target": "не задан чат для доставки",
+    }
+    lines = [
+        "📊 Attention сейчас",
+        "",
+        f"🌍 Часовой пояс: {status.timezone_name}",
+        f"🕒 Локальное время бота: {status.local_now:%H:%M}",
+        f"🌙 Тихие часы: {status.quiet_start:%H:%M}–{status.quiet_end:%H:%M} — "
+        f"{status.quiet_state}",
+        "",
+        f"Режим: {status.policy.label} ({status.policy.level})",
+        "",
+        "Сегодня:",
+        f"уведомления {status.budget_used}/{status.policy.daily_cap}",
+        f"общие напоминания {status.generic_used}/{status.generic_cap}",
+    ]
+    if status.latest_type is not None and status.latest_sent_at is not None:
+        now_utc = status.local_now.astimezone(UTC).replace(tzinfo=None)
+        elapsed = max(0, int((now_utc - status.latest_sent_at).total_seconds()))
+        if elapsed < 60:
+            ago = "меньше минуты"
+        elif elapsed < 3600:
+            ago = f"{elapsed // 60} мин"
+        else:
+            hours, minutes = divmod(elapsed // 60, 60)
+            ago = f"{hours} ч" if minutes == 0 else f"{hours} ч {minutes} мин"
+        lines.extend(
+            ("", f"Последнее: {latest_labels.get(status.latest_type, 'Уведомление')} · {ago} назад")
+        )
+    if status.next_possible_at is not None:
+        next_time = (
+            status.next_possible_at.strftime("%H:%M")
+            if status.next_possible_at.date() == status.local_now.date()
+            else status.next_possible_at.strftime("%d.%m %H:%M")
+        )
+        lines.extend(("", f"Следующее возможно не раньше: {next_time}"))
+    blocker_labels = [blockers.get(reason, "нет данных") for reason in status.block_reasons]
+    blocker_text = (
+        "ничего — вариант доступен в следующем цикле"
+        if status.block_reasons == ("ready",)
+        else "; ".join(blocker_labels)
+    )
+    lines.extend(
+        (
+            "",
+            f"Подходящие материалы: {status.proactive_candidates}",
+            f"Поводы для общего напоминания: {status.generic_candidates}",
+            "",
+            f"Сейчас блокирует: {blocker_text}",
+            "",
+            "Ручной просмотр Сегодня/Attention считается показом материала; "
+            "недавно просмотренное может временно не приходить повторно.",
+        )
+    )
+    return "\n".join(lines)
 
 
 async def add_snooze_reminder(session, user_id: int, item_id: int, scheduled_at: datetime) -> None:
@@ -332,7 +479,7 @@ class ReminderWorker:
         session_factory,
         bot,
         default_timezone: str = "UTC",
-        poll_seconds: float = 60.0,
+        poll_seconds: float = 30.0,
         max_send_attempts: int = 3,
         retry_backoff_seconds: float = 0.1,
         attention_hook_service: AttentionHookService | None = None,
@@ -651,6 +798,150 @@ class ReminderWorker:
             return policy, zone, local_date, "minimum_gap"
         return policy, zone, local_date, None
 
+    async def attention_status(
+        self, telegram_user_id: int, now: datetime | None = None
+    ) -> AttentionStatus | None:
+        """Read current gating and candidates through scheduler helpers without acquiring claims."""
+        instant = _utc_naive(now) if now is not None else _utc_now()
+        async with self.session_factory() as session:
+            user = await session.scalar(
+                select(User).where(User.telegram_user_id == telegram_user_id)
+            )
+            if user is None:
+                return None
+            settings = settings_for(user)
+            policy, _gate_zone, _local_date, blocked = await self._attention_gate(
+                session, user, instant
+            )
+            try:
+                zone = parse_timezone(user.timezone or self.default_timezone)
+            except ValueError:
+                zone = parse_timezone(self.default_timezone)
+            local_now = instant.replace(tzinfo=UTC).astimezone(zone)
+            try:
+                quiet_start = parse_clock(settings["quiet_hours_start"])
+                quiet_end = parse_clock(settings["quiet_hours_end"])
+            except ValueError:
+                quiet_start = parse_clock(_DEFAULT_SETTINGS["quiet_hours_start"])
+                quiet_end = parse_clock(_DEFAULT_SETTINGS["quiet_hours_end"])
+            _, day_start, day_end = _local_day_window(instant, zone)
+            budget_used = int(
+                await session.scalar(
+                    select(func.count(Reminder.id)).where(
+                        Reminder.user_id == user.id,
+                        Reminder.type.in_(_BUDGET_REMINDER_TYPES),
+                        Reminder.status == "SENT",
+                        Reminder.sent_at.is_not(None),
+                        Reminder.sent_at >= day_start,
+                        Reminder.sent_at < day_end,
+                    )
+                )
+                or 0
+            )
+            generic_used = int(
+                await session.scalar(
+                    select(func.count(Reminder.id)).where(
+                        Reminder.user_id == user.id,
+                        Reminder.type == MOTIVATION_NUDGE,
+                        Reminder.status == "SENT",
+                        Reminder.sent_at.is_not(None),
+                        Reminder.sent_at >= day_start,
+                        Reminder.sent_at < day_end,
+                    )
+                )
+                or 0
+            )
+            latest_reminder = await session.scalar(
+                select(Reminder)
+                .where(
+                    Reminder.user_id == user.id,
+                    Reminder.type.in_(_GAP_REMINDER_TYPES),
+                    Reminder.status == "SENT",
+                    Reminder.sent_at.is_not(None),
+                )
+                .order_by(Reminder.sent_at.desc(), Reminder.id.desc())
+                .limit(1)
+            )
+            qualified, proactive = await self._proactive_candidate_projection(
+                session, user.id, policy, instant
+            )
+            motivation = await self._motivation_candidates(session, user, policy, zone, instant)
+
+            if user.telegram_chat_id is None:
+                block_reasons = ("no_delivery_target",)
+            elif blocked is not None:
+                block_reasons = ("attention_off" if blocked == "disabled" else blocked,)
+            else:
+                latest_attention = await self._latest_sent_type(
+                    session, user.id, _ATTENTION_FAMILY_TYPES
+                )
+                selected = self._choose_attention_intervention(
+                    policy, bool(proactive), bool(motivation), latest_attention
+                )
+                if selected is not None:
+                    block_reasons = ("ready",)
+                else:
+                    reasons = []
+                    if not qualified:
+                        reasons.append("no_proactive_candidate")
+                    elif not proactive:
+                        reasons.append("candidate_cooldown")
+                    if not motivation:
+                        reasons.append("no_generic_candidate")
+                    block_reasons = tuple(reasons or ("no_proactive_candidate",))
+
+            releases: list[datetime] = []
+            quiet_release = _quiet_hours_release(local_now, quiet_start, quiet_end, zone)
+            if quiet_release is not None:
+                releases.append(quiet_release.astimezone(UTC))
+            if budget_used >= policy.daily_cap:
+                releases.append(day_end.replace(tzinfo=UTC))
+            if latest_reminder is not None and latest_reminder.sent_at is not None:
+                latest_sent_at = _utc_naive(latest_reminder.sent_at)
+                if instant - latest_sent_at < policy.minimum_gap:
+                    releases.append((latest_sent_at + policy.minimum_gap).replace(tzinfo=UTC))
+            lease_now = _utc_now()
+            active_claims = list(
+                (
+                    await session.scalars(
+                        select(Reminder.claimed_at).where(
+                            Reminder.user_id == user.id,
+                            Reminder.type.in_(_DELIVERY_CLAIM_TYPES),
+                            Reminder.status == "CLAIMED",
+                            Reminder.claimed_at.is_not(None),
+                            Reminder.claimed_at > lease_now - PROACTIVE_CLAIM_LEASE,
+                        )
+                    )
+                ).all()
+            )
+            releases.extend(
+                (_utc_naive(claimed_at) + PROACTIVE_CLAIM_LEASE).replace(tzinfo=UTC)
+                for claimed_at in active_claims
+                if claimed_at is not None
+            )
+            next_possible_at = max(releases).astimezone(zone) if releases else None
+            return AttentionStatus(
+                timezone_name=zone.key,
+                local_now=local_now,
+                quiet_start=quiet_start,
+                quiet_end=quiet_end,
+                quiet_state=_quiet_hours_state(local_now.time(), quiet_start, quiet_end),
+                policy=policy,
+                budget_used=budget_used,
+                generic_used=generic_used,
+                generic_cap=GENERIC_MOTIVATION_DAILY_CAPS[policy.level],
+                latest_type=latest_reminder.type if latest_reminder is not None else None,
+                latest_sent_at=(
+                    _utc_naive(latest_reminder.sent_at)
+                    if latest_reminder is not None and latest_reminder.sent_at is not None
+                    else None
+                ),
+                next_possible_at=next_possible_at,
+                proactive_candidates=len(proactive),
+                generic_candidates=len(motivation),
+                block_reasons=block_reasons,
+            )
+
     async def _has_active_notification_claim(
         self,
         session,
@@ -735,28 +1026,39 @@ class ReminderWorker:
             and item.item_type in ACTIONABLE_ITEM_TYPES
         )
 
-    async def _sendable_proactive_candidates(
+    async def _proactive_candidate_projection(
         self, session, user_id: int, policy: AttentionIntensityPolicy, now: datetime
-    ) -> list[tuple[int, AttentionRank]]:
-        """Project PM-07's current shortlist through only PM-08 sendability filters."""
+    ) -> tuple[list[tuple[int, AttentionRank]], list[tuple[int, AttentionRank]]]:
+        """Share intensity, actionability and cooldown eligibility with read-only diagnostics."""
         ranked = await AttentionRankingService().list_candidates(
             session, user_id, limit=ATTENTION_CANDIDATE_LIMIT, now=now
         )
         qualified = [
             (item, rank)
             for item, rank in ranked
-            if rank.score >= MIN_PROACTIVE_ATTENTION_SCORE and self._item_is_actionable(item)
+            if rank.score >= policy.minimum_proactive_score and self._item_is_actionable(item)
         ]
         cooldowns = await self._proactive_cooldowns(
             session, user_id, [item.id for item, _ in qualified]
         )
         item_ids = [item.id for item, _ in qualified]
         dismissals = await self._dismissal_cooldowns(session, user_id, item_ids, now)
-        return [
+        candidate_ids = [(item.id, rank) for item, rank in qualified]
+        sendable = [
             (item.id, rank)
             for item, rank in qualified
             if not self._proactive_cooldown_active(item.id, now, policy, cooldowns, dismissals)
         ]
+        return candidate_ids, sendable
+
+    async def _sendable_proactive_candidates(
+        self, session, user_id: int, policy: AttentionIntensityPolicy, now: datetime
+    ) -> list[tuple[int, AttentionRank]]:
+        """Project PM-07's current shortlist through only PM-08 sendability filters."""
+        _candidates, sendable = await self._proactive_candidate_projection(
+            session, user_id, policy, now
+        )
+        return sendable
 
     async def _latest_sent_type(self, session, user_id: int, types: tuple[str, ...]) -> str | None:
         """Read the latest successful family member for deterministic pacing/arbitration."""
@@ -801,11 +1103,21 @@ class ReminderWorker:
         )
         if sent_today >= generic_cap:
             return []
-        latest_interrupting = await self._latest_sent_type(
-            session, user.id, _INTERRUPTING_REMINDER_TYPES
+        latest_generic = await session.scalar(
+            select(func.max(Reminder.sent_at)).where(
+                Reminder.user_id == user.id,
+                Reminder.type == MOTIVATION_NUDGE,
+                Reminder.status == "SENT",
+                Reminder.sent_at.is_not(None),
+            )
         )
-        if latest_interrupting == MOTIVATION_NUDGE:
+        if (
+            latest_generic is not None
+            and _utc_naive(now) - _utc_naive(latest_generic) < GENERIC_REPEAT_GAP
+        ):
             return []
+        # ❌ Удалено чередование типов как условие следующего generic reminder:
+        # проверяется явный четырёхчасовой интервал, а cap остаётся отдельным.
         candidates = await MotivationService().candidates(session, user.id, zone=zone, now=now)
         suppressed = await ReminderFeedbackService.suppressed_motivation_kinds(
             session, user.id, now=now
@@ -1460,7 +1772,7 @@ class ReminderWorker:
             qualified = [
                 (item_id, rank)
                 for item_id, rank in ranked
-                if rank.score >= MIN_PROACTIVE_ATTENTION_SCORE
+                if rank.score >= policy.minimum_proactive_score
             ]
             item_ids = [item_id for item_id, _ in qualified]
             eligible_ids = set()
@@ -1653,7 +1965,7 @@ class ReminderWorker:
             )
             if (
                 current_candidate is None
-                or current_candidate[1].score < MIN_PROACTIVE_ATTENTION_SCORE
+                or current_candidate[1].score < policy.minimum_proactive_score
             ):
                 reminder.status = "CANCELLED"
                 reminder.claimed_at = None

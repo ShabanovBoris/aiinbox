@@ -2,7 +2,7 @@
 
 Type: Post-MVP Epic + Detailed Technical Specification  
 Prerequisite: PM-13 Ask My Inbox merged + documented lexical retrieval misses  
-Status: PLANNED
+Status: EVIDENCE CONFIRMED — runtime ON HOLD until both POLISH-07 reviews approve
 
 ## 1. Problem
 
@@ -33,6 +33,13 @@ The PM-13 grounding contract remains unchanged: the model may cite only Items/so
 ## 3. Evidence gate
 
 Implementation must not start only because embeddings are fashionable.
+
+Concrete PM-13 failure evidence is recorded in
+[PM-14_RETRIEVAL_EVIDENCE.md](PM-14_RETRIEVAL_EVIDENCE.md): the Russian query
+`Андроид` does not lexically match relevant saved material using `Android`.
+POLISH-07 makes that limitation visible but does not implement semantic
+retrieval. Runtime work remains on hold until both requested POLISH-07 reviews
+approve.
 
 Before enabling semantic retrieval, record concrete PM-13 failure cases showing:
 

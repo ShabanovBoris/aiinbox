@@ -322,7 +322,7 @@ async def run(settings: Settings) -> None:
                 session_factory,
                 bot,
                 default_timezone=settings.default_timezone,
-                poll_seconds=settings.processing_poll_seconds,
+                poll_seconds=settings.reminder_poll_seconds,
                 attention_hook_service=AttentionHookService(session_factory, analyzer.provider),
             )
             reminder_tasks.append(
