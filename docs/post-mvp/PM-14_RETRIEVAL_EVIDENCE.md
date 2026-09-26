@@ -12,5 +12,6 @@
 
 This is evidence for PM-14's hybrid retrieval gate. POLISH-07 discloses the
 lexical limitation in Search and Ask; it does not add aliases, embeddings, or
-semantic retrieval. PM-14 runtime work remains on hold until both requested
-POLISH-07 reviews approve.
+semantic retrieval. PM-14 runtime work remains on hold through POLISH-08 review;
+approval alone does not resume it. Review real usage after that gate and make a
+separate explicit decision before starting runtime work.

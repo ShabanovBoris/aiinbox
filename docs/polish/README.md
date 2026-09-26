@@ -67,7 +67,9 @@ Russian object-centric daily, weekly, and reminder presentation
         ↓
 two independent quality reviews
         ↓
-resume PM-14+
+review real usage
+        ↓
+explicitly decide whether to resume PM-14
 ~~~
 
 Some implementation work may overlap, but each PR should remain independently reviewable and should not silently absorb the next PR's scope.
@@ -90,7 +92,9 @@ content-only topic classification, lexical Search disclosure, visible local
 time, and explainable Attention eligibility. POLISH-08 removes aggregate
 analytics from ordinary user surfaces and returns concrete saved content from
 daily, weekly, and motivation flows. PM-14 remains ON HOLD until POLISH-08 is
-approved by both requested review conversations.
+approved by both requested review conversations. Approval alone does not resume
+PM-14; real usage must be reviewed and resumption explicitly decided. PM-16+
+remains on hold pending a separate sequencing decision.
 
 ## Product invariant after the milestone
 
@@ -129,7 +133,9 @@ Until POLISH-01…08 are accepted and reviewed together:
 
 This is a product sequencing decision, not a hard technical dependency.
 
-After POLISH-08, review real usage and explicitly decide whether to resume PM-14.
+After all requested POLISH-08 reviews approve, review real usage and explicitly
+decide whether to resume PM-14. Keep PM-16+ on hold until a separate sequencing
+decision; approval of this milestone alone does not resume later feature work.
 
 ## Cross-PR invariants
 
