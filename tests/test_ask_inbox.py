@@ -508,7 +508,7 @@ async def test_ask_handler_validates_and_deduplicates_telegram_message(settings,
     await on_ask(message, settings, session_factory, "  ")
     await on_ask(message, settings, session_factory, "x" * (MAX_ASK_QUESTION_CHARS + 1))
     assert message.responses == [
-        "🧠 Ask отвечает по найденным сохранённым материалам.\n\n"
+        "🧠 Ответ по найденным сохранённым материалам.\n\n"
         "Напиши вопрос одним сообщением. Например: «Что я сохранял про Kotlin?»",
         f"Вопрос слишком длинный. Максимум {MAX_ASK_QUESTION_CHARS} символов.",
     ]
@@ -1079,7 +1079,7 @@ def test_ask_format_and_keyboard_bound_references_and_validate_urls():
     )
     rendered = format_ask_answer("A grounded answer.", references)
     assert len(rendered) <= 4096
-    assert "[1] Source 1 — WEB" in rendered
+    assert "[1] Source 1 — ссылка" in rendered
     assert "[5] Source 5" in rendered
     assert "[6] Source 6" not in rendered
     keyboard = ask_sources_keyboard(references)

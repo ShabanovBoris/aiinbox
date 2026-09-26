@@ -391,7 +391,7 @@ async def test_item_view_rejects_a_different_chat_for_the_same_telegram_user(
     await on_item_callback(callback, settings, session_factory)
 
     assert callback.message.sent_answers == []
-    assert callback.answers == ["Item недоступен"]
+    assert callback.answers == ["Сохранение недоступно"]
     async with session_factory() as session:
         assert await session.scalar(select(func.count(Event.id))) == 0
 
@@ -439,7 +439,7 @@ async def test_original_callback_rejects_another_owners_item_before_copy(setting
     await on_item_callback(callback, settings, session_factory)
 
     assert callback.bot.copies == []
-    assert callback.answers == ["Item недоступен"]
+    assert callback.answers == ["Сохранение недоступно"]
     assert "4321" not in str(callback.answers)
 
 
@@ -712,7 +712,7 @@ async def test_reminder_terminal_callbacks_are_transport_and_markup_idempotent(
     await on_reminder_callback(done, settings, session_factory)
     await on_reminder_callback(done, settings, session_factory)
 
-    assert done.answers == ["Готово", "Уже учтено"]
+    assert done.answers == ["Сделано", "Уже учтено"]
     assert done.message.markup_edits == 1
     assert done.message.remote_reply_markup is None
 
@@ -1081,7 +1081,7 @@ async def test_priority_feedback_stays_in_menu_without_changing_score(settings, 
     callbacks = _callback_data(message.reply_markup)
     assert f"feedback:back:{item_id}" in callbacks
     assert f"feedback:priority_higher:{item_id}" in callbacks
-    assert callback.answers == ["Записал сигнал о приоритете"]
+    assert callback.answers == ["Учту пожелание"]
 
 
 async def test_malformed_stale_and_unauthorized_feedback_callbacks_do_not_mutate(

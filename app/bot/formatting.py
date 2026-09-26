@@ -53,6 +53,14 @@ def _bounded_weekly_label(value: str, limit: int = 120) -> str:
     return normalized[: limit - 1] + "…"
 
 
+def _summary_preview(item: Item, limit: int) -> str:
+    """Keep persisted summaries readable at Telegram's presentation boundary."""
+    summary = " ".join((item.summary or "").split())
+    if len(summary) > limit:
+        return summary[: limit - 1].rstrip() + "…"
+    return summary
+
+
 def _analysis_completeness_warning(
     item: Item, sources: Sequence[ItemSource] | None = None
 ) -> list[str]:
@@ -114,27 +122,28 @@ def format_item_details(item: Item) -> str:
     type_label = item_type_label(item.item_type)
     if type_label:
         lines.append(f"Тип: {type_label}")
-    if item.priority_score is not None:
-        lines.append(f"Приоритет: {item.priority_score}/100")
+    # ❌ Удалены числовой приоритет и внутренняя причина ранжирования: в Details
+    # остаются метаданные, помогающие понять сохранение, а не оценку системы.
     if item.interest_level is not None:
-        lines.append(f"Интерес: {item.interest_level}/3")
+        interest_labels = {1: "низкий", 2: "обычный", 3: "высокий"}
+        interest_label = interest_labels.get(item.interest_level)
+        if interest_label:
+            lines.append(f"Интерес: {interest_label}")
 
     completeness_labels = {
-        "COMPLETE": "полный",
-        "FULL_TEXT": "текст",
-        "TRANSCRIPT_AND_VISUAL": "транскрипт и кадры",
-        "TRANSCRIPT_ONLY": "только транскрипт",
-        "VISUAL_ONLY": "только кадры",
-        "CAPTION_ONLY": "только подпись",
+        "COMPLETE": "по тексту",
+        "FULL_TEXT": "по тексту",
+        "TRANSCRIPT_AND_VISUAL": "по речи и кадрам",
+        "TRANSCRIPT_ONLY": "по речи",
+        "VISUAL_ONLY": "по кадрам",
+        "CAPTION_ONLY": "по подписи",
         "PARTIAL": "частичный",
     }
     completeness_label = completeness_labels.get(item.analysis_completeness)
     if completeness_label:
-        lines.append(f"Полнота анализа: {completeness_label}")
+        lines.append(f"Анализ: {completeness_label}")
     if item.next_action and item.next_action.strip():
         lines.extend(["", "Следующее действие:", item.next_action.strip()])
-    if item.priority_reason and item.priority_reason.strip():
-        lines.extend(["", "Почему приоритет:", item.priority_reason.strip()])
     return _fit_message(lines)
 
 
@@ -171,12 +180,12 @@ def format_item_failure(item: Item, sources: Sequence[ItemSource]) -> str:
         reason = (
             "Не удалось получить Reel: "
             f"{format_instagram_failure_reason(error_code)}. Ссылка сохранена; "
-            "после настройки INSTAGRAM_COOKIES_FILE нажмите Retry."
+            "после настройки доступа к Instagram нажмите «Повторить»."
         )
     elif instagram_failure and error_code == "RATE_LIMITED":
         reason = (
             f"Не удалось получить Reel: {format_instagram_failure_reason(error_code)}. "
-            "Ссылка сохранена; попробуйте Retry позже."
+            "Ссылка сохранена; попробуйте «Повторить» позже."
         )
     elif instagram_failure and error_code == "UNSUPPORTED_SOURCE":
         reason = (
@@ -242,7 +251,7 @@ def format_profile(profile: UserProfile) -> str:
         lines.append(f"Интересы: {', '.join(profile.interests)}")
     if profile.constraints:
         lines.append(
-            "Constraints: " + "; ".join(f"{k}: {v}" for k, v in profile.constraints.items())
+            "Ограничения: " + "; ".join(f"{k}: {v}" for k, v in profile.constraints.items())
         )
     if profile.free_text:
         lines.append(f"Заметки: {profile.free_text}")
@@ -253,158 +262,64 @@ def format_profile(profile: UserProfile) -> str:
 
 
 def format_today(
-    items: list[Item], sources_by_item: Mapping[int, Sequence[ItemSource]] | None = None
+    items: list[Item],
+    sources_by_item: Mapping[int, Sequence[ItemSource]] | None = None,
+    *,
+    heading: str = "🎯 Сегодня",
 ) -> str:
-    """Показывает actionable-срез с полями, нужными для решения «что делать»."""
+    """Share one concrete-content projection for /today and scheduled подборку."""
     if not items:
-        return "Сегодня нет подходящих задач."
-    lines = ["Сегодня:"]
-    for index, (item, entry) in enumerate(
-        zip(items, item_navigation_entries(items, sources_by_item), strict=True), start=1
-    ):
-        lines.append(f"{index}. {entry.label} — {item.priority_score or 0}/100")
+        return f"{heading}\n\nНа сегодня пока нечего вернуть в фокус."
+
+    # ❌ Удалены позиции и числовые рейтинги из списка дня: человеку показываются
+    # конкретные сохранения и следующий полезный шаг, а порядок остаётся у TodayService.
+    lines = [heading]
+    entries = item_navigation_entries(items, sources_by_item)
+    for item, entry in zip(items, entries, strict=True):
+        lines.extend(["", f"🎯 {entry.label}"])
+        action = item.next_action.strip() if item.next_action and item.next_action.strip() else ""
+        content = action or _summary_preview(item, 220)
+        if content:
+            lines.append(content)
         if item.estimated_action_minutes is not None:
-            lines.append(f"   ~{item.estimated_action_minutes} мин")
-        if item.next_action:
-            lines.append(f"   {item.next_action}")
+            lines.append(f"≈ {item.estimated_action_minutes} минут")
     return _fit_message(lines)
 
 
 def format_weekly_review(
     review: WeeklyReview, item_titles_by_id: Mapping[int, str] | None = None
 ) -> str:
-    """Render the read model as one compact message, keeping actions ahead of themes."""
-    flow = review.flow
-    backlog = review.backlog
-    reminders = review.reminder_outcomes
-    has_data = any(
-        (
-            flow.created,
-            flow.completed,
-            flow.archived,
-            backlog.active_actionable,
-            backlog.high_priority,
-            backlog.high_interest,
-            backlog.stale,
-            backlog.old_important_unrevisited,
-            bool(review.created_categories),
-            bool(review.completed_categories),
-            review.most_postponed is not None,
-            review.strongest_progress is not None,
-            reminders is not None and reminders.has_activity,
-            bool(review.recommendations),
+    """Show only concrete saved materials from the existing read-only recommendations."""
+    if not review.recommendations:
+        return "📌 На этой неделе пока нечего отдельно возвращать в фокус."
+
+    # ❌ Удалены недельные счётчики и категории из Telegram-проекции: аналитика
+    # остаётся в WeeklyReview, а человек видит только связанные с ним материалы.
+    lines = ["📌 Вернуться на этой неделе"]
+    descriptions = {
+        "RETURN_OLD_IMPORTANT": "Вернуться к материалу.",
+        "QUICK_WIN": "Короткий следующий шаг.",
+        "CLEANUP_REVIEW": "Проверить, ещё актуален ли он.",
+    }
+    for recommendation in review.recommendations[:3]:
+        title = _bounded_weekly_label(
+            (item_titles_by_id or {}).get(recommendation.item_id)
+            or recommendation.title
+            or "Сохранённый материал"
         )
-    )
-    if not has_data:
-        return "Неделя\n\nПока недостаточно данных для недельного обзора."
-
-    lines = ["📊 Неделя"]
-    has_flow = any((flow.created, flow.completed, flow.archived))
-    if has_flow:
-        lines.append("")
-        if flow.created:
-            lines.append(f"Добавлено: {flow.created}")
-        if flow.completed:
-            lines.append(f"Готово: {flow.completed}")
-        if flow.archived:
-            lines.append(f"Архивировано: {flow.archived}")
-        if flow.net_change > 0:
-            lines.append(f"Backlog вырос на {flow.net_change}")
-        elif flow.net_change < 0:
-            lines.append(f"Backlog сократился на {abs(flow.net_change)}")
-        else:
-            lines.append("Поток примерно сбалансирован")
-
-    if (
-        any(
-            (
-                backlog.active_actionable,
-                backlog.high_priority,
-                backlog.high_interest,
+        lines.extend(("", f"• {title}"))
+        description = descriptions.get(recommendation.kind)
+        if (
+            recommendation.kind == "QUICK_WIN"
+            and recommendation.estimated_action_minutes is not None
+        ):
+            description = (
+                f"{description} ≈ {recommendation.estimated_action_minutes} минут"
+                if description
+                else None
             )
-        )
-        or has_flow
-    ):
-        lines.extend(("", "Сейчас:"))
-        lines.append(f"Активных actionable: {backlog.active_actionable}")
-        if backlog.high_priority:
-            lines.append(f"Высокий приоритет: {backlog.high_priority}")
-        if backlog.high_interest:
-            lines.append(f"Интерес 3/3: {backlog.high_interest}")
-
-    if backlog.stale or backlog.old_important_unrevisited:
-        lines.extend(("", "Старый backlog:"))
-        if backlog.stale:
-            lines.append(f"{backlog.stale} Item старше 30 дней")
-        if backlog.old_important_unrevisited:
-            lines.append(
-                f"{backlog.old_important_unrevisited} важных давно не возвращались в фокус"
-            )
-
-    if review.recommendations:
-        lines.extend(("", "На следующую неделю:"))
-        for index, recommendation in enumerate(review.recommendations[:3], start=1):
-            title = _bounded_weekly_label(
-                (item_titles_by_id or {}).get(recommendation.item_id)
-                or recommendation.title
-                or "Сохранение"
-            )
-            if recommendation.kind == "RETURN_OLD_IMPORTANT":
-                lines.append(f"{index}. Вернуться: {title}")
-            elif recommendation.kind == "QUICK_WIN":
-                estimate = (
-                    f" (~{recommendation.estimated_action_minutes} мин)"
-                    if recommendation.estimated_action_minutes is not None
-                    else ""
-                )
-                lines.append(f"{index}. Быстрый шаг: {title}{estimate}")
-            elif recommendation.kind == "CLEANUP_REVIEW":
-                lines.append(f"{index}. Проверить актуальность: {title}")
-
-    if reminders is not None and reminders.has_activity:
-        lines.extend(("", "Attention:"))
-        reminder_labels = (
-            ("отправлено", reminders.sent),
-            ("открыто", reminders.opened),
-            ("отложено", reminders.snoozed),
-            ("готово", reminders.done),
-            ("не сейчас", reminders.dismissed),
-            ("меньше таких", reminders.disliked),
-        )
-        lines.append(" · ".join(f"{label} {count}" for label, count in reminder_labels if count))
-
-    if review.created_categories:
-        lines.extend(("", "Чаще добавлял:"))
-        lines.extend(
-            f"{_bounded_weekly_label(category.category)} — {category.count}"
-            for category in review.created_categories[:3]
-        )
-
-    completed_categories = list(review.completed_categories[:3])
-    progress = review.strongest_progress
-    if progress is not None:
-        progress_category = _bounded_weekly_label(progress.category)
-        progress_line = f"Больше всего завершений: {progress_category} — {progress.count}"
-        lines.extend(("", progress_line))
-        completed_categories = [
-            category for category in completed_categories if category.category != progress.category
-        ]
-    if completed_categories:
-        lines.extend(("", "Темы завершений:"))
-        lines.extend(
-            f"{_bounded_weekly_label(category.category)} — {category.count}"
-            for category in completed_categories
-        )
-
-    if review.most_postponed is not None:
-        postponed = review.most_postponed
-        lines.extend(
-            (
-                "",
-                f"Чаще откладывал: {_bounded_weekly_label(postponed.category)} — {postponed.count}",
-            )
-        )
-
+        if description:
+            lines.append(description)
     return _fit_message(lines)
 
 
@@ -447,10 +362,8 @@ def format_attention_item(
     # ❌ Удалены score, возраст и ranking reason из ручной карточки: это диагностика
     # ранжирования, а preview должен помогать узнать сохранённый материал.
     title = item_display_title(item, sources)
-    summary = " ".join((item.summary or "").split())
-    if len(summary) > _ATTENTION_SUMMARY_PREVIEW_LENGTH:
-        summary = summary[: _ATTENTION_SUMMARY_PREVIEW_LENGTH - 1].rstrip() + "…"
-    lines = [f"{index}/{count} — {title}"]
+    summary = _summary_preview(item, _ATTENTION_SUMMARY_PREVIEW_LENGTH)
+    lines = [f"🎯 {title}"]
     if summary:
         lines.extend(["", summary])
     return _fit_message(lines)
@@ -468,11 +381,18 @@ def format_proactive_attention_reminder(
     content = (hook_text or "").strip()
     if not content:
         # Item.summary is presentation fallback only; AttentionHookService never reads it.
-        content = " ".join((item.summary or "").split())
-        if len(content) > _PROACTIVE_SUMMARY_PREVIEW_LENGTH:
-            content = content[: _PROACTIVE_SUMMARY_PREVIEW_LENGTH - 1].rstrip() + "…"
+        content = _summary_preview(item, _PROACTIVE_SUMMARY_PREVIEW_LENGTH)
     if content:
         lines.extend(("", content))
+    return _fit_message(lines)
+
+
+def format_snooze_reminder(item: Item, sources: Sequence[ItemSource] = ()) -> str:
+    """Return a snoozed save with its title and persisted summary beside source actions."""
+    lines = ["⏰ Вы хотели вернуться к этому:", "", item_display_title(item, sources)]
+    summary = _summary_preview(item, _PROACTIVE_SUMMARY_PREVIEW_LENGTH)
+    if summary:
+        lines.extend(("", summary))
     return _fit_message(lines)
 
 
@@ -486,9 +406,9 @@ def format_item_list(
         return f"{heading}\n\nНичего не найдено."
     lines = [heading]
     entries = item_navigation_entries(items, sources_by_item)
-    for item, entry in zip(items, entries, strict=True):
-        score = f" — {item.priority_score}/100" if item.priority_score is not None else ""
-        lines.append(f"• {entry.label}{score}")
+    # ❌ Удалены числовые оценки из списков: пользователь выбирает материал по названию.
+    for entry in entries:
+        lines.append(f"• {entry.label}")
     return _fit_message(lines)
 
 
@@ -498,10 +418,26 @@ def format_ask_answer(answer: str, references: Sequence[AskReference]) -> str:
     lines = [answer or "В найденных материалах недостаточно данных для уверенного ответа."]
     if references:
         lines.extend(("", "Источники:"))
+        source_labels = {
+            SourceType.TEXT: "заметка",
+            SourceType.WEB: "ссылка",
+            SourceType.VOICE: "голосовое сообщение",
+            SourceType.AUDIO: "аудио",
+            SourceType.YOUTUBE: "YouTube",
+            SourceType.INSTAGRAM: "Instagram",
+            SourceType.VIDEO: "видео",
+            SourceType.DOCUMENT: "документ",
+        }
         for index, reference in enumerate(references[:5], start=1):
             title = _bounded_weekly_label(reference.title or "Сохранение", 120)
             if reference.source_type:
-                title += f" — {reference.source_type[:16]}"
+                try:
+                    source_type = SourceType(reference.source_type)
+                except ValueError:
+                    source_type = None
+                source_label = source_labels.get(source_type) if source_type else None
+                if source_label:
+                    title += f" — {source_label}"
             lines.append(f"[{index}] {title}")
     return _fit_message(lines)
 
@@ -509,7 +445,6 @@ def format_ask_answer(answer: str, references: Sequence[AskReference]) -> str:
 def format_categories(categories: Sequence[tuple[str, int]], *, page: int = 0) -> str:
     """Format one category page while the keyboard carries the bounded choices."""
     if not categories:
-        return "Категории пока пусты."
-    return _fit_message(
-        [f"Категории · {page + 1}"] + [f"{name} — {count}" for name, count in categories]
-    )
+        return "Категорий пока нет."
+    # ❌ Удалены внутренние числа материалов и номер страницы из списка категорий.
+    return _fit_message(["🏷 Категории"] + [name for name, _count in categories])

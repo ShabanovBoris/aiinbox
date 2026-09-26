@@ -6,7 +6,6 @@ from sqlalchemy import func, select
 from app.bot.keyboards import (
     item_keyboard,
     item_more_keyboard,
-    motivation_reminder_keyboard,
     proactive_reminder_keyboard,
     reminder_more_keyboard,
     reminder_snooze_keyboard,
@@ -14,6 +13,7 @@ from app.bot.keyboards import (
 from app.domain.enums import ItemState, ItemType, MotivationKind, ProcessingStatus, SourceType
 from app.services.actions import apply_item_action
 from app.services.attention_ranking import AttentionRankingService
+from app.services.original_access import reminder_original_target
 from app.services.reminder_feedback import (
     ReminderFeedbackService,
     record_reminder_event,
@@ -31,6 +31,7 @@ async def _item_and_user(
     category: str | None = "AI",
     item_type: ItemType | None = ItemType.READ,
     source_type: SourceType = SourceType.TEXT,
+    telegram_message_id: int | None = None,
 ) -> tuple[int, int]:
     async with session_factory() as session:
         user = User(telegram_user_id=telegram_user_id, telegram_chat_id=telegram_user_id)
@@ -38,7 +39,7 @@ async def _item_and_user(
         await session.flush()
         item = Item(
             user_id=user.id,
-            telegram_message_id=None,
+            telegram_message_id=telegram_message_id,
             source_index=0,
             processing_status=ProcessingStatus.READY,
             state=state,
@@ -326,6 +327,67 @@ async def test_generic_nudge_dislike_has_no_item_and_ok_is_not_a_fake_event(sess
             "motivation_kind": "QUICK_WINS",
         }
         assert user.settings_json.get("generic_motivation_enabled", True) is True
+
+
+async def test_focused_motivation_uses_saved_item_for_original_and_lifecycle_actions(
+    session_factory,
+):
+    user_id, item_id = await _item_and_user(session_factory, telegram_message_id=321)
+    reminder_id = await _reminder(
+        session_factory,
+        user_id,
+        None,
+        type_="MOTIVATION_NUDGE",
+        payload={"kind": "QUICK_WINS", "focus_item_id": item_id, "policy_level": 3},
+    )
+    service = ReminderFeedbackService(session_factory)
+
+    projection = await service.item_reminder_projection(42, reminder_id)
+    assert projection is not None
+    assert projection[1].id == item_id
+    assert projection[3] is True
+    original = await reminder_original_target(session_factory, 42, reminder_id, current_chat_id=42)
+    assert original is not None
+    assert original.item_id == item_id
+    assert original.message_id == 321
+
+    assert await service.apply_callback(42, reminder_id, "done", callback_id="motivation-done") == (
+        "APPLIED"
+    )
+    async with session_factory() as session:
+        item = await session.get(Item, item_id)
+        event = await session.scalar(
+            select(Event).where(
+                Event.reminder_id == reminder_id,
+                Event.event_type == "REMINDER_DONE",
+            )
+        )
+        assert item.state is ItemState.DONE
+        assert event.item_id == item_id
+        assert (
+            await session.scalar(
+                select(func.count(Event.id)).where(
+                    Event.item_id == item_id, Event.event_type == "DONE"
+                )
+            )
+            == 1
+        )
+
+
+async def test_focused_motivation_rejects_an_item_owned_by_another_user(session_factory):
+    owner_id, _owner_item_id = await _item_and_user(session_factory)
+    _other_user_id, foreign_item_id = await _item_and_user(session_factory, telegram_user_id=1000)
+    reminder_id = await _reminder(
+        session_factory,
+        owner_id,
+        None,
+        type_="MOTIVATION_NUDGE",
+        payload={"kind": "QUICK_WINS", "focus_item_id": foreign_item_id},
+    )
+
+    service = ReminderFeedbackService(session_factory)
+    assert await service.apply_callback(42, reminder_id, "done") == "UNAVAILABLE"
+    assert await service.item_reminder_projection(42, reminder_id) is None
 
 
 async def test_wrong_user_and_non_sent_reminder_cannot_create_feedback(session_factory):
@@ -722,9 +784,8 @@ def test_reminder_keyboards_are_compact_identity_preserving_and_bounded(session_
         extraction_status="READY",
     )
     proactive = proactive_reminder_keyboard(456, item, [source], focus_source_id=321)
-    motivation = motivation_reminder_keyboard(456)
     snooze = reminder_snooze_keyboard(456)
-    callbacks = _callback_data(proactive) + _callback_data(motivation) + _callback_data(snooze)
+    callbacks = _callback_data(proactive) + _callback_data(snooze)
     assert all(len(value.encode("utf-8")) <= 64 for value in callbacks)
     assert "reminder:open:456:321" in callbacks
     proactive_actions = {
@@ -736,8 +797,10 @@ def test_reminder_keyboards_are_compact_identity_preserving_and_bounded(session_
     assert "reminder:more:456" in _callback_data(proactive)
     assert not proactive_actions & set(_callback_data(proactive))
     assert proactive_actions <= set(_callback_data(reminder_more_keyboard(456)))
-    assert {"nav:attention:show:3", "reminder:less:456"} <= set(_callback_data(motivation))
     assert "reminder:snooze:456:tomorrow" in _callback_data(snooze)
+    reminder_actions = reminder_more_keyboard(456).inline_keyboard
+    assert any(button.text == "✅ Сделано" for row in reminder_actions for button in row)
+    assert any(button.text == "⏰ Отложить" for row in reminder_actions for button in row)
 
     primary = _callback_data(item_keyboard(item, [source]))
     assert f"item:video:{item.id}:{source.id}" in primary

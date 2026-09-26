@@ -4,11 +4,13 @@ from types import SimpleNamespace
 import pytest
 
 from app.bot.formatting import (
+    format_attention_item,
     format_categories,
     format_item_details,
     format_item_failure,
     format_item_list,
     format_ready_item,
+    format_snooze_reminder,
     format_today,
 )
 from app.bot.keyboards import item_keyboard
@@ -292,10 +294,11 @@ def test_details_localize_item_type_and_show_available_system_fields():
     assert "ℹ️ Детали" in text
     assert "Категория: AI" in text
     assert "Тип: Изучить" in text
-    assert "Приоритет: 82/100" in text
-    assert "Интерес: 2/3" in text
+    assert "Приоритет:" not in text
+    assert "82/100" not in text
+    assert "Интерес: обычный" in text
     assert "Следующее действие:\nПосмотреть блок про tool orchestration" in text
-    assert "Почему приоритет:\nСильно связано с профессиональными целями" in text
+    assert "Почему приоритет:" not in text
     assert "LEARN" not in text
 
 
@@ -339,12 +342,57 @@ def test_today_uses_source_derived_title_instead_of_missing_analysis_placeholder
         source_url="https://www.avito.ru/item",
     )
 
-    assert "1. avito.ru" in format_today([item], {item.id: [source]})
+    text = format_today([item], {item.id: [source]})
+    assert "🎯 Сегодня" in text
+    assert "🎯 avito.ru" in text
+    assert "1." not in text
+    assert "/100" not in text
+
+
+def test_today_is_object_centric_and_keeps_only_useful_per_item_details():
+    first = make_ready_item()
+    first.title = "Docker release flow"
+    first.next_action = "Check the dependency scan."
+    first.estimated_action_minutes = 10
+    second = make_ready_item()
+    second.id = 2
+    second.title = "Kotlin compiler changes"
+    second.next_action = None
+    second.summary = "A note about the new API."
+
+    text = format_today([first, second])
+
+    assert "Docker release flow" in text
+    assert "Check the dependency scan." in text
+    assert "≈ 10 минут" in text
+    assert "Kotlin compiler changes" in text
+    assert "A note about the new API." in text
+    assert not any(term in text for term in ("1.", "2.", "1/2", "/100", "actionable", "Item"))
+
+
+def test_manual_attention_and_snooze_copy_name_the_concrete_save():
+    item = make_ready_item()
+    item.title = "A saved title"
+    item.summary = "Persisted content summary."
+    attention = format_attention_item(2, 5, item, None)
+    snooze = format_snooze_reminder(item)
+
+    assert attention.startswith("🎯 A saved title")
+    assert "2/5" not in attention
+    assert "Persisted content summary." in attention
+    assert snooze.startswith("⏰ Вы хотели вернуться к этому:")
+    assert "A saved title" in snooze
+    assert "Persisted content summary." in snooze
 
 
 def test_category_format_stays_within_telegram_limit():
-    text = format_categories([(f"category-{index}-{'x' * 300}", index) for index in range(30)])
+    text = format_categories(
+        [(f"category-{index}-{'x' * 300}", index) for index in range(30)], page=3
+    )
     assert len(text) <= 4096
+    assert "Категории · 4" not in text
+    assert "category-3" in text
+    assert "— 3" not in text
 
 
 def test_openai_parse_valid_json():

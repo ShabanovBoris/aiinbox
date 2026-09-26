@@ -100,10 +100,10 @@ def main_menu_keyboard() -> InlineKeyboardMarkup:
     actions = (
         ("🎯 Сегодня", "nav:today"),
         ("✨ Внимание", "nav:attention"),
-        ("📥 Inbox", "nav:inbox"),
+        ("📥 Сохранённое", "nav:inbox"),
         ("🔎 Поиск", "nav:search"),
-        ("🧠 Ask", "nav:ask"),
-        ("📊 Неделя", "nav:weekly"),
+        ("🧠 Спросить", "nav:ask"),
+        ("📌 На этой неделе", "nav:weekly"),
         ("🏷 Категории", "nav:categories"),
         ("👤 Профиль", "nav:profile"),
         ("⚙️ Настройки", "nav:settings"),
@@ -239,10 +239,10 @@ def item_more_keyboard(item: Item) -> InlineKeyboardMarkup:
         rows.extend(
             [
                 [
-                    InlineKeyboardButton(text="✅ Готово", callback_data=f"item:done:{item.id}"),
-                    InlineKeyboardButton(text="⏰ Позже", callback_data=f"item:later:{item.id}"),
+                    InlineKeyboardButton(text="✅ Сделано", callback_data=f"item:done:{item.id}"),
+                    InlineKeyboardButton(text="⏰ Отложить", callback_data=f"item:later:{item.id}"),
                 ],
-                [InlineKeyboardButton(text="🗄 Архив", callback_data=f"item:archive:{item.id}")],
+                [InlineKeyboardButton(text="🗄 В архив", callback_data=f"item:archive:{item.id}")],
             ]
         )
     if item.processing_status is ProcessingStatus.READY:
@@ -270,11 +270,12 @@ def item_more_keyboard(item: Item) -> InlineKeyboardMarkup:
 
 def item_interest_keyboard(item: Item) -> InlineKeyboardMarkup:
     """Render the current canonical interest level without mutating the Item."""
+    # ❌ Удалены числовые уровни из кнопок: сохранены только понятные человеку слова.
     labels = {1: "Низкий", 2: "Обычный", 3: "Высокий"}
     rows = [
         [
             InlineKeyboardButton(
-                text=f"{level} — {labels[level]}{' ✓' if item.interest_level == level else ''}",
+                text=f"{labels[level]}{' ✓' if item.interest_level == level else ''}",
                 callback_data=f"item:interest:{item.id}:{level}",
             )
         ]
@@ -490,10 +491,10 @@ def reminder_more_keyboard(reminder_id: int) -> InlineKeyboardMarkup:
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text="⏰ Позже", callback_data=f"reminder:later:{reminder_id}"
+                    text="⏰ Отложить", callback_data=f"reminder:later:{reminder_id}"
                 ),
                 InlineKeyboardButton(
-                    text="✅ Готово", callback_data=f"reminder:done:{reminder_id}"
+                    text="✅ Сделано", callback_data=f"reminder:done:{reminder_id}"
                 ),
             ],
             [
@@ -531,20 +532,8 @@ def reminder_sources_keyboard(
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def motivation_reminder_keyboard(reminder_id: int) -> InlineKeyboardMarkup:
-    """Offer a direct Attention view and preserve the existing negative feedback action."""
-    # ❌ Удалена кнопка «Ок»: она не открывала материал и не меняла полезное состояние;
-    # вместо неё сообщение ведёт сразу к ограниченному ручному Attention-списку.
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="🎯 Показать", callback_data="nav:attention:show:3")],
-            [
-                InlineKeyboardButton(
-                    text="👎 Меньше таких", callback_data=f"reminder:less:{reminder_id}"
-                )
-            ],
-        ]
-    )
+# ❌ Удалена отдельная клавиатура общего нуджа: новые мотивационные сообщения
+# используют source/actions клавиатуру конкретного сохранения.
 
 
 def reminder_snooze_keyboard(reminder_id: int) -> InlineKeyboardMarkup:
@@ -579,7 +568,7 @@ def feedback_menu_keyboard(item_id: int) -> InlineKeyboardMarkup:
             [
                 InlineKeyboardButton(text="👍 Полезно", callback_data=f"feedback:useful:{item_id}"),
                 InlineKeyboardButton(
-                    text="👎 Не моё", callback_data=f"feedback:not_interesting:{item_id}"
+                    text="👎 Неинтересно", callback_data=f"feedback:not_interesting:{item_id}"
                 ),
             ],
             [
@@ -590,17 +579,17 @@ def feedback_menu_keyboard(item_id: int) -> InlineKeyboardMarkup:
             ],
             [
                 InlineKeyboardButton(
-                    text="⬆ Приоритет",
+                    text="⬆ Важнее",
                     callback_data=f"feedback:priority_higher:{item_id}",
                 ),
                 InlineKeyboardButton(
-                    text="⬇ Приоритет",
+                    text="⬇ Менее важно",
                     callback_data=f"feedback:priority_lower:{item_id}",
                 ),
             ],
             [
                 InlineKeyboardButton(
-                    text="📝 Summary неверный",
+                    text="📝 Неточная сводка",
                     callback_data=f"feedback:summary_wrong:{item_id}",
                 )
             ],
@@ -692,18 +681,18 @@ def snooze_keyboard(item_id: int) -> InlineKeyboardMarkup:
 
 def settings_keyboard(enabled: bool) -> InlineKeyboardMarkup:
     """Expose notification settings as direct controls, keeping slash forms secondary."""
-    label = "🔕 Выключить digest" if enabled else "🔔 Включить digest"
+    label = "🔕 Выключить подборку" if enabled else "🔔 Включить подборку"
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="🌍 Часовой пояс", callback_data="settings:edit:timezone")],
             [
                 InlineKeyboardButton(
-                    text="🕘 Время digest", callback_data="settings:edit:digest_time"
+                    text="🕘 Время подборки", callback_data="settings:edit:digest_time"
                 )
             ],
             [InlineKeyboardButton(text="🌙 Тихие часы", callback_data="settings:edit:quiet_hours")],
             [InlineKeyboardButton(text=label, callback_data="settings:digest")],
-            [InlineKeyboardButton(text="⚡ Attention", callback_data="settings:attention:open")],
+            [InlineKeyboardButton(text="✨ Внимание", callback_data="settings:attention:open")],
             [InlineKeyboardButton(text="← Меню", callback_data="nav:menu")],
         ]
     )
@@ -713,7 +702,7 @@ def attention_settings_keyboard(
     enabled: bool, level: int, motivation_enabled: bool = True
 ) -> InlineKeyboardMarkup:
     """Project PM-08 intensity and the independent PM-10 toggle into Telegram controls."""
-    labels = ("Calm", "Light", "Normal", "Active", "Aggressive")
+    labels = ("Спокойно", "Легко", "Обычно", "Активно", "Очень активно")
     levels = [
         InlineKeyboardButton(
             text=f"{number} {label}{' ✓' if number == level else ''}",
@@ -722,14 +711,14 @@ def attention_settings_keyboard(
         for number, label in enumerate(labels, start=1)
     ]
     toggle = InlineKeyboardButton(
-        text="🔕 Attention OFF" if enabled is True else "🔔 Attention ON",
+        text="🔕 Выключить внимание" if enabled is True else "🔔 Включить внимание",
         callback_data="settings:attention:toggle",
     )
     motivation_toggle = InlineKeyboardButton(
         text=(
-            "💬 Выключить общие напоминания"
+            "💬 Выключить дополнительные напоминания"
             if motivation_enabled is True
-            else "💬 Включить общие напоминания"
+            else "💬 Включить дополнительные напоминания"
         ),
         callback_data="settings:attention:motivation",
     )

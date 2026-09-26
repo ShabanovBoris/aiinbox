@@ -21,15 +21,15 @@ from sqlalchemy.exc import SQLAlchemyError
 from app.bot.formatting import (
     format_attention_reason,
     format_proactive_attention_reminder,
+    format_snooze_reminder,
     format_today,
 )
 from app.bot.keyboards import (
     item_keyboard,
     item_list_keyboard,
-    motivation_reminder_keyboard,
     proactive_reminder_keyboard,
 )
-from app.bot.presentation import item_display_title, item_navigation_entries
+from app.bot.presentation import item_navigation_entries
 from app.domain.enums import ACTIONABLE_ITEM_TYPES, ItemState, ProcessingStatus
 from app.domain.models import MotivationCandidate
 from app.services.attention_hooks import AttentionHookService
@@ -123,12 +123,12 @@ class GenericMotivationGate:
 
 ATTENTION_POLICIES: Mapping[int, AttentionIntensityPolicy] = MappingProxyType(
     {
-        1: AttentionIntensityPolicy(1, "Calm", 1, timedelta(hours=8), timedelta(hours=72), 60),
-        2: AttentionIntensityPolicy(2, "Light", 2, timedelta(hours=5), timedelta(hours=48), 60),
-        3: AttentionIntensityPolicy(3, "Normal", 3, timedelta(hours=3), timedelta(hours=30), 60),
-        4: AttentionIntensityPolicy(4, "Active", 4, timedelta(hours=2), timedelta(hours=20), 55),
+        1: AttentionIntensityPolicy(1, "Спокойно", 1, timedelta(hours=8), timedelta(hours=72), 60),
+        2: AttentionIntensityPolicy(2, "Легко", 2, timedelta(hours=5), timedelta(hours=48), 60),
+        3: AttentionIntensityPolicy(3, "Обычно", 3, timedelta(hours=3), timedelta(hours=30), 60),
+        4: AttentionIntensityPolicy(4, "Активно", 4, timedelta(hours=2), timedelta(hours=20), 55),
         5: AttentionIntensityPolicy(
-            5, "Aggressive", 6, timedelta(minutes=90), timedelta(hours=12), 50
+            5, "Очень активно", 6, timedelta(minutes=90), timedelta(hours=12), 50
         ),
     }
 )
@@ -335,13 +335,12 @@ async def update_notification_settings(
 
 
 def format_settings(user: User, settings: dict, now: datetime | None = None) -> str:
-    enabled = "включён" if settings["daily_digest_enabled"] else "выключен"
+    enabled = "включена" if settings["daily_digest_enabled"] else "выключена"
     level = settings.get("attention_intensity", 3)
     if type(level) is not int or level not in ATTENTION_POLICIES:
         level = 3
     policy = attention_policy(level)
     attention_enabled = settings.get("attention_enabled") is True
-    attention_status = "ON" if attention_enabled else "OFF"
     try:
         instant = now or datetime.now(UTC)
         if instant.tzinfo is None:
@@ -350,16 +349,16 @@ def format_settings(user: User, settings: dict, now: datetime | None = None) -> 
         local_clock = local_now.strftime("%H:%M")
     except ValueError:
         local_clock = "недоступно"
-    # ❌ Удалены slash-примеры как основной способ редактирования; обычный экран
-    # ведёт к кнопкам guided input, а командный синтаксис остаётся запасным.
+    # ❌ Удалены технические уровни и служебные лимиты; обычный экран ведёт к
+    # кнопкам настроек, а командный синтаксис остаётся запасным способом ввода.
     return (
         "⚙️ Настройки уведомлений\n"
         f"🌍 Часовой пояс: {user.timezone}\n"
         f"🕒 Сейчас для уведомлений: {local_clock}\n"
-        f"Ежедневная сводка: {enabled} ({settings['daily_digest_time']})\n"
+        f"Ежедневная подборка: {enabled} ({settings['daily_digest_time']})\n"
         f"Тихие часы: {settings['quiet_hours_start']}–{settings['quiet_hours_end']}\n\n"
-        f"Внимание: {'включено' if attention_status == 'ON' else 'выключено'}, "
-        f"{policy.label} ({policy.level})\n\n"
+        f"Внимание: {'включено' if attention_enabled else 'выключено'}\n"
+        f"Режим: {policy.label}\n\n"
         "Параметры можно изменить кнопками ниже. Команды /settings остаются доступны."
     )
 
@@ -370,47 +369,43 @@ def format_attention_settings(settings: dict) -> str:
     if type(level) is not int or level not in ATTENTION_POLICIES:
         level = 3
     policy = attention_policy(level)
-    status = "ON" if settings.get("attention_enabled") is True else "OFF"
+    status = "включено" if settings.get("attention_enabled") is True else "выключено"
     motivation_status = (
         "включены" if settings.get("generic_motivation_enabled") is True else "выключены"
     )
-    gap_seconds = int(policy.minimum_gap.total_seconds())
-    gap = f"{gap_seconds // 3600} ч" if gap_seconds % 3600 == 0 else f"{gap_seconds // 60} мин"
-    cooldown_hours = int(policy.same_item_cooldown.total_seconds() // 3600)
+    # ❌ Удалены лимиты, интервалы и cooldown из обычных настроек: эти
+    # служебные значения доступны только на явно открытом экране статуса.
     return (
-        "🧠 Attention\n\n"
-        f"Статус: {'включён' if status == 'ON' else 'выключен'}\n"
-        f"Интенсивность: {policy.level} — {policy.label}\n"
-        f"Общие напоминания: {motivation_status}\n"
-        f"Лимит: до {policy.daily_cap} уведомлений в день, включая сводку\n"
-        f"Минимальный интервал: {gap}\n"
-        f"Повтор материала: через {cooldown_hours} ч"
+        "✨ Внимание\n\n"
+        f"Статус: {status}\n"
+        f"Интенсивность: {policy.label}\n"
+        f"Дополнительные напоминания: {motivation_status}"
     )
 
 
 def format_attention_status(status: AttentionStatus) -> str:
     """Render read-only scheduler facts with Russian user-facing blocker labels."""
     latest_labels = {
-        DAILY_DIGEST: "Дайджест",
-        PROACTIVE_ATTENTION: "Attention",
+        DAILY_DIGEST: "Ежедневная подборка",
+        PROACTIVE_ATTENTION: "Внимание",
         SNOOZE_RESURFACE: "Отложенный материал",
-        MOTIVATION_NUDGE: "Общее напоминание",
+        MOTIVATION_NUDGE: "Дополнительное напоминание",
     }
     blockers = {
-        "attention_off": "Attention выключен",
+        "attention_off": "автоматические напоминания выключены",
         "quiet_hours": "сейчас тихие часы",
         "daily_cap": "достигнут дневной лимит",
-        "generic_repeat_gap": "не прошёл четырёхчасовой интервал общих напоминаний",
+        "generic_repeat_gap": "не прошёл четырёхчасовой интервал дополнительных напоминаний",
         "minimum_gap": "не прошёл минимальный интервал",
         "delivery_in_progress": "уже готовится отправка",
         "no_proactive_candidate": "нет подходящих материалов",
-        "no_generic_candidate": "нет подходящего общего напоминания",
+        "no_generic_candidate": "нет подходящего дополнительного напоминания",
         "candidate_cooldown": "ещё действует пауза повторного показа",
         "ready": "ничего — вариант доступен в следующем цикле",
         "no_delivery_target": "не задан чат для доставки",
     }
     lines = [
-        "📊 Attention сейчас",
+        "📊 Статус уведомлений",
         "",
         f"🌍 Часовой пояс: {status.timezone_name}",
         f"🕒 Локальное время бота: {status.local_now:%H:%M}",
@@ -421,7 +416,7 @@ def format_attention_status(status: AttentionStatus) -> str:
         "",
         "Сегодня:",
         f"уведомления {status.budget_used}/{status.policy.daily_cap}",
-        f"общие напоминания {status.generic_used}/{status.generic_cap}",
+        f"дополнительные напоминания {status.generic_used}/{status.generic_cap}",
     ]
     if status.latest_type is not None and status.latest_sent_at is not None:
         now_utc = status.local_now.astimezone(UTC).replace(tzinfo=None)
@@ -453,11 +448,11 @@ def format_attention_status(status: AttentionStatus) -> str:
         (
             "",
             f"Подходящие материалы: {status.proactive_candidates}",
-            f"Поводы для общего напоминания: {status.generic_candidates}",
+            f"Поводы для дополнительных напоминаний: {status.generic_candidates}",
             "",
             f"Сейчас блокирует: {blocker_text}",
             "",
-            "Ручной просмотр Сегодня/Attention считается показом материала; "
+            "Ручной просмотр Сегодня/Внимание считается показом материала; "
             "недавно просмотренное может временно не приходить повторно.",
         )
     )
@@ -653,7 +648,7 @@ class ReminderWorker:
         try:
             await self._send_with_retry(
                 user.telegram_chat_id,
-                format_today(items, sources_by_item),
+                format_today(items, sources_by_item, heading="☀️ На сегодня"),
                 claimed_at=lease_now,
                 reply_markup=item_list_keyboard(item_navigation_entries(items, sources_by_item)),
             )
@@ -1448,7 +1443,7 @@ class ReminderWorker:
             payload = {
                 "kind": candidate.kind.value,
                 "facts": dict(candidate.facts),
-                "template_id": candidate.template_id,
+                "focus_item_id": candidate.focus_item_id,
                 "policy_level": policy.level,
                 "local_date": local_date.isoformat(),
                 "slot": slot,
@@ -1492,7 +1487,7 @@ class ReminderWorker:
         user_id: int,
         claim_generation: int,
         now: datetime | None,
-    ) -> tuple[MotivationCandidate, int, int, datetime, int, int] | None:
+    ) -> tuple[MotivationCandidate, Item, list[ItemSource], int, int, datetime, int, int] | None:
         """Refresh facts and every live PM-08 condition before releasing SQLite for Telegram."""
         async with self.session_factory() as session:
             await session.execute(text("BEGIN IMMEDIATE"))
@@ -1584,10 +1579,25 @@ class ReminderWorker:
                 reminder.claimed_at = None
                 await session.commit()
                 return None
+            focus_item = await session.get(Item, candidate.focus_item_id)
+            if focus_item is None or focus_item.user_id != user_id:
+                reminder.status = "CANCELLED"
+                reminder.claimed_at = None
+                await session.commit()
+                return None
+            sources = list(
+                (
+                    await session.scalars(
+                        select(ItemSource)
+                        .where(ItemSource.item_id == focus_item.id)
+                        .order_by(ItemSource.source_index, ItemSource.id)
+                    )
+                ).all()
+            )
             reminder.payload_json = {
                 "kind": candidate.kind.value,
                 "facts": dict(candidate.facts),
-                "template_id": candidate.template_id,
+                "focus_item_id": candidate.focus_item_id,
                 "policy_level": policy.level,
                 "local_date": local_date.isoformat(),
                 "slot": slot,
@@ -1595,6 +1605,8 @@ class ReminderWorker:
             await session.commit()
             return (
                 candidate,
+                focus_item,
+                sources,
                 user.telegram_chat_id,
                 claim_generation,
                 reminder.claimed_at,
@@ -1656,13 +1668,13 @@ class ReminderWorker:
         )
         if prepared is None:
             return 0
-        candidate, chat_id, generation, claimed_at, slot, policy_level = prepared
+        candidate, item, sources, chat_id, generation, claimed_at, slot, policy_level = prepared
         try:
             await self._send_with_retry(
                 chat_id,
-                candidate.rendered_text,
+                format_proactive_attention_reminder(item, sources=sources),
                 claimed_at=claimed_at,
-                reply_markup=motivation_reminder_keyboard(reminder_id),
+                reply_markup=proactive_reminder_keyboard(reminder_id, item, sources),
             )
         except Exception:
             log.exception(
@@ -1676,12 +1688,12 @@ class ReminderWorker:
         sent_at = self._delivery_timestamp(sent_at_override)
         await self._finalize_motivation_send(reminder_id, user_id, generation, sent_at)
         log.info(
-            "motivation nudge sent user_id=%s reminder_id=%s kind=%s template_id=%s "
+            "motivation nudge sent user_id=%s item_id=%s reminder_id=%s kind=%s "
             "policy_level=%s slot=%s",
             user_id,
+            candidate.focus_item_id,
             reminder_id,
             candidate.kind.value,
-            candidate.template_id,
             policy_level,
             slot,
         )
@@ -2189,7 +2201,7 @@ class ReminderWorker:
             try:
                 await self._send_with_retry(
                     chat_id,
-                    f"⏰ Вернулся отложенный Item: {title}",
+                    title,
                     claimed_at=claimed_at,
                     reply_markup=keyboard,
                 )
@@ -2281,7 +2293,7 @@ class ReminderWorker:
                 reminder.scheduled_at,
                 reminder.claim_generation,
                 claimed_at,
-                item_display_title(item, sources),
+                format_snooze_reminder(item, sources),
                 user.telegram_chat_id,
                 keyboard,
             )

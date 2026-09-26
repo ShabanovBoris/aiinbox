@@ -266,8 +266,14 @@ def test_bot_commands_are_bounded_and_main_menu_is_inline():
         "help",
     ]
     assert all(command.description and len(command.description) <= 256 for command in BOT_COMMANDS)
+    assert next(command.description for command in BOT_COMMANDS if command.command == "weekly") == (
+        "Что открыть на этой неделе"
+    )
     keyboard = main_menu_keyboard()
     assert isinstance(keyboard, InlineKeyboardMarkup)
+    labels = {button.text for row in keyboard.inline_keyboard for button in row}
+    assert "📌 На этой неделе" in labels
+    assert "📊 Неделя" not in labels
     assert {button.callback_data for row in keyboard.inline_keyboard for button in row} == {
         "nav:today",
         "nav:attention",
@@ -353,7 +359,7 @@ async def test_today_records_shown_event_after_successful_send(
 
     monkeypatch.setattr(Message, "answer", answer_after_send)
     await on_today(make_message(42), settings, session_factory)
-    assert sent[0][0] == "Сегодня:\n1. Do it — 80/100"
+    assert sent[0][0] == "🎯 Сегодня\n\n🎯 Do it"
     buttons = [button for row in sent[0][1]["reply_markup"].inline_keyboard for button in row]
     assert [(button.text, button.callback_data) for button in buttons] == [
         ("Do it", f"item:view:{item_id}")
@@ -444,7 +450,7 @@ async def test_navigation_today_uses_callback_actor_and_records_after_send(
     await on_navigation_callback(callback, settings, session_factory, FakeFSMContext("ask"))
 
     assert callback_answers == [None]
-    assert sent[0][0] == "Сегодня:\n1. Do it — 80/100"
+    assert sent[0][0] == "🎯 Сегодня\n\n🎯 Do it"
     async with session_factory() as session:
         assert (
             await session.scalar(select(Event.event_type).where(Event.event_type == "TODAY_SHOWN"))
@@ -1018,7 +1024,7 @@ async def test_malformed_page_callbacks_fail_safely_and_huge_pages_clamp(
         session_factory,
         FakeFSMContext(),
     )
-    assert edits[-1][0].startswith("📥 Inbox · 1\n\nНичего не найдено.")
+    assert edits[-1][0].startswith("📥 Сохранённое\n\nНичего не найдено.")
 
 
 async def test_menu_settings_exposes_attention_and_back_navigation(
@@ -1057,7 +1063,7 @@ async def test_menu_settings_exposes_attention_and_back_navigation(
     await on_attention_settings_callback(
         make_callback(42, "settings:attention:open"), settings, session_factory
     )
-    assert "🧠 Attention" in edited[-1][0]
+    assert "✨ Внимание" in edited[-1][0]
     attention_buttons = [
         button for row in edited[-1][1]["reply_markup"].inline_keyboard for button in row
     ]
@@ -1067,7 +1073,7 @@ async def test_menu_settings_exposes_attention_and_back_navigation(
     await on_attention_settings_callback(
         make_callback(42, "settings:attention:status"), settings, session_factory
     )
-    assert "📊 Attention сейчас" in edited[-1][0]
+    assert "📊 Статус уведомлений" in edited[-1][0]
     status_buttons = [
         button for row in edited[-1][1]["reply_markup"].inline_keyboard for button in row
     ]
@@ -1081,7 +1087,7 @@ async def test_menu_settings_exposes_attention_and_back_navigation(
     )
 
     await on_settings_open_callback(make_callback(42, "settings:open"), settings, session_factory)
-    assert "Ежедневная сводка" in edited[-1][0]
+    assert "Ежедневная подборка" in edited[-1][0]
 
 
 async def test_ask_prompt_cancel_clears_ephemeral_state_without_job(
@@ -1280,7 +1286,7 @@ async def test_inbox_category_and_search_selectors_match_visible_list_order(
             item.created_at = created_at
         await session.commit()
         expected = {
-            "📥 Inbox": (await list_inbox_page(session, user.id)).items,
+            "📥 Сохранённое": (await list_inbox_page(session, user.id)).items,
             "Категория: Shared": (await list_category_items_page(session, user.id, "Shared")).items,
             "Результаты поиска:": await search_items(session, user.id, "needle"),
         }
@@ -1359,7 +1365,7 @@ async def test_settings_buttons_use_existing_validation_and_keep_invalid_input_s
         make_callback(42, "settings:edit:timezone"), settings, session_factory, timezone_state
     )
     assert timezone_state.value == GuidedInput.settings_timezone.state
-    assert "IANA timezone" in edited[-1][0]
+    assert "Отправь его название" in edited[-1][0]
     await on_guided_notification_setting_input(
         make_message(42, text="Mars/Phobos"),
         settings,
@@ -1417,9 +1423,9 @@ async def test_settings_attention_command_and_callbacks_preserve_current_choice(
 ):
     sent = capture_answers(monkeypatch)
     await on_settings(make_message(42), settings, session_factory, "attention")
-    assert "🧠 Attention" in sent[0]
-    assert "Normal" in sent[0]
-    assert "Общие напоминания: включены" in sent[0]
+    assert "✨ Внимание" in sent[0]
+    assert "Обычно" in sent[0]
+    assert "Дополнительные напоминания: включены" in sent[0]
 
     answered = []
     edited = []
@@ -1453,7 +1459,7 @@ async def test_settings_attention_command_and_callbacks_preserve_current_choice(
         data="settings:attention:level:5",
     )
     await on_attention_settings_callback(level_change, settings, session_factory)
-    assert "Aggressive" in edited[-1][0]
+    assert "Очень активно" in edited[-1][0]
     updated = await get_notification_settings(session_factory, 42)
     assert updated[1]["attention_intensity"] == 5
 
@@ -1477,7 +1483,7 @@ async def test_settings_attention_command_and_callbacks_preserve_current_choice(
         data="settings:attention:motivation",
     )
     await on_attention_settings_callback(motivation_toggle, settings, session_factory)
-    assert "Общие напоминания: выключены" in edited[-1][0]
+    assert "Дополнительные напоминания: выключены" in edited[-1][0]
     updated = await get_notification_settings(session_factory, 42)
     assert updated[1]["attention_enabled"] is False
     assert updated[1]["generic_motivation_enabled"] is False
@@ -1485,7 +1491,7 @@ async def test_settings_attention_command_and_callbacks_preserve_current_choice(
     buttons = [button for row in markup.inline_keyboard for button in row]
     assert any(
         button.callback_data == "settings:attention:motivation"
-        and button.text == "💬 Включить общие напоминания"
+        and button.text == "💬 Включить дополнительные напоминания"
         for button in buttons
     )
 
@@ -1703,4 +1709,4 @@ def test_item_action_label_reports_persisted_winner_not_requested_action():
         processing_stage="READY",
         user_note="x",
     )
-    assert _item_action_label(item, "archive") == "Готово ✅"
+    assert _item_action_label(item, "archive") == "Сделано ✅"

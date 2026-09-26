@@ -712,3 +712,26 @@ queries through the same generic cap/repeat gate as the scheduler. PM-14 evidenc
 is confirmed, but semantic retrieval stays on hold pending both requested
 POLISH-07 reviews. No migration or dependency is required; the existing scoring
 formula and reminder caps remain unchanged.
+
+## D-045 — User-facing reminders return concrete saved material
+
+Context: daily, weekly, Attention and motivational messages exposed database
+statistics, ranking values, English lifecycle vocabulary and the technical word
+`Item`, while generic motivation could be sent without a saved focus.
+
+Decision: ordinary Telegram copy is Russian and object-centric. Daily uses the same
+formatter for `/today` and scheduled delivery; weekly presents only existing
+concrete recommendations; list/Attention cards omit numeric ranks and positions.
+Every new motivation candidate resolves to one existing Item selected in PM-07
+order and stores that focus in the existing Reminder payload. The Reminder keeps
+`item_id=NULL` so its user-level claim identity is unchanged; reminder Events and
+callbacks resolve the payload focus. No focus means no send. Aggregate facts remain
+internal, and only the explicitly opened status screen shows scheduler counters.
+
+Reason: returning the exact saved source lets the user recognize and act on what they
+shared, without requiring a new ranking, table, or user-visible analytics model.
+
+Consequences: historical generic reminders without a focus remain valid. No schema
+migration, dependency, LLM call, or scheduler-policy change is required. The
+existing claims, thresholds, pacing, source provenance and PM-11 feedback remain in
+place.
