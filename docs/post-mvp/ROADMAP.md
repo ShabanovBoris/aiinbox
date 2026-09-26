@@ -62,7 +62,7 @@ All post-MVP work must preserve the current architecture:
 | 07 | Attention Ranking Engine | Dynamic “what should be shown now?” score | PM-01, PM-06 |
 | 08 | Attention Intensity | Calm → aggressive notification policies | PM-07 |
 | 09 | Contextual Attention Hooks | Grounded facts/hooks for old important Items | PM-07 |
-| 10 | Motivational Nudges | Duolingo-like contextual motivation without a specific Item | PM-08 |
+| 10 | Motivational Nudges | Deterministic motivation signals returned through a focused saved material | PM-08 |
 | 11 | Reminder Feedback Loop | Reminder outcomes feed future attention ranking | PM-08..10 |
 | 12 | Weekly Review | Reflection over backlog, progress and stale Items | PM-06, PM-11 |
 | 13 | Ask My Inbox | Question answering over saved Items with citations to Items | Search |
@@ -409,21 +409,24 @@ summary is never hook evidence.
 
 ## 14. PM-10 — Motivational Nudges
 
-Add optional Duolingo-like nudges not tied to one Item.
+PM-10 derives optional motivation signals from deterministic Item/Event facts.
+Every new sendable candidate is paired with one existing save in PM-07 order;
+the user sees its title, persisted summary, and supported source/lifecycle
+actions. The proactive-only dismissal cooldown is not offered for motivation.
+Signals and aggregate facts remain internal. Generic motivation has no
+user-facing template rotation or LLM copy.
 
-Examples must be based on real computed facts:
+`Reminder.item_id` remains NULL as the user-level claim identity. The selected
+`focus_item_id` is stored in the existing payload for owner-scoped callbacks and
+focused Reminder Events. No eligible focus means no send; historical focusless
+Reminder rows remain valid.
 
-- “4 important Items are older than a month”;
-- “You have 3 quick wins under 15 minutes”;
-- “You added more than you completed today”;
-- “You completed at least one Item three days in a row”.
+`generic_motivation_enabled` remains an independent setting. Deterministic fact
+thresholds, intensity caps, PM-08 budget/quiet-hours/minimum-gap policy, durable
+claims, four-hour generic repeat pacing, and PM-11 feedback follow the current
+contract in `PRODUCT_SPEC.md` and D-045.
 
-First version should be template-based. An LLM may later rewrite already-computed facts but must not invent metrics.
-
-Provide `generic_motivation_enabled`.
-
-Current state: DONE. Nudges use deterministic Item/Event facts and share
-PM-08 budget, quiet hours, minimum gap and durable claims.
+Current state: DONE.
 
 ## 15. PM-11 — Reminder Feedback Loop
 

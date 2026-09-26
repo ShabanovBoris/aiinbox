@@ -613,8 +613,10 @@ Telegram ответ становится `SENT`; `FAILED`/`CANCELLED` не ра�
 новый claim. Между принятым Telegram сообщением и SQLite финализацией остаётся
 узкое at-least-once окно с возможным дублем; exactly-once не гарантируется.
 Generic nudge не пишет `ATTENTION_SHOWN`. Его сообщение показывает выбранное
-сохранение с теми же source/original и lifecycle actions, что и proactive
-reminder. Для нового focused nudge `REMINDER_SENT` и callbacks указывают на
+сохранение с Original/source actions и поддерживаемыми lifecycle actions.
+В More доступны «Отложить», «Сделано» и «Меньше таких»; «Не сейчас» остаётся
+только у proactive reminder, где работает same-Item dismissal cooldown. Для
+нового focused nudge `REMINDER_SENT` и callbacks указывают на
 сохранение из `focus_item_id`; исторические focusless Reminder остаются
 валидными. Успешная доставка создаёт `REMINDER_SENT` в той же транзакции,
 которая фиксирует `SENT`; `Меньше таких` ссылается на этот Reminder.

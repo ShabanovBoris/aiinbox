@@ -479,25 +479,28 @@ def proactive_reminder_keyboard(
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def reminder_more_keyboard(reminder_id: int) -> InlineKeyboardMarkup:
+def reminder_more_keyboard(
+    reminder_id: int, *, dismiss_available: bool = True
+) -> InlineKeyboardMarkup:
     """Project existing PM-11 reactions into a read-only Reminder submenu."""
     # Callback identities remain the same so this UI projection cannot change
     # the durable feedback semantics owned by ReminderFeedbackService.
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text="⏰ Отложить", callback_data=f"reminder:later:{reminder_id}"
-                ),
-                InlineKeyboardButton(
-                    text="✅ Сделано", callback_data=f"reminder:done:{reminder_id}"
-                ),
-            ],
+    rows = [
+        [
+            InlineKeyboardButton(text="⏰ Отложить", callback_data=f"reminder:later:{reminder_id}"),
+            InlineKeyboardButton(text="✅ Сделано", callback_data=f"reminder:done:{reminder_id}"),
+        ],
+    ]
+    if dismiss_available:
+        rows.append(
             [
                 InlineKeyboardButton(
                     text="🙈 Не сейчас", callback_data=f"reminder:dismiss:{reminder_id}"
                 )
-            ],
+            ]
+        )
+    rows.extend(
+        [
             [
                 InlineKeyboardButton(
                     text="👎 Меньше таких", callback_data=f"reminder:less:{reminder_id}"
@@ -506,6 +509,7 @@ def reminder_more_keyboard(reminder_id: int) -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="← Назад", callback_data=f"reminder:back:{reminder_id}")],
         ]
     )
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def reminder_sources_keyboard(

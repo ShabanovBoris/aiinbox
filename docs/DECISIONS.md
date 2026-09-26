@@ -627,8 +627,10 @@ or the title alone. Ranking values stay in scheduling and Reminder attribution,
 not default Telegram copy. Hook templates are direct; source/original access
 stays primary and PM-11 reactions move into an ephemeral More menu. Generic
 motivation facts select a focus Item as specified by D-045; its user-facing copy
-uses that saved title and summary with the same source and lifecycle actions.
-Aggregate motivation text and template rotation are not part of new sends.
+uses that saved title and summary with the same source actions and supported
+lifecycle actions. The proactive-only dismissal cooldown is not exposed for
+motivation. Aggregate motivation text and template rotation are not part of new
+sends.
 
 Reason: the interruption should earn attention through the saved content or a
 truthful computed fact, not expose the machinery that selected it.
@@ -736,7 +738,9 @@ Every new motivation candidate resolves to one existing Item selected in PM-07
 order and stores that focus in the existing Reminder payload. The Reminder keeps
 `item_id=NULL` so its user-level claim identity is unchanged; reminder Events and
 callbacks resolve the payload focus. No focus means no send. Aggregate facts remain
-internal, and only the explicitly opened status screen shows scheduler counters.
+internal. Focused motivation exposes only lifecycle actions whose feedback rules
+apply to that Reminder type; the proactive-only dismissal cooldown is not offered.
+Only the explicitly opened status screen shows scheduler counters.
 
 Reason: returning the exact saved source lets the user recognize and act on what they
 shared, without requiring a new ranking, table, or user-visible analytics model.

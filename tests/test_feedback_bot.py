@@ -837,6 +837,41 @@ async def test_reminder_more_sources_and_back_are_owner_scoped_read_only_navigat
         assert await session.scalar(select(func.count(Event.id))) == 0
 
 
+async def test_focused_motivation_reminder_menu_omits_unsupported_dismiss_action(
+    settings, session_factory
+):
+    """Expose only feedback actions whose scheduler semantics apply to this reminder type."""
+    item_id = await _create_ready_item(session_factory)
+    async with session_factory() as session:
+        user = await session.scalar(select(User).where(User.telegram_user_id == 42))
+        reminder = Reminder(
+            user_id=user.id,
+            item_id=None,
+            type="MOTIVATION_NUDGE",
+            status="SENT",
+            scheduled_at=datetime(2026, 9, 20),
+            sent_at=datetime(2026, 9, 20),
+            payload_json={"focus_item_id": item_id},
+        )
+        session.add(reminder)
+        await session.commit()
+        reminder_id = reminder.id
+
+    message = FakeCallbackMessage(reply_markup="old-menu")
+    more = FakeCallback(42, f"reminder:more:{reminder_id}", "motivation-reminder-more")
+    more.message = message
+    await on_reminder_callback(more, settings, session_factory)
+
+    callbacks = set(_callback_data(message.reply_markup))
+    assert {
+        f"reminder:later:{reminder_id}",
+        f"reminder:done:{reminder_id}",
+        f"reminder:less:{reminder_id}",
+        f"reminder:back:{reminder_id}",
+    } <= callbacks
+    assert f"reminder:dismiss:{reminder_id}" not in callbacks
+
+
 async def test_primary_feedback_clicks_with_different_ids_remain_distinct(
     settings, session_factory
 ):

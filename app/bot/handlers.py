@@ -62,6 +62,7 @@ from app.services.feedback import (
     record_item_feedback,
 )
 from app.services.ingestion import ingest_media, ingest_message
+from app.services.motivation import MOTIVATION_NUDGE
 from app.services.notifications import (
     format_attention_settings,
     format_attention_status,
@@ -1134,7 +1135,9 @@ async def on_reminder_callback(
         if type(focus_source_id) is not int:
             focus_source_id = None
         if callback_action == "more":
-            keyboard = reminder_more_keyboard(reminder_id)
+            keyboard = reminder_more_keyboard(
+                reminder_id, dismiss_available=reminder.type != MOTIVATION_NUDGE
+            )
         elif callback_action == "sources":
             keyboard = reminder_sources_keyboard(
                 reminder_id, item, sources, focus_source_id=focus_source_id

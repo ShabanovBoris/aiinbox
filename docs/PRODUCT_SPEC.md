@@ -676,8 +676,10 @@ Generic intent хранится как Reminder с `item_id=NULL`. `scheduled_at
 Event хранит bounded snapshot отправки, а не source content. Delivery сохраняет
 текущую PM-08 at-least-once семантику при сбое между Telegram и SQLite.
 
-Proactive и focused motivation reminders используют keyboard выбранного
-сохранения: Original/source actions и PM-11 actions в More.
+Proactive и focused motivation используют Original и доступные source actions
+выбранного сохранения. В More для focused motivation доступны «Отложить»,
+«Сделано» и «Меньше таких». «Не сейчас» остаётся только у proactive Reminder,
+где его callback участвует в существующем same-Item cooldown.
 Reminder Done/Snooze фиксируют дополнительный
 outcome в транзакции с canonical lifecycle event; normal Item Done/Snooze не
 приписываются задним числом к напоминанию. Не наблюдаемый Telegram URL-click не
@@ -1079,8 +1081,8 @@ for Calm/Light/Normal/Active/Aggressive without changing AttentionRank scoring.
 Generic motivational reminders retain their caps and minimum gap; a second
 generic reminder may compete after four hours without requiring an intervening
 proactive reminder. Generic copy remains fact-based and LLM-free; each message
-uses its selected saved material and the same source and lifecycle actions as a
-proactive reminder. Reminder polling uses the independent
+uses its selected saved material and supported source/lifecycle actions; its
+More menu omits proactive-only dismissal. Reminder polling uses the independent
 `REMINDER_POLL_SECONDS` setting, defaulting to 30 seconds. No schema migration
 or dependency is introduced.
 
@@ -1105,10 +1107,10 @@ Every new `MOTIVATION_NUDGE` candidate has a concrete `focus_item_id` selected i
 existing PM-07 order. The id is stored in the existing Reminder payload while the
 Reminder retains its user-level `item_id=NULL` claim identity; Reminder Events
 resolve and record the focused Item. The message projects the saved title and
-persisted summary, and uses the same source/original and lifecycle controls as an
-Item-specific reminder. No eligible concrete save means no send. Historical
-`MOTIVATION_NUDGE` rows with no focus remain valid; no migration or new dependency
-is required. Motivation remains deterministic and LLM-free.
+persisted summary, with Original/source actions and lifecycle controls whose
+feedback rules apply to this reminder type. No eligible concrete save means no
+send. Historical `MOTIVATION_NUDGE` rows with no focus remain valid; no migration
+or new dependency is required. Motivation remains deterministic and LLM-free.
 
 Normal settings show translated names and intensity labels without scheduler budgets.
 The explicit read-only `📊 Статус` screen remains the sole surface for operational

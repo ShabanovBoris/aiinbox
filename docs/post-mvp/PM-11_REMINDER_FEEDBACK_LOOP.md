@@ -118,8 +118,10 @@ material's Original and available source actions, then a compact More menu:
 [••• Ещё]
 ~~~
 
-More contains the reminder lifecycle and feedback actions. Source actions and
-callbacks resolve through the saved focus for new motivation reminders.
+More contains lifecycle and feedback actions supported by that Reminder type.
+Focused motivation exposes Later, Done and Fewer like this; it omits Not now,
+whose current per-Item cooldown applies only to proactive reminders. Source
+actions and callbacks resolve through the saved focus for new motivation sends.
 
 ### Open
 
@@ -139,6 +141,9 @@ When bot-mediated:
 - apply existing DONE lifecycle transition.
 
 ### Not now
+
+This action is shown only on proactive Attention reminders, whose scheduler uses
+its dismissal cooldown.
 
 - record REMINDER_DISMISSED;
 - do not change Item state;
@@ -260,7 +265,6 @@ keeps PM-11 reactions in the reminder's More menu:
 
 ~~~text
 [⏰ Отложить] [✅ Сделано]
-[🙈 Не сейчас]
 [👎 Меньше таких]
 ~~~
 
