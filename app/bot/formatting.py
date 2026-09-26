@@ -208,7 +208,7 @@ def _failure_copy(error_code: str | None, source_type: SourceType) -> str:
         "INVALID_LLM_OUTPUT",
     }
     if error_code in llm_failures:
-        return "Источник сохранён, но AI-анализ не завершился."
+        return "Источник сохранён, но ИИ-анализ не завершился."
     if error_code == "TOO_LARGE":
         return "Файл слишком большой для обработки."
     if error_code == "UNSUPPORTED_SOURCE":

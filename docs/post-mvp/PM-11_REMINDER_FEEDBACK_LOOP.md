@@ -122,6 +122,8 @@ More contains lifecycle and feedback actions supported by that Reminder type.
 Focused motivation exposes Later, Done and Fewer like this; it omits Not now,
 whose current per-Item cooldown applies only to proactive reminders. Source
 actions and callbacks resolve through the saved focus for new motivation sends.
+A stale or crafted dismissal callback for motivation is rejected without an
+Event because that type has no dismissal cooldown.
 
 ### Open
 

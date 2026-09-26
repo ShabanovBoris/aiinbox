@@ -481,7 +481,7 @@ async def test_video_delivery_rejects_files_above_telegram_upload_limit(tmp_path
     assert await worker.process_one() is True
     assert bot.media_sends == []
     assert (
-        bot.messages[-1][1] == "Видео превышает лимит Telegram в 50 MB. Откройте исходную ссылку."
+        bot.messages[-1][1] == "Видео превышает лимит Telegram в 50 МБ. Откройте исходную ссылку."
     )
     async with session_factory() as session:
         delivery = await session.scalar(

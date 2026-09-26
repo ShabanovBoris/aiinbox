@@ -841,7 +841,7 @@ class DeliveryWorker:
             try:
                 error_code = exc.code if isinstance(exc, AppError) else None
                 if isinstance(exc, MediaTooLargeError):
-                    message = "Видео превышает лимит Telegram в 50 MB. Откройте исходную ссылку."
+                    message = "Видео превышает лимит Telegram в 50 МБ. Откройте исходную ссылку."
                 elif error_code == "TOO_LARGE":
                     message = "Видео превышает допустимую длительность. Откройте исходную ссылку."
                 elif error_code == "AUDIO_TOO_LARGE":

@@ -523,7 +523,7 @@ async def test_ask_handler_validates_and_deduplicates_telegram_message(settings,
     assert len(jobs) == 1
     assert jobs[0].status == "PENDING"
     assert jobs[0].question == "local Android models"
-    assert "Slash-команды тоже работают." in HELP_TEXT
+    assert "Команды с / тоже работают." in HELP_TEXT
 
 
 @pytest.mark.asyncio

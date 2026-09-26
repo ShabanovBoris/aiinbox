@@ -871,6 +871,20 @@ async def test_focused_motivation_reminder_menu_omits_unsupported_dismiss_action
     } <= callbacks
     assert f"reminder:dismiss:{reminder_id}" not in callbacks
 
+    # A stale or crafted callback cannot create feedback with no matching cooldown.
+    dismiss = FakeCallback(42, f"reminder:dismiss:{reminder_id}", "motivation-dismiss")
+    dismiss.message = message
+    await on_reminder_callback(dismiss, settings, session_factory)
+    assert dismiss.answers == ["Это напоминание сейчас недоступно"]
+    async with session_factory() as session:
+        event = await session.scalar(
+            select(Event).where(
+                Event.reminder_id == reminder_id,
+                Event.event_type == "REMINDER_DISMISSED",
+            )
+        )
+        assert event is None
+
 
 async def test_primary_feedback_clicks_with_different_ids_remain_distinct(
     settings, session_factory

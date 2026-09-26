@@ -158,7 +158,7 @@ async def test_help_is_compact_task_oriented_and_has_inline_menu(settings, monke
     assert "Найти" in sent[0]
     assert "Сегодня" in sent[0]
     assert "Настройки" in sent[0]
-    assert "Slash-команды тоже работают." in sent[0]
+    assert "Команды с / тоже работают." in sent[0]
     assert len(sent[0]) < 500
 
 

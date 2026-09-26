@@ -213,6 +213,9 @@ class ReminderFeedbackService:
             if reminder.status != "SENT":
                 await session.rollback()
                 return "UNAVAILABLE"
+            if action == "dismiss" and reminder.type != PROACTIVE_ATTENTION:
+                await session.rollback()
+                return "UNAVAILABLE"
 
             focus_item_id = reminder_focus_item_id(reminder)
             if action in {
