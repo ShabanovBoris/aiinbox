@@ -47,6 +47,21 @@ def _round_half_away_from_zero(value: float) -> int:
     return floor(value + 0.5) if value >= 0 else ceil(value - 0.5)
 
 
+def reminder_focus_item_id(reminder: Reminder) -> int | None:
+    """Resolve the saved Item behind both item reminders and focused motivation.
+
+    Older MOTIVATION_NUDGE rows intentionally have no focus and remain valid;
+    new sends keep their user-level claim key while carrying this identity in payload.
+    """
+    if type(reminder.item_id) is int:
+        return reminder.item_id
+    if reminder.type != MOTIVATION_NUDGE:
+        return None
+    payload = reminder.payload_json if isinstance(reminder.payload_json, dict) else {}
+    focus_item_id = payload.get("focus_item_id")
+    return focus_item_id if type(focus_item_id) is int and focus_item_id > 0 else None
+
+
 def reminder_event_snapshot(reminder: Reminder, *, source_id: int | None = None) -> dict:
     """Project only bounded delivery attribution into analytical Event payloads.
 
@@ -126,7 +141,7 @@ def record_reminder_event(
         event_time = reminder.sent_at if event_type == "REMINDER_SENT" else datetime.now(UTC)
     event = Event(
         user_id=reminder.user_id,
-        item_id=reminder.item_id,
+        item_id=reminder_focus_item_id(reminder),
         reminder_id=reminder.id,
         event_type=event_type,
         payload_json=reminder_event_snapshot(reminder, source_id=source_id),
@@ -198,8 +213,11 @@ class ReminderFeedbackService:
             if reminder.status != "SENT":
                 await session.rollback()
                 return "UNAVAILABLE"
+            if action == "dismiss" and reminder.type != PROACTIVE_ATTENTION:
+                await session.rollback()
+                return "UNAVAILABLE"
 
-            item_action_types = {"PROACTIVE_ATTENTION"}
+            focus_item_id = reminder_focus_item_id(reminder)
             if action in {
                 "done",
                 "snooze",
@@ -209,7 +227,14 @@ class ReminderFeedbackService:
                 "later",
                 "cancel",
             }:
-                if reminder.type not in item_action_types or reminder.item_id is None:
+                if (
+                    reminder.type not in {PROACTIVE_ATTENTION, MOTIVATION_NUDGE}
+                    or focus_item_id is None
+                ):
+                    await session.rollback()
+                    return "UNAVAILABLE"
+                focus_item = await session.get(Item, focus_item_id)
+                if focus_item is None or focus_item.user_id != user_id:
                     await session.rollback()
                     return "UNAVAILABLE"
             elif action == "ok" and reminder.type != MOTIVATION_NUDGE:
@@ -256,10 +281,7 @@ class ReminderFeedbackService:
                     return "ALREADY_RECORDED"
 
             if action in {"done", "snooze"}:
-                item = await session.get(Item, reminder.item_id)
-                if item is None:
-                    await session.rollback()
-                    return "UNAVAILABLE"
+                item = await session.get(Item, focus_item_id)
                 if action == "done" and item.state is ItemState.DONE:
                     await session.commit()
                     return "ALREADY_DONE"
@@ -275,7 +297,7 @@ class ReminderFeedbackService:
                 item, transitioned = await _apply_item_action_in_session(
                     session,
                     user_id,
-                    reminder.item_id,
+                    focus_item_id,
                     action,
                     snoozed_until=snoozed_until,
                 )
@@ -293,7 +315,7 @@ class ReminderFeedbackService:
                 from app.services.delivery import enqueue_item_video_delivery_in_session
 
                 delivery_status = await enqueue_item_video_delivery_in_session(
-                    session, user_id, reminder.item_id, source_id
+                    session, user_id, focus_item_id, source_id
                 )
                 if delivery_status is None:
                     await session.rollback()
@@ -331,7 +353,7 @@ class ReminderFeedbackService:
     async def item_reminder_projection(
         self, telegram_user_id: int, reminder_id: int
     ) -> tuple[Reminder, Item, list[ItemSource], bool] | None:
-        """Load an owned SENT Item reminder for read-only menu navigation projections."""
+        """Load an owned SENT reminder's concrete focus for source/action projections."""
         if self.session_factory is None:
             raise RuntimeError("Reminder callbacks require a session factory")
         async with self.session_factory() as session:
@@ -341,17 +363,19 @@ class ReminderFeedbackService:
                 .where(
                     Reminder.id == reminder_id,
                     User.telegram_user_id == telegram_user_id,
-                    Reminder.type == PROACTIVE_ATTENTION,
+                    Reminder.type.in_((PROACTIVE_ATTENTION, MOTIVATION_NUDGE)),
                     Reminder.status == "SENT",
-                    Reminder.item_id.is_not(None),
                 )
             )
             projection = row.one_or_none()
             if projection is None:
                 return None
             reminder, chat_id = projection
-            item = await session.get(Item, reminder.item_id)
-            if item is None:
+            focus_item_id = reminder_focus_item_id(reminder)
+            if focus_item_id is None:
+                return None
+            item = await session.get(Item, focus_item_id)
+            if item is None or item.user_id != reminder.user_id:
                 return None
             sources = list(
                 (

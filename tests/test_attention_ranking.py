@@ -656,7 +656,7 @@ async def test_repeated_attention_suppresses_successfully_shown_items(
     first_shown = {event.item_id for event in await _get_attention_events(session_factory)}
     await on_attention(_message(42), settings, session_factory, "3")
     events = await _get_attention_events(session_factory)
-    cards = [text for text in sent if "/3 —" in text]
+    cards = [text for text in sent if text.startswith("🎯 Card")]
     second_shown = {event.item_id for event in events} - first_shown
 
     assert len(cards) == 6
@@ -673,8 +673,13 @@ async def test_failed_telegram_card_does_not_record_its_exposure(
         await _create_item(session_factory, user_id, title=f"Card {index}") for index in range(3)
     ]
 
+    cards_sent = 0
+
     async def answer(self, text, **kwargs):
-        if text.startswith("2/3 —"):
+        nonlocal cards_sent
+        if text.startswith("🎯 Card"):
+            cards_sent += 1
+        if cards_sent == 2:
             raise RuntimeError("Telegram send failed")
 
     monkeypatch.setattr(Message, "answer", answer)
@@ -742,7 +747,7 @@ async def test_empty_attention_result_has_no_exposure_event(settings, session_fa
     monkeypatch.setattr(Message, "answer", answer)
     await on_attention(_message(42), settings, session_factory, "3")
 
-    assert sent[-1] == "Сейчас нет подходящих Items."
+    assert sent[-1] == "Пока нечего вернуть в фокус."
     assert await _get_attention_events(session_factory) == []
 
 

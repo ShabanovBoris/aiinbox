@@ -751,8 +751,9 @@ def test_weekly_formatter_omits_empty_sections_and_bounds_dynamic_labels():
         reminder_outcomes=None,
         recommendations=(),
     )
-    assert "недостаточно данных" in format_weekly_review(empty).lower()
-    assert "Attention:" not in format_weekly_review(empty)
+    assert (
+        format_weekly_review(empty) == "📌 На этой неделе пока нечего отдельно возвращать в фокус."
+    )
 
     populated = WeeklyReview(
         flow=WeeklyFlow(1, 0, 0, 1),
@@ -770,13 +771,16 @@ def test_weekly_formatter_omits_empty_sections_and_bounds_dynamic_labels():
     )
     text = format_weekly_review(populated)
     assert len(text) <= 4096
-    assert "Добавлено: 1" in text
-    assert "На следующую неделю:" in text
-    assert "Attention:" in text
-    assert "Чаще добавлял:" in text
-    assert "Проверить актуальность:" in text
-    assert "Готово: 0" not in text
-    assert "открыто 0" not in text
+    assert "📌 Вернуться на этой неделе" in text
+    assert "• T" in text
+    assert "• Q" in text
+    assert "• R" in text
+    assert "Короткий следующий шаг. ≈ 20 минут" in text
+    assert "Проверить, ещё актуален ли он." in text
+    assert not any(
+        term in text
+        for term in ("Добавлено:", "Backlog", "actionable", "Attention:", "Активных", "1.", "2.")
+    )
 
 
 class _Message:
@@ -813,9 +817,10 @@ async def test_weekly_handler_sends_one_message_and_falls_back_from_invalid_user
     await on_weekly(message, settings, session_factory)
 
     assert len(message.responses) == 1
-    assert "Неделя" in message.responses[0]
-    assert "Активных actionable: 2" in message.responses[0]
-    assert "Быстрый шаг: Quick step" in message.responses[0]
+    assert "📌 Вернуться на этой неделе" in message.responses[0]
+    assert "• Quick step" in message.responses[0]
+    assert "Короткий следующий шаг." in message.responses[0]
+    assert "Активных actionable" not in message.responses[0]
     buttons = [button for row in message.reply_markups[0].inline_keyboard for button in row]
     assert [button.callback_data for button in buttons] == [f"item:view:{quick_win_id}"]
     assert [button.text for button in buttons] == ["Quick step"]

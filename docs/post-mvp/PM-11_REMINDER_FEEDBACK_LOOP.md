@@ -75,35 +75,16 @@ User chose “Fewer like this”.
 
 It does not automatically archive the Item.
 
-## 3. Current schema issue
+## 3. Current event identity
 
-Current Event rows require item_id.
+`events.item_id` and `events.reminder_id` are nullable, with a constraint that
+at least one reference is present. Reminder outcome Events carry
+`reminder_id`; Item-specific reminders also carry `item_id`.
 
-Generic MOTIVATION_NUDGE reminders have no Item.
-
-PM-11 therefore requires a schema migration.
-
-Recommended Event evolution:
-
-~~~text
-item_id     nullable
-reminder_id nullable FK -> reminders.id
-~~~
-
-Constraint:
-
-~~~text
-item_id IS NOT NULL OR reminder_id IS NOT NULL
-~~~
-
-For an Item reminder event:
-- set both item_id and reminder_id.
-
-For generic nudge event:
-- item_id may be NULL;
-- reminder_id is required.
-
-Existing events remain valid.
+`MOTIVATION_NUDGE` keeps `Reminder.item_id=NULL` as its user-level claim key.
+New focused motivation sends resolve `focus_item_id` from the Reminder payload
+and record that Item on their Reminder Events. Historical focusless motivation
+Events remain valid with only `reminder_id`; they are not backfilled.
 
 ## 4. Event payload
 
@@ -128,17 +109,21 @@ Do not copy full source content.
 
 ## 5. Telegram actions
 
-Item reminder should expose a minimal set:
+Item-specific proactive and focused motivation reminders expose the saved
+material's Original and available source actions, then a compact More menu:
 
 ~~~text
-[Открыть]
-[Позже]
-[Готово]
-[Не сейчас]
-[Меньше таких]
+[↩️ Оригинал]
+[source actions]
+[••• Ещё]
 ~~~
 
-Archive may remain accessible through existing Item UI, but do not overload the reminder keyboard.
+More contains lifecycle and feedback actions supported by that Reminder type.
+Focused motivation exposes Later, Done and Fewer like this; it omits Not now,
+whose current per-Item cooldown applies only to proactive reminders. Source
+actions and callbacks resolve through the saved focus for new motivation sends.
+A stale or crafted dismissal callback for motivation is rejected without an
+Event because that type has no dismissal cooldown.
 
 ### Open
 
@@ -158,6 +143,9 @@ When bot-mediated:
 - apply existing DONE lifecycle transition.
 
 ### Not now
+
+This action is shown only on proactive Attention reminders, whose scheduler uses
+its dismissal cooldown.
 
 - record REMINDER_DISMISSED;
 - do not change Item state;
@@ -274,17 +262,16 @@ REMINDER_DISLIKED may cause next-ranked candidate to win.
 
 ## 13. PM-10 generic nudge feedback
 
-Generic nudge can expose:
+Focused generic motivation shows its saved material with source actions and
+keeps PM-11 reactions in the reminder's More menu:
 
 ~~~text
-[Ок]
-[Меньше таких]
+[⏰ Отложить] [✅ Сделано]
+[👎 Меньше таких]
 ~~~
 
-Optional “Ок” need not generate a positive event in v1.
-
 “Mеньше таких”:
-- records REMINDER_DISLIKED with reminder_id and no item_id;
+- records REMINDER_DISLIKED with reminder_id and the focus item_id when present;
 - suppresses generic nudges for a fixed period, initial 7 days, or disables only the current nudge kind.
 
 Recommended v1:
@@ -313,7 +300,8 @@ No dashboard required.
 - item_id nullable;
 - reminder_id FK;
 - at least one reference constraint;
-- generic nudge event valid.
+- focused generic nudge event stores its focus item_id;
+- historical focusless generic nudge event remains valid with reminder_id alone.
 
 ### Actions
 
@@ -339,7 +327,8 @@ No dashboard required.
 
 ### Generic nudges
 
-- disliked nudge works with item_id NULL;
+- focused disliked nudge retains its item_id and reminder_id attribution;
+- historical focusless disliked nudge remains valid with reminder_id alone;
 - same nudge kind suppression works.
 
 ## 16. Acceptance criteria

@@ -62,6 +62,7 @@ from app.services.feedback import (
     record_item_feedback,
 )
 from app.services.ingestion import ingest_media, ingest_message
+from app.services.motivation import MOTIVATION_NUDGE
 from app.services.notifications import (
     format_attention_settings,
     format_attention_status,
@@ -92,10 +93,10 @@ log = logging.getLogger(__name__)
 # ❌ Удалена старая HELP_TEXT-командная простыня: основные действия теперь видны в inline-меню.
 HELP_TEXT = (
     "Просто отправь\n"
-    "• текст, ссылку, видео, документ или forward\n\n"
+    "• текст, ссылку, видео, документ или пересланное сообщение\n\n"
     "Найти\n"
     "• 🔎 Поиск по словам в сохранённом\n"
-    "• 🧠 Ask отвечает по найденным сохранённым материалам\n\n"
+    "• 🧠 Спросить — ответ по найденным сохранённым материалам\n\n"
     "Вернуться\n"
     "• 🎯 Сегодня\n"
     "• ✨ Внимание\n"
@@ -104,9 +105,9 @@ HELP_TEXT = (
     "• 👤 Профиль\n"
     "• ⚙️ Настройки\n"
     "\nЭкспорт\n"
-    "• Компактный — Items, источники, профиль и история\n"
+    "• Компактный — сохранённое, источники, профиль и история\n"
     "• Полный — дополнительно тексты и транскрипты\n\n"
-    "Slash-команды тоже работают."
+    "Команды с / тоже работают."
 )
 
 
@@ -122,7 +123,7 @@ class GuidedInput(StatesGroup):
 
 
 _ASK_PROMPT = (
-    "🧠 Ask отвечает по найденным сохранённым материалам.\n\n"
+    "🧠 Ответ по найденным сохранённым материалам.\n\n"
     "Напиши вопрос одним сообщением. Например: «Что я сохранял про Kotlin?»"
 )
 _SEARCH_PROMPT = (
@@ -335,11 +336,11 @@ async def on_settings_edit_callback(
     choices = {
         "settings:edit:timezone": (
             GuidedInput.settings_timezone,
-            "🌍 Часовой пояс\nОтправь IANA timezone, например Europe/Moscow.",
+            "🌍 Часовой пояс\nОтправь его название, например Europe/Moscow.",
         ),
         "settings:edit:digest_time": (
             GuidedInput.settings_digest_time,
-            "🕘 Время digest\nОтправь время в формате HH:MM, например 09:00.",
+            "🕘 Время подборки\nОтправь время в формате HH:MM, например 09:00.",
         ),
         "settings:edit:quiet_hours": (
             GuidedInput.settings_quiet_hours,
@@ -879,10 +880,10 @@ async def on_item_callback(
     try:
         item_id = int(raw_item_id)
     except ValueError:
-        await callback.answer("Некорректный Item")
+        await callback.answer("Некорректное сохранение")
         return
     if item_id < 1:
-        await callback.answer("Некорректный Item")
+        await callback.answer("Некорректное сохранение")
         return
     current_chat_id = getattr(getattr(callback.message, "chat", None), "id", None)
 
@@ -897,7 +898,7 @@ async def on_item_callback(
             current_chat_id=current_chat_id,
         )
         if target is None:
-            await callback.answer("Item недоступен")
+            await callback.answer("Сохранение недоступно")
             return
         try:
             await callback.bot.copy_message(
@@ -915,7 +916,7 @@ async def on_item_callback(
                 current_chat_id=current_chat_id,
             )
             if projection is None:
-                await callback.answer("Item недоступен")
+                await callback.answer("Сохранение недоступно")
                 return
             item, sources, _ = projection
             source_markup = item_sources_keyboard(item, sources)
@@ -938,7 +939,7 @@ async def on_item_callback(
             await callback.answer("Некорректное действие")
             return
         if action == "view" and current_chat_id is None:
-            await callback.answer("Item недоступен")
+            await callback.answer("Сохранение недоступно")
             return
         projection = await _load_item_ui_projection(
             session_factory,
@@ -947,7 +948,7 @@ async def on_item_callback(
             current_chat_id=current_chat_id if action == "view" else None,
         )
         if projection is None:
-            await callback.answer("Item недоступен")
+            await callback.answer("Сохранение недоступно")
             return
         item, sources, original_available = projection
         if action == "view":
@@ -973,7 +974,7 @@ async def on_item_callback(
                 ItemState.ACTIVE,
                 ItemState.SNOOZED,
             }:
-                await callback.answer("Item недоступен")
+                await callback.answer("Сохранение недоступно")
                 return
             await _edit_reply_markup_if_changed(callback.message, item_interest_keyboard(item))
         elif action == "details":
@@ -995,7 +996,7 @@ async def on_item_callback(
             elif item.processing_status is ProcessingStatus.FAILED:
                 text = format_item_failure(item, sources)
             else:
-                text = "Item пока обрабатывается."
+                text = "Сохранение пока обрабатывается."
             await _edit_item_message_if_changed(
                 callback.message,
                 text,
@@ -1045,14 +1046,14 @@ async def on_item_callback(
             current_chat_id=current_chat_id,
         )
         if projection is None or projection[0].processing_status is not ProcessingStatus.READY:
-            await callback.answer("Item недоступен")
+            await callback.answer("Сохранение недоступно")
             return
         if projection[0].state not in {ItemState.ACTIVE, ItemState.SNOOZED}:
-            await callback.answer("Item недоступен")
+            await callback.answer("Сохранение недоступно")
             return
         result = await set_item_interest(session_factory, user.id, item_id, level)
         if result is None:
-            await callback.answer("Item недоступен")
+            await callback.answer("Сохранение недоступно")
             return
         item, changed = result
         # ❌ Удалён возврат к полной карточке после смены интереса: submenu сохраняет
@@ -1093,7 +1094,7 @@ async def on_item_callback(
         session_factory, user.id, item_id, action_name, snoozed_until=snoozed_until
     )
     if item is None:
-        await callback.answer("Item не найден")
+        await callback.answer("Сохранение не найдено")
         return
     # ❌ Удален label lookup только по requested action: при concurrent CAS он
     # мог подтверждать проигравшее действие вместо persisted результата.
@@ -1134,7 +1135,9 @@ async def on_reminder_callback(
         if type(focus_source_id) is not int:
             focus_source_id = None
         if callback_action == "more":
-            keyboard = reminder_more_keyboard(reminder_id)
+            keyboard = reminder_more_keyboard(
+                reminder_id, dismiss_available=reminder.type != MOTIVATION_NUDGE
+            )
         elif callback_action == "sources":
             keyboard = reminder_sources_keyboard(
                 reminder_id, item, sources, focus_source_id=focus_source_id
@@ -1269,14 +1272,14 @@ async def on_reminder_callback(
     if result == "APPLIED" and action == "ok":
         if callback.message:
             await _edit_reply_markup_if_changed(callback.message, None)
-        await callback.answer("Ок")
+        await callback.answer("Хорошо")
         return
     if result == "APPLIED":
         if action in {"done", "snooze", "dismiss", "dislike"} and callback.message:
             await _edit_reply_markup_if_changed(callback.message, None)
         answers = {
-            "done": "Готово",
-            "snooze": "Отложил",
+            "done": "Сделано",
+            "snooze": "Отложено",
             "dismiss": "Учту время",
             "dislike": "Записал — буду показывать меньше похожих",
         }
@@ -1291,7 +1294,7 @@ async def on_reminder_callback(
     if result == "ALREADY_DONE":
         if callback.message:
             await _edit_reply_markup_if_changed(callback.message, None)
-        await callback.answer("Уже готово")
+        await callback.answer("Уже сделано")
         return
     if result == "ALREADY_RECORDED":
         if callback.message:
@@ -1422,10 +1425,10 @@ async def on_feedback_callback(
     try:
         item_id = int(raw_item_id)
     except ValueError:
-        await callback.answer("Некорректный Item")
+        await callback.answer("Некорректное сохранение")
         return
     if item_id < 1:
-        await callback.answer("Некорректный Item")
+        await callback.answer("Некорректное сохранение")
         return
 
     if action in {"menu", "category_menu", "type_menu", "back"}:
@@ -1444,7 +1447,7 @@ async def on_feedback_callback(
             session_factory, callback.from_user.id, item_id
         )
         if projection is None:
-            await callback.answer("Item недоступен")
+            await callback.answer("Сохранение недоступно")
             return
         item, sources = projection
         if action == "menu":
@@ -1500,7 +1503,7 @@ async def on_feedback_callback(
             idempotency_key=idempotency_key,
         )
         if item is None:
-            await callback.answer("Item недоступен")
+            await callback.answer("Сохранение недоступно")
             return
         if action in {"useful", "not_interesting"}:
             confirmations = {
@@ -1518,9 +1521,9 @@ async def on_feedback_callback(
                 callback.message, feedback_menu_keyboard(current_item.id)
             )
         confirmations = {
-            "priority_higher": "Записал сигнал о приоритете",
-            "priority_lower": "Записал сигнал о приоритете",
-            "summary_wrong": "Отметил summary как неверный",
+            "priority_higher": "Учту пожелание",
+            "priority_lower": "Учту пожелание",
+            "summary_wrong": "Отметил сводку как неточную",
         }
         await callback.answer(confirmations[action])
         return
@@ -1549,7 +1552,7 @@ async def on_feedback_callback(
                 session_factory, callback.from_user.id, item_id
             )
             await callback.answer(
-                "Категория больше недоступна" if current is not None else "Item недоступен"
+                "Категория больше недоступна" if current is not None else "Сохранение недоступно"
             )
             return
         _updated_item, changed = result
@@ -1585,7 +1588,7 @@ async def on_feedback_callback(
             await callback.answer("Некорректный тип")
             return
         if result is None:
-            await callback.answer("Item недоступен")
+            await callback.answer("Сохранение недоступно")
             return
         _updated_item, changed = result
         current = await _load_ready_feedback_projection(
@@ -1620,7 +1623,7 @@ def _item_action_label(item: Item, action_name: str) -> str:
     }.get(action_name)
     if item.state is expected_state:
         return {
-            "done": "Готово ✅",
+            "done": "Сделано ✅",
             "archive": "В архиве 🗄",
             "snooze": "Отложено ⏰",
             "cancel_snooze": "Отложенное действие отменено",
@@ -1628,7 +1631,7 @@ def _item_action_label(item: Item, action_name: str) -> str:
     return {
         ItemState.ACTIVE: "Активно",
         ItemState.SNOOZED: "Отложено ⏰",
-        ItemState.DONE: "Готово ✅",
+        ItemState.DONE: "Сделано ✅",
         ItemState.ARCHIVED: "В архиве 🗄",
     }[item.state]
 
@@ -2045,7 +2048,7 @@ async def _send_attention_for_actor(
         await session.commit()
 
     if not ranked:
-        await send("Сейчас нет подходящих Items.")
+        await send("Пока нечего вернуть в фокус.")
         return
 
     await send("🎯 Сейчас заслуживает внимания:")
@@ -2115,9 +2118,7 @@ async def _send_inbox_for_actor(
         back_label="← Меню",
     )
     await send(
-        format_item_list(
-            list(item_page.items), f"📥 Inbox · {item_page.page + 1}", sources_by_item
-        ),
+        format_item_list(list(item_page.items), "📥 Сохранённое", sources_by_item),
         reply_markup=keyboard,
     )
 
@@ -2226,7 +2227,7 @@ async def _send_category_items_for_actor(
     await send(
         format_item_list(
             list(item_page.items),
-            f"Категория: {category} · {item_page.page + 1}",
+            f"Категория: {category}",
             sources_by_item,
         ),
         reply_markup=keyboard,

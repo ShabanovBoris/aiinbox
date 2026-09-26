@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
+from app.services.reminder_feedback import MOTIVATION_NUDGE, reminder_focus_item_id
 from app.storage.models import Item, Reminder, User
 
 PROACTIVE_ATTENTION = "PROACTIVE_ATTENTION"
@@ -59,32 +60,36 @@ async def reminder_original_target(
     *,
     current_chat_id: int | None,
 ) -> OriginalMessageTarget | None:
-    """Resolve the Item behind one owned, sent proactive Reminder before copying it."""
+    """Resolve the saved focus behind a sent reminder before Telegram copies it."""
     if type(reminder_id) is not int or reminder_id < 1 or current_chat_id is None:
         return None
     async with session_factory() as session:
         row = (
             await session.execute(
-                select(Item.id, Item.telegram_message_id, User.telegram_chat_id)
-                .join(Reminder, Reminder.item_id == Item.id)
+                select(Reminder, User.telegram_chat_id)
                 .join(User, User.id == Reminder.user_id)
                 .where(
                     Reminder.id == reminder_id,
-                    Reminder.type == PROACTIVE_ATTENTION,
+                    Reminder.type.in_((PROACTIVE_ATTENTION, MOTIVATION_NUDGE)),
                     Reminder.status == "SENT",
-                    Reminder.user_id == Item.user_id,
                     User.telegram_user_id == telegram_user_id,
                 )
             )
         ).one_or_none()
         if row is None:
             return None
-        stored_chat_id = row.telegram_chat_id
-        message_id = row.telegram_message_id
+        reminder, stored_chat_id = row
+        focus_item_id = reminder_focus_item_id(reminder)
+        if focus_item_id is None:
+            return None
+        item = await session.get(Item, focus_item_id)
+        if item is None or item.user_id != reminder.user_id:
+            return None
+        message_id = item.telegram_message_id
         if stored_chat_id is None or message_id is None or stored_chat_id != current_chat_id:
             return None
         return OriginalMessageTarget(
-            item_id=row.id,
+            item_id=item.id,
             source_chat_id=stored_chat_id,
             destination_chat_id=current_chat_id,
             message_id=message_id,

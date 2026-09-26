@@ -1,6 +1,6 @@
 # POLISH-07 — Консистентные взаимодействия и калибровка Attention
 
-Статус: IN_REVIEW
+Статус: DONE (PR #53 merged)
 
 ## Цель
 
@@ -65,6 +65,6 @@
 - `git diff --check` — passed.
 - Новых зависимостей и runtime PM-14 нет.
 
-Базовый `main`: `42e34692fc37b4114d4e4384befc87b86793e37c`. PR #53 открыт из
-`codex/polish-07-system-integrity`; GitHub хранит точный HEAD, который должен
-получить `APPROVED` в обоих запрошенных review-разговорах.
+Базовый `main` на момент разработки: `42e34692fc37b4114d4e4384befc87b86793e37c`.
+POLISH-07 завершён и вошёл в `main` через PR #53; POLISH-08 — отдельный текущий
+review gate, описанный в `POLISH-08_HUMAN_REMINDERS.md` и `README.md`.

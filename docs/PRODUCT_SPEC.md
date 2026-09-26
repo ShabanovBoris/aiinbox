@@ -446,9 +446,9 @@ Items и подавление недавно показанных Items. Каж�
 записывается `ATTENTION_SHOWN`; автоматических сообщений команда не планирует.
 `/today` и daily digest остаются основаны на `priority_score`.
 
-Ручные карточки `/attention` показывают позицию, title и ограниченный preview
-сохранённого summary. Attention/priority score, интерес, возраст и ranking reason
-не выводятся в карточке. Обычные source actions остаются доступны через компактную
+Ручные карточки `/attention` показывают title и ограниченный preview сохранённой
+сводки без позиции в списке. Attention/priority score, интерес, возраст и ranking
+reason не выводятся в карточке. Обычные source actions остаются доступны через компактную
 клавиатуру Item; `ATTENTION_SHOWN` по-прежнему записывается только после успешной
 отправки каждой карточки.
 
@@ -463,8 +463,13 @@ On-demand read-only обзор последних семи локальных к
 Категории завершённых и созданных Items читаются из текущего `Item.category`,
 поскольку исторический снимок категории на каждом lifecycle Event не хранится.
 Attention outcome counts берутся только из PM-11 Events, связанных с
-`PROACTIVE_ATTENTION` Reminder, и показываются как сырые факты без процентов и
-оценки эффективности. Рекомендации используют текущий PM-07 ranking.
+`PROACTIVE_ATTENTION` Reminder. Эти агрегаты остаются внутренней частью read model;
+Telegram-проекция показывает только до трёх concrete recommendations. Возврат к
+старому важному материалу и quick win используют упорядоченный список кандидатов
+PM-07; cleanup review выбирается отдельным детерминированным запросом по старым
+активным материалам с низким приоритетом и низким интересом. Поэтому cleanup
+recommendation может быть вне списка actionable-кандидатов PM-07. При отсутствии
+рекомендаций показывается нейтральное empty state независимо от aggregate activity.
 
 PM-12 v1 не пишет Item/Event/Reminder, не меняет профиль или settings, не
 записывает `TODAY_SHOWN`, `ATTENTION_SHOWN` или `WEEKLY_SHOWN`, не сохраняет
@@ -577,18 +582,21 @@ receipt выполняются в одной транзакции. Распоз�
 
 PM-11 reminder Events (`REMINDER_SENT`, `REMINDER_OPENED`, `REMINDER_SNOOZED`,
 `REMINDER_DONE`, `REMINDER_DISMISSED`, `REMINDER_DISLIKED`) ссылаются на
-конкретный `reminder_id`; Item-specific события также сохраняют `item_id`, а
-generic nudge может иметь только Reminder. Normal `DONE`, `SNOOZED`, `ARCHIVED`
-и PM-05 feedback не выводятся из reminder reactions и остаются отдельными
-сигналами. Для успешной доставки `REMINDER_SENT` фиксируется в той же
-транзакции, что и `Reminder.SENT`; исторические SENT rows не backfill-ятся.
+конкретный `reminder_id`; события к конкретному материалу также сохраняют
+`item_id`. `MOTIVATION_NUDGE` оставляет `Reminder.item_id=NULL` как ключ
+пользовательского claim, но новые focused reminders записывают выбранный `item_id`
+в Reminder Events. Исторические reminders без focus остаются только с `reminder_id`.
+Обычные `DONE`, `SNOOZED`, `ARCHIVED` и PM-05 feedback не выводятся из reminder
+reactions и остаются отдельными сигналами. Для успешной доставки `REMINDER_SENT`
+фиксируется в той же транзакции, что и `Reminder.SENT`; исторические SENT rows не
+backfill-ятся.
 
 ## 50. reminders
 
 `reminders` хранит daily digest, snooze, PM-08 proactive scheduling и PM-10
 user-level motivation claims. `MOTIVATION_NUDGE` использует `item_id=NULL` и
-отдельную уникальность локального дневного слота. Events могут независимо
-указывать Item и Reminder, но хотя бы одна ссылка обязательна; один Reminder
+отдельную уникальность локального дневного слота; новый focus хранится в payload.
+Events могут независимо указывать Item и Reminder, но хотя бы одна ссылка обязательна; один Reminder
 может иметь не более одного Event каждого PM-11 типа.
 `deliveries` — отдельный durable outbox для READY/FAILED/profile notifications,
 Ask outcomes, export-файлов и других явных Telegram delivery.
@@ -596,7 +604,11 @@ Ask outcomes, export-файлов и других явных Telegram delivery.
 ## 51. Daily digest
 
 Настройки: enabled, local time, quiet hours + user timezone.
-Digest создаётся не чаще одного раза за локальный день и использует TodayService.
+Подборка создаётся не чаще одного раза за локальный день и использует TodayService.
+Ручной `/today` и scheduled daily используют один object-centric formatter; меняется
+только заголовок. Пользователь видит названия конкретных сохранений, next action или
+короткую сводку и оценку времени при её наличии. Номера позиций, priority score и
+aggregate counters в тексте не показываются.
 
 ## 52. Snooze
 
@@ -633,11 +645,14 @@ overflow открывается в `Источники`, а реакции PM-11
 Навигация меню не создаёт Events и не меняет Item/Reminder. Наблюдаемость
 Original и video resend, а также необозримость прямых URL-click сохраняются.
 
-PM-10 вычисляет только детерминированные факты из actionable Items и lifecycle
-Events; motivational copy — поддерживаемые русские шаблоны без LLM, профиля,
-source content или `ATTENTION_HOOK`. Набор фактов охватывает старые важные и
-интересные Items, quick wins, дневную разницу новых/разрешённых Items, текущую
-DONE-серию и последние семь локальных календарных дней. Календарные границы
+PM-10 вычисляет только детерминированные факты из подходящих сохранений и
+lifecycle Events. Эти факты остаются внутренними сигналами; каждое новое
+sendable мотивационное напоминание связано с одним сохранением, выбранным в
+существующем PM-07 порядке. Telegram показывает его название и сохранённую сводку,
+а не агрегатную мотивационную фразу. Текст не использует LLM, профиль, исходное
+содержимое или `ATTENTION_HOOK`. Факты охватывают старые важные и интересные
+сохранения, короткие задачи, дневную разницу новых/разрешённых записей, текущую
+серию завершений и последние семь локальных календарных дней. Календарные границы
 используют `User.timezone` и IANA timezone, включая DST.
 
 `generic_motivation_enabled` независимо выключает generic нуджи, сохраняя
@@ -664,8 +679,10 @@ Generic intent хранится как Reminder с `item_id=NULL`. `scheduled_at
 Event хранит bounded snapshot отправки, а не source content. Delivery сохраняет
 текущую PM-08 at-least-once семантику при сбое между Telegram и SQLite.
 
-Proactive reminder позволяет Done, Later, Not now и Fewer like this через More;
-generic nudge открывает три материала Attention и сохраняет Fewer like this.
+Proactive и focused motivation используют Original и доступные source actions
+выбранного сохранения. В More для focused motivation доступны «Отложить»,
+«Сделано» и «Меньше таких». «Не сейчас» остаётся только у proactive Reminder,
+где его callback участвует в существующем same-Item cooldown.
 Reminder Done/Snooze фиксируют дополнительный
 outcome в транзакции с canonical lifecycle event; normal Item Done/Snooze не
 приписываются задним числом к напоминанию. Не наблюдаемый Telegram URL-click не
@@ -789,10 +806,12 @@ Ingestion отвечает быстро. Длинная работа идёт в
 
 ## 70. Telegram Item presentation
 
-По умолчанию READY result показывает сохранённое подтверждение, title и
-outcome-first summary. Существенное ограничение полноты анализа остаётся коротким
-предупреждением; category, type, priority, interest, next action и priority reason
-показываются только через `ℹ️ Детали`.
+По умолчанию результат показывает подтверждение сохранения, title и summary.
+Существенное ограничение полноты анализа остаётся коротким предупреждением;
+category, локализованный type, interest и next action доступны через `ℹ️ Детали`.
+На экране деталей также может отображаться локализованный охват анализа; внутренние
+значения completeness enum не показываются.
+Числовой priority score и ranking reason в обычной Telegram-карточке не показываются.
 
 Первичная inline-клавиатура отдаёт приоритет возврату к содержимому: кнопки
 открытия и повторной отправки источника и `••• Ещё`. Жизненный цикл Item, уровень интереса,
@@ -1064,7 +1083,40 @@ Attention intensity changes candidate eligibility thresholds to 60/60/60/55/50
 for Calm/Light/Normal/Active/Aggressive without changing AttentionRank scoring.
 Generic motivational reminders retain their caps and minimum gap; a second
 generic reminder may compete after four hours without requiring an intervening
-proactive reminder. Generic copy remains fact-based and LLM-free, and its
-`🎯 Показать` action opens three Attention items. Reminder polling uses the
-independent `REMINDER_POLL_SECONDS` setting, defaulting to 30 seconds. No schema
-migration or dependency is introduced.
+proactive reminder. Generic copy remains fact-based and LLM-free; each message
+uses its selected saved material and supported source/lifecycle actions; its
+More menu omits proactive-only dismissal. Reminder polling uses the independent
+`REMINDER_POLL_SECONDS` setting, defaulting to 30 seconds. No schema migration
+or dependency is introduced.
+
+## 104. POLISH-08 — Human-facing reminders and Russian object-centric UX
+
+Ordinary Telegram copy uses Russian product vocabulary: сохранение/материал,
+`✅ Сделано`, `⏰ Отложить`, `🗄 В архив`, `🔄 Повторить`, `📥 Сохранённое`,
+`🧠 Спросить`, `✨ Внимание`, `Ежедневная подборка`, and `Дополнительные напоминания`.
+Internal Python/SQLite identifiers and event types remain unchanged.
+
+`/today` and scheduled daily share one formatter. Their messages contain concrete
+titles and, when available, a saved next action or bounded summary; a known duration
+may be shown. They do not show ordinal positions, priority scores, or aggregate
+counts. Weekly presentation uses the existing read-only `WeeklyReview` and exposes
+only up to three existing `WeeklyRecommendation` rows; an empty recommendation set
+does not fall back to weekly flow/backlog/reminder statistics. Manual Attention
+cards show title plus persisted summary without `index/count` metadata. Ordinary
+Inbox, category, and search lists do not show priority scores, category counts, or
+page totals.
+
+Every new `MOTIVATION_NUDGE` candidate has a concrete `focus_item_id` selected in
+existing PM-07 order. The id is stored in the existing Reminder payload while the
+Reminder retains its user-level `item_id=NULL` claim identity; Reminder Events
+resolve and record the focused Item. The message projects the saved title and
+persisted summary, with Original/source actions and lifecycle controls whose
+feedback rules apply to this reminder type. No eligible concrete save means no
+send. Historical `MOTIVATION_NUDGE` rows with no focus remain valid; no migration
+or new dependency is required. Motivation remains deterministic and LLM-free.
+
+Normal settings show translated names and intensity labels without scheduler budgets.
+The explicit read-only `📊 Статус` screen remains the sole surface for operational
+counts and delivery blockers. Daily/weekly/Attention presentation, source identity,
+Reminder claim/finalization, PM-11 feedback, TodayService and ranking formula remain
+unchanged beyond the described copy/projection behavior.

@@ -1,6 +1,5 @@
 import asyncio
 from datetime import UTC, date, datetime, time, timedelta
-from string import Formatter
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -8,7 +7,7 @@ from sqlalchemy import func, select
 
 from app.domain.enums import ItemState, ItemType, MotivationKind, ProcessingStatus, SourceType
 from app.services.calendar_windows import local_day_window
-from app.services.motivation import _TEMPLATES, MotivationService, _next_template
+from app.services.motivation import MotivationService
 from app.services.notifications import (
     MOTIVATION_NUDGE,
     PROACTIVE_ATTENTION,
@@ -153,8 +152,8 @@ async def make_worker_user(
 
 
 async def add_growth_items(session_factory, user_id, now, count=3):
-    """Create non-actionable same-day Items so only the generic fact is eligible."""
-    return [
+    """Create a growth signal plus one low-ranked save that can ground its reminder."""
+    growth_ids = [
         await add_item(
             session_factory,
             user_id,
@@ -165,6 +164,14 @@ async def add_growth_items(session_factory, user_id, now, count=3):
         )
         for index in range(count)
     ]
+    await add_item(
+        session_factory,
+        user_id,
+        created_at=now - timedelta(days=1),
+        priority=40,
+        title="Saved focus",
+    )
+    return growth_ids
 
 
 async def add_proactive_item(session_factory, user_id, now, *, title):
@@ -185,7 +192,7 @@ async def test_item_facts_use_exact_thresholds_actionability_and_user_scope(sess
     user_id = await add_user(session_factory)
     other_user_id = await add_user(session_factory, telegram_id=1000)
 
-    await add_item(
+    stale_item_id = await add_item(
         session_factory,
         user_id,
         created_at=now - timedelta(days=30),
@@ -206,7 +213,7 @@ async def test_item_facts_use_exact_thresholds_actionability_and_user_scope(sess
         priority=74,
         title="priority below stale threshold",
     )
-    await add_item(
+    high_interest_item_id = await add_item(
         session_factory,
         user_id,
         created_at=now - timedelta(days=14),
@@ -221,14 +228,17 @@ async def test_item_facts_use_exact_thresholds_actionability_and_user_scope(sess
         interest=3,
         title="one second too new for interest",
     )
+    quick_item_ids = []
     for index in range(3):
-        await add_item(
-            session_factory,
-            user_id,
-            created_at=now - timedelta(days=2),
-            priority=60,
-            minutes=20,
-            title=f"quick win {index}",
+        quick_item_ids.append(
+            await add_item(
+                session_factory,
+                user_id,
+                created_at=now - timedelta(days=2),
+                priority=60,
+                minutes=20,
+                title=f"quick win {index}",
+            )
         )
     await add_item(
         session_factory,
@@ -287,14 +297,16 @@ async def test_item_facts_use_exact_thresholds_actionability_and_user_scope(sess
         "count": 3,
         "max_minutes": 20,
     }
-    assert "3" in by_kind[MotivationKind.QUICK_WINS].rendered_text
-    assert "20" in by_kind[MotivationKind.QUICK_WINS].rendered_text
+    assert by_kind[MotivationKind.STALE_IMPORTANT].focus_item_id == stale_item_id
+    assert by_kind[MotivationKind.HIGH_INTEREST_STALE].focus_item_id == high_interest_item_id
+    assert by_kind[MotivationKind.QUICK_WINS].focus_item_id in quick_item_ids
     with pytest.raises(TypeError):
         by_kind[MotivationKind.QUICK_WINS].facts["count"] = 99
 
     other_result = await candidates(session_factory, other_user_id, now)
     assert len(other_result) == 1
     assert dict(other_result[0].facts) == {"count": 3, "max_minutes": 20}
+    assert other_result[0].focus_item_id != by_kind[MotivationKind.QUICK_WINS].focus_item_id
 
 
 async def test_inbox_growth_uses_half_open_local_day_and_only_resolution_events(session_factory):
@@ -337,10 +349,18 @@ async def test_inbox_growth_uses_half_open_local_day_and_only_resolution_events(
     await add_event(session_factory, user_id, item_ids[1], "ARCHIVED", end - timedelta(seconds=1))
     await add_event(session_factory, user_id, item_ids[2], "SNOOZED", end - timedelta(seconds=1))
     await add_event(session_factory, user_id, item_ids[3], "ARCHIVED", end)
+    focus_item_id = await add_item(
+        session_factory,
+        user_id,
+        created_at=now - timedelta(days=1),
+        priority=40,
+        title="Saved growth focus",
+    )
 
     result = await candidates(session_factory, user_id, now, timezone="Europe/Helsinki")
     assert [candidate.kind for candidate in result] == [MotivationKind.INBOX_GROWTH]
     assert dict(result[0].facts) == {"created": 5, "resolved": 2, "net": 3}
+    assert result[0].focus_item_id == focus_item_id
 
 
 async def test_completion_streak_deduplicates_local_dates_and_week_has_seven_dates(
@@ -356,6 +376,13 @@ async def test_completion_streak_deduplicates_local_dates_and_week_has_seven_dat
         created_at=datetime(2026, 1, 1),
         item_type=ItemType.REFERENCE,
         processing=ProcessingStatus.QUEUED,
+    )
+    focus_item_id = await add_item(
+        session_factory,
+        user_id,
+        created_at=now - timedelta(days=2),
+        priority=40,
+        title="Saved completion focus",
     )
 
     for local_day in (today - timedelta(days=2), today - timedelta(days=1), today):
@@ -392,9 +419,11 @@ async def test_completion_streak_deduplicates_local_dates_and_week_has_seven_dat
         "completed": 5,
         "days": 7,
     }
+    assert by_kind[MotivationKind.COMPLETION_STREAK].focus_item_id == focus_item_id
+    assert by_kind[MotivationKind.WEEKLY_PROGRESS].focus_item_id == focus_item_id
 
 
-async def test_streak_must_be_current_and_templates_rotate_from_sent_history(session_factory):
+async def test_streak_must_be_current_and_same_day_sent_kind_is_suppressed(session_factory):
     now = datetime(2026, 9, 24, 12)
     user_id = await add_user(session_factory)
     item_id = await add_item(
@@ -414,18 +443,21 @@ async def test_streak_must_be_current_and_templates_rotate_from_sent_history(ses
             historical_start + timedelta(days=offset),
         )
 
+    quick_ids = []
     for index in range(3):
-        await add_item(
-            session_factory,
-            user_id,
-            created_at=now - timedelta(days=1),
-            priority=60,
-            minutes=20,
-            title=f"quick {index}",
+        quick_ids.append(
+            await add_item(
+                session_factory,
+                user_id,
+                created_at=now - timedelta(days=1),
+                priority=60,
+                minutes=20,
+                title=f"quick {index}",
+            )
         )
     before = await candidates(session_factory, user_id, now)
     quick = next(candidate for candidate in before if candidate.kind is MotivationKind.QUICK_WINS)
-    assert quick.template_id == "quick_wins_v3"
+    assert quick.focus_item_id in quick_ids
     assert MotivationKind.COMPLETION_STREAK not in {candidate.kind for candidate in before}
 
     async with session_factory() as session:
@@ -436,16 +468,16 @@ async def test_streak_must_be_current_and_templates_rotate_from_sent_history(ses
                 type="MOTIVATION_NUDGE",
                 scheduled_at=now - timedelta(days=1),
                 status="SENT",
-                payload_json={"kind": "QUICK_WINS", "template_id": quick.template_id},
+                payload_json={"kind": "QUICK_WINS", "focus_item_id": quick.focus_item_id},
                 sent_at=now - timedelta(days=1),
             )
         )
         await session.commit()
-    rotated = await candidates(session_factory, user_id, now)
-    rotated_quick = next(
-        candidate for candidate in rotated if candidate.kind is MotivationKind.QUICK_WINS
+    prior_day = await candidates(session_factory, user_id, now)
+    assert MotivationKind.QUICK_WINS in {candidate.kind for candidate in prior_day}
+    current_quick = next(
+        candidate for candidate in prior_day if candidate.kind is MotivationKind.QUICK_WINS
     )
-    assert rotated_quick.template_id == "quick_wins_v4"
 
     async with session_factory() as session:
         session.add(
@@ -455,7 +487,7 @@ async def test_streak_must_be_current_and_templates_rotate_from_sent_history(ses
                 type="MOTIVATION_NUDGE",
                 scheduled_at=now - timedelta(seconds=1),
                 status="SENT",
-                payload_json={"kind": "QUICK_WINS", "template_id": rotated_quick.template_id},
+                payload_json={"kind": "QUICK_WINS", "focus_item_id": current_quick.focus_item_id},
                 sent_at=now - timedelta(hours=1),
             )
         )
@@ -464,40 +496,30 @@ async def test_streak_must_be_current_and_templates_rotate_from_sent_history(ses
     assert MotivationKind.QUICK_WINS not in {candidate.kind for candidate in same_day}
 
 
-def test_motivation_templates_use_only_their_known_facts_and_rotate_in_order():
-    """Keep maintained copy within deterministic facts and make every variant reachable."""
-    fact_contracts = {
-        MotivationKind.STALE_IMPORTANT: {"count": 4},
-        MotivationKind.HIGH_INTEREST_STALE: {"count": 4},
-        MotivationKind.QUICK_WINS: {"count": 4, "max_minutes": 20},
-        MotivationKind.INBOX_GROWTH: {"created": 6, "resolved": 2, "net": 4},
-        MotivationKind.COMPLETION_STREAK: {"days": 4},
-        MotivationKind.WEEKLY_PROGRESS: {"completed": 5, "days": 7},
-    }
-    formatter = Formatter()
-    for kind, templates in _TEMPLATES.items():
-        assert len(templates) >= 3
-        assert len({template.template_id for template in templates}) == len(templates)
-        allowed = set(fact_contracts[kind])
-        for template in templates:
-            fields = {
-                field_name
-                for _literal, field_name, _format_spec, _conversion in formatter.parse(
-                    template.text
-                )
-                if field_name is not None
-            }
-            assert fields <= allowed
-            rendered = template.text.format(**fact_contracts[kind])
-            assert len(rendered) <= 180
-            assert all(str(fact_contracts[kind][field]) in rendered for field in fields)
-            assert not any(jargon in rendered.casefold() for jargon in ("done", "item", "inbox"))
+async def test_aggregate_signal_without_an_actionable_focus_creates_no_candidate(session_factory):
+    now = datetime(2026, 9, 24, 12)
+    user_id = await make_worker_user(session_factory)
+    await add_growth_items_without_focus(session_factory, user_id, now)
 
-        ids = [template.template_id for template in templates]
-        assert _next_template(templates, None).template_id == ids[0]
-        assert _next_template(templates, "quick_wins_v1").template_id == ids[0]
-        for current, expected in zip(ids, ids[1:] + ids[:1], strict=True):
-            assert _next_template(templates, current).template_id == expected
+    assert await candidates(session_factory, user_id, now) == []
+    bot = RecordingBot()
+    assert await ReminderWorker(session_factory, bot).process_once(now) == 0
+    assert bot.messages == []
+    async with session_factory() as session:
+        assert await session.scalar(select(Reminder.id)) is None
+
+
+async def add_growth_items_without_focus(session_factory, user_id, now):
+    """Create only aggregate growth evidence for the no-fake-reminder regression."""
+    for index in range(3):
+        await add_item(
+            session_factory,
+            user_id,
+            created_at=now,
+            item_type=ItemType.REFERENCE,
+            processing=ProcessingStatus.QUEUED,
+            title=f"reference {index}",
+        )
 
 
 async def test_worker_sends_generic_claim_with_feedback_controls_and_send_attribution(
@@ -514,13 +536,14 @@ async def test_worker_sends_generic_claim_with_feedback_controls_and_send_attrib
     assert len(bot.messages) == 1
     chat_id, text, kwargs = bot.messages[0]
     assert chat_id == 42
-    assert "3 новых" in text
-    assert "+3" in text
+    assert text == "🎯 Saved focus"
+    assert "INBOX_GROWTH" not in text
+    assert not any(term in text for term in ("3 новых", "+3", "Item", "Done"))
     callbacks = {
         button.callback_data for row in kwargs["reply_markup"].inline_keyboard for button in row
     }
-    assert "nav:attention:show:3" in callbacks
-    assert any(value.startswith("reminder:less:") for value in callbacks)
+    assert any(value.startswith("reminder:more:") for value in callbacks)
+    assert not any(value.startswith("nav:attention:show:") for value in callbacks)
     assert hooks.calls == 0
 
     async with session_factory() as session:
@@ -531,10 +554,13 @@ async def test_worker_sends_generic_claim_with_feedback_controls_and_send_attrib
         assert reminder.sent_at == now
         assert reminder.scheduled_at == datetime(2026, 9, 24, 0, 0, 1)
         assert reminder.claim_generation == 1
+        focus_item_id = reminder.payload_json["focus_item_id"]
+        focus_item = await session.get(Item, focus_item_id)
+        assert focus_item.title == "Saved focus"
         assert reminder.payload_json == {
             "kind": "INBOX_GROWTH",
             "facts": {"created": 3, "resolved": 0, "net": 3},
-            "template_id": "inbox_growth_v7_a",
+            "focus_item_id": focus_item_id,
             "policy_level": 3,
             "local_date": "2026-09-24",
             "slot": 1,
@@ -545,12 +571,11 @@ async def test_worker_sends_generic_claim_with_feedback_controls_and_send_attrib
                 Event.event_type == "REMINDER_SENT",
             )
         )
-        assert sent_event.item_id is None
+        assert sent_event.item_id == focus_item_id
         assert sent_event.payload_json == {
             "reminder_type": "MOTIVATION_NUDGE",
             "policy_level": 3,
             "motivation_kind": "INBOX_GROWTH",
-            "template_id": "inbox_growth_v7_a",
             "local_date": "2026-09-24",
             "slot": 1,
         }
@@ -629,7 +654,8 @@ async def test_disliked_nudge_kind_is_filtered_before_and_during_arbitration(ses
     worker = ReminderWorker(session_factory, bot)
     assert await worker.process_once(now) == 1
     assert len(bot.messages) == 1
-    assert "Важные сохранения старше месяца" in bot.messages[0][1]
+    assert "Old important item" in bot.messages[0][1]
+    assert "Важные сохранения старше месяца" not in bot.messages[0][1]
     async with session_factory() as session:
         sent = await session.scalar(
             select(Reminder).where(
@@ -639,6 +665,7 @@ async def test_disliked_nudge_kind_is_filtered_before_and_during_arbitration(ses
             )
         )
         assert sent.payload_json["kind"] == "STALE_IMPORTANT"
+        assert sent.payload_json["focus_item_id"] == stale_item_id
         user = await session.get(User, user_id)
         assert user.settings_json["generic_motivation_enabled"] is True
 
@@ -743,7 +770,7 @@ async def test_stale_generic_claim_recovers_same_slot_with_current_facts_and_fen
     worker = ReminderWorker(session_factory, bot)
 
     assert await worker.process_once(now) == 1
-    assert "4 новых" in bot.messages[0][1]
+    assert bot.messages[0][1] == "🎯 Saved focus"
     async with session_factory() as session:
         recovered = await session.get(Reminder, reminder_id)
         rows = (
@@ -755,6 +782,7 @@ async def test_stale_generic_claim_recovers_same_slot_with_current_facts_and_fen
         assert recovered.sent_at == now
         assert recovered.scheduled_at == slot_at
         assert recovered.payload_json["facts"] == {"created": 4, "resolved": 0, "net": 4}
+        assert recovered.payload_json["focus_item_id"] is not None
 
     await worker._mark_failed(user_id, None, MOTIVATION_NUDGE, slot_at, 4)
     await worker._finalize_motivation_send(reminder_id, user_id, 4, now + timedelta(seconds=1))
@@ -815,11 +843,12 @@ async def test_final_prepare_can_replace_a_quick_win_with_a_new_current_kind(ses
 
     worker._prepare_motivation_send = cross_stale_threshold_before_prepare
     assert await worker.process_once(now) == 1
-    assert "Важные сохранения старше месяца" in bot.messages[0][1]
+    assert "stale soon" in bot.messages[0][1]
     async with session_factory() as session:
         reminder = await session.scalar(select(Reminder).where(Reminder.type == MOTIVATION_NUDGE))
         assert reminder.payload_json["kind"] == "STALE_IMPORTANT"
         assert reminder.payload_json["facts"] == {"count": 1}
+        assert reminder.payload_json["focus_item_id"] == stale_soon_id
 
 
 @pytest.mark.parametrize("setting", ["attention_enabled", "generic_motivation_enabled"])
@@ -890,7 +919,7 @@ async def test_level_five_second_generic_uses_four_hour_gap_without_intervening_
     assert "generic_repeat_gap" in blocked.block_reasons
     assert blocked.next_possible_at.astimezone(UTC) == repeat_boundary.replace(tzinfo=UTC)
     assert "Следующее возможно не раньше: 16:00" in format_attention_status(blocked)
-    assert "четырёхчасовой интервал общих напоминаний" in format_attention_status(blocked)
+    assert "четырёхчасовой интервал дополнительных напоминаний" in format_attention_status(blocked)
 
     assert await worker.process_once(now + timedelta(hours=3, minutes=59)) == 0
     assert len(bot.messages) == 1

@@ -10,17 +10,16 @@ from app.domain.enums import AttentionHookType, ItemType, MotivationKind, Source
 
 @dataclass(frozen=True, slots=True)
 class MotivationCandidate:
-    """Immutable projection of a verified backlog fact into one short nudge.
+    """Keep an internal motivation signal tied to one ranked, persisted save.
 
-    MotivationService owns this domain result; policy and delivery stay in
-    ReminderWorker, so the facts cannot accidentally affect Item ranking.
+    The service returns facts and focus identity; Telegram copy is projected
+    from that Item by the bot layer, while ReminderWorker still owns pacing.
     """
 
     kind: MotivationKind
     score: int
     facts: Mapping[str, int]
-    template_id: str
-    rendered_text: str
+    focus_item_id: int
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "facts", MappingProxyType(dict(self.facts)))

@@ -62,7 +62,7 @@ All post-MVP work must preserve the current architecture:
 | 07 | Attention Ranking Engine | Dynamic “what should be shown now?” score | PM-01, PM-06 |
 | 08 | Attention Intensity | Calm → aggressive notification policies | PM-07 |
 | 09 | Contextual Attention Hooks | Grounded facts/hooks for old important Items | PM-07 |
-| 10 | Motivational Nudges | Duolingo-like contextual motivation without a specific Item | PM-08 |
+| 10 | Motivational Nudges | Deterministic motivation signals returned through a focused saved material | PM-08 |
 | 11 | Reminder Feedback Loop | Reminder outcomes feed future attention ranking | PM-08..10 |
 | 12 | Weekly Review | Reflection over backlog, progress and stale Items | PM-06, PM-11 |
 | 13 | Ask My Inbox | Question answering over saved Items with citations to Items | Search |
@@ -96,7 +96,7 @@ All post-MVP work must preserve the current architecture:
 
 ## 3.2 Quality & UX Polish — current focus
 
-Before resuming PM-14+ feature expansion, complete the seven stabilization and
+Before resuming PM-14+ feature expansion, complete all eight stabilization and
 corrective UX PRs:
 
 - [POLISH-01 — AI Analysis v2](../polish/POLISH-01_AI_ANALYSIS_V2.md)
@@ -106,6 +106,7 @@ corrective UX PRs:
 - [POLISH-05 — Telegram Navigation & AI Reliability](../polish/POLISH-05_NAVIGATION_AND_AI_RELIABILITY.md)
 - [POLISH-06 — Final Telegram UX Cleanup](../polish/POLISH-06_FINAL_TELEGRAM_UX.md)
 - [POLISH-07 — System Integrity](../polish/POLISH-07_SYSTEM_INTEGRITY.md)
+- [POLISH-08 — Human-facing Reminders](../polish/POLISH-08_HUMAN_REMINDERS.md)
 - [Milestone index and freeze policy](../polish/README.md)
 
 Current sequencing decision:
@@ -113,15 +114,17 @@ Current sequencing decision:
 ~~~text
 POLISH-01 → POLISH-02 → POLISH-03 → POLISH-04 → POLISH-05
 → real-user review → POLISH-06 → POLISH-07
-→ two independent quality reviews → resume PM-14+
+→ POLISH-08 → two independent quality reviews
+→ review real usage → explicitly decide whether to resume PM-14
 ~~~
 
-PM-14 runtime and PM-16+ are ON HOLD until POLISH-07 is accepted by both
-requested review conversations. PM-14 now has a documented real lexical-miss
-case; embeddings and semantic retrieval remain out of scope for POLISH-07. This
-is a product-quality sequencing decision, not a hard technical dependency.
-Reliability/security fixes remain allowed. PM-15 is already merged and remains
-supported.
+PM-14 runtime and PM-16+ are ON HOLD until all eight polish PRs are accepted
+through their requested reviews. POLISH-08 approval does not automatically
+resume PM-14: review real usage after the polish gate and explicitly decide
+whether to resume it. PM-16+ remains on hold pending a separate sequencing
+decision. PM-14 has a documented real lexical-miss case; embeddings and semantic
+retrieval remain out of scope for POLISH-08. Reliability/security fixes remain
+allowed. PM-15 is already merged and remains supported.
 
 ## 4. Milestone grouping
 
@@ -175,21 +178,23 @@ Goal: expose trends in attention, backlog growth, completion, neglect and catego
 - POLISH-04 Hooks & Notifications v2 — DONE (PR #50 merged)
 - POLISH-05 Telegram Navigation & AI Reliability — DONE (PR #51 merged)
 - POLISH-06 Final Telegram UX Cleanup — DONE (PR #52 merged)
-- POLISH-07 System Integrity — IN_REVIEW
+- POLISH-07 System Integrity — DONE (PR #53 merged)
+- POLISH-08 Human-facing Reminders — IN_REVIEW (PR #54)
 
 Goal: make the existing AI understanding, Telegram presentation, source navigation,
 reminders and reliability worth extending before new capability is added.
 
 POLISH-06 is the corrective PR produced by real-user review after POLISH-05.
 POLISH-07 records the confirmed `Андроид` → `Android` lexical miss and fixes
-interaction parity, classifier isolation, and Attention diagnostics. PM-14 and
-PM-16+ remain ON HOLD until both independent reviews approve POLISH-07; this
-implementation PR does not resume roadmap expansion.
+interaction parity, classifier isolation, and Attention diagnostics. POLISH-08
+is the current review gate for Russian, object-centric daily, weekly, and
+reminder presentation. PM-14 and PM-16+ remain ON HOLD through its two requested
+reviews; approving POLISH-08 does not resume roadmap expansion automatically.
 
 ### Milestone G — Knowledge
 
 - PM-13 Ask My Inbox — DONE (PR #42 merged)
-- PM-14 Hybrid Semantic Search — EVIDENCE CONFIRMED; runtime ON HOLD until both POLISH-07 reviews approve
+- PM-14 Hybrid Semantic Search — EVIDENCE CONFIRMED; runtime ON HOLD through POLISH-08 review and pending an explicit post-review usage decision
 
 Goal: make stored material queryable as a personal knowledge base.
 
@@ -409,21 +414,24 @@ summary is never hook evidence.
 
 ## 14. PM-10 — Motivational Nudges
 
-Add optional Duolingo-like nudges not tied to one Item.
+PM-10 derives optional motivation signals from deterministic Item/Event facts.
+Every new sendable candidate is paired with one existing save in PM-07 order;
+the user sees its title, persisted summary, and supported source/lifecycle
+actions. The proactive-only dismissal cooldown is not offered for motivation.
+Signals and aggregate facts remain internal. Generic motivation has no
+user-facing template rotation or LLM copy.
 
-Examples must be based on real computed facts:
+`Reminder.item_id` remains NULL as the user-level claim identity. The selected
+`focus_item_id` is stored in the existing payload for owner-scoped callbacks and
+focused Reminder Events. No eligible focus means no send; historical focusless
+Reminder rows remain valid.
 
-- “4 important Items are older than a month”;
-- “You have 3 quick wins under 15 minutes”;
-- “You added more than you completed today”;
-- “You completed at least one Item three days in a row”.
+`generic_motivation_enabled` remains an independent setting. Deterministic fact
+thresholds, intensity caps, PM-08 budget/quiet-hours/minimum-gap policy, durable
+claims, four-hour generic repeat pacing, and PM-11 feedback follow the current
+contract in `PRODUCT_SPEC.md` and D-045.
 
-First version should be template-based. An LLM may later rewrite already-computed facts but must not invent metrics.
-
-Provide `generic_motivation_enabled`.
-
-Current state: DONE. Nudges use deterministic Item/Event facts and share
-PM-08 budget, quiet hours, minimum gap and durable claims.
+Current state: DONE.
 
 ## 15. PM-11 — Reminder Feedback Loop
 
@@ -455,17 +463,19 @@ attention ranking
 
 Current state: DONE. PM-12 was implemented and merged to `main` in PR #41.
 
-Add on-demand `/weekly`; scheduled weekly delivery is out of scope for v1.
+`WeeklyReview` computes deterministic facts for the last seven local calendar
+days and the current backlog: added/completed/archived counts, active categories,
+staleness, postponement/progress themes, old important Items, reminder outcomes,
+and up to three concrete recommendations. These aggregate facts remain internal
+to the read model.
 
-Show:
-
-- added/completed/archived counts;
-- active categories;
-- stale backlog;
-- most snoozed themes;
-- progress themes;
-- old important Items never revisited;
-- maximum three concrete recommendations.
+On-demand `/weekly` presents only up to three existing concrete recommendations.
+Old-important and quick-win recommendations reuse PM-07 candidate ordering;
+cleanup review comes from its separate deterministic query over old, active,
+low-interest saved material and may be outside the PM-07 candidate set. If no
+recommendations are available, `/weekly` shows a neutral empty state; it does not
+fall back to aggregate activity. Scheduled weekly delivery remains out of scope
+for v1.
 
 This is reflection, not another giant backlog dump.
 
@@ -493,10 +503,11 @@ Answers must identify source Items so hallucinated “memory” cannot silently 
 
 ## 18. PM-14 — Hybrid Semantic Search
 
-Status: EVIDENCE CONFIRMED; runtime ON HOLD until both requested POLISH-07
-reviews approve and the PR is merged. After the hold is lifted, add further
-PM-13 examples only if usage shows concrete vocabulary-mismatch queries where
-relevant saved Items are not usefully retrieved by FTS5.
+Status: EVIDENCE CONFIRMED; runtime remains ON HOLD through the POLISH-08 review
+gate. Approval alone does not resume PM-14: first review real usage, then make
+an explicit decision to lift the hold. If resumed, add further PM-13 examples
+only if usage shows concrete vocabulary-mismatch queries where relevant saved
+Items are not usefully retrieved by FTS5.
 
 Keep FTS5 and add one rebuildable Item-level embedding projection stored in SQLite.
 Compute cosine similarity in-process at personal scale and fuse bounded lexical +

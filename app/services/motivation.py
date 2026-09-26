@@ -1,15 +1,14 @@
-"""Deterministic backlog facts and Russian templates for PM-10 nudges."""
+"""Deterministic reminder signals paired with concrete PM-07-ranked saves."""
 
-from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from types import MappingProxyType
-from typing import Mapping
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import and_, case, func, select
+from sqlalchemy import func, select
 
-from app.domain.enums import ACTIONABLE_ITEM_TYPES, ItemState, MotivationKind, ProcessingStatus
+from app.domain.enums import MotivationKind
 from app.domain.models import MotivationCandidate
+from app.services.attention_ranking import AttentionRankingService
 from app.services.calendar_windows import local_dates_utc_window, local_day_window
 from app.storage.models import Event, Item, Reminder
 
@@ -20,7 +19,7 @@ QUICK_WIN_MAX_MINUTES = 20
 QUICK_WIN_MIN_PRIORITY = 60
 WEEKLY_PROGRESS_MIN_DONE = 5
 
-_KIND_SCORES: Mapping[MotivationKind, int] = MappingProxyType(
+_KIND_SCORES = MappingProxyType(
     {
         MotivationKind.STALE_IMPORTANT: 60,
         MotivationKind.HIGH_INTEREST_STALE: 50,
@@ -32,144 +31,15 @@ _KIND_SCORES: Mapping[MotivationKind, int] = MappingProxyType(
 )
 
 
-@dataclass(frozen=True, slots=True)
-class _Template:
-    """Keep stable presentation IDs alongside copy for deterministic rotation."""
-
-    template_id: str
-    text: str
-
-
-# ❌ Удалены краткие v1/v2 формулировки, звучавшие как telemetry, и англоязычные
-# Done/Item/Inbox слова; новые варианты говорят с пользователем на обычном языке,
-# сохраняя те же факты из MotivationCandidate.
-_TEMPLATES: Mapping[MotivationKind, tuple[_Template, ...]] = MappingProxyType(
-    {
-        MotivationKind.STALE_IMPORTANT: (
-            _Template(
-                "stale_important_v3",
-                "Важные сохранения старше месяца: {count}. Что открыть?",
-            ),
-            _Template(
-                "stale_important_v7_b",
-                "Приоритетные сохранения старше месяца: {count}. Вернуть одно в фокус?",
-            ),
-            _Template(
-                "stale_important_v7_c",
-                "Старые важные сохранения в списке: {count}. С чего начать?",
-            ),
-            _Template(
-                "stale_important_v6",
-                "Важное, что лежит больше месяца: {count}. Вернуть одно?",
-            ),
-        ),
-        MotivationKind.HIGH_INTEREST_STALE: (
-            _Template(
-                "high_interest_stale_v3",
-                "Сохранения с интересом 3/3 старше двух недель: {count}. Что открыть?",
-            ),
-            _Template(
-                "high_interest_stale_v4",
-                "Интерес 3/3 и возраст от двух недель — таких материалов: {count}. "
-                "Какой пересмотреть?",
-            ),
-            _Template(
-                "high_interest_stale_v5",
-                "Материалы с интересом 3/3 старше двух недель: {count}. Что пересмотреть?",
-            ),
-            _Template(
-                "high_interest_stale_v6",
-                "Сохранения с интересом 3/3 старше двух недель: {count}. С чего начать?",
-            ),
-        ),
-        MotivationKind.QUICK_WINS: (
-            _Template(
-                "quick_wins_v3",
-                "Задач с оценкой до {max_minutes} минут: {count}. Выбрать одну?",
-            ),
-            _Template(
-                "quick_wins_v4",
-                "Количество задач с оценкой до {max_minutes} минут — {count}. С какой начать?",
-            ),
-            _Template(
-                "quick_wins_v5",
-                "Коротких задач по оценке (до {max_minutes} минут): {count}. Один быстрый заход?",
-            ),
-            _Template(
-                "quick_wins_v6",
-                "Задач, которым оценили до {max_minutes} минут: {count}. Какую взять?",
-            ),
-        ),
-        MotivationKind.INBOX_GROWTH: (
-            _Template(
-                "inbox_growth_v7_a",
-                "Сегодня +{net} к списку: {created} новых, {resolved} завершено или архивировано. "
-                "Разгрузить один?",
-            ),
-            _Template(
-                "inbox_growth_v7_b",
-                "Список вырос на {net}: добавлено {created}, завершено или архивировано "
-                "{resolved}. "
-                "С чего начать?",
-            ),
-            _Template(
-                "inbox_growth_v5",
-                "За сегодня — {created} новых и {resolved} завершённых или архивированных; "
-                "прирост {net}. Открыть один?",
-            ),
-            _Template(
-                "inbox_growth_v7_c",
-                "Сегодня в списке стало на {net} записей больше: +{created} и −{resolved}. "
-                "Разобрать одну?",
-            ),
-        ),
-        MotivationKind.COMPLETION_STREAK: (
-            _Template(
-                "completion_streak_v7_a",
-                "Дней подряд с завершёнными делами: {days}. Продолжить серию?",
-            ),
-            _Template(
-                "completion_streak_v7_b",
-                "Есть хотя бы одно завершение {days} дней подряд. Выбрать следующий шаг?",
-            ),
-            _Template(
-                "completion_streak_v7_c",
-                "Серия дней с завершёнными делами: {days}. Продолжить?",
-            ),
-            _Template(
-                "completion_streak_v7_d",
-                "Зафиксированы завершения {days} дней подряд. Продолжить в удобном темпе?",
-            ),
-        ),
-        MotivationKind.WEEKLY_PROGRESS: (
-            _Template(
-                "weekly_progress_v7_a",
-                "За последние {days} дней закрыто {completed} сохранений. Что вернуть в фокус?",
-            ),
-            _Template(
-                "weekly_progress_v7_b",
-                "За {days}-дневный период закрыто {completed} сохранений. "
-                "Показать, что продолжить?",
-            ),
-            _Template(
-                "weekly_progress_v7_c",
-                "За последние {days} дней завершено сохранений: {completed}. "
-                "Показать следующий шаг?",
-            ),
-            _Template(
-                "weekly_progress_v7_d",
-                "За последние {days} дней закрыто {completed} сохранений. Что продолжить?",
-            ),
-        ),
-    }
-)
+# ❌ Удалены aggregate-copy шаблоны и их ротация: мотивация теперь выбирает
+# сигнал и конкретное сохранение, а пользовательский текст собирается из самого Item.
 
 
 class MotivationService:
-    """Read canonical Item/Event aggregates and project eligible nudge candidates.
+    """Read signals and use existing PM-07 ordering to assign a concrete focus.
 
-    The service intentionally knows nothing about Attention intensity, delivery
-    pacing, Telegram, Item content, profile signals, or LLM providers.
+    ReminderWorker retains pacing/arbitration; Telegram text and content remain
+    outside this service, and the PM-07 rank formula is reused unchanged.
     """
 
     async def candidates(
@@ -180,99 +50,84 @@ class MotivationService:
         zone: ZoneInfo,
         now: datetime,
     ) -> list[MotivationCandidate]:
-        """Compute current user-scoped facts and apply durable template history."""
+        """Pair current facts with their best eligible save in PM-07 order."""
         instant = now.astimezone(UTC).replace(tzinfo=None) if now.tzinfo else now
+        ranked = await AttentionRankingService().list_candidates(
+            session, user_id, limit=None, now=instant
+        )
+        ranked_items = [item for item, _rank in ranked]
+        if not ranked_items:
+            return []
+
         local_date, day_start, day_end = local_day_window(instant, zone)
-        facts_by_kind = await self._item_facts(session, user_id, instant)
+        facts_by_kind = self._item_facts(ranked_items, instant)
+        focus_item = ranked_items[0]
         growth = await self._inbox_growth(session, user_id, day_start, day_end)
         done_dates, weekly_count = await self._completion_facts(session, user_id, zone, local_date)
         streak = self._current_streak(done_dates, local_date)
         if streak >= 3:
-            facts_by_kind[MotivationKind.COMPLETION_STREAK] = {"days": streak}
+            facts_by_kind[MotivationKind.COMPLETION_STREAK] = ({"days": streak}, focus_item)
         if weekly_count >= WEEKLY_PROGRESS_MIN_DONE:
-            facts_by_kind[MotivationKind.WEEKLY_PROGRESS] = {
-                "completed": weekly_count,
-                "days": 7,
-            }
+            facts_by_kind[MotivationKind.WEEKLY_PROGRESS] = (
+                {"completed": weekly_count, "days": 7},
+                focus_item,
+            )
         if growth["net"] >= 3:
-            facts_by_kind[MotivationKind.INBOX_GROWTH] = growth
+            facts_by_kind[MotivationKind.INBOX_GROWTH] = (growth, focus_item)
 
         if not facts_by_kind:
             return []
-        sent_today, latest_templates = await self._presentation_history(
-            session, user_id, day_start, day_end, facts_by_kind
-        )
+        sent_today = await self._sent_kinds_today(session, user_id, day_start, day_end)
         candidates = []
-        for kind, facts in facts_by_kind.items():
+        for kind, (facts, focus) in facts_by_kind.items():
             # Successful same-day sends are skipped while other factual kinds can still compete.
             if kind in sent_today:
                 continue
-            templates = _TEMPLATES[kind]
-            latest = latest_templates.get(kind)
-            template = _next_template(templates, latest)
-            rendered = template.text.format(**facts)
             candidates.append(
                 MotivationCandidate(
                     kind=kind,
                     score=_KIND_SCORES[kind],
                     facts=facts,
-                    template_id=template.template_id,
-                    rendered_text=rendered,
+                    focus_item_id=focus.id,
                 )
             )
         return sorted(candidates, key=lambda candidate: candidate.score, reverse=True)
 
-    async def _item_facts(self, session, user_id: int, now: datetime) -> dict:
-        """Aggregate the three active-actionable Item facts in one DB round trip."""
-        eligible = (
-            Item.user_id == user_id,
-            Item.processing_status == ProcessingStatus.READY,
-            Item.state == ItemState.ACTIVE,
-            Item.item_type.in_(ACTIONABLE_ITEM_TYPES),
-        )
+    @staticmethod
+    def _item_facts(ranked_items: list[Item], now: datetime) -> dict:
+        """Count existing motivation signals while retaining their top PM-07 Item."""
         stale_before = now - STALE_IMPORTANT_MIN_AGE
         interest_before = now - HIGH_INTEREST_MIN_AGE
-        quick_wins = and_(
-            Item.estimated_action_minutes.is_not(None),
-            Item.estimated_action_minutes <= QUICK_WIN_MAX_MINUTES,
-            Item.priority_score >= QUICK_WIN_MIN_PRIORITY,
-        )
-        row = (
-            await session.execute(
-                select(
-                    func.sum(
-                        case(
-                            (
-                                and_(Item.priority_score >= 75, Item.created_at <= stale_before),
-                                1,
-                            ),
-                            else_=0,
-                        )
-                    ),
-                    func.sum(
-                        case(
-                            (
-                                and_(Item.interest_level == 3, Item.created_at <= interest_before),
-                                1,
-                            ),
-                            else_=0,
-                        )
-                    ),
-                    func.sum(case((quick_wins, 1), else_=0)),
-                ).where(*eligible)
-            )
-        ).one()
-        stale_count, interest_count, quick_count = (int(value or 0) for value in row)
+        stale = [
+            item
+            for item in ranked_items
+            if item.priority_score >= 75 and item.created_at <= stale_before
+        ]
+        high_interest = [
+            item
+            for item in ranked_items
+            if item.interest_level == 3 and item.created_at <= interest_before
+        ]
+        quick_wins = [
+            item
+            for item in ranked_items
+            if item.estimated_action_minutes is not None
+            and item.estimated_action_minutes <= QUICK_WIN_MAX_MINUTES
+            and item.priority_score >= QUICK_WIN_MIN_PRIORITY
+        ]
         facts = {}
-        if stale_count >= 1:
-            facts[MotivationKind.STALE_IMPORTANT] = {"count": stale_count}
-        if interest_count >= 1:
-            facts[MotivationKind.HIGH_INTEREST_STALE] = {"count": interest_count}
-        if quick_count >= 3:
-            facts[MotivationKind.QUICK_WINS] = {
-                "count": quick_count,
-                "max_minutes": QUICK_WIN_MAX_MINUTES,
-            }
+        if stale:
+            facts[MotivationKind.STALE_IMPORTANT] = ({"count": len(stale)}, stale[0])
+        if high_interest:
+            facts[MotivationKind.HIGH_INTEREST_STALE] = (
+                {"count": len(high_interest)},
+                high_interest[0],
+            )
+        if len(quick_wins) >= 3:
+            facts[MotivationKind.QUICK_WINS] = (
+                {"count": len(quick_wins), "max_minutes": QUICK_WIN_MAX_MINUTES},
+                quick_wins[0],
+            )
         return facts
 
     async def _inbox_growth(
@@ -341,15 +196,14 @@ class MotivationService:
             day -= timedelta(days=1)
         return streak
 
-    async def _presentation_history(
+    async def _sent_kinds_today(
         self,
         session,
         user_id: int,
         day_start: datetime,
         day_end: datetime,
-        kinds: Mapping[MotivationKind, dict],
-    ) -> tuple[set[MotivationKind], dict[MotivationKind, str]]:
-        """Use SENT reminders only for same-day kind suppression and template rotation."""
+    ) -> set[MotivationKind]:
+        """Use successful same-day Reminder facts to suppress repeated signals."""
         sent_today_payloads = (
             await session.scalars(
                 select(Reminder.payload_json).where(
@@ -369,35 +223,4 @@ class MotivationService:
             except (KeyError, TypeError, ValueError):
                 continue
 
-        latest_templates = {}
-        for kind in kinds:
-            latest_payload = await session.scalar(
-                select(Reminder.payload_json)
-                .where(
-                    Reminder.user_id == user_id,
-                    Reminder.type == MOTIVATION_NUDGE,
-                    Reminder.status == "SENT",
-                    Reminder.sent_at.is_not(None),
-                    func.json_extract(Reminder.payload_json, "$.kind") == kind.value,
-                )
-                .order_by(Reminder.sent_at.desc(), Reminder.id.desc())
-                .limit(1)
-            )
-            if isinstance(latest_payload, dict) and isinstance(
-                latest_payload.get("template_id"), str
-            ):
-                latest_templates[kind] = latest_payload["template_id"]
-        return sent_today, latest_templates
-
-
-def _next_template(templates: tuple[_Template, ...], latest_template_id: str | None) -> _Template:
-    """Advance one ordered copy family; legacy history starts from its current first variant."""
-    latest_index = next(
-        (
-            index
-            for index, template in enumerate(templates)
-            if template.template_id == latest_template_id
-        ),
-        None,
-    )
-    return templates[0] if latest_index is None else templates[(latest_index + 1) % len(templates)]
+        return sent_today

@@ -595,8 +595,9 @@ hours, PM-07 rank и same-Item cooldown. Если процесс останов�
 сообщения Telegram, но до SQLite finalization, повторная попытка после lease
 может отправить дубль: точно объединить транзакции Telegram и SQLite нельзя.
 
-`MOTIVATION_NUDGE` хранит только bounded snapshot `kind`, integer `facts`,
-`template_id`, `policy_level`, `local_date` и `slot`; `item_id` всегда NULL.
+`MOTIVATION_NUDGE` хранит bounded snapshot `kind`, integer `facts`,
+`focus_item_id`, `policy_level`, `local_date` и `slot`; `Reminder.item_id`
+остаётся NULL как ключ пользовательского claim.
 Посмотреть слоты и claims можно тем же запросом выше. `scheduled_at` у этого
 типа — identity локального дня + ordinal слота, а не время будущей доставки.
 Partial indexes `uq_reminders_motivation_slot` и
@@ -606,15 +607,19 @@ Partial indexes `uq_reminders_motivation_slot` и
 Worker разделяет commit claim, Telegram send и финальный commit; SQLite write
 lock не удерживается на сетевом вызове. Перед отправкой он заново вычисляет
 факты и проверяет настройки, quiet hours, общий дневной budget, отдельный
-generic cap, minimum gap и kind/template history. Только успешный Telegram
-ответ становится `SENT`; `FAILED`/`CANCELLED` не расходуют budget или gap.
+generic cap, minimum gap и историю отправки того же kind. Только успешный
+Telegram ответ становится `SENT`; `FAILED`/`CANCELLED` не расходуют budget или gap.
 После recovery generation fencing не позволяет старому владельцу изменить
 новый claim. Между принятым Telegram сообщением и SQLite финализацией остаётся
 узкое at-least-once окно с возможным дублем; exactly-once не гарантируется.
-Generic nudge не пишет `ATTENTION_SHOWN`. Успешная доставка создаёт
-`REMINDER_SENT` в той же транзакции, которая фиксирует `SENT`; показ кнопки
-`🎯 Показать` ведёт к ручному списку Attention, а `Меньше таких` ссылается на
-этот Reminder.
+Generic nudge не пишет `ATTENTION_SHOWN`. Его сообщение показывает выбранное
+сохранение с Original/source actions и поддерживаемыми lifecycle actions.
+В More доступны «Отложить», «Сделано» и «Меньше таких»; «Не сейчас» остаётся
+только у proactive reminder, где работает same-Item dismissal cooldown. Для
+нового focused nudge `REMINDER_SENT` и callbacks указывают на
+сохранение из `focus_item_id`; исторические focusless Reminder остаются
+валидными. Успешная доставка создаёт `REMINDER_SENT` в той же транзакции,
+которая фиксирует `SENT`; `Меньше таких` ссылается на этот Reminder.
 Proactive reminder, digest и snooze resurfacing также получают
 `REMINDER_SENT` только после успешного ответа Telegram. У Telegram URL-кнопки
 нет наблюдаемого callback, поэтому она не создаёт `REMINDER_OPENED`.

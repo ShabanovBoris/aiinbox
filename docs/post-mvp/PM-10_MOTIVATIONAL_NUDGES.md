@@ -9,23 +9,16 @@ Status: DONE
 
 ### Problem
 
-Not every useful intervention needs to point to one specific Item.
-
-Sometimes the best prompt is a truthful summary of the user's backlog/progress:
-
-> You have three high-value tasks under 20 minutes.
-
-or:
-
-> You added more than you completed today.
-
-The system should support Duolingo-like motivation without fabricating activity or turning the bot into generic quote spam.
+Motivation signals can summarize Item/Event facts, but a user-facing reminder
+must return a concrete saved material. The signal remains an internal reason to
+select a focus; the message shows that saved material rather than a backlog or
+progress report.
 
 ### Goal
 
-Add optional generic motivational nudges based only on deterministic facts derived from AIInbox data.
-
-The first version should be template-based and require no LLM.
+Keep optional motivational nudges based only on deterministic facts derived from
+AIInbox data. Every sendable candidate is paired with one eligible saved
+material in existing PM-07 order. Presentation remains LLM-free.
 
 ## 2. In scope
 
@@ -33,10 +26,11 @@ The first version should be template-based and require no LLM.
 - MotivationService;
 - deterministic fact computation;
 - nudge eligibility;
-- several nudge kinds;
-- template variation;
+- several deterministic nudge kinds;
+- pairing each candidate with a concrete PM-07-ranked focus;
 - integration with PM-08 notification budget;
 - durable Reminder rows;
+- source and lifecycle actions for the focused material;
 - tests.
 
 ## 3. Out of scope
@@ -156,11 +150,12 @@ MotivationCandidate:
   kind
   score
   facts
-  template_id
-  rendered_text
+  focus_item_id
 ~~~
 
-Score is only for choosing among nudge types, not Item priority.
+Score chooses among motivation signals, not Item priority. `focus_item_id`
+identifies the best eligible Item in existing PM-07 order. Telegram text is
+projected later from the saved Item; the candidate contains no rendered copy.
 
 ## 8. Initial nudge priority
 
@@ -177,39 +172,24 @@ Use a small deterministic score/table.
 
 No LLM ranking.
 
-## 9. Templates
+## 9. Presentation
 
-Each kind should have several short templates.
+New motivation messages use the focused Item's saved title and bounded summary
+through the existing proactive reminder formatter. They expose that material's
+Original/source actions and supported lifecycle controls. “Не сейчас” is shown
+only for proactive reminders because its same-Item cooldown applies to that
+Reminder type. “Меньше таких” remains available for motivation-kind feedback.
 
-Example STALE_IMPORTANT:
-
-~~~text
-"У тебя {count} важных Item старше месяца. Сегодня достаточно вернуть в фокус один."
-
-"{count} важных вещей давно лежат без движения. Не нужно закрывать всё — выбери одну."
-~~~
-
-Example QUICK_WINS:
-
-~~~text
-"В backlog есть {count} задач до 20 минут. Одна небольшая победа заметно разгрузит список."
-~~~
-
-Example STREAK:
-
-~~~text
-"{days} дня подряд ты закрывал хотя бы один Item. Продолжим серию?"
-~~~
-
-Templates may be in the user's preferred language only if explicitly maintained.
-
-For v1, use the bot's supported product language and do not call an LLM merely for translation.
+No aggregate fact, template id, rendered template, or motivation-kind reason is
+shown to the user. If there is no eligible focus, no candidate is sent. If the
+Item has no summary, the formatter shows its title only. No LLM is used to write
+or translate this message.
 
 ## 10. Truthfulness
 
 Every interpolated fact must come from deterministic DB queries.
 
-No template may imply:
+No motivation signal or message may imply:
 - a streak that was not computed;
 - an unread Item count that was not queried;
 - a “best week” without historical comparison;
@@ -235,14 +215,15 @@ Initial generic limits:
 | 5 | max 2 |
 
 Additional rules:
-- never send two generic nudges consecutively;
+- keep the four-hour generic repeat gap;
 - Item-specific reminder wins at levels 1–3 when a candidate >= PM-08 threshold exists;
 - at levels 4–5, a nudge may consume an available slot but still cannot exceed generic cap.
 
 Arbitration is deterministic: at levels 1–3 a sendable proactive candidate
-wins; at levels 4–5 proactive and generic sends alternate according to the last
-successful Attention-family Reminder, falling back to the other candidate only
-when the preferred type is unavailable. After digest and snooze phases, no more
+wins. At levels 4–5 the scheduler prefers variety based on the last successful
+Attention-family Reminder, while a generic candidate may compete again after
+four hours without requiring an intervening proactive send. The generic cap and
+shared budget/gap remain authoritative. After digest and snooze phases, no more
 than one Attention-family attempt is made for a user in one worker cycle.
 
 ## 12. Reminder type
@@ -261,12 +242,16 @@ payload_json:
 {
   "kind": "QUICK_WINS",
   "facts": {"count": 5},
-  "template_id": "quick_wins_v2",
-  "policy_level": 4
+  "focus_item_id": 123,
+  "policy_level": 4,
+  "local_date": "2026-09-24",
+  "slot": 1
 }
 ~~~
 
 Because item_id is NULL, durable uniqueness/idempotency must explicitly handle user-level reminders.
+`focus_item_id` in the payload attributes new messages and callbacks to their
+selected save without changing the Reminder's user-level claim identity.
 
 If necessary, add a SQLite partial unique index for user/type/scheduled slot where item_id IS NULL.
 
@@ -299,30 +284,25 @@ No catch-up nudge queue after quiet hours.
 
 Only `SENT` reminders consume the shared PM-08 budget/minimum gap and separate
 generic cap. Claims are committed before Telegram I/O. Final preparation
-revalidates settings, pacing and current facts, updates the bounded payload/text
-to the current candidate or cancels the claim, then releases SQLite before send.
+revalidates settings, pacing, current facts and focused Item; it updates the
+bounded payload to the current candidate or cancels the claim, then releases
+SQLite before send.
 Recovery increments claim generation; a stale owner cannot finalize a newer
 claim. Telegram and SQLite cannot provide exactly-once delivery, so the
 existing bounded at-least-once crash window remains.
 
 ## 15. Nudge repetition
 
-Do not send the same nudge kind/template repeatedly.
-
-Use Reminder history to avoid:
-- same kind twice consecutively;
-- same template for same kind twice consecutively when alternatives exist.
-
-Facts may be re-evaluated each time.
+Reminder history suppresses a motivation kind already sent on the current local
+day. “Меньше таких” suppresses that kind for seven elapsed days. The scheduler
+also enforces the four-hour generic repeat gap. Facts and focus are re-evaluated
+at final preparation; there is no user-facing template rotation.
 
 ## 16. Interaction with PM-09 hooks
 
-Generic nudges do not use ATTENTION_HOOK.
-
-PM-09 is Item-specific.
-PM-10 is user/backlog-level.
-
-Keep these paths separate.
+Generic motivation does not use `ATTENTION_HOOK`. PM-09 hooks remain
+proactive-only; focused motivation shows the saved summary as presentation and
+keeps source content and profile data out of the motivation copy path.
 
 ## 17. Tests
 
@@ -339,8 +319,9 @@ Exact tests for:
 ### Truthfulness
 
 - no eligible fact -> no nudge;
-- counts in text equal DB result;
-- no invented metric.
+- every new send has an eligible `focus_item_id`;
+- user-facing text comes from that Item's saved title and summary;
+- no aggregate metric or motivation reason is exposed.
 
 ### Policy
 
@@ -350,7 +331,8 @@ Exact tests for:
 - generic disabled -> none;
 - quiet hours -> none;
 - daily budget reached -> none;
-- no consecutive generic nudges.
+- generic repeat gap is four hours;
+- opening More for focused motivation does not expose the proactive-only dismiss action.
 
 ### Idempotency
 
@@ -365,31 +347,35 @@ Exact tests for:
 4. Aggressive mode still caps generic nudges at two/day.
 5. generic nudges share the PM-08 budget/gap.
 6. duplicate polls/restarts do not duplicate a nudge.
-7. no LLM is required.
-8. quality gate passes.
+7. Every sendable candidate is paired with a concrete saved material in PM-07 order.
+8. User-facing text and actions resolve to that material; no focus means no send.
+9. No LLM is required, and generic motivation does not create Attention exposure.
+10. Reminder claim identity remains user-level with `item_id=NULL`.
+11. Quality gate passes.
 
 ## 19. Definition of Done
 
 - setting/UI;
 - MotivationService;
 - deterministic facts;
-- templates;
+- concrete focus selection and summary-based presentation;
 - MOTIVATION_NUDGE persistence;
 - worker integration;
 - tests;
 - BOT_USAGE updated;
-- no PM-11 feedback implementation early;
+- PM-11 feedback attribution;
 - repository review completed.
 
-## 20. POLISH-04 current behavior
+## 20. Current implementation
 
-Every existing `MotivationKind` has four maintained, concise Russian copy
-variants. These templates interpolate only the facts already produced by
-`MotivationService`; fact queries, thresholds and `_KIND_SCORES` are unchanged.
-There is no LLM call, source content, Item summary, or profile context on this
-path.
+Motivation kinds and deterministic facts remain internal selection signals.
+Each new sendable `MotivationCandidate` includes a `focus_item_id` chosen in
+existing PM-07 order. Its durable `MOTIVATION_NUDGE` Reminder keeps
+`Reminder.item_id=NULL`; the focus id lives in the existing payload and is used
+for owner-scoped source/lifecycle callbacks and focused Reminder Events.
 
-Successful `SENT` Reminder history advances through the ordered variants and
-wraps deterministically. Missing, unknown, or legacy template IDs start at the
-first current variant. Failed or open claims do not advance rotation, and the
-existing same-day kind suppression and notification caps remain authoritative.
+The message uses the focused Item's title and persisted summary, with no
+template rotation or LLM. A missing eligible focus produces no send. Historical
+focusless Reminder rows remain valid and are not rewritten. Fact thresholds,
+motivation scores, daily caps, four-hour repeat pacing, durable claims, and
+PM-11 feedback remain governed by the current product spec and tests.
