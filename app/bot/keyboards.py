@@ -149,11 +149,7 @@ def attention_chooser_keyboard() -> InlineKeyboardMarkup:
                 InlineKeyboardButton(text="3", callback_data="nav:attention:show:3"),
                 InlineKeyboardButton(text="5", callback_data="nav:attention:show:5"),
             ],
-            [
-                InlineKeyboardButton(
-                    text="📊 Статус Attention", callback_data="nav:attention:status"
-                )
-            ],
+            [InlineKeyboardButton(text="📊 Статус", callback_data="nav:attention:status")],
             [InlineKeyboardButton(text="⚙️ Настройки", callback_data="settings:attention:open")],
             [InlineKeyboardButton(text="← Меню", callback_data="nav:menu")],
         ]

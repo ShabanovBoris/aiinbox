@@ -1216,6 +1216,11 @@ async def test_attention_command_and_menu_share_chooser_and_count_projection(
         "settings:attention:open",
         "nav:menu",
     }
+    chooser_labels = {
+        button.text for row in sent[-1][1]["reply_markup"].inline_keyboard for button in row
+    }
+    assert "📊 Статус" in chooser_labels
+    assert "📊 Статус Attention" not in chooser_labels
     await on_navigation_callback(
         make_callback(42, "nav:attention"), settings, session_factory, FakeFSMContext()
     )
