@@ -34,6 +34,7 @@ The milestone therefore pauses major feature expansion and polishes the existing
 5. [POLISH-05 — Telegram Navigation & AI Reliability](POLISH-05_NAVIGATION_AND_AI_RELIABILITY.md)
 6. [POLISH-06 — Final Telegram UX Cleanup](POLISH-06_FINAL_TELEGRAM_UX.md)
 7. [POLISH-07 — System Integrity](POLISH-07_SYSTEM_INTEGRITY.md)
+8. [POLISH-08 — Human-facing Reminders](POLISH-08_HUMAN_REMINDERS.md)
 
 ## Recommended implementation order
 
@@ -61,9 +62,14 @@ final Telegram UX cleanup
 POLISH-07
 interaction, category isolation, and Attention calibration
         ↓
+POLISH-08
+Russian object-centric daily, weekly, and reminder presentation
+        ↓
 two independent quality reviews
         ↓
-resume PM-14+
+review real usage
+        ↓
+explicitly decide whether to resume PM-14
 ~~~
 
 Some implementation work may overlap, but each PR should remain independently reviewable and should not silently absorb the next PR's scope.
@@ -76,14 +82,19 @@ Some implementation work may overlap, but each PR should remain independently re
 - POLISH-04 — DONE (PR #50 merged)
 - POLISH-05 — DONE (PR #51 merged)
 - POLISH-06 — DONE (PR #52 merged)
-- POLISH-07 — IN_REVIEW
+- POLISH-07 — DONE (PR #53 merged)
+- POLISH-08 — IN_REVIEW
 
 POLISH-06 closed the Inbox/category reachability, Item-row navigation,
 failed-Item identity, Export shortcut, and Profile editing gaps. POLISH-07
 captures follow-up failures from real user testing: guided command parity,
 content-only topic classification, lexical Search disclosure, visible local
-time, and explainable Attention eligibility. PM-14 remains ON HOLD until
-POLISH-07 is accepted by both requested review conversations.
+time, and explainable Attention eligibility. POLISH-08 removes aggregate
+analytics from ordinary user surfaces and returns concrete saved content from
+daily, weekly, and motivation flows. PM-14 remains ON HOLD until POLISH-08 is
+approved by both requested review conversations. Approval alone does not resume
+PM-14; real usage must be reviewed and resumption explicitly decided. PM-16+
+remains on hold pending a separate sequencing decision.
 
 ## Product invariant after the milestone
 
@@ -106,11 +117,14 @@ Internal fields such as:
 - ranking reason;
 - analysis completeness details
 
-remain available to the system and, where useful, behind Details. They are not the default presentation.
+remain available to the system. Category, type, localized analysis coverage,
+interest, and next action remain available through Details; numeric scores and
+ranking reasons stay internal except on the explicitly opened status screen. They
+are not the default presentation.
 
 ## Freeze policy
 
-Until POLISH-01…07 are accepted and reviewed together:
+Until POLISH-01…08 are accepted and reviewed together:
 
 - PM-14 Hybrid Semantic Search: ON HOLD;
 - PM-16+ feature expansion: ON HOLD;
@@ -119,11 +133,13 @@ Until POLISH-01…07 are accepted and reviewed together:
 
 This is a product sequencing decision, not a hard technical dependency.
 
-After POLISH-07, review real usage and explicitly decide whether to resume PM-14.
+After all requested POLISH-08 reviews approve, review real usage and explicitly
+decide whether to resume PM-14. Keep PM-16+ on hold until a separate sequencing
+decision; approval of this milestone alone does not resume later feature work.
 
 ## Cross-PR invariants
 
-All seven PRs must preserve:
+All eight PRs must preserve:
 
 - SQLite as canonical storage;
 - thin Telegram handlers;

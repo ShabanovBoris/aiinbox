@@ -559,10 +559,11 @@ class DeliveryWorker:
                 ) from None
             if artifact_path.stat().st_size != size_bytes:
                 raise RuntimeError(f"delivery {delivery_id} export artifact size changed")
+            export_label = "полный" if mode == "FULL" else "компактный"
             await self.bot.send_document(
                 chat_id=chat_id,
                 document=FSInputFile(artifact_path),
-                caption=f"Экспорт AIInbox — {mode.casefold()}",
+                caption=f"Экспорт AIInbox — {export_label}",
             )
             return None
         if delivery_type == EXPORT_FAILED:
@@ -840,7 +841,7 @@ class DeliveryWorker:
             try:
                 error_code = exc.code if isinstance(exc, AppError) else None
                 if isinstance(exc, MediaTooLargeError):
-                    message = "Видео превышает лимит Telegram в 50 MB. Откройте исходную ссылку."
+                    message = "Видео превышает лимит Telegram в 50 МБ. Откройте исходную ссылку."
                 elif error_code == "TOO_LARGE":
                     message = "Видео превышает допустимую длительность. Откройте исходную ссылку."
                 elif error_code == "AUDIO_TOO_LARGE":

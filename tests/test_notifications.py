@@ -24,6 +24,7 @@ from app.services.notifications import (
     ReminderWorker,
     _local_day_window,
     attention_policy,
+    format_attention_settings,
     format_attention_status,
     format_settings,
     get_attention_status,
@@ -188,6 +189,7 @@ async def test_timezone_digest_is_once_per_local_day(session_factory):
     assert await worker.process_once(now) == 1
     assert await worker.process_once(now + timedelta(minutes=1)) == 0
     assert len(bot.messages) == 1
+    assert bot.messages[0][1] == "☀️ На сегодня\n\n🎯 Сделать задачу"
     async with session_factory() as session:
         reminder = await session.scalar(select(Reminder).where(Reminder.type == DAILY_DIGEST))
         assert reminder.status == "SENT"
@@ -575,7 +577,7 @@ async def test_snoozed_item_becomes_active_and_notifies(session_factory):
         assert item.state is ItemState.ACTIVE
         assert item.snoozed_until is None
         assert reminder.status == "SENT"
-    assert "Вернулся" in bot.messages[0][1]
+    assert "⏰ Вы хотели вернуться к этому:" in bot.messages[0][1]
     callbacks = {
         button.callback_data
         for row in bot.messages[0][2]["reply_markup"].inline_keyboard
@@ -595,7 +597,7 @@ async def test_failed_snooze_send_does_not_start_proactive_minimum_gap(session_f
 
     class FailSnoozeThenSucceed(FakeBot):
         async def send_message(self, chat_id, text, **kwargs):
-            if text.startswith("⏰ Вернулся"):
+            if text.startswith("⏰ Вы хотели вернуться к этому:"):
                 raise RuntimeError("Telegram unavailable for snooze")
             await super().send_message(chat_id, text, **kwargs)
 
@@ -698,11 +700,11 @@ async def test_notification_settings_validate_and_persist(session_factory):
 
 def test_attention_policy_table_and_validation_are_exact():
     expected = {
-        1: ("Calm", 1, timedelta(hours=8), timedelta(hours=72), 60),
-        2: ("Light", 2, timedelta(hours=5), timedelta(hours=48), 60),
-        3: ("Normal", 3, timedelta(hours=3), timedelta(hours=30), 60),
-        4: ("Active", 4, timedelta(hours=2), timedelta(hours=20), 55),
-        5: ("Aggressive", 6, timedelta(minutes=90), timedelta(hours=12), 50),
+        1: ("Спокойно", 1, timedelta(hours=8), timedelta(hours=72), 60),
+        2: ("Легко", 2, timedelta(hours=5), timedelta(hours=48), 60),
+        3: ("Обычно", 3, timedelta(hours=3), timedelta(hours=30), 60),
+        4: ("Активно", 4, timedelta(hours=2), timedelta(hours=20), 55),
+        5: ("Очень активно", 6, timedelta(minutes=90), timedelta(hours=12), 50),
     }
     assert {
         level: (
@@ -776,7 +778,7 @@ async def test_attention_status_shares_quiet_gate_and_is_read_only(session_facto
     output = format_attention_status(ready)
     assert "Тихие часы: 22:30–08:00 — закончились" in output
     assert "Сейчас блокирует: ничего" in output
-    assert "Ручной просмотр Сегодня/Attention считается показом материала" in output
+    assert "Ручной просмотр Сегодня/Внимание считается показом материала" in output
     async with session_factory() as session:
         after = (
             await session.scalar(select(func.count(Reminder.id))),
@@ -937,6 +939,37 @@ async def test_settings_show_configured_local_time_for_dst_timezone(session_fact
     assert "🕒 Сейчас для уведомлений: 01:30" in rendered
     assert status.local_now.strftime("%H:%M %Z") == "01:30 EST"
     assert status.timezone_name == "America/New_York"
+
+
+async def test_normal_notification_settings_hide_scheduler_counters_and_use_russian_labels(
+    session_factory,
+):
+    user_id, _item_id = await make_ready_item(session_factory, attention_enabled=True)
+    async with session_factory() as session:
+        user = await session.get(User, user_id)
+        values = settings_for(user)
+
+    normal = format_settings(user, values, now=datetime(2026, 9, 26, 12, tzinfo=UTC))
+    attention = format_attention_settings(values)
+
+    assert "Ежедневная подборка: включена" in normal
+    assert "Внимание: включено" in normal
+    assert "Режим: Обычно" in normal
+    assert "Дополнительные напоминания: включены" in attention
+    assert not any(
+        term in normal + attention
+        for term in (
+            "digest",
+            "Attention",
+            "ON",
+            "OFF",
+            "Calm",
+            "Normal",
+            "лимит",
+            "Минимальный интервал",
+            "Повтор материала",
+        )
+    )
 
 
 async def test_attention_defaults_and_settings_validation(session_factory):

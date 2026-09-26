@@ -619,7 +619,8 @@ async def test_auth_failure_is_controlled_and_keeps_manual_retry(tmp_path, sessi
     assert len(bot.messages) == 1
     message, options = bot.messages[0]
     assert "требует авторизации Instagram" in message
-    assert "INSTAGRAM_COOKIES_FILE" in message
+    assert "INSTAGRAM_COOKIES_FILE" not in message
+    assert "«Повторить»" in message
     buttons = [button for row in options["reply_markup"].inline_keyboard for button in row]
     assert any(button.callback_data == f"item:retry:{item.id}" for button in buttons)
 

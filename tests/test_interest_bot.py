@@ -94,9 +94,9 @@ def test_interest_submenu_projects_current_level_and_details_are_read_only():
     item = _ready_item(interest_level=2)
     markup = item_interest_keyboard(item)
     assert [row[0].text for row in markup.inline_keyboard] == [
-        "1 — Низкий",
-        "2 — Обычный ✓",
-        "3 — Высокий",
+        "Низкий",
+        "Обычный ✓",
+        "Высокий",
         "← Назад",
     ]
     assert _callback_data(markup) == [
@@ -114,7 +114,7 @@ def test_more_menu_contains_secondary_controls_and_returns_to_primary():
     callbacks = _callback_data(markup)
     labels = [button.text for row in markup.inline_keyboard for button in row]
 
-    assert {"✅ Готово", "⏰ Позже", "🗄 Архив", "⭐ Интерес"} <= set(labels)
+    assert {"✅ Сделано", "⏰ Отложить", "🗄 В архив", "⭐ Интерес"} <= set(labels)
     assert {"🛠 Обратная связь", "ℹ️ Детали", "← Назад"} <= set(labels)
     assert {
         "item:done:7",
@@ -458,9 +458,9 @@ async def test_interest_callback_updates_persisted_state_and_existing_message(
         assert stored.interest_level == 3
     assert callback.message.text == original_text
     assert [row[0].text for row in callback.message.reply_markup.inline_keyboard[:3]] == [
-        "1 — Низкий",
-        "2 — Обычный",
-        "3 — Высокий ✓",
+        "Низкий",
+        "Обычный",
+        "Высокий ✓",
     ]
     assert callback.answers == ["Интерес обновлён"]
 
@@ -476,7 +476,7 @@ async def test_more_navigation_is_owner_scoped_and_presentation_only(settings, s
     labels = {
         button.text for row in callback.message.reply_markup.inline_keyboard for button in row
     }
-    assert {"✅ Готово", "⏰ Позже", "🗄 Архив", "⭐ Интерес"} <= labels
+    assert {"✅ Сделано", "⏰ Отложить", "🗄 В архив", "⭐ Интерес"} <= labels
     assert {"🛠 Обратная связь", "ℹ️ Детали", "← Назад"} <= labels
     assert callback.message.text == "✓ Сохранено\n\n🎯 PM-01"
     assert callback.answers == [None]
@@ -503,7 +503,7 @@ async def test_details_reload_is_read_only_and_item_owner_scoped(settings, sessi
     for action in ("more", "details", "sources", "interest_menu", "back"):
         other_user = FakeCallback(1000, f"item:{action}:{item_id}")
         await on_item_callback(other_user, settings, session_factory)
-        assert other_user.answers == ["Item недоступен"]
+        assert other_user.answers == ["Сохранение недоступно"]
         assert other_user.message.text is None
         assert other_user.message.reply_markup is None
 
@@ -565,9 +565,9 @@ async def test_interest_callback_current_level_is_transport_noop(settings, sessi
         )
         assert event_count == 0
     assert [row[0].text for row in callback.message.reply_markup.inline_keyboard] == [
-        "1 — Низкий",
-        "2 — Обычный ✓",
-        "3 — Высокий",
+        "Низкий",
+        "Обычный ✓",
+        "Высокий",
         "← Назад",
     ]
     assert callback.answers == ["Уже выбран этот уровень"]
@@ -586,7 +586,7 @@ async def test_stale_interest_callback_after_archive_is_rejected_without_event(
         suffix = ":3" if action == "interest" else ""
         callback = FakeCallback(42, f"item:{action}:{item_id}{suffix}")
         await on_item_callback(callback, settings, session_factory)
-        assert callback.answers == ["Item недоступен"]
+        assert callback.answers == ["Сохранение недоступно"]
 
     async with session_factory() as session:
         item = await session.get(Item, item_id)
@@ -633,4 +633,4 @@ async def test_other_allowed_user_cannot_change_interest(settings, session_facto
         stored = await session.scalar(select(Item).where(Item.id == item_id))
         assert stored.interest_level == 2
     assert callback.message.text is None
-    assert callback.answers == ["Item недоступен"]
+    assert callback.answers == ["Сохранение недоступно"]
