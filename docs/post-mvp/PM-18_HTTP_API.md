@@ -2,7 +2,7 @@
 
 Type: Post-MVP Epic + Detailed Technical Specification  
 Prerequisite: stable application services after PM-13+; PM-16/17 optional  
-Status: PLANNED
+Status: CURRENT IMPLEMENTATION FOCUS
 
 ## 1. Problem
 
@@ -32,7 +32,14 @@ GET    /v1/settings
 PATCH  /v1/settings
 ~~~
 
-The API becomes the server contract used by PM-19 Android.
+The API becomes the stable client/integration contract used first by the promoted
+PM-33 Browser Extension and later by PM-19 Android and other explicit external
+clients.
+
+Current sequencing:
+`PM-18 → PM-33 Browser Extension → Integration Sync Foundation → Miro`.
+Server-side outbound connectors remain inside the modular monolith and should call
+application services directly rather than calling the local HTTP API.
 
 ## 3. Architectural rule
 
