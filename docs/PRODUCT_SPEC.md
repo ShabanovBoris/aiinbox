@@ -464,9 +464,12 @@ On-demand read-only обзор последних семи локальных к
 поскольку исторический снимок категории на каждом lifecycle Event не хранится.
 Attention outcome counts берутся только из PM-11 Events, связанных с
 `PROACTIVE_ATTENTION` Reminder. Эти агрегаты остаются внутренней частью read model;
-Telegram-проекция показывает только до трёх concrete recommendations по текущему
-PM-07 ranking. При отсутствии рекомендаций показывается нейтральное empty state,
-независимо от aggregate activity.
+Telegram-проекция показывает только до трёх concrete recommendations. Возврат к
+старому важному материалу и quick win используют упорядоченный список кандидатов
+PM-07; cleanup review выбирается отдельным детерминированным запросом по старым
+активным материалам с низким приоритетом и низким интересом. Поэтому cleanup
+recommendation может быть вне списка actionable-кандидатов PM-07. При отсутствии
+рекомендаций показывается нейтральное empty state независимо от aggregate activity.
 
 PM-12 v1 не пишет Item/Event/Reminder, не меняет профиль или settings, не
 записывает `TODAY_SHOWN`, `ATTENTION_SHOWN` или `WEEKLY_SHOWN`, не сохраняет

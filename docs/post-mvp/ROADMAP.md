@@ -469,10 +469,13 @@ staleness, postponement/progress themes, old important Items, reminder outcomes,
 and up to three concrete recommendations. These aggregate facts remain internal
 to the read model.
 
-On-demand `/weekly` presents only up to three existing concrete recommendations
-selected by PM-07. If none are available, it shows a neutral empty state; it
-does not fall back to aggregate activity. Scheduled weekly delivery remains out
-of scope for v1.
+On-demand `/weekly` presents only up to three existing concrete recommendations.
+Old-important and quick-win recommendations reuse PM-07 candidate ordering;
+cleanup review comes from its separate deterministic query over old, active,
+low-interest saved material and may be outside the PM-07 candidate set. If no
+recommendations are available, `/weekly` shows a neutral empty state; it does not
+fall back to aggregate activity. Scheduled weekly delivery remains out of scope
+for v1.
 
 This is reflection, not another giant backlog dump.
 

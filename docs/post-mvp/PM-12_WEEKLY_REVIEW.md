@@ -187,11 +187,16 @@ READY + ACTIVE actionable:
 
 ### Cleanup review
 
-Candidate:
-- ACTIVE;
+Use a separate deterministic query, not the PM-07 candidate list. Select one
+Item with:
+- processing_status = READY and lifecycle state = ACTIVE;
 - age >= 90 days;
-- interest_level = 1 or explicit NOT_INTERESTING history;
-- low/medium priority.
+- priority_score below the high-priority threshold;
+- interest_level = 1 or an explicit NOT_INTERESTING Event;
+- no duplicate with the already selected recommendation Items.
+
+Order eligible Items by oldest first, then lower priority score, then Item ID.
+This query may select a saved material outside PM-07's actionable candidate set.
 
 Russian Telegram wording is:
 
@@ -230,8 +235,11 @@ or ordinal positions appear in ordinary Telegram messages.
 
 Avoid N+1 queries.
 
-WeeklyReviewService should use bounded aggregate queries and reuse:
-- PM-07 ranking service;
+WeeklyReviewService should use bounded aggregate queries. Select
+`RETURN_OLD_IMPORTANT` and `QUICK_WIN` from the PM-07 ordered candidate list;
+select `CLEANUP_REVIEW` through its separate deterministic cleanup query.
+Reuse:
+- PM-07 ranking service for its two recommendation classes;
 - Event;
 - Reminder;
 - Item.
