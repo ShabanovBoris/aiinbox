@@ -9,19 +9,16 @@ Status: DONE (PR #41 merged)
 
 ### Problem
 
-Daily attention answers:
+`WeeklyReview` needs deterministic facts about the previous week and current
+backlog. Ordinary Telegram, however, should return the user to useful saved
+content rather than report the system's aggregate analytics.
 
-> What should I do now?
-
-It does not answer:
-
-> What is happening to my attention and backlog over time?
-
-The user needs a compact weekly reflection, not another long backlog dump.
+The user-facing `/weekly` is a compact list of concrete materials worth
+revisiting, not another long backlog dump or a productivity report.
 
 ### Goal
 
-Add /weekly: a deterministic seven-day review of:
+Build an internal deterministic seven-day read model of:
 - capture;
 - completion;
 - archive/cleanup;
@@ -31,7 +28,9 @@ Add /weekly: a deterministic seven-day review of:
 - reminder outcomes;
 - up to three concrete next recommendations.
 
-The first version should not require an LLM.
+The Telegram projection exposes only up to three existing concrete
+recommendations. Aggregate facts remain internal and are never a fallback when
+there are no recommendations. The first version does not require an LLM.
 
 ## 2. Time window
 
@@ -51,12 +50,11 @@ Also compute backlog age/staleness from current state.
 
 - WeeklyReviewService;
 - /weekly command;
-- deterministic metrics;
-- category summaries;
-- stale/neglected analysis;
-- reminder outcome metrics;
-- max three recommendations;
-- concise Telegram formatting;
+- deterministic aggregate metrics kept in the internal read model;
+- category and stale/neglected analysis kept internal;
+- reminder outcome metrics kept internal;
+- at most three existing deterministic recommendations in Telegram;
+- concise Russian, object-centric Telegram formatting;
 - tests.
 
 ## 4. Out of scope
@@ -94,7 +92,7 @@ READY + ACTIVE actionable
 age >= 30 days
 ~~~
 
-Report count.
+Compute the count in `WeeklyReview`; do not show it in ordinary Telegram copy.
 
 ### Old important never revisited
 
@@ -106,15 +104,16 @@ age >= 30 days
 no TODAY_SHOWN / ATTENTION_SHOWN / successful PROACTIVE_ATTENTION in last 14 days
 ~~~
 
-Report count and optionally top 1–3 titles.
+Compute the count internally. A selected saved material may appear as one of the
+concrete recommendations; never show the aggregate count or a numbered top list.
 
 ## 6. Category metrics
 
-Show at most top three categories for:
+Compute at most the top three categories in the internal read model for:
 - Items created in the period;
 - Items completed in the period.
 
-Do not show dozens of categories.
+Do not render category counts in the Telegram projection.
 
 ### Most postponed category
 
@@ -135,7 +134,7 @@ Do not claim “best progress” from one completed Item.
 
 ## 7. Reminder metrics
 
-When PM-11 data exists, report compactly:
+When PM-11 data exists, compute compact raw counts internally:
 
 ~~~text
 Attention reminders:
@@ -146,10 +145,12 @@ dismissed X
 disliked Y
 ~~~
 
-Avoid percentages for very small sample sizes.
+Do not show these counts or percentages in the ordinary Telegram projection.
+Avoid percentages for very small sample sizes if an explicit diagnostics surface
+is added later.
 
 If sent < 5:
-- show raw counts only;
+- retain factual counts only in the internal read model;
 - do not infer effectiveness.
 
 ## 8. Backlog trend
@@ -160,12 +161,13 @@ Compute:
 net_change = created - completed - archived
 ~~~
 
-Wording:
+Internal interpretation:
 - positive: backlog grew by N;
 - negative: backlog shrank by N;
 - zero: roughly balanced.
 
-Do not label growth as failure.
+The current Telegram projection never displays this trend. If a future explicit
+diagnostics surface exposes it, do not label growth as failure.
 
 ## 9. Recommendations
 
@@ -191,9 +193,9 @@ Candidate:
 - interest_level = 1 or explicit NOT_INTERESTING history;
 - low/medium priority.
 
-Wording must be:
+Russian Telegram wording is:
 
-> Check whether this is still relevant.
+> Проверить, ещё актуален ли он.
 
 Do not auto-recommend “archive” as a certainty.
 
@@ -202,35 +204,27 @@ Ensure recommendations use distinct Items.
 ## 10. Example output
 
 ~~~text
-Неделя
+📌 Вернуться на этой неделе
 
-Добавлено: 38
-Готово: 17
-Архивировано: 6
-Backlog: +15
+• Kotlin compiler changes
+Вернуться к материалу.
 
-Активные темы:
-AI — 11
-Android — 7
-Finance — 5
+• Процесс деплоя на серьёзном проекте
+Короткий следующий шаг. ≈ 15 минут
 
-Старый backlog:
-21 Item старше 30 дней
-4 важных давно не возвращались в фокус
-
-Чаще откладывал:
-Piano
-
-Attention:
-8 reminders · 2 done · 1 disliked
-
-На следующую неделю:
-1. Вернуться к <Item>
-2. Закрыть быстрый <Item> (~15 мин)
-3. Проверить актуальность <Item>
+• Старый материал по архитектуре
+Проверить, ещё актуален ли он.
 ~~~
 
-Omit empty sections rather than printing zeros everywhere.
+The empty state is:
+
+~~~text
+📌 На этой неделе пока нечего отдельно возвращать в фокус.
+~~~
+
+Do not fall back to aggregate metrics when no recommendation exists. No weekly
+counts, category totals, backlog trend, Reminder outcomes, Item jargon, scores,
+or ordinal positions appear in ordinary Telegram messages.
 
 ## 11. Data access
 
@@ -246,9 +240,12 @@ Do not build a data warehouse.
 
 ## 12. User language
 
-Use existing bot/product language in v1.
+Ordinary Telegram copy is Russian. Saved titles keep their canonical source
+language; generated recommendation descriptions use the existing Russian
+product wording.
 
-If later localized, all computed facts remain language-neutral and only formatting changes.
+All computed facts remain language-neutral; only presentation text depends on
+the product language.
 
 No LLM translation required.
 
@@ -259,15 +256,16 @@ No LLM translation required.
 - no heavy external calls;
 - result should fit Telegram message limits.
 
-If content is too large:
-- trim low-value sections;
-- do not split into ten messages.
+The command sends one message containing only the recommendation rows. Keep the
+existing Telegram length bound; do not add aggregate sections or split the
+report into multiple messages.
 
 ## 14. Exposure side effects
 
-/weekly v1 is an on-demand analytical report, not an Attention exposure. It
-does not write any Event for Items mentioned in its metrics or recommendations,
-including `TODAY_SHOWN`, `ATTENTION_SHOWN`, or `WEEKLY_SHOWN`.
+`/weekly` is an on-demand read-only recommendation projection, not an analytical
+Telegram report or an Attention exposure. It does not write any Event for Items
+considered by its internal metrics or recommendations, including
+`TODAY_SHOWN`, `ATTENTION_SHOWN`, or `WEEKLY_SHOWN`.
 
 The next `/attention` preview therefore continues to use only actual PM-07/11
 exposure history. No schema change is required for PM-12.
@@ -302,29 +300,33 @@ exposure history. No schema change is required for PM-12.
 
 ### Formatting
 
-- empty sections omitted;
+- only concrete existing recommendation titles and short next-step descriptions;
+- at most three rows, with no numbering or aggregate fallback;
+- neutral empty state when no recommendation exists;
+- no Item/Backlog/lifecycle jargon, scores, or aggregate counts;
 - bounded Telegram length;
-- no fabricated percentages.
+- no fabricated content or unsupported percentages.
 
 ## 16. Acceptance criteria
 
-1. /weekly summarizes real seven-day activity.
-2. stale/neglected backlog is visible.
-3. category insights require sufficient evidence.
-4. reminder outcomes are factual.
-5. max three deterministic recommendations.
-6. no LLM is required.
-7. command does not mutate semantic ranking.
-8. output remains compact.
-9. quality gate passes.
+1. `WeeklyReview` computes the documented seven-day and current-backlog facts.
+2. Internal category and reminder facts use the documented evidence thresholds.
+3. Telegram shows at most three existing `WeeklyRecommendation` rows, each
+   linked to its concrete saved material; it exposes no aggregate metrics.
+4. When there are no recommendations, Telegram shows the neutral empty state
+   without falling back to activity counts.
+5. The Russian output is compact and contains no system jargon, scores,
+   numbering, or productivity counters.
+6. No LLM is required and `/weekly` does not mutate semantic ranking or create
+   exposure Events.
+7. The quality gate passes.
 
 ## 17. Definition of Done
 
-- WeeklyReviewService;
-- /weekly;
-- aggregate queries;
-- formatter;
-- tests;
+- `WeeklyReviewService` with aggregate facts retained in the internal model;
+- `/weekly` with only concrete recommendation rows in its Telegram projection;
+- an object-centric formatter with a neutral no-recommendation state;
+- tests for metrics, recommendations, and aggregate-free Telegram formatting;
 - BOT_USAGE update;
 - no scheduled weekly push unless separately approved;
 - repository review completed.
