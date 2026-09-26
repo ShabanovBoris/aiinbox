@@ -458,17 +458,16 @@ attention ranking
 
 Current state: DONE. PM-12 was implemented and merged to `main` in PR #41.
 
-Add on-demand `/weekly`; scheduled weekly delivery is out of scope for v1.
+`WeeklyReview` computes deterministic facts for the last seven local calendar
+days and the current backlog: added/completed/archived counts, active categories,
+staleness, postponement/progress themes, old important Items, reminder outcomes,
+and up to three concrete recommendations. These aggregate facts remain internal
+to the read model.
 
-Show:
-
-- added/completed/archived counts;
-- active categories;
-- stale backlog;
-- most snoozed themes;
-- progress themes;
-- old important Items never revisited;
-- maximum three concrete recommendations.
+On-demand `/weekly` presents only up to three existing concrete recommendations
+selected by PM-07. If none are available, it shows a neutral empty state; it
+does not fall back to aggregate activity. Scheduled weekly delivery remains out
+of scope for v1.
 
 This is reflection, not another giant backlog dump.
 
