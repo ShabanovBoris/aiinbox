@@ -123,7 +123,7 @@ PM-15 is largely independent and can be scheduled before or after PM-14 based on
 - PM-19 Android Client
 - PM-20 Calendar-aware Attention
 
-## Implementation-order recommendation
+## Historical implementation-order recommendation
 
 A low-risk practical order is:
 
@@ -139,3 +139,24 @@ PM-15
 PM-14 should begin when PM-13 usage provides the retrieval-failure evidence required by its spec; it can run before or alongside PM-15/16 without blocking the portability/client track.
 
 This is a sequencing suggestion, not a new product dependency.
+
+## Current sequencing override
+
+The earlier low-risk ordering above is no longer the active execution priority.
+
+Current explicit product focus:
+
+~~~text
+PM-18 HTTP API
+→ PM-33 Browser Extension
+→ Integration Sync Foundation
+→ Miro one-way sync
+→ additional outbound destinations
+~~~
+
+PM-14 and PM-16/17 remain separately gated until explicitly resumed.
+
+See:
+- [CURRENT_FOCUS_API_BROWSER_INTEGRATIONS.md](CURRENT_FOCUS_API_BROWSER_INTEGRATIONS.md)
+- [INTEGRATION_SYNC_ARCHITECTURE.md](INTEGRATION_SYNC_ARCHITECTURE.md)
+- [FUTURE_ROADMAP_PM21_PM50.md](FUTURE_ROADMAP_PM21_PM50.md)
