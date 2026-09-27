@@ -92,9 +92,14 @@ All post-MVP work must preserve the current architecture:
 - [PM-19 — Android Client](PM-19_ANDROID_CLIENT.md)
 - [PM-20 — Calendar-aware Attention](PM-20_CALENDAR_AWARE_ATTENTION.md)
 - [PM-14…PM-20 — Remaining roadmap index](PM-14_PM-20_INDEX.md)
+- [Browser & Integration Track](BROWSER_INTEGRATIONS_INDEX.md)
+- [PM-33 — Browser Extension](PM-33_BROWSER_EXTENSION.md)
+- [Integration Sync Foundation](INTEGRATION_SYNC_FOUNDATION.md)
+- [Miro Connector v1](INTEGRATION_MIRO_V1.md)
+- [Additional Integration Destinations](INTEGRATION_DESTINATIONS.md)
 
 
-## 3.2 Quality & UX Polish — current focus
+## 3.2 Quality & UX Polish — completed gate
 
 Before resuming PM-14+ feature expansion, complete all eight stabilization and
 corrective UX PRs:
@@ -109,22 +114,53 @@ corrective UX PRs:
 - [POLISH-08 — Human-facing Reminders](../polish/POLISH-08_HUMAN_REMINDERS.md)
 - [Milestone index and freeze policy](../polish/README.md)
 
-Current sequencing decision:
+The corrective polish sequence is complete through POLISH-08 (PR #54 merged).
+
+PM-14 semantic retrieval and PM-16/17 provider-routing work remain separately
+gated until explicitly resumed. The product sequencing decision already resumed
+PM-18, which is now DONE in PR #56. The current expansion focus is browser capture
+and outbound integrations rather than automatic continuation through numeric PM
+order.
+
+
+## 3.3 Current execution focus — browser capture and external projections
+
+Current sequencing:
 
 ~~~text
-POLISH-01 → POLISH-02 → POLISH-03 → POLISH-04 → POLISH-05
-→ real-user review → POLISH-06 → POLISH-07
-→ POLISH-08 → two independent quality reviews
-→ review real usage → explicitly decide whether to resume PM-14
+PM-18 HTTP API — DONE
+        ↓
+PM-33 Browser Extension
+        ↓
+Integration Sync Foundation
+        ↓
+Miro Connector v1
+        ↓
+additional outbound destinations
 ~~~
 
-PM-14 runtime and PM-16+ are ON HOLD until all eight polish PRs are accepted
-through their requested reviews. POLISH-08 approval does not automatically
-resume PM-14: review real usage after the polish gate and explicitly decide
-whether to resume it. PM-16+ remains on hold pending a separate sequencing
-decision. PM-14 has a documented real lexical-miss case; embeddings and semantic
-retrieval remain out of scope for POLISH-08. Reliability/security fixes remain
-allowed. PM-15 is already merged and remains supported.
+PM-33 is intentionally promoted ahead of its numeric position. PM numbers remain
+stable roadmap identifiers, not a strict execution queue.
+
+Key boundaries:
+
+- Browser Extension is an external client of the existing PM-18 API.
+- AIInbox remains canonical for Item identity, sources, analysis and lifecycle.
+- Server-side integration connectors use application services/read projections
+  directly and do not call the local HTTP API.
+- External platforms are one-way projections in v1.
+- Miro is the first concrete destination.
+- A second destination is selected only after real Miro usage.
+- PM-14 and PM-16/17 remain independently gated.
+- PM-19 Android and PM-20 calendar are deferred while this track is active.
+
+Detailed specifications:
+
+- [Browser & Integration Track](BROWSER_INTEGRATIONS_INDEX.md)
+- [PM-33 — Browser Extension](PM-33_BROWSER_EXTENSION.md)
+- [Integration Sync Foundation](INTEGRATION_SYNC_FOUNDATION.md)
+- [Miro Connector v1](INTEGRATION_MIRO_V1.md)
+- [Additional Integration Destinations](INTEGRATION_DESTINATIONS.md)
 
 ## 4. Milestone grouping
 
@@ -170,7 +206,7 @@ Goal: make resurfacing useful and engaging rather than repetitive.
 
 Goal: expose trends in attention, backlog growth, completion, neglect and category balance.
 
-### Milestone P — Quality & UX Polish — CURRENT FOCUS
+### Milestone P — Quality & UX Polish — DONE
 
 - POLISH-01 AI Analysis v2 — DONE (PR #46 merged)
 - POLISH-02 Compact Telegram Item UI — DONE (PR #48 merged)
@@ -179,7 +215,7 @@ Goal: expose trends in attention, backlog growth, completion, neglect and catego
 - POLISH-05 Telegram Navigation & AI Reliability — DONE (PR #51 merged)
 - POLISH-06 Final Telegram UX Cleanup — DONE (PR #52 merged)
 - POLISH-07 System Integrity — DONE (PR #53 merged)
-- POLISH-08 Human-facing Reminders — IN_REVIEW (PR #54)
+- POLISH-08 Human-facing Reminders — DONE (PR #54 merged)
 
 Goal: make the existing AI understanding, Telegram presentation, source navigation,
 reminders and reliability worth extending before new capability is added.
@@ -187,9 +223,9 @@ reminders and reliability worth extending before new capability is added.
 POLISH-06 is the corrective PR produced by real-user review after POLISH-05.
 POLISH-07 records the confirmed `Андроид` → `Android` lexical miss and fixes
 interaction parity, classifier isolation, and Attention diagnostics. POLISH-08
-is the current review gate for Russian, object-centric daily, weekly, and
-reminder presentation. PM-14 and PM-16+ remain ON HOLD through its two requested
-reviews; approving POLISH-08 does not resume roadmap expansion automatically.
+completed the Russian, object-centric daily, weekly, and reminder presentation
+gate. PM-18 was then explicitly resumed and merged; other gated epics do not
+resume automatically.
 
 ### Milestone G — Knowledge
 
@@ -206,9 +242,19 @@ Goal: make stored material queryable as a personal knowledge base.
 
 ### Milestone I — Additional Clients & Context
 
-- PM-18 HTTP API — ON HOLD until polish milestone review
-- PM-19 Android — ON HOLD; depends on PM-18
-- PM-20 Calendar-aware Attention — ON HOLD until the current core is polished
+- PM-18 HTTP API — DONE (PR #56 merged)
+- PM-19 Android — DEFERRED; PM-18 prerequisite is satisfied
+- PM-20 Calendar-aware Attention — DEFERRED
+
+### Milestone J — Browser & External Integrations — CURRENT FOCUS
+
+- PM-33 Browser Extension — NEXT
+- Integration Sync Foundation — PLANNED
+- Miro Connector v1 — PLANNED, first destination
+- Additional destinations — EVIDENCE-DRIVEN after Miro
+
+Goal: remove browser capture friction and make canonical AIInbox saves available
+inside external workspaces without creating another source of truth.
 
 ## 5. PM-01 — User Interest Level
 
@@ -564,21 +610,24 @@ Detailed specification: [PM-17_OLLAMA_LOCAL_MODELS.md](PM-17_OLLAMA_LOCAL_MODELS
 
 ## 22. PM-18 — HTTP API
 
-Status: ON HOLD until the Quality & UX Polish milestone is reviewed.
+Status: DONE. PM-18 was implemented and merged to main in PR #56.
 
-Expose existing application services through an authenticated versioned FastAPI
-`/v1` interface. API endpoints remain thin adapters; they do not duplicate
-Telegram business logic. Initial surface covers text/URL capture, Item browsing,
-Today, Attention, Weekly, Search, durable Ask, lifecycle actions and user settings.
+The implemented optional FastAPI `/v1` interface is a thin adapter over existing
+application services. It provides bearer-authenticated text/URL capture, cursor
+Item browsing, Today, Attention, Weekly, Search, durable/pollable Ask, lifecycle
+actions and user settings.
 
-Write operations support client idempotency keys for mobile/offline retry. HTTP
-Ask remains asynchronous and its generated result stays transient/non-canonical.
+HTTP capture and Ask use durable external idempotency keys. HTTP-created Items do
+not create Telegram READY/FAILED delivery noise, GET projections remain read-only,
+and HTTP Ask results stay transient/non-canonical. PM-33 Browser Extension is the
+first prioritized external client of this contract.
 
 Detailed specification: [PM-18_HTTP_API.md](PM-18_HTTP_API.md).
 
 ## 23. PM-19 — Android Client
 
-Status: ON HOLD. Depends on PM-18 and the Quality & UX Polish milestone review.
+Status: DEFERRED. PM-18 prerequisite is complete; browser capture and outbound
+integrations are currently prioritized first.
 
 Build a native thin Android client over `/v1`: Share Sheet text/URL capture,
 offline retry, Inbox/detail, Today, Attention, Search, Ask, Weekly, lifecycle
@@ -592,7 +641,7 @@ Detailed specification: [PM-19_ANDROID_CLIENT.md](PM-19_ANDROID_CLIENT.md).
 
 ## 24. PM-20 — Calendar-aware Attention
 
-Status: ON HOLD until the Quality & UX Polish milestone is reviewed. Depends on the Attention engine; PM-18/19 provide the recommended
+Status: DEFERRED. Depends on the Attention engine; PM-18/19 provide the recommended
 initial calendar transport.
 
 Use optional fresh busy/free windows together with Attention score and
@@ -605,6 +654,46 @@ existing PM-08 caps, gaps, quiet hours and fatigue policies remain authoritative
 Core ranking remains fully usable when no calendar is connected.
 
 Detailed specification: [PM-20_CALENDAR_AWARE_ATTENTION.md](PM-20_CALENDAR_AWARE_ATTENTION.md).
+
+
+## 24.1 Promoted PM-33 and integration track
+
+### PM-33 — Browser Extension
+
+Use the existing PM-18 authenticated API for explicit browser capture. V1 saves
+the current page or selected text plus page URL, keeps explicit user notes
+separate, and persists an offline retry queue with one stable Idempotency-Key per
+capture.
+
+Detailed specification: [PM-33_BROWSER_EXTENSION.md](PM-33_BROWSER_EXTENSION.md).
+
+### Integration Sync Foundation
+
+Add a small durable one-way projection layer. AIInbox remains canonical. One
+Item × one connection gets one durable projection/mapping, provider calls happen
+outside SQLite write transactions, and bootstrap plus incremental updates survive
+restart.
+
+Detailed specification:
+[INTEGRATION_SYNC_FOUNDATION.md](INTEGRATION_SYNC_FOUNDATION.md).
+
+### Miro Connector v1
+
+Miro is the first destination. Mirror every canonical Item into one configured
+board using a stable remote mapping and concise sticky-note representation.
+Remote edits/deletions do not mutate AIInbox. OAuth, rate limits, crash-after-create
+recovery and full-history bootstrap are explicit connector responsibilities.
+
+Detailed specification: [INTEGRATION_MIRO_V1.md](INTEGRATION_MIRO_V1.md).
+
+### Additional destinations
+
+After real Miro usage, choose the next destination from demonstrated workflow
+need. Candidate directions include a signed generic webhook, Notion,
+Google Sheets/Drive projections and local Markdown/Obsidian output.
+
+Detailed strategy:
+[INTEGRATION_DESTINATIONS.md](INTEGRATION_DESTINATIONS.md).
 
 ## 25. Target data-model evolution
 
