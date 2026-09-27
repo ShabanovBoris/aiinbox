@@ -53,6 +53,14 @@ class SnoozeRequest(_WriteRequest):
 
     snoozed_until: datetime
 
+    @field_validator("snoozed_until", mode="before")
+    @classmethod
+    def require_iso_string(cls, value: object) -> object:
+        """Keep the HTTP contract to ISO strings instead of Pydantic's epoch coercion."""
+        if not isinstance(value, str):
+            raise ValueError("snoozed_until must be an ISO timestamp string")
+        return value
+
     @field_validator("snoozed_until")
     @classmethod
     def require_timezone(cls, value: datetime) -> datetime:

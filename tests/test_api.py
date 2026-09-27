@@ -1,7 +1,7 @@
 import asyncio
 import json
 import logging
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -316,6 +316,13 @@ async def test_interest_snooze_and_settings_use_shared_services(api_client, sess
         json={"snoozed_until": "2026-09-30T12:00:00"},
     )
     assert naive_snooze.status_code == 422
+    for timestamp in (int((datetime.now(UTC) + timedelta(days=2)).timestamp()), 1_800_000_000.5):
+        epoch_snooze = await api_client.post(
+            f"/v1/items/{item_id}/snooze",
+            headers=auth_headers(),
+            json={"snoozed_until": timestamp},
+        )
+        assert epoch_snooze.status_code == 422
     snooze = await api_client.post(
         f"/v1/items/{item_id}/snooze",
         headers=auth_headers(),
@@ -336,6 +343,30 @@ async def test_interest_snooze_and_settings_use_shared_services(api_client, sess
             == 1
         )
         assert await session.scalar(select(func.count(Reminder.id))) == 1
+
+    offset_target = (datetime.now(UTC) + timedelta(days=3)).astimezone(timezone(timedelta(hours=3)))
+    async with session_factory() as session:
+        offset_item = Item(
+            user_id=user_id,
+            telegram_message_id=None,
+            source_index=1,
+            processing_status=ProcessingStatus.READY,
+            state=ItemState.ACTIVE,
+            source_type=SourceType.TEXT,
+            processing_stage="READY",
+            user_note="",
+            title="Snooze with offset",
+        )
+        session.add(offset_item)
+        await session.commit()
+        offset_item_id = offset_item.id
+    offset_snooze = await api_client.post(
+        f"/v1/items/{offset_item_id}/snooze",
+        headers=auth_headers(),
+        json={"snoozed_until": offset_target.isoformat()},
+    )
+    assert offset_snooze.status_code == 200
+    assert offset_snooze.json()["snoozed_until"].endswith("Z")
 
     done_responses = [
         await api_client.post(f"/v1/items/{item_id}/done", headers=auth_headers()) for _ in range(2)

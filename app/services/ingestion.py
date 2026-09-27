@@ -14,6 +14,16 @@ from app.storage.models import Content, Event, Item, ItemSource, User
 log = logging.getLogger(__name__)
 
 
+def _refresh_telegram_chat_id(user: User, chat_id: int | None) -> None:
+    """Keep Telegram's delivery destination on the shared User identity.
+
+    HTTP startup may create the canonical User without a Telegram destination;
+    only an actual Telegram update is authoritative enough to set or change it.
+    """
+    if chat_id is not None and user.telegram_chat_id != chat_id:
+        user.telegram_chat_id = chat_id
+
+
 async def get_or_create_user(
     session: AsyncSession,
     *,
@@ -23,6 +33,7 @@ async def get_or_create_user(
 ) -> User:
     user = await session.scalar(select(User).where(User.telegram_user_id == telegram_user_id))
     if user is not None:
+        _refresh_telegram_chat_id(user, chat_id)
         return user
     user = User(telegram_user_id=telegram_user_id, telegram_chat_id=chat_id, timezone=timezone)
     session.add(user)
@@ -36,6 +47,7 @@ async def get_or_create_user(
         user = await session.scalar(select(User).where(User.telegram_user_id == telegram_user_id))
         if user is None:
             raise
+        _refresh_telegram_chat_id(user, chat_id)
     return user
 
 

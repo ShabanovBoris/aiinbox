@@ -21,6 +21,7 @@ from app.extractors import subprocess_runner
 from app.extractors import youtube as youtube_module
 from app.extractors.subprocess_runner import run_killable_subprocess
 from app.extractors.youtube import YoutubeExtractor
+from app.main import _ensure_http_api_user
 from app.services.actions import apply_item_action
 from app.services.delivery import (
     ITEM_FAILED,
@@ -164,6 +165,40 @@ async def test_delivery_worker_sends_ready_item_and_marks_sent(session_factory):
         assert delivery.status == "SENT"
         assert delivery.attempts == 1
         assert delivery.sent_at is not None
+
+
+async def test_api_first_identity_can_receive_telegram_ready_delivery(session_factory, settings):
+    """HTTP identity provisioning must leave later Telegram delivery fully usable."""
+    api_settings = settings.model_copy(
+        update={
+            "http_api_enabled": True,
+            "http_api_user_telegram_id": 42,
+        }
+    )
+    await _ensure_http_api_user(session_factory, api_settings)
+    item = (
+        await ingest_message(
+            session_factory,
+            telegram_user_id=42,
+            chat_id=7777,
+            message_id=1,
+            text="item after API startup",
+        )
+    ).items[0]
+    await _ensure_http_api_user(session_factory, api_settings)
+    async with session_factory() as session:
+        stored = await session.get(Item, item.id)
+        assert stored is not None
+        stored.processing_status = ProcessingStatus.READY
+        stored.processing_stage = "READY"
+        stored.title = "Разобрать материал"
+        await enqueue_item_delivery(session, stored, ITEM_READY)
+        await session.commit()
+
+    bot = FakeBot()
+    worker = DeliveryWorker(session_factory, bot, retry_backoff_seconds=0)
+    assert await worker.process_one() is True
+    assert bot.messages[0][0] == 7777
 
 
 async def _make_ready_video_source(session_factory, source_type: SourceType):

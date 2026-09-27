@@ -1,11 +1,12 @@
 import asyncio
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 
 from app.domain.enums import ContentKind, ProcessingStatus, SourceType
-from app.services.ingestion import ingest_message
+from app.services.ingestion import get_or_create_user, ingest_message
 from app.services.url_parsing import normalize_url, parse_message
 from app.storage.models import Content, Event, Item, ItemSource, User
 
@@ -183,6 +184,40 @@ async def test_parallel_first_messages_create_one_user_and_all_items(session_fac
     async with session_factory() as session:
         assert await session.scalar(select(func.count()).select_from(User)) == 1
         assert await session.scalar(select(func.count()).select_from(Item)) == 2
+
+
+async def test_user_conflict_reload_sets_telegram_destination_after_api_creation():
+    """The identity seam reconciles Telegram delivery data after an insert race."""
+    api_user = User(telegram_user_id=777, telegram_chat_id=None)
+    session = Mock()
+    session.scalar = AsyncMock(side_effect=[None, api_user])
+    session.flush = AsyncMock(side_effect=IntegrityError("insert", {}, RuntimeError("duplicate")))
+    session.rollback = AsyncMock()
+
+    user = await get_or_create_user(
+        session,
+        telegram_user_id=777,
+        chat_id=7007,
+    )
+
+    assert user is api_user
+    assert user.telegram_chat_id == 7007
+    session.rollback.assert_awaited_once()
+
+
+async def test_existing_user_tracks_changed_telegram_destination(session_factory):
+    """Telegram's non-null chat destination remains current on the canonical identity."""
+    async with session_factory() as session:
+        await get_or_create_user(session, telegram_user_id=778, chat_id=7007)
+        await session.commit()
+
+    async with session_factory() as session:
+        await get_or_create_user(session, telegram_user_id=778, chat_id=7008)
+        await session.commit()
+
+    async with session_factory() as session:
+        user = await session.scalar(select(User).where(User.telegram_user_id == 778))
+        assert user.telegram_chat_id == 7008
 
 
 async def test_item_with_unknown_user_rejected_by_db(session_factory):

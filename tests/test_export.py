@@ -249,6 +249,13 @@ async def _seed_export_content(session_factory):
                 Event(
                     user_id=user.id,
                     item_id=item.id,
+                    event_type="INTEREST_CHANGED",
+                    payload_json={"from": 2, "to": 3, "source": "http"},
+                    created_at=datetime(2026, 9, 23, 11),
+                ),
+                Event(
+                    user_id=user.id,
+                    item_id=item.id,
                     reminder_id=reminder.id,
                     event_type="REMINDER_SENT",
                     payload_json={
@@ -509,8 +516,15 @@ async def test_compact_and_full_archives_obey_allowlists_and_user_ownership(
             "to": "AI",
             "source": "telegram",
         }
-        assert compact_events[1]["payload"]["source_id"] == source_id
-        assert compact_events[1]["reminder_id"] == reminder_id
+        http_interest_event = next(
+            event for event in compact_events if event["event_type"] == "INTEREST_CHANGED"
+        )
+        assert http_interest_event["payload"] == {"from": 2, "to": 3, "source": "http"}
+        reminder_event = next(
+            event for event in compact_events if event["event_type"] == "REMINDER_SENT"
+        )
+        assert reminder_event["payload"]["source_id"] == source_id
+        assert reminder_event["reminder_id"] == reminder_id
         assert compact_reminders[0]["item_id"] == item_id
         assert "payload_json" not in compact_reminders[0]
         assert "contents.jsonl" not in archive.namelist()
@@ -579,7 +593,7 @@ async def test_compact_and_full_archives_obey_allowlists_and_user_ownership(
         assert current_item.state is ItemState.ACTIVE
         assert current_item.processing_status is ProcessingStatus.READY
         assert await session.scalar(select(func.count()).select_from(Content)) == 10
-        assert await session.scalar(select(func.count()).select_from(Event)) == 3
+        assert await session.scalar(select(func.count()).select_from(Event)) == 4
         assert await session.scalar(select(func.count()).select_from(Reminder)) == 2
         assert await session.scalar(select(func.count()).select_from(Delivery)) == 3
         assert await session.scalar(select(func.count()).select_from(ExportJob)) == 2
@@ -689,7 +703,7 @@ async def test_full_content_guard_creates_controlled_durable_failure_notice(
     )
     assert await delivery_worker.process_one()
     assert bot.send_message.await_args.args == (
-        998877665544,
+        7001,
         "Полный экспорт получился слишком большим для отправки в Telegram. "
         "Попробуй /export compact.",
     )
