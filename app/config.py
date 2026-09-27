@@ -27,6 +27,12 @@ class Settings(BaseSettings):
     processing_timeout_seconds: float = Field(900.0, gt=0)
     shutdown_timeout_seconds: float = Field(30.0, gt=0)
     default_timezone: str = "UTC"
+    http_api_enabled: bool = False
+    http_api_host: str = "127.0.0.1"
+    http_api_port: int = Field(8080, ge=1, le=65535)
+    http_api_token: str = ""
+    http_api_user_telegram_id: int | None = Field(default=None, gt=0)
+    http_ask_result_ttl_seconds: int = Field(3600, ge=60)
 
     # Web extraction (Phase 3)
     min_extracted_text_length: int = Field(300, ge=1)
@@ -129,6 +135,16 @@ class Settings(BaseSettings):
             or backup_path.is_relative_to(export_path)
         ):
             raise ValueError("EXPORT_DIR and BACKUP_DIR must use separate directories")
+        return self
+
+    @model_validator(mode="after")
+    def validate_http_api(self) -> "Settings":
+        """Keep the optional HTTP boundary fail-closed before a listener can start."""
+        if self.http_api_enabled:
+            if len(self.http_api_token) < 32:
+                raise ValueError("HTTP_API_TOKEN must contain at least 32 characters")
+            if self.http_api_user_telegram_id is None:
+                raise ValueError("HTTP_API_USER_TELEGRAM_ID is required when HTTP API is enabled")
         return self
 
     @property

@@ -5,15 +5,25 @@
 длинный контент из ``contents`` без SQLite trigger-магии.
 """
 
+import base64
+import binascii
+import json
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import UTC, datetime
 
-from sqlalchemy import func, select, text
+from sqlalchemy import and_, func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.category_tokens import category_token
-from app.domain.enums import ACTIONABLE_ITEM_TYPES, ContentKind, ItemState, ProcessingStatus
+from app.domain.enums import (
+    ACTIONABLE_ITEM_TYPES,
+    ContentKind,
+    ItemState,
+    ItemType,
+    ProcessingStatus,
+)
 from app.storage.models import Content, Item, ItemSource
 
 _FTS_TABLE = "item_search"
@@ -21,6 +31,7 @@ _DEFAULT_SEARCH_LIMIT = 10
 _MAX_SEARCH_RESULTS = 20
 _DEFAULT_PAGE_SIZE = 10
 _MAX_PAGE_SIZE = 12
+MAX_API_CURSOR_CHARS = 512
 _CATEGORY_RESOLUTION_PAGE_SIZE = 100
 _DEFAULT_ASK_LIMIT = 8
 _MAX_ASK_LIMIT = 10
@@ -34,6 +45,14 @@ class ItemPage:
     page: int
     has_previous: bool
     has_next: bool
+
+
+@dataclass(frozen=True, slots=True)
+class ApiItemPage:
+    """Owner-scoped cursor page used as the stable external read contract."""
+
+    items: tuple[Item, ...]
+    next_cursor: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -286,6 +305,98 @@ async def load_item_sources_by_item(
     for source in sources:
         grouped[source.item_id].append(source)
     return grouped
+
+
+async def list_api_item_page(
+    session: AsyncSession,
+    user_id: int,
+    *,
+    limit: int = 20,
+    cursor: str | None = None,
+    state: ItemState | None = None,
+    processing_status: ProcessingStatus | None = None,
+    category: str | None = None,
+    item_type: ItemType | None = None,
+) -> ApiItemPage:
+    """Read stable created-at/id pages without trusting cursor data for ownership."""
+    if not 1 <= limit <= 50:
+        raise ValueError("API Item limit must be between 1 and 50")
+    conditions = [Item.user_id == user_id]
+    if state is not None:
+        conditions.append(Item.state == state)
+    if processing_status is not None:
+        conditions.append(Item.processing_status == processing_status)
+    if category is not None:
+        conditions.append(Item.category == category)
+    if item_type is not None:
+        conditions.append(Item.item_type == item_type)
+    if cursor is not None:
+        cursor_created_at, cursor_id = _decode_api_item_cursor(cursor)
+        conditions.append(
+            or_(
+                Item.created_at < cursor_created_at,
+                and_(Item.created_at == cursor_created_at, Item.id < cursor_id),
+            )
+        )
+
+    rows = list(
+        (
+            await session.scalars(
+                select(Item)
+                .where(*conditions)
+                .order_by(Item.created_at.desc(), Item.id.desc())
+                .limit(limit + 1)
+            )
+        ).all()
+    )
+    page_items = rows[:limit]
+    next_cursor = (
+        _encode_api_item_cursor(page_items[-1].created_at, page_items[-1].id)
+        if len(rows) > limit and page_items
+        else None
+    )
+    return ApiItemPage(items=tuple(page_items), next_cursor=next_cursor)
+
+
+def _encode_api_item_cursor(created_at: datetime, item_id: int) -> str:
+    """Encode only ordering state; authorization always comes from the query owner."""
+    instant = (
+        created_at.replace(tzinfo=UTC) if created_at.tzinfo is None else created_at.astimezone(UTC)
+    )
+    payload = json.dumps(
+        {"created_at": instant.isoformat().replace("+00:00", "Z"), "id": item_id},
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
+
+
+def _decode_api_item_cursor(cursor: str) -> tuple[datetime, int]:
+    """Strictly parse the bounded opaque ordering token before building SQL."""
+    if (
+        not cursor
+        or len(cursor) > MAX_API_CURSOR_CHARS
+        or not re.fullmatch(r"[A-Za-z0-9_-]+", cursor)
+    ):
+        raise ValueError("INVALID_CURSOR")
+    try:
+        padded = cursor + "=" * ((4 - len(cursor) % 4) % 4)
+        payload = base64.b64decode(padded, altchars=b"-_", validate=True)
+        decoded = json.loads(payload)
+        if (
+            not isinstance(decoded, dict)
+            or set(decoded) != {"created_at", "id"}
+            or type(decoded["id"]) is not int
+            or decoded["id"] <= 0
+            or not isinstance(decoded["created_at"], str)
+        ):
+            raise ValueError
+        created_at = datetime.fromisoformat(decoded["created_at"].replace("Z", "+00:00"))
+        if created_at.tzinfo is None or created_at.utcoffset() is None:
+            raise ValueError
+        return created_at.astimezone(UTC).replace(tzinfo=None), decoded["id"]
+    except (binascii.Error, UnicodeDecodeError, json.JSONDecodeError, ValueError):
+        raise ValueError("INVALID_CURSOR") from None
 
 
 def _page_size(value: int) -> int:

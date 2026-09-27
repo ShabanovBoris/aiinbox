@@ -1,10 +1,12 @@
 import asyncio
 import logging
 import signal
+from contextlib import nullcontext
 from pathlib import Path
 
 from alembic import command as alembic_command
 from alembic.config import Config as AlembicConfig
+from pydantic import ValidationError
 
 from app.bot.files import TelegramFileDownloader
 from app.config import Settings
@@ -22,6 +24,7 @@ from app.services.ask_inbox import requeue_running_ask_jobs
 from app.services.attention_hooks import AttentionHookService
 from app.services.delivery import DeliveryWorker, requeue_sending_deliveries
 from app.services.export import requeue_running_export_jobs
+from app.services.ingestion import get_or_create_user
 from app.services.notifications import ReminderWorker
 from app.services.processing import ProcessingPipeline
 from app.services.profile import (
@@ -205,6 +208,44 @@ async def _start_polling(dispatcher, bot) -> None:
     await dispatcher.start_polling(bot, handle_signals=False, close_bot_session=False)
 
 
+async def _ensure_http_api_user(session_factory, settings: Settings) -> None:
+    """Create the configured API identity once so every adapter uses canonical User.id."""
+    if not settings.http_api_enabled:
+        return
+    async with session_factory() as session:
+        await get_or_create_user(
+            session,
+            telegram_user_id=settings.http_api_user_telegram_id,
+            chat_id=None,
+            timezone=settings.default_timezone,
+        )
+        await session.commit()
+
+
+def _build_http_api_server(settings: Settings, session_factory):
+    """Compose the optional listener while leaving signal and shutdown ownership in main."""
+    if not settings.http_api_enabled:
+        return None
+
+    import uvicorn
+
+    from app.api.app import create_api_app
+
+    config = uvicorn.Config(
+        create_api_app(settings, session_factory),
+        host=settings.http_api_host,
+        port=settings.http_api_port,
+        access_log=False,
+        # FastAPI logs bounded frames; Uvicorn exception dumps may contain request values.
+        log_level="critical",
+        log_config=None,
+        timeout_graceful_shutdown=int(settings.shutdown_timeout_seconds),
+    )
+    server = uvicorn.Server(config)
+    server.capture_signals = lambda: nullcontext()
+    return server
+
+
 # ❌ Удалены best-effort notifier callbacks: они выполнялись уже после business
 # commit и терялись при crash. Immediate Telegram side effects теперь принадлежат
 # durable DeliveryWorker, а intent создаётся в той же транзакции, что READY/FAILED/DONE.
@@ -221,6 +262,8 @@ async def run(settings: Settings) -> None:
         await requeue_sending_deliveries(session_factory)
         await apply_profile_seed(session_factory, settings.profile_seed_file)
         configure_profile_seed(settings.profile_seed_file)
+        await _ensure_http_api_user(session_factory, settings)
+        api_server = _build_http_api_server(settings, session_factory)
 
         provider = build_provider(settings)
         analyzer = Analyzer(
@@ -294,6 +337,7 @@ async def run(settings: Settings) -> None:
             session_factory,
             analyzer.provider,
             poll_seconds=settings.processing_poll_seconds,
+            http_result_ttl_seconds=settings.http_ask_result_ttl_seconds,
         )
         ask_task = asyncio.create_task(ask_worker.run_forever(stop), name="ask-worker")
         export_worker = ExportWorker(
@@ -347,7 +391,13 @@ async def run(settings: Settings) -> None:
         all_worker_tasks = (
             worker_tasks + profile_tasks + [ask_task, export_task] + delivery_tasks + reminder_tasks
         )
-        critical_tasks = all_worker_tasks + ([polling] if polling is not None else [])
+        api_task = (
+            asyncio.create_task(api_server.serve(), name="http-api")
+            if api_server is not None
+            else None
+        )
+        runtime_tasks = all_worker_tasks + ([api_task] if api_task is not None else [])
+        critical_tasks = runtime_tasks + ([polling] if polling is not None else [])
         # ❌ Удален пассивный await stop.wait(): завершившийся worker/polling
         # оставлял процесс живым без гарантии дальнейшей обработки.
         try:
@@ -355,13 +405,15 @@ async def run(settings: Settings) -> None:
         finally:
             stop.set()
             log.info("shutdown: stopping background tasks")
+            if api_server is not None:
+                api_server.should_exit = True
             if polling is not None:
                 if not polling.done():
                     polling.cancel()
                 await asyncio.gather(polling, return_exceptions=True)
             # Сначала даём воркерам завершить текущую атомарную операцию; cancel —
             # только bounded fallback для зависшего внешнего provider call.
-            await _drain_worker_tasks(all_worker_tasks, settings.shutdown_timeout_seconds)
+            await _drain_worker_tasks(runtime_tasks, settings.shutdown_timeout_seconds)
             if bot is not None:
                 # Delivery callbacks must keep the Telegram session alive until
                 # all workers have drained or the bounded shutdown deadline ends.
@@ -372,7 +424,17 @@ async def run(settings: Settings) -> None:
 
 
 def main() -> None:  # pragma: no cover — точка входа процесса
-    settings = Settings()
+    try:
+        settings = Settings()
+    except ValidationError as exc:
+        # Pydantic's default rendering includes rejected input values, including secrets.
+        locations = sorted(
+            {
+                ".".join(str(part) for part in error["loc"])
+                for error in exc.errors(include_input=False)
+            }
+        )
+        raise SystemExit("Invalid application configuration at: " + ", ".join(locations)) from None
     run_migrations(settings.database_url)
     # basicConfig(force=True) после миграций: fileConfig из alembic env.py ставит
     # root на WARNING и подменяет хендлеры — обычный basicConfig был бы no-op.

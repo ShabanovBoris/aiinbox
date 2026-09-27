@@ -17,7 +17,7 @@ from app.llm.base import LlmError
 from app.services.actions import apply_item_action
 from app.services.analysis import CHUNK_SUMMARY_GENERATOR_VERSION, Analyzer, split_text
 from app.services.delivery import ITEM_FAILED, ITEM_READY
-from app.services.ingestion import ingest_message
+from app.services.ingestion import ingest_external_text, ingest_message
 from app.services.processing import ProcessingPipeline
 from app.storage.models import Content, Delivery, Item, User
 from app.workers.processing import ProcessingWorker, requeue_stale
@@ -88,6 +88,51 @@ async def test_text_pipeline_end_to_end(session_factory):
         )
         assert delivery is not None
     assert delivery.status == "PENDING"
+
+
+async def test_external_capture_reaches_ready_or_failed_without_telegram_deliveries(
+    session_factory,
+):
+    async with session_factory() as session:
+        user = User(telegram_user_id=42, telegram_chat_id=None)
+        session.add(user)
+        await session.commit()
+        user_id = user.id
+
+    ready = (
+        await ingest_external_text(
+            session_factory,
+            user_id=user_id,
+            idempotency_key="http-ready",
+            request_hash="a" * 64,
+            text="Research durable processing",
+        )
+    ).items[0]
+    failed = (
+        await ingest_external_text(
+            session_factory,
+            user_id=user_id,
+            idempotency_key="http-failed",
+            request_hash="b" * 64,
+            text="Research a provider error",
+        )
+    ).items[0]
+
+    assert await make_worker(session_factory, FakeLlmProvider()).process_one() is True
+    assert (
+        await make_worker(
+            session_factory,
+            FakeLlmProvider(error=LlmError("LLM_FAILED", "provider unreachable")),
+        ).process_one()
+        is True
+    )
+
+    assert (await get_item(session_factory, ready.id)).processing_status is ProcessingStatus.READY
+    stored_failed = await get_item(session_factory, failed.id)
+    assert stored_failed.processing_status is ProcessingStatus.FAILED
+    async with session_factory() as session:
+        assert await session.scalar(select(Delivery).where(Delivery.item_id == ready.id)) is None
+        assert await session.scalar(select(Delivery).where(Delivery.item_id == failed.id)) is None
 
 
 async def test_persisted_category_uses_isolated_topic_result(session_factory):

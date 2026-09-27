@@ -58,6 +58,13 @@ class Item(Base):
     __tablename__ = "items"
     __table_args__ = (
         UniqueConstraint("user_id", "telegram_message_id", "source_index", name="uq_items_source"),
+        Index(
+            "uq_items_user_external_idempotency",
+            "user_id",
+            "external_idempotency_key",
+            unique=True,
+            sqlite_where=text("external_idempotency_key IS NOT NULL"),
+        ),
         # ❌ Удалена уникальность Item по URL: Item теперь идентифицирует входящее
         # сообщение, а URL — дочерний ItemSource. Один URL в разных постах может
         # иметь разный контекст и поэтому не должен склеивать два Item.
@@ -67,6 +74,8 @@ class Item(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
     telegram_message_id: Mapped[int | None] = mapped_column(BigInteger, index=True)
+    external_idempotency_key: Mapped[str | None] = mapped_column(String(128))
+    external_request_hash: Mapped[str | None] = mapped_column(String(64))
     source_index: Mapped[int] = mapped_column(default=0)
 
     processing_status: Mapped[ProcessingStatus] = mapped_column(
@@ -362,12 +371,28 @@ class ProfileUpdateJob(Base):
 
 
 class AskJob(Base):
-    """Durable standalone request; synthesis lives only in its delivery outbox row."""
+    """Durable standalone request with transport-specific result retention."""
 
     __tablename__ = "ask_jobs"
     __table_args__ = (
         UniqueConstraint(
             "user_id", "telegram_message_id", name="uq_ask_jobs_user_telegram_message"
+        ),
+        CheckConstraint(
+            "response_channel IN ('TELEGRAM', 'HTTP')",
+            name="ck_ask_jobs_response_channel",
+        ),
+        Index(
+            "uq_ask_jobs_user_external_idempotency",
+            "user_id",
+            "external_idempotency_key",
+            unique=True,
+            sqlite_where=text("external_idempotency_key IS NOT NULL"),
+        ),
+        Index(
+            "ix_ask_jobs_http_result_expiry",
+            "result_expires_at",
+            sqlite_where=text("response_channel = 'HTTP' AND result_json IS NOT NULL"),
         ),
     )
 
@@ -375,6 +400,13 @@ class AskJob(Base):
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
     telegram_message_id: Mapped[int | None] = mapped_column(BigInteger)
     question: Mapped[str] = mapped_column(Text)
+    response_channel: Mapped[str] = mapped_column(
+        String(16), default="TELEGRAM", server_default=text("'TELEGRAM'"), nullable=False
+    )
+    external_idempotency_key: Mapped[str | None] = mapped_column(String(128))
+    external_request_hash: Mapped[str | None] = mapped_column(String(64))
+    result_json: Mapped[dict | None] = mapped_column(JSON)
+    result_expires_at: Mapped[datetime | None] = mapped_column(DateTime)
     status: Mapped[str] = mapped_column(
         String(16), default="PENDING", server_default="PENDING", index=True
     )

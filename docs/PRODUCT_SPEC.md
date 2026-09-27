@@ -126,7 +126,7 @@ analysis uses the shared representative-frame pipeline.
 
 Не реализованы и не должны появляться без отдельной задачи:
 
-- Android client / HTTP API;
+- Android client;
 - web frontend;
 - embeddings / vector database / RAG;
 - ML ranking;
@@ -137,6 +137,31 @@ analysis uses the shared representative-frame pipeline.
 - direct Telegram image ingestion;
 - OCR, spreadsheets, presentations and other non-PM-03 document formats;
 - Telegram video note.
+
+## 7.1. Optional HTTP API (PM-18)
+
+Первый consumer HTTP API — PM-33 Browser Extension. Он использует optional
+FastAPI adapter над теми же application services. По умолчанию
+`HTTP_API_ENABLED=false`; при включении API
+проверяет Bearer token и разрешает только настроенного
+`HTTP_API_USER_TELEGRAM_ID`, отображая его на канонический `User.id`. API не
+создаёт отдельную учётную запись или параллельную бизнес-модель.
+
+Поддерживаются `GET /healthz`, capture и cursor browsing через `/v1/items`,
+Today, Attention, lexical Search и Weekly projections, Ask с polling,
+Done/Archive/Snooze/Interest actions, а также чтение и patch пользовательских
+notification settings. Capture сохраняет `USER_TEXT`, URL sources и `CREATED`
+event в общий pipeline и отвечает до extraction/analysis. Повторы `POST /v1/items`
+и `POST /v1/ask` требуют `Idempotency-Key`; повтор с другим телом возвращает
+conflict. HTTP Ask использует существующие grounding и citation checks, сохраняет
+результат для polling на `HTTP_ASK_RESULT_TTL_SECONDS` и не создаёт Telegram
+Delivery. Telegram Ask по-прежнему использует durable outbox.
+
+Request body ограничен 64 KiB; capture text — 20 000 символов, `user_note` —
+2 000, Ask question — 2 000. API не разрешает клиенту задавать `user_id`, не
+возвращает Content/transcripts, не добавляет CORS и не логирует query strings или
+request bodies. HTTP listener по умолчанию привязан к `127.0.0.1`; production
+доступ публикуется только через TLS reverse proxy.
 
 ## 8. Структура проекта
 

@@ -283,8 +283,9 @@ def _event_payload(event_type: str, payload: dict | None) -> dict:
             value = payload.get(key)
             if type(value) is int and 1 <= value <= 3:
                 result[key] = value
-        if payload.get("source") == "telegram":
-            result["source"] = "telegram"
+        source = payload.get("source")
+        if source in ("telegram", "http"):
+            result["source"] = source
     elif event_type == "SNOOZED":
         value = payload.get("snoozed_until")
         if isinstance(value, str):

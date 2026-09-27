@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import time
 
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import async_sessionmaker
@@ -12,6 +13,7 @@ from app.services.ask_inbox import (
     AskInboxService,
     ask_failure_code,
     claim_oldest_ask_job,
+    clear_expired_http_ask_results,
 )
 
 log = logging.getLogger(__name__)
@@ -25,13 +27,24 @@ class AskWorker:
         session_factory: async_sessionmaker,
         provider: LlmProvider,
         poll_seconds: float = 1.0,
+        http_result_ttl_seconds: int = 3600,
+        result_cleanup_poll_seconds: float = 60.0,
     ):
         self.session_factory = session_factory
-        self.service = AskInboxService(session_factory, provider)
+        self.service = AskInboxService(
+            session_factory,
+            provider,
+            http_result_ttl_seconds=http_result_ttl_seconds,
+        )
         self.poll_seconds = poll_seconds
+        self.result_cleanup_poll_seconds = result_cleanup_poll_seconds
 
     async def run_forever(self, stop: asyncio.Event) -> None:
+        next_result_cleanup = 0.0
         while not stop.is_set():
+            if time.monotonic() >= next_result_cleanup:
+                await clear_expired_http_ask_results(self.session_factory)
+                next_result_cleanup = time.monotonic() + self.result_cleanup_poll_seconds
             processed = await self.process_one()
             if not processed:
                 try:

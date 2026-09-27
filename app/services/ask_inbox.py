@@ -6,6 +6,7 @@ import logging
 import re
 import time
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from urllib.parse import urlsplit
 
 from sqlalchemy import func, select, update
@@ -494,6 +495,7 @@ async def enqueue_ask(
             "user_id": user.id,
             "telegram_message_id": telegram_message_id,
             "question": question,
+            "response_channel": "TELEGRAM",
             "status": "PENDING",
         }
         if telegram_message_id is None:
@@ -520,6 +522,77 @@ async def enqueue_ask(
         await session.commit()
         log.info("ask job queued id=%s user_id=%s", job.id, user.id)
         return job
+
+
+async def enqueue_http_ask(
+    session_factory: async_sessionmaker,
+    *,
+    user_id: int,
+    idempotency_key: str,
+    request_hash: str,
+    question: str,
+) -> AskJob:
+    """Persist an HTTP Ask request under its durable client identity for the shared worker."""
+    question = question.strip()
+    if not question:
+        raise ValueError("Ask question must not be empty")
+    if len(question) > MAX_ASK_QUESTION_CHARS:
+        raise ValueError("Ask question exceeds the application length limit")
+
+    async with session_factory() as session:
+        existing = await session.scalar(
+            select(AskJob).where(
+                AskJob.user_id == user_id,
+                AskJob.external_idempotency_key == idempotency_key,
+            )
+        )
+        if existing is not None:
+            _check_ask_request_hash(existing, request_hash)
+            return existing
+
+        result = await session.execute(
+            sqlite_insert(AskJob)
+            .values(
+                user_id=user_id,
+                telegram_message_id=None,
+                question=question,
+                response_channel="HTTP",
+                external_idempotency_key=idempotency_key,
+                external_request_hash=request_hash,
+                status="PENDING",
+            )
+            .on_conflict_do_nothing(
+                index_elements=[AskJob.user_id, AskJob.external_idempotency_key],
+                index_where=AskJob.external_idempotency_key.is_not(None),
+            )
+            .returning(AskJob.id)
+        )
+        job_id = result.scalar_one_or_none()
+        if job_id is None:
+            job = await session.scalar(
+                select(AskJob).where(
+                    AskJob.user_id == user_id,
+                    AskJob.external_idempotency_key == idempotency_key,
+                )
+            )
+            if job is None:
+                raise RuntimeError("Ask idempotency conflict did not resolve to a job")
+            _check_ask_request_hash(job, request_hash)
+        else:
+            job = await session.get(AskJob, job_id)
+        await session.commit()
+        log.info("HTTP ask job queued id=%s user_id=%s", job.id, user_id)
+        return job
+
+
+def _check_ask_request_hash(job: AskJob, request_hash: str) -> None:
+    """Prevent an offline retry key from silently naming a different question."""
+    if job.external_request_hash != request_hash:
+        raise AppError(
+            "IDEMPOTENCY_CONFLICT",
+            "Idempotency key was already used for a different request",
+            permanent=True,
+        )
 
 
 async def claim_oldest_ask_job(session_factory: async_sessionmaker) -> AskJob | None:
@@ -554,6 +627,39 @@ async def requeue_running_ask_jobs(session_factory: async_sessionmaker) -> int:
         if result.rowcount:
             log.warning("requeued RUNNING ask jobs count=%s", result.rowcount)
         return result.rowcount
+
+
+async def clear_expired_http_ask_results(
+    session_factory: async_sessionmaker,
+    *,
+    now: datetime | None = None,
+    batch_size: int = 100,
+) -> int:
+    """Bound retention work in SQLite without deleting AskJob idempotency history."""
+    instant = _utc_naive(now or datetime.now(UTC))
+    expired_ids = (
+        select(AskJob.id)
+        .where(
+            AskJob.response_channel == "HTTP",
+            AskJob.result_json.is_not(None),
+            AskJob.result_expires_at <= instant,
+        )
+        .order_by(AskJob.result_expires_at, AskJob.id)
+        .limit(batch_size)
+    )
+    async with session_factory() as session:
+        result = await session.execute(
+            update(AskJob).where(AskJob.id.in_(expired_ids)).values(result_json=None)
+        )
+        await session.commit()
+        return result.rowcount or 0
+
+
+def _utc_naive(value: datetime) -> datetime:
+    """Convert API/worker instants to the project's naive-UTC SQLite convention."""
+    if value.tzinfo is None:
+        return value
+    return value.astimezone(UTC).replace(tzinfo=None)
 
 
 def _controlled_answer(code: str, language: str) -> AskDeliveryPayload:
@@ -595,9 +701,16 @@ def _validated_answer(
 class AskInboxService:
     """Own retrieval, evidence projection, language, citation checks, and outbox handoff."""
 
-    def __init__(self, session_factory: async_sessionmaker, provider: LlmProvider):
+    def __init__(
+        self,
+        session_factory: async_sessionmaker,
+        provider: LlmProvider,
+        *,
+        http_result_ttl_seconds: int = 3600,
+    ):
         self.session_factory = session_factory
         self.provider = provider
+        self.http_result_ttl_seconds = http_result_ttl_seconds
 
     async def _answer_with_transient_retry(
         self,
@@ -754,8 +867,6 @@ class AskInboxService:
         await self._complete(ask_job_id, user_id, payload)
 
     async def _complete(self, ask_job_id: int, user_id: int, payload: AskDeliveryPayload) -> None:
-        from app.services.delivery import ASK_RESULT, enqueue_ask_delivery
-
         async with self.session_factory() as session:
             job = await session.get(AskJob, ask_job_id)
             if job is None or job.status != "RUNNING":
@@ -763,19 +874,25 @@ class AskInboxService:
             job.status = "DONE"
             job.error_code = None
             job.error_message = None
-            await enqueue_ask_delivery(
-                session,
-                user_id=user_id,
-                ask_job_id=ask_job_id,
-                delivery_type=ASK_RESULT,
-                payload=payload.model_dump(mode="json"),
-            )
+            if job.response_channel == "HTTP":
+                job.result_json = payload.model_dump(mode="json")
+                job.result_expires_at = _utc_naive(datetime.now(UTC)) + timedelta(
+                    seconds=self.http_result_ttl_seconds
+                )
+            else:
+                from app.services.delivery import ASK_RESULT, enqueue_ask_delivery
+
+                await enqueue_ask_delivery(
+                    session,
+                    user_id=user_id,
+                    ask_job_id=ask_job_id,
+                    delivery_type=ASK_RESULT,
+                    payload=payload.model_dump(mode="json"),
+                )
             await session.commit()
 
     async def fail(self, ask_job_id: int, user_id: int, code: str) -> None:
         """Store a safe failure and delivery intent, not provider exception text."""
-        from app.services.delivery import ASK_FAILED, enqueue_ask_delivery
-
         async with self.session_factory() as session:
             job = await session.get(AskJob, ask_job_id)
             if job is None or job.status != "RUNNING":
@@ -783,13 +900,18 @@ class AskInboxService:
             job.status = "FAILED"
             job.error_code = code[:64]
             job.error_message = safe_llm_error_message(code)
-            await enqueue_ask_delivery(
-                session,
-                user_id=user_id,
-                ask_job_id=ask_job_id,
-                delivery_type=ASK_FAILED,
-                payload={},
-            )
+            job.result_json = None
+            job.result_expires_at = None
+            if job.response_channel != "HTTP":
+                from app.services.delivery import ASK_FAILED, enqueue_ask_delivery
+
+                await enqueue_ask_delivery(
+                    session,
+                    user_id=user_id,
+                    ask_job_id=ask_job_id,
+                    delivery_type=ASK_FAILED,
+                    payload={},
+                )
             await session.commit()
 
 

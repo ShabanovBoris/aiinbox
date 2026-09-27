@@ -44,6 +44,51 @@ Instagram Reels обрабатываются без авторизации по 
 `INSTAGRAM_MAX_DURATION_SECONDS=7200`, `INSTAGRAM_MAX_AUDIO_BYTES=50000000` и
 `INSTAGRAM_MAX_VIDEO_BYTES=50000000`.
 
+## Optional HTTP API
+
+HTTP API выключен по умолчанию. Чтобы включить его, задайте в `.env`:
+
+```dotenv
+HTTP_API_ENABLED=true
+HTTP_API_HOST=127.0.0.1
+HTTP_API_PORT=8080
+HTTP_API_TOKEN=<output of openssl rand -hex 32>
+HTTP_API_USER_TELEGRAM_ID=<your numeric Telegram user id>
+HTTP_ASK_RESULT_TTL_SECONDS=3600
+```
+
+`HTTP_API_TOKEN` должен содержать не менее 32 символов. При старте приложение
+создаёт настроенного пользователя, если его ещё нет; API всегда работает через
+его канонический `User.id`. В локальном запуске listener остаётся на loopback.
+Compose контейнер слушает свой порт, но публикует его только на host loopback:
+поставьте перед ним TLS reverse proxy на той же машине. Не публикуйте API напрямую
+в интернет. Uvicorn access log выключен; application log содержит только метод,
+route template, status, duration и authenticated `user_id`.
+
+Для Compose порт на host задаётся `HTTP_API_PORT` из `.env` (default 8080):
+
+```bash
+docker compose up --build -d
+curl -fsS http://127.0.0.1:8080/healthz
+curl -i http://127.0.0.1:8080/v1/items \
+  -H "Authorization: Bearer $HTTP_API_TOKEN" \
+  -H "Idempotency-Key: browser-capture-001" \
+  -H "Content-Type: application/json" \
+  --data '{"text":"Read later https://example.com/article","user_note":"Research"}'
+```
+
+Capture и Ask возвращают `202 Accepted` и `Location`; клиент опрашивает этот URL.
+Повторите create request только с тем же `Idempotency-Key` и тем же телом; reuse
+того же ключа для другого тела даёт `409`. HTTP Ask результат хранится до
+`HTTP_ASK_RESULT_TTL_SECONDS`, после чего polling возвращает `410 Gone`; worker
+очищает истёкший ответ, сохраняя idempotency запись. Telegram Ask продолжает
+доставляться через существующий Delivery outbox.
+
+Body limit — 64 KiB. Capture text ограничен 20 000 символами, `user_note` —
+2 000, Ask question — 2 000. API не принимает `user_id`, не выдаёт извлечённый
+Content/transcripts и не разрешает CORS. `GET /healthz` проверяет только
+доступность SQLite и не раскрывает конфигурацию.
+
 ## Docker
 
 ```bash

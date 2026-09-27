@@ -128,6 +128,11 @@ async def test_interest_rejects_invalid_levels(session_factory, level):
         assert stored.interest_level == 2
 
 
+async def test_interest_validation_precedes_telegram_user_lookup(session_factory):
+    with pytest.raises(ValueError):
+        await set_item_interest(session_factory, 999999, 1, 4)
+
+
 async def test_interest_change_is_idempotent_and_records_exact_feedback(session_factory):
     _, item_id = await make_failed_item(session_factory)
     async with session_factory() as session:

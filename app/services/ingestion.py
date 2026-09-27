@@ -5,12 +5,23 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.domain.enums import ContentKind, ProcessingStatus, SourceType
+from app.errors import AppError
 from app.extractors.instagram import is_instagram_reel_url
 from app.extractors.youtube import is_youtube_url
 from app.services.url_parsing import normalize_url, parse_message
 from app.storage.models import Content, Event, Item, ItemSource, User
 
 log = logging.getLogger(__name__)
+
+
+def _refresh_telegram_chat_id(user: User, chat_id: int | None) -> None:
+    """Keep Telegram's delivery destination on the shared User identity.
+
+    HTTP startup may create the canonical User without a Telegram destination;
+    only an actual Telegram update is authoritative enough to set or change it.
+    """
+    if chat_id is not None and user.telegram_chat_id != chat_id:
+        user.telegram_chat_id = chat_id
 
 
 async def get_or_create_user(
@@ -22,6 +33,7 @@ async def get_or_create_user(
 ) -> User:
     user = await session.scalar(select(User).where(User.telegram_user_id == telegram_user_id))
     if user is not None:
+        _refresh_telegram_chat_id(user, chat_id)
         return user
     user = User(telegram_user_id=telegram_user_id, telegram_chat_id=chat_id, timezone=timezone)
     session.add(user)
@@ -35,6 +47,7 @@ async def get_or_create_user(
         user = await session.scalar(select(User).where(User.telegram_user_id == telegram_user_id))
         if user is None:
             raise
+        _refresh_telegram_chat_id(user, chat_id)
     return user
 
 
@@ -121,6 +134,103 @@ async def ingest_message(
         return IngestResult([item], [])
 
 
+async def ingest_external_text(
+    session_factory: async_sessionmaker,
+    *,
+    user_id: int,
+    idempotency_key: str,
+    request_hash: str,
+    text: str,
+    user_note: str | None = None,
+) -> IngestResult:
+    """Project non-Telegram capture into the canonical Item/source/content pipeline.
+
+    The durable external key absorbs browser retries at the database boundary;
+    extraction and analysis remain owned by ProcessingWorker after this commit.
+    """
+    async with session_factory() as session:
+        user_exists = await session.scalar(select(User.id).where(User.id == user_id))
+        if user_exists is None:
+            raise AppError("USER_NOT_FOUND", "Configured API user is unavailable", permanent=True)
+
+        existing = await session.scalar(
+            select(Item).where(
+                Item.user_id == user_id,
+                Item.external_idempotency_key == idempotency_key,
+            )
+        )
+        if existing is not None:
+            _check_external_request_hash(existing, request_hash)
+            return IngestResult([existing], [])
+
+        _, raw_urls = parse_message(text)
+        urls = _normalized_urls(raw_urls)
+        primary_type = urls[0][0] if len(urls) == 1 else SourceType.TEXT
+        primary_url = urls[0][1] if len(urls) == 1 else None
+        item = Item(
+            user_id=user_id,
+            telegram_message_id=None,
+            external_idempotency_key=idempotency_key,
+            external_request_hash=request_hash,
+            source_index=0,
+            processing_status=ProcessingStatus.QUEUED,
+            source_type=primary_type,
+            source_url=primary_url,
+            source_metadata_json={"ingest_channel": "http"},
+            user_note=user_note or "",
+        )
+        session.add(item)
+        try:
+            await session.flush()
+            session.add_all(
+                [
+                    ItemSource(
+                        item_id=item.id,
+                        source_index=source_index,
+                        source_type=source_type,
+                        source_url=url,
+                    )
+                    for source_index, (source_type, url) in enumerate(urls)
+                ]
+            )
+            await _add_created_events(session, [item])
+            _add_source_contents(session, [item], text)
+            await session.commit()
+            await session.refresh(item)
+        except IntegrityError:
+            # The partial unique index is authoritative when two captures race.
+            await session.rollback()
+            existing = await session.scalar(
+                select(Item).where(
+                    Item.user_id == user_id,
+                    Item.external_idempotency_key == idempotency_key,
+                )
+            )
+            if existing is None:
+                raise
+            _check_external_request_hash(existing, request_hash)
+            return IngestResult([existing], [])
+
+        log.info(
+            "external item queued id=%s user_id=%s source_type=%s sources=%s",
+            item.id,
+            user_id,
+            item.source_type.value,
+            len(urls),
+        )
+        return IngestResult([item], [])
+
+
+def _check_external_request_hash(item: Item, request_hash: str) -> None:
+    """Reject reuse of one durable capture key for a different accepted body."""
+    if item.external_request_hash != request_hash:
+        raise AppError(
+            "IDEMPOTENCY_CONFLICT",
+            "Idempotency key was already used for a different request",
+            permanent=True,
+        )
+
+
 def _normalized_urls(raw_urls: list[str]) -> list[tuple[SourceType, str]]:
     """Build stable per-message URL source identities while removing local repeats."""
     result: list[tuple[SourceType, str]] = []
@@ -179,7 +289,7 @@ async def _add_created_events(session: AsyncSession, items: list[Item]) -> None:
 
 
 def _add_source_contents(session: AsyncSession, items: list[Item], source_text: str | None) -> None:
-    """Persist the original Telegram text/caption beside Item.
+    """Persist the original captured text/caption beside its canonical Item.
 
     USER_TEXT is the durable message-level source text used for fallback analysis,
     search and forwarded source_context; user_note remains the intent projection.

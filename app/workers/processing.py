@@ -8,7 +8,11 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.domain.enums import ProcessingStatus
 from app.errors import AppError
-from app.services.delivery import ITEM_FAILED, enqueue_item_delivery
+from app.services.delivery import (
+    ITEM_FAILED,
+    enqueue_item_delivery,
+    wants_telegram_item_delivery,
+)
 from app.services.processing import ProcessingPipeline
 from app.storage.models import Item
 
@@ -108,15 +112,17 @@ class ProcessingWorker:
             # (persisted WEB_TEXT/analysis), и retry повторял бы дорогие этапы.
             item.error_code = exc.code if isinstance(exc, AppError) else "UNKNOWN"
             item.error_message = str(exc)[:500]
-            # FAILED и Retry-кнопка должны переживать crash между DB commit и
-            # Telegram: reopen создаёт новое намерение после пользовательского Retry.
-            await enqueue_item_delivery(
-                session,
-                item,
-                ITEM_FAILED,
-                payload={"error_code": item.error_code},
-                reopen=True,
-            )
+            # Delivery intent shares the outbox with READY; HTTP clients poll this state.
+            if wants_telegram_item_delivery(item):
+                # FAILED и Retry-кнопка должны переживать crash между DB commit и
+                # Telegram: reopen создаёт новое намерение после пользовательского Retry.
+                await enqueue_item_delivery(
+                    session,
+                    item,
+                    ITEM_FAILED,
+                    payload={"error_code": item.error_code},
+                    reopen=True,
+                )
             await session.commit()
 
     async def process_one(self) -> bool:

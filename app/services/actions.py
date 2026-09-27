@@ -43,6 +43,22 @@ async def apply_item_action(
         return item
 
 
+async def apply_item_action_for_user_id(
+    session_factory: async_sessionmaker,
+    user_id: int,
+    item_id: int,
+    action: str,
+    snoozed_until: datetime | None = None,
+) -> Item | None:
+    """Expose the canonical lifecycle CAS to adapters that already hold User.id."""
+    async with session_factory() as session:
+        item, _transitioned = await _apply_item_action_in_session(
+            session, user_id, item_id, action, snoozed_until=snoozed_until
+        )
+        await session.commit()
+        return item
+
+
 async def _apply_item_action_in_session(
     session: AsyncSession,
     user_id: int,
@@ -238,50 +254,82 @@ async def set_item_interest(
     deliberately leaves PriorityEngine/model-derived ``interest_fit`` untouched.
     The boolean tells the delivery layer whether its message projection changed.
     """
+    _validate_interest_level(level)
+    async with session_factory() as session:
+        user_id = await session.scalar(
+            select(User.id).where(User.telegram_user_id == telegram_user_id)
+        )
+        if user_id is None:
+            return None
+        return await _set_item_interest_in_session(
+            session, user_id, item_id, level, event_source="telegram"
+        )
+
+
+async def set_item_interest_for_user_id(
+    session_factory: async_sessionmaker,
+    user_id: int,
+    item_id: int,
+    level: int,
+) -> tuple[Item, bool] | None:
+    """Apply interest through the same serialized event transition using canonical User.id."""
+    _validate_interest_level(level)
+    async with session_factory() as session:
+        return await _set_item_interest_in_session(
+            session, user_id, item_id, level, event_source="http"
+        )
+
+
+async def _set_item_interest_in_session(
+    session: AsyncSession,
+    user_id: int,
+    item_id: int,
+    level: int,
+    *,
+    event_source: str,
+) -> tuple[Item, bool] | None:
+    """Serialize level comparison and Event creation in the caller's owner scope."""
+    # ❌ Удалена Telegram-only реализация смены интереса: HTTP и Telegram теперь
+    # используют одну user-id scoped транзакцию и сохраняют источник события.
+    await session.execute(text("BEGIN IMMEDIATE"))
+    item = await session.scalar(select(Item).where(Item.id == item_id, Item.user_id == user_id))
+    if item is None:
+        await session.rollback()
+        return None
+    if item.interest_level == level:
+        await session.commit()
+        return item, False
+
+    previous = item.interest_level
+    changed_item_id = await session.scalar(
+        update(Item)
+        .where(
+            Item.id == item.id,
+            Item.user_id == user_id,
+            Item.interest_level == previous,
+        )
+        .values(interest_level=level)
+        .returning(Item.id)
+    )
+    if changed_item_id is None:
+        await session.rollback()
+        return None
+    session.add(
+        Event(
+            user_id=user_id,
+            item_id=item.id,
+            event_type="INTEREST_CHANGED",
+            payload_json={"from": previous, "to": level, "source": event_source},
+        )
+    )
+    await session.commit()
+    return item, True
+
+
+def _validate_interest_level(level: int) -> None:
+    """Validate before owner lookup so Telegram keeps its established error ordering."""
     if level not in {1, 2, 3}:
         raise ValueError("interest level must be between 1 and 3")
-
-    async with session_factory() as session:
-        # SQLite is the project's durable source of truth. Reserving its writer
-        # lock before reading the old level serializes rapid callbacks so Event
-        # payloads describe the real committed transition, not a stale snapshot.
-        await session.execute(text("BEGIN IMMEDIATE"))
-        item = await session.scalar(
-            select(Item)
-            .join(User, User.id == Item.user_id)
-            .where(Item.id == item_id, User.telegram_user_id == telegram_user_id)
-        )
-        if item is None:
-            await session.rollback()
-            return None
-        if item.interest_level == level:
-            await session.commit()
-            return item, False
-
-        previous = item.interest_level
-        changed_item_id = await session.scalar(
-            update(Item)
-            .where(
-                Item.id == item.id,
-                Item.user_id == item.user_id,
-                Item.interest_level == previous,
-            )
-            .values(interest_level=level)
-            .returning(Item.id)
-        )
-        if changed_item_id is None:
-            await session.rollback()
-            return None
-        session.add(
-            Event(
-                user_id=item.user_id,
-                item_id=item.id,
-                event_type="INTEREST_CHANGED",
-                payload_json={"from": previous, "to": level, "source": "telegram"},
-            )
-        )
-        await session.commit()
-        return item, True
 
 
 async def record_item_events(
