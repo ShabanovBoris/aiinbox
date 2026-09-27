@@ -1,13 +1,16 @@
 # AIInbox — Remaining Post-MVP Specifications (PM-14…PM-20)
 
-Prepared against current `main` baseline:
+Originally prepared after PM-13. Current status update:
 
 ~~~text
-8912eca079fd3da31d32c4303c9aa921464ca704
-Merge PR #42 — PM-13: add grounded Ask My Inbox
+PM-13 Ask My Inbox — DONE
+PM-15 Export / Ownership — DONE
+PM-18 HTTP API — DONE (PR #56)
 ~~~
 
-PM-13 is already merged in this baseline and introduced durable `AskJob`/`AskWorker`, bounded FTS5-grounded context, validated Item/source citations and transient Ask delivery.
+PM-18 now provides the external-client transport needed by the promoted PM-33
+Browser Extension track. See
+[BROWSER_INTEGRATIONS_INDEX.md](BROWSER_INTEGRATIONS_INDEX.md).
 
 The remaining roadmap phases are documented in this package:
 
@@ -36,11 +39,19 @@ PM-17 Ollama / Local Models
 
 stable application services
    ↓
-PM-18 HTTP API
+PM-18 HTTP API (DONE)
+   ├→ PM-33 Browser Extension (current next client)
+   └→ PM-19 Android Client (deferred)
+       ↓
+PM-20 Calendar-aware Attention (deferred)
+
+canonical Item services
    ↓
-PM-19 Android Client
+Integration Sync Foundation
    ↓
-PM-20 Calendar-aware Attention (recommended initial calendar source)
+Miro
+   ↓
+additional destinations
 
 PM-07/08 Attention ───────────────────────────────┘
 ~~~
@@ -119,23 +130,31 @@ PM-15 is largely independent and can be scheduled before or after PM-14 based on
 
 ### Milestone I — Additional Clients & Context
 
-- PM-18 HTTP API
-- PM-19 Android Client
-- PM-20 Calendar-aware Attention
+- PM-18 HTTP API — DONE (PR #56)
+- PM-19 Android Client — DEFERRED
+- PM-20 Calendar-aware Attention — DEFERRED
 
-## Implementation-order recommendation
+### Milestone J — Browser & External Integrations
 
-A low-risk practical order is:
+- PM-33 Browser Extension — NEXT
+- Integration Sync Foundation — PLANNED
+- Miro Connector v1 — PLANNED
+- Additional destinations — EVIDENCE-DRIVEN
+
+## Current sequencing override
+
+The historical numeric recommendation is no longer the active execution order.
+
+Current direction:
 
 ~~~text
-PM-15
-→ PM-16
-→ PM-17 (optional depending on local-model need)
-→ PM-18
-→ PM-19
-→ PM-20
+PM-18 HTTP API — DONE
+→ PM-33 Browser Extension
+→ Integration Sync Foundation
+→ Miro
+→ additional destinations
 ~~~
 
-PM-14 should begin when PM-13 usage provides the retrieval-failure evidence required by its spec; it can run before or alongside PM-15/16 without blocking the portability/client track.
+PM-14 and PM-16/17 remain separately gated. PM-19/20 are deferred.
 
-This is a sequencing suggestion, not a new product dependency.
+See [BROWSER_INTEGRATIONS_INDEX.md](BROWSER_INTEGRATIONS_INDEX.md).

@@ -2,7 +2,7 @@
 
 Type: Post-MVP Epic + Detailed Technical Specification  
 Prerequisite: stable application services after PM-13+; PM-16/17 optional  
-Status: PLANNED
+Status: DONE — implemented and merged in PR #56
 
 ## 1. Problem
 
@@ -32,7 +32,30 @@ GET    /v1/settings
 PATCH  /v1/settings
 ~~~
 
-The API becomes the server contract used by PM-19 Android.
+The API is now the stable external-client contract. The first prioritized
+consumer is PM-33 Browser Extension; PM-19 Android may reuse the same contract
+later. Server-side outbound integrations do not call the local HTTP API and use
+application services/read projections directly.
+
+## 2.1 Implemented baseline
+
+PR #56 implemented:
+
+- optional FastAPI/uvicorn runtime in the existing supervised process;
+- personal Bearer auth mapped to one canonical User;
+- durable external capture and Ask idempotency;
+- text/URL capture through the canonical Item/ItemSource processing pipeline;
+- cursor Item browsing;
+- read-only Today/Attention/Search/Weekly projections;
+- lifecycle and settings adapters;
+- HTTP Ask over the existing AskWorker with transient result TTL;
+- loopback default binding and sanitized logging/errors;
+- single Alembic head `f5a7c2d91e12` at merge time.
+
+HTTP-created Items intentionally do not enqueue Telegram READY/FAILED delivery.
+
+The downstream browser/integration track is documented in
+[BROWSER_INTEGRATIONS_INDEX.md](BROWSER_INTEGRATIONS_INDEX.md).
 
 ## 3. Architectural rule
 

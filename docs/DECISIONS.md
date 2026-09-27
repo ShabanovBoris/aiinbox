@@ -772,3 +772,32 @@ retention fields. Request bodies are bounded, API responses omit extracted Conte
 and request logs omit bodies and query strings. The default listener binds to
 loopback; deployments expose it only through a TLS reverse proxy. Telegram
 responses continue to use the existing outbox.
+
+
+## D-047 — Browser capture uses PM-18; external platforms are one-way projections
+
+Context: PM-18 is now merged and provides durable authenticated capture for
+external clients. The next product focus is browser capture followed by
+synchronization of the complete AIInbox archive into Miro and, later, selected
+other tools.
+
+Decision: PM-33 Browser Extension is a thin Manifest-V3-style client of the
+existing PM-18 API. It owns only explicit browser capture, a local durable retry
+queue and API transport; canonical ingestion and processing remain server-owned.
+Server-side integrations do not call the local HTTP API. They consume canonical
+application/read projections directly through a small durable sync foundation.
+AIInbox remains the source of truth, while Miro and later destinations are
+one-way projections in v1. One Item × one connection owns one durable remote
+mapping/projection; provider network calls happen outside SQLite write
+transactions and recover after restart.
+
+Reason: the browser needs low-friction capture, while external workspaces need a
+reliable mirror of saved material. Treating those systems as projections prevents
+remote provider semantics from leaking into Item lifecycle and avoids building a
+generic integration platform before there is evidence for it.
+
+Consequences: Miro is the first connector and must prove full-history bootstrap,
+incremental idempotent updates, rate-limit handling and crash-after-create
+recovery. Remote edits/deletions never silently mutate canonical AIInbox data.
+The next destination is selected only after real Miro usage; bidirectional sync
+requires a separate explicit decision.
