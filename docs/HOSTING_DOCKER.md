@@ -592,3 +592,213 @@ docker compose exec -T app python -m app.ops verify
 ~~~
 
 Logs не являются очередью или backup. Canonical durable state — SQLite.
+
+
+## 17. Persistent volumes и опасные Docker команды
+
+Production state находится в logical Compose volumes:
+
+~~~text
+aiinbox_data
+aiinbox_backups
+aiinbox_exports
+~~~
+
+Engine-level volume names могут иметь Compose project prefix. Не привязывайте automation к /var/lib/docker/volumes/... напрямую.
+
+Обычный:
+
+~~~bash
+docker compose down
+~~~
+
+не удаляет named volumes.
+
+Опасный production command:
+
+~~~bash
+docker compose down -v
+~~~
+
+Он удаляет Compose volumes. Не используйте down -v, docker volume rm или volume-pruning команды, пока не проверено, какие данные будут удалены, и нет протестированного off-host backup.
+
+## 18. Backup
+
+Создать verified online snapshot:
+
+~~~bash
+docker compose exec -T app python -m app.ops backup
+~~~
+
+Snapshot сохраняется в /backups (aiinbox_backups). BACKUP_KEEP задаёт local retention, default 14.
+
+Пример cron:
+
+~~~cron
+17 3 * * * cd /opt/aiinbox && docker compose exec -T app python -m app.ops backup
+~~~
+
+Backup volume на том же VPS не защищает от потери VPS/disk.
+
+Для off-host disaster recovery используйте существующий script:
+
+~~~bash
+cd /opt/aiinbox
+OFFSITE_BACKUP_TARGET='<OFFSITE_BACKUP_TARGET>' ./scripts/offsite_backup.sh
+~~~
+
+Он:
+
+1. создаёт verified SQLite generation;
+2. отправляет .db + .sha256 через rsync/SSH;
+3. скачивает exact generation обратно;
+4. проверяет SHA-256 + SQLite integrity + foreign keys;
+5. выполняет restore drill в tmpfs без замены canonical /data/app.db.
+
+SSH credentials off-host backup остаются на VPS host и не передаются application container как .env credentials.
+
+## 19. Restore
+
+Используйте exact sequence из [RUNBOOK.md](RUNBOOK.md#restore-drill--recovery):
+
+1. docker compose stop app;
+2. повторно проверить выбранный backup;
+3. restore в новый /data/app-restored.db;
+4. архивировать старый app.db, app.db-wal и app.db-shm вместе;
+5. явно заменить canonical /data/app.db;
+6. запустить app;
+7. выполнить status и smoke.
+
+Не восстанавливайте production копированием одного live app.db поверх работающего application process.
+
+## 20. Обновление deployment
+
+До update запишите текущий SHA:
+
+~~~bash
+cd /opt/aiinbox
+git rev-parse HEAD
+~~~
+
+Перед release, который может содержать migrations:
+
+~~~bash
+docker compose exec -T app python -m app.ops backup
+~~~
+
+Обновление:
+
+~~~bash
+git fetch origin
+git pull --ff-only
+docker compose build
+docker compose up -d
+~~~
+
+Startup сам выполняет Alembic migrations.
+
+Проверки после update:
+
+~~~bash
+docker compose ps
+docker compose exec -T app python -m app.ops health
+docker compose exec -T app python -m app.ops status
+curl -fsS https://<API_DOMAIN>/healthz
+docker compose exec -T app python -m app.ops smoke
+~~~
+
+Затем выполните реальный browser или Telegram capture и дождитесь READY.
+
+## 21. Rollback
+
+Rollback должен учитывать одновременно code revision и SQLite schema/data.
+
+### 21.1 Если incompatible schema/data ещё не появились
+
+Code-only rollback может быть достаточен:
+
+~~~bash
+docker compose stop app
+git checkout <PREVIOUS_GOOD_SHA>
+docker compose build
+docker compose up -d
+~~~
+
+После этого повторите health/status/smoke и end-to-end capture.
+
+### 21.2 Если update изменил schema/data
+
+Используйте verified backup, созданный **до** upgrade.
+
+Не рассчитывайте на generic alembic downgrade: RUNBOOK уже фиксирует forward-only/data-sensitive migration cases.
+
+Безопасный порядок:
+
+1. остановить новый app;
+2. checkout matching <PREVIOUS_GOOD_SHA>;
+3. восстановить matching pre-upgrade SQLite generation через documented restore sequence;
+4. rebuild old image;
+5. docker compose up -d;
+6. проверить health/status/smoke/browser/Telegram.
+
+Failed/newer DB recovery set сохраняйте до окончания rollback verification.
+
+Если rollback возвращает Telegram на старую локальную машину, **сначала остановите VPS app**, затем запускайте old local polling. Не запускайте оба consumer одновременно.
+
+## 22. Production checklist
+
+~~~text
+[ ] Docker Engine + Compose plugin установлены
+[ ] repository cloned на нужном revision
+[ ] .env заполнен, mode ограничен, placeholders удалены
+[ ] DNS A record указывает на VPS
+[ ] 80/443 доступны reverse proxy
+[ ] 8080 не открыт публично
+[ ] Compose публикует API только на 127.0.0.1
+[ ] TLS reverse proxy обслуживает https://<API_DOMAIN>
+[ ] /healthz работает через HTTPS
+[ ] authenticated /v1 работает через HTTPS
+[ ] aiinbox_data persistent volume существует
+[ ] aiinbox_backups persistent volume существует
+[ ] aiinbox_exports persistent volume существует
+[ ] при миграции перенесены .db + .sha256
+[ ] verify-copy прошёл
+[ ] app.ops verify прошёл
+[ ] старый Telegram polling остановлен
+[ ] VPS Telegram polling запущен без conflict loop
+[ ] app.ops status healthy
+[ ] app.ops smoke успешен
+[ ] Browser Extension Test connection успешен
+[ ] browser capture дошёл до READY
+[ ] Telegram capture дошёл до READY и delivery получен
+[ ] local backup создаётся
+[ ] off-host backup/recovery drill настроен и протестирован
+[ ] известны previous-good SHA и pre-upgrade backup для rollback
+~~~
+
+## 23. Что этот deployment намеренно не добавляет
+
+Этот документ не вводит:
+
+- PostgreSQL;
+- Redis/Celery;
+- отдельные worker containers;
+- Kubernetes;
+- второй API process;
+- public port 8080;
+- изменения checked-in Compose ради reverse proxy;
+- автоматическое secret management;
+- автоматический DNS provisioning.
+
+Поддерживаемая production shape остаётся простой:
+
+~~~text
+one VPS
+├── host TLS reverse proxy :80/:443
+└── Docker Compose
+    └── app
+        ├── Telegram
+        ├── workers
+        ├── FastAPI
+        └── SQLite persistent volume
+~~~
