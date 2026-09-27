@@ -316,52 +316,71 @@ uv run python -m app.ops backup
 backup=/backups/aiinbox-YYYYMMDDTHHMMSSffffffZ.db checksum=/backups/aiinbox-YYYYMMDDTHHMMSSffffffZ.db.sha256 integrity=ok rotated=0
 ~~~
 
-Для Docker source можно вывести exact generation из backup volume на host через stdout:
+Для передачи создайте private staging directory во временной файловой системе,
+вне Git checkout. `umask` защищает файлы, созданные shell redirection; directory
+и backup-файлы дополнительно получают явные права. Сохраните напечатанный путь
+для следующих шагов:
 
 ~~~bash
-mkdir -p transfer
+umask 077
+MIGRATION_DIR="$(mktemp -d /tmp/aiinbox-migration.XXXXXXXX)"
+chmod 700 "$MIGRATION_DIR"
+printf 'MIGRATION_DIR=%s\n' "$MIGRATION_DIR"
 
 docker compose run --rm --no-deps app \
   cat /backups/aiinbox-YYYYMMDDTHHMMSSffffffZ.db \
-  > transfer/aiinbox-YYYYMMDDTHHMMSSffffffZ.db
+  > "$MIGRATION_DIR/aiinbox-YYYYMMDDTHHMMSSffffffZ.db"
 
 docker compose run --rm --no-deps app \
   cat /backups/aiinbox-YYYYMMDDTHHMMSSffffffZ.db.sha256 \
-  > transfer/aiinbox-YYYYMMDDTHHMMSSffffffZ.db.sha256
+  > "$MIGRATION_DIR/aiinbox-YYYYMMDDTHHMMSSffffffZ.db.sha256"
+chmod 600 "$MIGRATION_DIR"/aiinbox-YYYYMMDDTHHMMSSffffffZ.db*
 ~~~
 
 После этого старый instance оставьте остановленным до окончания cutover.
 
 ### 9.2 Передача поколения на VPS
 
-Сначала на VPS создайте private staging directory:
+На VPS создайте отдельный private staging directory вне `/opt/aiinbox` и
+сохраните напечатанный путь:
 
 ~~~bash
-mkdir -p /opt/aiinbox/recovery
-chmod 700 /opt/aiinbox/recovery
+umask 077
+RECOVERY_DIR="$(mktemp -d /tmp/aiinbox-recovery.XXXXXXXX)"
+chmod 700 "$RECOVERY_DIR"
+printf 'RECOVERY_DIR=%s\n' "$RECOVERY_DIR"
 ~~~
 
 Затем со старого host/workstation:
 
 ~~~bash
-rsync -av transfer/aiinbox-YYYYMMDDTHHMMSSffffffZ.db* \
-  <SSH_USER>@<VPS_PUBLIC_IP>:/opt/aiinbox/recovery/
+rsync -av "$MIGRATION_DIR"/aiinbox-YYYYMMDDTHHMMSSffffffZ.db* \
+  "<SSH_USER>@<VPS_PUBLIC_IP>:<RECOVERY_DIR>/"
 ~~~
 
 На VPS:
 
 ~~~bash
 cd /opt/aiinbox
-ls -l recovery/
+RECOVERY_DIR="<path printed when creating the VPS staging directory>"
+chmod 700 "$RECOVERY_DIR"
+chmod 600 "$RECOVERY_DIR"/aiinbox-YYYYMMDDTHHMMSSffffffZ.db*
+ls -l "$RECOVERY_DIR/"
 ~~~
+
+Замените `<RECOVERY_DIR>` в `rsync` на абсолютный путь, напечатанный на VPS.
+В следующей команде используйте тот же путь. Не размещайте `.db` или `.sha256`
+в каталоге приложения: это личные данные, и они не должны становиться файлами
+внутри Git checkout.
 
 ### 9.3 Перенос в Compose backup volume
 
 Сохраните исходные filenames: .sha256 sidecar проверяет имя DB.
 
 ~~~bash
+RECOVERY_DIR="<path printed when creating the VPS staging directory>"
 docker compose run --rm --no-deps --user 0 \
-  -v "$PWD/recovery:/recovery:ro" \
+  -v "$RECOVERY_DIR:/recovery:ro" \
   app sh -c '
     set -eu
     cp /recovery/aiinbox-YYYYMMDDTHHMMSSffffffZ.db /backups/
@@ -461,7 +480,9 @@ Startup сначала выполняет migrations, затем в одном p
 2. Остановить старый AIInbox process.
 3. Создать финальный verified backup **после остановки старого process**.
 4. Передать .db + .sha256 на VPS.
-5. Выполнить verify-copy, restore, app.ops verify и app.ops status.
+5. Выполнить verify-copy и restore по разделам 9.3–9.4. Затем завершить
+   migration preflight из раздела 10: `verify`, при необходимости
+   `alembic upgrade head`, повторный `verify` и `status` — до включения polling.
 6. Запустить VPS Compose с реальным TELEGRAM_BOT_TOKEN.
 7. Проверить, что polling не попадает в repeated conflict/restart loop.
 8. Отправить тестовое Telegram message и дождаться READY/normal delivery.
@@ -582,14 +603,23 @@ Telegram
 Для прямой API диагностики можно создать Item существующим contract:
 
 ~~~bash
-curl -i https://<API_DOMAIN>/v1/items \
+IDEMPOTENCY_KEY="vps-smoke-$(docker compose run --rm --no-deps app \
+  python -c 'import uuid; print(uuid.uuid4())')"
+printf 'Smoke key (reuse only for an ambiguous retry of this request): %s\n' \
+  "$IDEMPOTENCY_KEY"
+
+curl -i "https://<API_DOMAIN>/v1/items" \
   -H "Authorization: Bearer $HTTP_API_TOKEN" \
-  -H "Idempotency-Key: vps-smoke-001" \
+  -H "Idempotency-Key: $IDEMPOTENCY_KEY" \
   -H "Content-Type: application/json" \
   --data '{"text":"https://example.com/","user_note":"VPS smoke"}'
 ~~~
 
-Create возвращает 202 Accepted; дальше poll выполняется по returned Item resource. При ambiguous network retry используйте тот же Idempotency-Key и то же body.
+Каждый новый smoke генерирует новый key. Create возвращает 202 Accepted; дальше
+poll выполняется по returned Item resource. При ambiguous network retry того же
+запроса используйте тот же `Idempotency-Key` и то же body; для следующей
+намеренной проверки сгенерируйте новый key, чтобы не получить ранее созданный
+Item и ложноположительный результат.
 
 ## 16. Логи и диагностика
 
