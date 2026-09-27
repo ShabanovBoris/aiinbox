@@ -154,7 +154,7 @@ ss -ltnp | grep ':8080'
 
 Caddy умеет автоматически получать и обновлять сертификат для public domain, если DNS указывает на VPS и 80/443 доступны.
 
-Пример /etc/caddy/Caddyfile:
+Пример /etc/caddy/Caddyfile (если HTTP_API_PORT изменён с 8080, замените upstream port тем же значением):
 
 ~~~caddyfile
 <API_DOMAIN> {
@@ -333,6 +333,15 @@ docker compose run --rm --no-deps app \
 После этого старый instance оставьте остановленным до окончания cutover.
 
 ### 9.2 Передача поколения на VPS
+
+Сначала на VPS создайте private staging directory:
+
+~~~bash
+mkdir -p /opt/aiinbox/recovery
+chmod 700 /opt/aiinbox/recovery
+~~~
+
+Затем со старого host/workstation:
 
 ~~~bash
 rsync -av transfer/aiinbox-YYYYMMDDTHHMMSSffffffZ.db* \
