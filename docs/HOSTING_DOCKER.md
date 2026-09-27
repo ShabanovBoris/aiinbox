@@ -310,7 +310,10 @@ docker compose run --rm --no-deps app python -m app.ops backup
 uv run python -m app.ops backup
 ~~~
 
-Команда печатает exact generation, например:
+Команда печатает exact generation и пути к `.db`/`.sha256`. У Docker Compose
+пути находятся в контейнерном `/backups`, а local `uv` использует host
+`BACKUP_DIR` (по умолчанию `./backups`). Для staging ниже используйте только
+команды, соответствующие типу source deployment.
 
 ~~~text
 backup=/backups/aiinbox-YYYYMMDDTHHMMSSffffffZ.db checksum=/backups/aiinbox-YYYYMMDDTHHMMSSffffffZ.db.sha256 integrity=ok rotated=0
@@ -327,6 +330,11 @@ MIGRATION_DIR="$(mktemp -d /tmp/aiinbox-migration.XXXXXXXX)"
 chmod 700 "$MIGRATION_DIR"
 printf 'MIGRATION_DIR=%s\n' "$MIGRATION_DIR"
 
+~~~
+
+Для старого Docker Compose source извлеките exact generation из backup volume:
+
+~~~bash
 docker compose run --rm --no-deps app \
   cat /backups/aiinbox-YYYYMMDDTHHMMSSffffffZ.db \
   > "$MIGRATION_DIR/aiinbox-YYYYMMDDTHHMMSSffffffZ.db"
@@ -334,6 +342,17 @@ docker compose run --rm --no-deps app \
 docker compose run --rm --no-deps app \
   cat /backups/aiinbox-YYYYMMDDTHHMMSSffffffZ.db.sha256 \
   > "$MIGRATION_DIR/aiinbox-YYYYMMDDTHHMMSSffffffZ.db.sha256"
+chmod 600 "$MIGRATION_DIR"/aiinbox-YYYYMMDDTHHMMSSffffffZ.db*
+~~~
+
+Для старого local `uv` source скопируйте оба точных host path, напечатанных
+командой `app.ops backup`; не читайте Docker Compose volume. Замените значения
+в кавычках путями после `backup=` и `checksum=` соответственно. Копирование в
+уже созданный staging directory сохраняет basename поколения:
+
+~~~bash
+cp "<exact path printed after backup=>" "$MIGRATION_DIR/"
+cp "<exact path printed after checksum=>" "$MIGRATION_DIR/"
 chmod 600 "$MIGRATION_DIR"/aiinbox-YYYYMMDDTHHMMSSffffffZ.db*
 ~~~
 
