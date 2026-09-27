@@ -1,0 +1,88 @@
+:root {
+  color-scheme: light;
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  color: #183547;
+  background: #f5f8fa;
+  font-size: 14px;
+}
+
+* { box-sizing: border-box; }
+
+body { margin: 0; }
+
+body.popup { width: 360px; }
+
+main {
+  display: grid;
+  gap: 12px;
+  padding: 18px;
+}
+
+body.options main {
+  width: min(100%, 620px);
+  margin: 36px auto;
+  padding: 28px;
+  background: #fff;
+  border: 1px solid #d8e2e8;
+  border-radius: 12px;
+}
+
+header { display: flex; align-items: center; gap: 11px; }
+h1, h2, p { margin: 0; }
+h1 { font-size: 18px; }
+h2 { font-size: 14px; margin-bottom: 5px; }
+
+section { min-width: 0; }
+.page-title { font-weight: 650; overflow-wrap: anywhere; }
+.page-url { margin-top: 3px; color: #476578; font-size: 12px; overflow-wrap: anywhere; }
+.muted, .help { color: #536b78; font-size: 12px; }
+.help { line-height: 1.45; }
+
+label { display: block; font-weight: 600; }
+input, textarea {
+  width: 100%;
+  margin-top: -6px;
+  padding: 9px 10px;
+  border: 1px solid #9cafbb;
+  border-radius: 6px;
+  color: inherit;
+  background: #fff;
+  font: inherit;
+}
+textarea { resize: vertical; min-height: 64px; }
+input:focus, textarea:focus, button:focus-visible { outline: 2px solid #1d718c; outline-offset: 2px; }
+
+button {
+  min-height: 38px;
+  border: 0;
+  border-radius: 6px;
+  padding: 8px 12px;
+  background: #1d617b;
+  color: #fff;
+  font: inherit;
+  font-weight: 650;
+  cursor: pointer;
+}
+button:hover:not(:disabled) { background: #164d63; }
+button:disabled { opacity: .55; cursor: not-allowed; }
+button.secondary { background: #e6eef2; color: #183547; }
+button.secondary:hover:not(:disabled) { background: #d5e3e9; }
+button.danger { background: #a52e27; }
+button.danger:hover:not(:disabled) { background: #84251f; }
+
+.status-panel {
+  display: grid;
+  gap: 6px;
+  padding: 11px;
+  border: 1px solid #d8e2e8;
+  border-radius: 8px;
+  background: #fff;
+  overflow-wrap: anywhere;
+}
+.message { min-height: 18px; line-height: 1.4; overflow-wrap: anywhere; }
+.message.error { color: #9d2821; }
+.message.success { color: #24633d; }
+.button-row { display: flex; flex-wrap: wrap; gap: 8px; }
+.capture-list { display: grid; gap: 8px; padding-left: 18px; }
+.capture-list li { overflow-wrap: anywhere; }
+.capture-list button { min-height: 30px; margin-left: 8px; padding: 4px 8px; font-size: 12px; }

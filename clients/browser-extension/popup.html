@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Сохранить в AIInbox</title>
+    <link rel="stylesheet" href="src/ui.css">
+  </head>
+  <body class="popup">
+    <main>
+      <header>
+        <img src="icons/icon-32.png" width="28" height="28" alt="">
+        <h1>AIInbox Capture</h1>
+      </header>
+      <section aria-labelledby="page-heading">
+        <h2 id="page-heading">Текущая страница</h2>
+        <p id="page-title" class="page-title">Загружаю страницу…</p>
+        <p id="page-url" class="page-url"></p>
+      </section>
+      <label for="user-note">Заметка (необязательно)</label>
+      <textarea id="user-note" rows="3" placeholder="Зачем вы сохраняете этот материал?"></textarea>
+      <p id="note-count" class="muted">0 / 2 000</p>
+      <button id="save-page" type="button" disabled>Сохранить страницу</button>
+      <p id="capture-message" class="message" role="status" aria-live="polite"></p>
+      <section class="status-panel" aria-label="AIInbox status">
+        <p><strong>Связь:</strong> <span id="connection-status">Проверяю…</span></p>
+        <p><strong>В локальной очереди:</strong> <span id="pending-count">0</span></p>
+        <p><strong>Последний Item:</strong> <span id="latest-status">Пока нет сохранённых Item</span></p>
+      </section>
+      <button id="open-options" class="secondary" type="button">Настройки соединения</button>
+    </main>
+    <script type="module" src="src/popup.js"></script>
+  </body>
+</html>
