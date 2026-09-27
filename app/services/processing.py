@@ -21,7 +21,7 @@ from app.extractors.web import WebPageExtractor
 from app.extractors.youtube import YoutubeExtractor
 from app.llm.base import TranscriptionSegmentCheckpoint
 from app.services.analysis import Analyzer
-from app.services.delivery import ITEM_READY, enqueue_item_delivery
+from app.services.delivery import ITEM_READY, enqueue_item_delivery, wants_telegram_item_delivery
 from app.services.frames import extract_representative_frames
 from app.services.profile import get_profile
 from app.services.retrieval import sync_item_search
@@ -147,7 +147,8 @@ class ProcessingPipeline:
         # Reopen is needed when a READY/PARTIAL Item is explicitly retried after
         # a child source recovers; the same durable delivery key then publishes
         # the newly synthesized result once instead of suppressing it as a replay.
-        await enqueue_item_delivery(session, item, ITEM_READY, reopen=True)
+        if wants_telegram_item_delivery(item):
+            await enqueue_item_delivery(session, item, ITEM_READY, reopen=True)
         await session.commit()
         log.info(
             "item analyzed id=%s category=%s type=%s priority=%s",

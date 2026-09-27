@@ -257,6 +257,17 @@ async def get_notification_settings(
         return user, settings_for(user)
 
 
+async def get_notification_settings_for_user_id(
+    session_factory, user_id: int
+) -> tuple[User, dict] | None:
+    """Project user-facing settings for an adapter that already authenticated User.id."""
+    async with session_factory() as session:
+        user = await session.get(User, user_id)
+        if user is None:
+            return None
+        return user, settings_for(user)
+
+
 async def get_attention_status(
     session_factory,
     telegram_user_id: int,
@@ -272,6 +283,30 @@ async def get_attention_status(
     ).attention_status(telegram_user_id, now=now)
 
 
+def _validate_notification_settings_patch(
+    *,
+    timezone: str | None,
+    daily_digest_time: str | None,
+    quiet_hours_start: str | None,
+    quiet_hours_end: str | None,
+    attention_enabled: bool | None,
+    attention_intensity: int | None,
+    generic_motivation_enabled: bool | None,
+) -> None:
+    """Share patch validation before identity lookup and before atomic JSON mutation."""
+    if timezone is not None:
+        parse_timezone(timezone)
+    for clock in (daily_digest_time, quiet_hours_start, quiet_hours_end):
+        if clock is not None:
+            parse_clock(clock)
+    if attention_enabled is not None and type(attention_enabled) is not bool:
+        raise ValueError("attention_enabled должен быть true или false")
+    if generic_motivation_enabled is not None and type(generic_motivation_enabled) is not bool:
+        raise ValueError("generic_motivation_enabled должен быть true или false")
+    if attention_intensity is not None:
+        attention_policy(attention_intensity)
+
+
 async def update_notification_settings(
     session_factory,
     telegram_user_id: int,
@@ -285,20 +320,63 @@ async def update_notification_settings(
     attention_intensity: int | None = None,
     generic_motivation_enabled: bool | None = None,
 ) -> tuple[User, dict] | None:
-    """Validate and persist only requested settings in one user-scoped update."""
-    if timezone is not None:
-        parse_timezone(timezone)
-    for clock in (daily_digest_time, quiet_hours_start, quiet_hours_end):
-        if clock is not None:
-            parse_clock(clock)
-    if attention_enabled is not None and type(attention_enabled) is not bool:
-        raise ValueError("attention_enabled должен быть true или false")
-    if generic_motivation_enabled is not None and type(generic_motivation_enabled) is not bool:
-        raise ValueError("generic_motivation_enabled должен быть true или false")
-    if attention_intensity is not None:
-        attention_policy(attention_intensity)
+    """Preserve the Telegram-facing signature while delegating by canonical User.id."""
+    _validate_notification_settings_patch(
+        timezone=timezone,
+        daily_digest_time=daily_digest_time,
+        quiet_hours_start=quiet_hours_start,
+        quiet_hours_end=quiet_hours_end,
+        attention_enabled=attention_enabled,
+        attention_intensity=attention_intensity,
+        generic_motivation_enabled=generic_motivation_enabled,
+    )
     async with session_factory() as session:
-        user = await session.scalar(select(User).where(User.telegram_user_id == telegram_user_id))
+        user_id = await session.scalar(
+            select(User.id).where(User.telegram_user_id == telegram_user_id)
+        )
+        if user_id is None:
+            return None
+    # ❌ Удалена Telegram-ID persistence path: both interfaces now share the
+    # user-id update that owns validation and atomic json_patch behavior.
+    return await update_notification_settings_for_user_id(
+        session_factory,
+        user_id,
+        timezone=timezone,
+        daily_digest_enabled=daily_digest_enabled,
+        daily_digest_time=daily_digest_time,
+        quiet_hours_start=quiet_hours_start,
+        quiet_hours_end=quiet_hours_end,
+        attention_enabled=attention_enabled,
+        attention_intensity=attention_intensity,
+        generic_motivation_enabled=generic_motivation_enabled,
+    )
+
+
+async def update_notification_settings_for_user_id(
+    session_factory,
+    user_id: int,
+    *,
+    timezone: str | None = None,
+    daily_digest_enabled: bool | None = None,
+    daily_digest_time: str | None = None,
+    quiet_hours_start: str | None = None,
+    quiet_hours_end: str | None = None,
+    attention_enabled: bool | None = None,
+    attention_intensity: int | None = None,
+    generic_motivation_enabled: bool | None = None,
+) -> tuple[User, dict] | None:
+    """Validate and atomically patch the canonical user's notification settings."""
+    _validate_notification_settings_patch(
+        timezone=timezone,
+        daily_digest_time=daily_digest_time,
+        quiet_hours_start=quiet_hours_start,
+        quiet_hours_end=quiet_hours_end,
+        attention_enabled=attention_enabled,
+        attention_intensity=attention_intensity,
+        generic_motivation_enabled=generic_motivation_enabled,
+    )
+    async with session_factory() as session:
+        user = await session.get(User, user_id)
         if user is None:
             return None
         if timezone is not None:

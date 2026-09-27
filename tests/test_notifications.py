@@ -2462,3 +2462,8 @@ async def test_proactive_user_failure_does_not_stop_other_users(session_factory)
     assert await worker.process_once(datetime(2026, 9, 14, 6, 30)) == 1
     assert len(worker.bot.messages) == 1
     assert "Second user's task" in worker.bot.messages[0][1]
+
+
+async def test_notification_values_are_validated_before_telegram_user_lookup(session_factory):
+    with pytest.raises(ValueError):
+        await update_notification_settings(session_factory, 999999, timezone="Not/A_Timezone")

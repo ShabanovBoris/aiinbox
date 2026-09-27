@@ -36,6 +36,11 @@ ASK_RESULT = "ASK_RESULT"
 ASK_FAILED = "ASK_FAILED"
 
 
+def wants_telegram_item_delivery(item: Item) -> bool:
+    """Keep transport policy beside the outbox so READY and FAILED share one rule."""
+    return (item.source_metadata_json or {}).get("ingest_channel") != "http"
+
+
 def _ask_failure_copy(error_code: str | None) -> str:
     """Keep computation failure details private while distinguishing temporary provider outages."""
     if error_code in {"LLM_TIMEOUT", "LLM_RATE_LIMITED", "LLM_FAILED"}:
@@ -335,6 +340,11 @@ async def _load_ask_references(session, user_id: int, payload: AskDeliveryPayloa
     return tuple(references)
 
 
+async def resolve_ask_references(session, user_id: int, payload: AskDeliveryPayload):
+    """Share the persisted citation trust boundary with HTTP Ask polling."""
+    return await _load_ask_references(session, user_id, payload)
+
+
 async def requeue_sending_deliveries(session_factory) -> int:
     """Recover the side-effect boundary after process death.
 
@@ -488,7 +498,9 @@ class DeliveryWorker:
                         ask_payload = AskDeliveryPayload.model_validate(payload)
                     except Exception:
                         raise RuntimeError("Ask delivery payload is invalid") from None
-                    references = await _load_ask_references(session, delivery.user_id, ask_payload)
+                    references = await resolve_ask_references(
+                        session, delivery.user_id, ask_payload
+                    )
                     ask_text = format_ask_answer(ask_payload.answer, references)
                     ask_keyboard = ask_sources_keyboard(references)
 

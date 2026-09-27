@@ -749,3 +749,26 @@ Consequences: historical generic reminders without a focus remain valid. No sche
 migration, dependency, LLM call, or scheduler-policy change is required. The
 existing claims, thresholds, pacing, source provenance and PM-11 feedback remain in
 place.
+
+## D-046 — HTTP is a thin authenticated adapter over canonical services
+
+Context: the PM-33 Browser Extension needs capture, retrieval, actions and grounded
+Ask, while SQLite and the Telegram pipeline remain the only business-state owners.
+
+Decision: PM-18 adds an optional FastAPI listener, disabled by default and mapped
+through a constant-time-checked Bearer token to one configured Telegram user. API
+capture and Ask use durable idempotency identities; Item processing and Ask
+synthesis remain in existing workers. HTTP Ask answers are transient database
+results with a bounded TTL and do not enter Telegram Delivery. Read projections
+reuse existing services and do not record exposure Events.
+
+Reason: clients need a stable transport boundary without creating a second
+pipeline, account system or source of truth. Persisted request identity makes
+network retries safe, and TTL bounds private answer retention without repeating
+expensive synthesis.
+
+Consequences: the schema adds external idempotency fields and HTTP Ask result
+retention fields. Request bodies are bounded, API responses omit extracted Content,
+and request logs omit bodies and query strings. The default listener binds to
+loopback; deployments expose it only through a TLS reverse proxy. Telegram
+responses continue to use the existing outbox.

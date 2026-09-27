@@ -23,13 +23,18 @@ Personal AI Inbox — личный Telegram-бот, который приним�
 Это single-process modular monolith:
 
 ```text
-Telegram → ingestion → SQLite queue → extraction/normalization
-         → structured LLM analysis → deterministic priority → Telegram
+Telegram / optional HTTP API → ingestion → SQLite queue → extraction/normalization
+                              → structured LLM analysis → deterministic priority
+                              → Telegram / HTTP polling
 ```
 
 SQLite остаётся canonical source of truth для Items, checkpoints, профиля,
 очереди, actions и reminders. Внешние adapters изолируют Telegram, HTTP,
 yt-dlp, ffmpeg и OpenAI от domain/application logic.
+
+PM-18 adds an optional FastAPI interface over those same services. It is disabled
+by default and uses a bearer token mapped to one configured Telegram user; see
+the [HTTP API runbook](docs/RUNBOOK.md#optional-http-api) before enabling it.
 
 Playwright fallback намеренно отключён: текущий SSRF boundary не позволяет
 безопасно выпускать браузер в сеть. Страница с недостаточным текстом получает
@@ -144,6 +149,8 @@ check для защищённой ветки `main`, поэтому merge тре
 - `DATABASE_URL`, `PROCESSING_CONCURRENCY`, `PROCESSING_POLL_SECONDS`;
 - `BACKUP_DIR`, `BACKUP_KEEP`;
 - `PROCESSING_TIMEOUT_SECONDS`, `SHUTDOWN_TIMEOUT_SECONDS`;
+- `HTTP_API_ENABLED`, `HTTP_API_HOST`, `HTTP_API_PORT`, `HTTP_API_TOKEN`,
+  `HTTP_API_USER_TELEGRAM_ID`, `HTTP_ASK_RESULT_TTL_SECONDS` (API disabled by default);
 - `WEB_TIMEOUT_SECONDS`, `MAX_DOWNLOAD_BYTES`, `WEB_MAX_ATTEMPTS`;
 - `MAX_AUDIO_BYTES`, `TRANSCRIPTION_TIMEOUT_SECONDS`;
 - `MAX_DOCUMENT_BYTES`, `MAX_DOCUMENT_TEXT_CHARS` (по умолчанию 20 MB и

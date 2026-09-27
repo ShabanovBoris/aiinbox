@@ -7,12 +7,15 @@ services:
       BACKUP_DIR: /backups
       EXPORT_DIR: /exports
       TEMP_DIR: /tmp/aiinbox
+      HTTP_API_HOST: 0.0.0.0
     volumes:
       - aiinbox_data:/data
       - aiinbox_backups:/backups
       - aiinbox_exports:/exports
     tmpfs:
       - /tmp/aiinbox:mode=1777
+    ports:
+      - "127.0.0.1:${HTTP_API_PORT:-8080}:${HTTP_API_PORT:-8080}"
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "python", "-m", "app.ops", "health"]

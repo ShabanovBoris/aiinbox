@@ -30,6 +30,23 @@ def test_fresh_database_migrates_to_latest_schema(tmp_path):
             "deliveries",
             "alembic_version",
         } <= tables
+        item_columns = {row[1] for row in conn.execute("PRAGMA table_info(items)")}
+        ask_columns = {row[1] for row in conn.execute("PRAGMA table_info(ask_jobs)")}
+        assert {"external_idempotency_key", "external_request_hash"} <= item_columns
+        assert {
+            "response_channel",
+            "external_idempotency_key",
+            "external_request_hash",
+            "result_json",
+            "result_expires_at",
+        } <= ask_columns
+        assert {
+            "uq_items_user_external_idempotency",
+        } <= {row[1] for row in conn.execute("PRAGMA index_list(items)")}
+        assert {
+            "uq_ask_jobs_user_external_idempotency",
+            "ix_ask_jobs_http_result_expiry",
+        } <= {row[1] for row in conn.execute("PRAGMA index_list(ask_jobs)")}
         search_sql = conn.execute(
             "SELECT sql FROM sqlite_master WHERE name='item_search'"
         ).fetchone()[0]
@@ -153,6 +170,54 @@ def test_fresh_database_migrates_to_latest_schema(tmp_path):
         )
     finally:
         conn.close()
+
+
+def test_http_api_migration_preserves_existing_items_and_ask_jobs(tmp_path):
+    db = tmp_path / "http-api-upgrade.db"
+    cfg = Config()
+    cfg.set_main_option("script_location", "migrations")
+    cfg.set_main_option("sqlalchemy.url", f"sqlite+aiosqlite:///{db}")
+    command.upgrade(cfg, "9c2e7a4d1b63")
+
+    with sqlite3.connect(db) as conn:
+        user_id = conn.execute(
+            "INSERT INTO users (telegram_user_id) VALUES (42) RETURNING id"
+        ).fetchone()[0]
+        item_id = conn.execute(
+            "INSERT INTO items (user_id, telegram_message_id, source_index, processing_status, "
+            "state, source_type, processing_stage, user_note) "
+            "VALUES (?, 123, 0, 'READY', 'ACTIVE', 'TEXT', 'READY', '') RETURNING id",
+            (user_id,),
+        ).fetchone()[0]
+        ask_id = conn.execute(
+            "INSERT INTO ask_jobs (user_id, telegram_message_id, question, status) "
+            "VALUES (?, 456, 'existing Telegram question', 'PENDING') RETURNING id",
+            (user_id,),
+        ).fetchone()[0]
+        conn.commit()
+
+    command.upgrade(cfg, "head")
+
+    with sqlite3.connect(db) as conn:
+        item_columns = {row[1] for row in conn.execute("PRAGMA table_info(items)")}
+        ask_columns = {row[1] for row in conn.execute("PRAGMA table_info(ask_jobs)")}
+        assert {"external_idempotency_key", "external_request_hash"} <= item_columns
+        assert {
+            "response_channel",
+            "external_idempotency_key",
+            "external_request_hash",
+            "result_json",
+            "result_expires_at",
+        } <= ask_columns
+        assert conn.execute(
+            "SELECT telegram_message_id, external_idempotency_key FROM items WHERE id = ?",
+            (item_id,),
+        ).fetchone() == (123, None)
+        assert conn.execute(
+            "SELECT question, response_channel, external_idempotency_key, result_json "
+            "FROM ask_jobs WHERE id = ?",
+            (ask_id,),
+        ).fetchone() == ("existing Telegram question", "TELEGRAM", None, None)
 
 
 def test_reminder_feedback_migration_preserves_events_and_enforces_references(tmp_path):
