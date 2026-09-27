@@ -390,17 +390,35 @@ restore намеренно отказывается перезаписывать
 
 ## 10. Preflight restored deployment
 
-До запуска основного process:
+После restore сначала проверьте SQLite **до** schema upgrade:
 
 ~~~bash
 cd /opt/aiinbox
 docker compose run --rm --no-deps app python -m app.ops verify
+~~~
+
+Если backup был создан более старой версией AIInbox, текущий `app.ops status`
+может ожидать более новую schema. Чтобы проверить migrations без запуска Telegram
+polling, примените тот же Alembic head отдельным one-shot container:
+
+~~~bash
+docker compose run --rm --no-deps app alembic upgrade head
+~~~
+
+После migration снова проверьте DB и только затем вызывайте текущий status:
+
+~~~bash
+docker compose run --rm --no-deps app python -m app.ops verify
 docker compose run --rm --no-deps app python -m app.ops status
 ~~~
 
-Если база создана более старой версией приложения, app.main при обычном startup выполнит alembic upgrade head автоматически.
+Обычный `app.main` также автоматически выполняет `alembic upgrade head` при
+startup; ручной preflight здесь нужен именно для миграционного cutover, чтобы
+schema проверить **до** включения Telegram polling.
 
-Сохраните transferred verified generation до полного acceptance нового deployment. Для rollback после schema changes используйте matching pre-upgrade backup, а не предположение, что любой alembic downgrade безопасен.
+Сохраните transferred verified pre-upgrade generation до полного acceptance
+нового deployment. Для rollback после schema changes используйте matching
+pre-upgrade backup, а не предположение, что любой alembic downgrade безопасен.
 
 
 ## 11. Запуск runtime
