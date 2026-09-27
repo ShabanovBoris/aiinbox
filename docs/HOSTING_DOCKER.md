@@ -401,3 +401,194 @@ docker compose run --rm --no-deps app python -m app.ops status
 Если база создана более старой версией приложения, app.main при обычном startup выполнит alembic upgrade head автоматически.
 
 Сохраните transferred verified generation до полного acceptance нового deployment. Для rollback после schema changes используйте matching pre-upgrade backup, а не предположение, что любой alembic downgrade безопасен.
+
+
+## 11. Запуск runtime
+
+Убедитесь, что старый Telegram instance остановлен, затем:
+
+~~~bash
+cd /opt/aiinbox
+docker compose up -d
+~~~
+
+Проверьте:
+
+~~~bash
+docker compose ps
+docker compose logs --tail=200 app
+docker compose exec -T app python -m app.ops status
+~~~
+
+Startup сначала выполняет migrations, затем в одном process запускает configured runtime tasks.
+
+При TELEGRAM_BOT_TOKEN работают Telegram polling, DeliveryWorker и ReminderWorker; Processing/Profile/Ask/Export workers работают в том же process. При HTTP_API_ENABLED=true там же запускается FastAPI server.
+
+Неожиданное завершение critical worker/API/polling task завершает process; restart: unless-stopped поднимает container снова.
+
+## 12. Безопасное переключение Telegram polling с локального instance
+
+Рекомендуемый cutover:
+
+1. Подготовить VPS, .env, domain, TLS reverse proxy и Docker image.
+2. Остановить старый AIInbox process.
+3. Создать финальный verified backup **после остановки старого process**.
+4. Передать .db + .sha256 на VPS.
+5. Выполнить verify-copy, restore, app.ops verify и app.ops status.
+6. Запустить VPS Compose с реальным TELEGRAM_BOT_TOKEN.
+7. Проверить, что polling не попадает в repeated conflict/restart loop.
+8. Отправить тестовое Telegram message и дождаться READY/normal delivery.
+9. Старый instance оставить выключенным.
+
+Если HTTPS API хочется проверить до Telegram cutover, временно оставьте на VPS:
+
+~~~dotenv
+TELEGRAM_BOT_TOKEN=
+~~~
+
+Приложение поддерживает worker-only mode. Delivery/Reminder workers при этом не запускаются, а durable Telegram deliveries остаются в SQLite до включения bot token.
+
+После API проверки задайте реальный token и recreate/restart app.
+
+app.ops smoke требует Telegram token, поэтому полный live smoke выполняется уже после включения Telegram.
+
+## 13. Health checks после запуска
+
+### Compose/application health
+
+~~~bash
+docker compose ps
+docker compose exec -T app python -m app.ops health
+docker compose exec -T app python -m app.ops status
+docker compose exec -T app python -m app.ops verify
+~~~
+
+Compose healthcheck сам выполняет python -m app.ops health каждые 30 секунд.
+
+### Loopback API на VPS
+
+~~~bash
+curl -fsS http://127.0.0.1:8080/healthz
+~~~
+
+Если HTTP_API_PORT изменён вручную, используйте фактическое значение.
+
+### Public TLS API
+
+~~~bash
+curl -fsS https://<API_DOMAIN>/healthz
+curl -fsS 'https://<API_DOMAIN>/v1/items?limit=1' \
+  -H "Authorization: Bearer $HTTP_API_TOKEN"
+~~~
+
+Не вводите real token прямо в shared shell history; предпочтительнее protected environment/secret handling оператора.
+
+### Live LLM + Telegram smoke
+
+После включения Telegram:
+
+~~~bash
+docker compose exec -T app python -m app.ops smoke
+~~~
+
+Команда делает реальный provider request и Telegram getMe и может потребить небольшое количество provider tokens.
+
+## 14. Настройка PM-33 Browser Extension
+
+Для remote AIInbox PM-33 extension принимает только HTTPS origin.
+
+В Options extension:
+
+~~~text
+API origin: https://<API_DOMAIN>
+Bearer token: тот же HTTP_API_TOKEN из VPS .env
+~~~
+
+Нажмите **Test connection**. Extension проверяет /healthz и authenticated GET /v1/items?limit=1.
+
+Extension сам запрашивает optional host permission для выбранного origin; включать permissive CORS на сервере не требуется.
+
+Не настраивайте extension на:
+
+~~~text
+http://<VPS_PUBLIC_IP>:8080
+~~~
+
+Remote plaintext HTTP намеренно запрещён PM-33 client policy.
+
+## 15. End-to-end проверка до READY
+
+После deployment проверьте полный browser flow:
+
+1. Открыть обычную HTTP(S) страницу в Chromium.
+2. Выполнить **Save page to AIInbox**.
+3. Убедиться, что extension показывает server acceptance, а не только local queued state.
+4. На VPS посмотреть bounded operational state:
+
+   ~~~bash
+   docker compose exec -T app python -m app.ops status
+   docker compose logs --tail=200 app
+   ~~~
+
+5. Дождаться перехода Item через processing states до READY.
+6. Отдельно отправить Telegram message и убедиться, что Telegram Item также достигает READY и delivery приходит пользователю.
+
+Проверяемые paths:
+
+~~~text
+Browser HTTPS
+→ FastAPI
+→ SQLite
+→ ProcessingWorker
+→ extraction/LLM
+→ READY
+
+Telegram
+→ long polling
+→ SQLite
+→ ProcessingWorker
+→ READY
+→ DeliveryWorker
+→ Telegram
+~~~
+
+Для прямой API диагностики можно создать Item существующим contract:
+
+~~~bash
+curl -i https://<API_DOMAIN>/v1/items \
+  -H "Authorization: Bearer $HTTP_API_TOKEN" \
+  -H "Idempotency-Key: vps-smoke-001" \
+  -H "Content-Type: application/json" \
+  --data '{"text":"https://example.com/","user_note":"VPS smoke"}'
+~~~
+
+Create возвращает 202 Accepted; дальше poll выполняется по returned Item resource. При ambiguous network retry используйте тот же Idempotency-Key и то же body.
+
+## 16. Логи и диагностика
+
+Follow:
+
+~~~bash
+docker compose logs -f app
+~~~
+
+Последние строки:
+
+~~~bash
+docker compose logs --tail=200 app
+~~~
+
+Container/health:
+
+~~~bash
+docker compose ps
+docker compose exec -T app python -m app.ops status
+~~~
+
+Полный SQLite integrity check:
+
+~~~bash
+docker compose exec -T app python -m app.ops verify
+~~~
+
+Logs не являются очередью или backup. Canonical durable state — SQLite.
