@@ -80,8 +80,8 @@ Remote edits/deletions do not silently mutate canonical AIInbox state.
 ## 5. Current milestone statuses
 
 - PM-18 HTTP API — DONE, PR #56.
-- PM-33 Browser Extension — PLANNED / next client focus.
-- Integration Sync Foundation — PLANNED after or alongside PM-33 stabilization.
+- PM-33 Browser Extension — IN_REVIEW.
+- Integration Sync Foundation — NEXT after PM-33 review.
 - Miro Connector v1 — PLANNED, first destination over the foundation.
 - Additional destinations — SELECT AFTER REAL MIRO USAGE.
 

@@ -130,11 +130,11 @@ Current sequencing:
 ~~~text
 PM-18 HTTP API — DONE
         ↓
-PM-33 Browser Extension
+PM-33 Browser Extension — IN_REVIEW
         ↓
-Integration Sync Foundation
+Integration Sync Foundation — NEXT
         ↓
-Miro Connector v1
+Miro Connector v1 — PLANNED
         ↓
 additional outbound destinations
 ~~~
@@ -248,8 +248,8 @@ Goal: make stored material queryable as a personal knowledge base.
 
 ### Milestone J — Browser & External Integrations — CURRENT FOCUS
 
-- PM-33 Browser Extension — NEXT
-- Integration Sync Foundation — PLANNED
+- PM-33 Browser Extension — IN_REVIEW
+- Integration Sync Foundation — NEXT
 - Miro Connector v1 — PLANNED, first destination
 - Additional destinations — EVIDENCE-DRIVEN after Miro
 

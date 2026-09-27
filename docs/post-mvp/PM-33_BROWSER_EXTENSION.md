@@ -2,7 +2,7 @@
 
 Type: Post-MVP Epic + Detailed Technical Specification  
 Prerequisite: PM-18 HTTP API  
-Status: PLANNED — CURRENT NEXT CLIENT FOCUS
+Status: IN_REVIEW
 
 ## 1. Problem
 

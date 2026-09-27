@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Настройки AIInbox Capture</title>
+    <link rel="stylesheet" href="src/ui.css">
+  </head>
+  <body class="options">
+    <main>
+      <header>
+        <img src="icons/icon-48.png" width="40" height="40" alt="">
+        <div>
+          <h1>AIInbox Capture</h1>
+          <p class="muted">Настройте существующий PM-18 API.</p>
+        </div>
+      </header>
+      <form id="connection-form">
+        <label for="api-origin">Адрес API AIInbox</label>
+        <input id="api-origin" name="api-origin" type="url" autocomplete="url" placeholder="http://127.0.0.1:8080" required>
+        <p class="help">Для удалённого сервера используйте HTTPS. HTTP разрешён только для localhost или 127.0.0.1.</p>
+        <label for="api-token">Bearer-токен</label>
+        <input id="api-token" name="api-token" type="password" autocomplete="new-password" placeholder="Введите новый токен; пустое поле оставит текущий для этого адреса">
+        <p id="token-state" class="help">Токен хранится в локальном хранилище расширения и не отображается повторно.</p>
+        <div class="button-row">
+          <button id="save-config" type="button">Сохранить настройки</button>
+          <button id="test-connection" class="secondary" type="button">Проверить соединение</button>
+        </div>
+      </form>
+      <p id="connection-message" class="message" role="status" aria-live="polite"></p>
+      <section class="status-panel" aria-labelledby="queue-heading">
+        <h2 id="queue-heading">Локальная очередь</h2>
+        <p><strong>Ожидают отправки:</strong> <span id="pending-count">0</span></p>
+        <p><strong>Для других серверов:</strong> <span id="other-origin-count">0</span></p>
+        <p class="help">Каждая запись привязана к серверу, выбранному при сохранении. Чтобы отправить её, восстановите этот адрес или удалите запись ниже.</p>
+        <ul id="capture-list" class="capture-list"></ul>
+      </section>
+      <button id="disconnect" class="danger" type="button">Отключить и удалить учётные данные</button>
+      <p class="help">Отключение сохраняет очередь. Записи с постоянной ошибкой или для другого сервера можно удалить по одной.</p>
+    </main>
+    <script type="module" src="src/options.js"></script>
+  </body>
+</html>
