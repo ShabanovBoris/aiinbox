@@ -3,6 +3,8 @@
 Операционный runbook текущего Personal AI Inbox. Product behavior описан в
 `PRODUCT_SPEC.md`, пользовательская поверхность — в `BOT_USAGE.md`.
 
+Полный single-VPS production deployment через текущий Docker Compose — включая Telegram polling, workers, SQLite volumes, TLS reverse proxy, browser-extension API, перенос существующей базы и rollback — вынесен в [HOSTING_DOCKER.md](HOSTING_DOCKER.md).
+
 ## Быстрый старт
 
 Требования: Python 3.12+, `uv`, `ffmpeg`/`ffprobe`.
