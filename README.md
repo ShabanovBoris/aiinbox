@@ -95,6 +95,8 @@ docker compose logs -f app
 docker compose down
 ```
 
+Полный production-сценарий для отдельного VPS — Telegram polling, все фоновые workers, SQLite volumes, TLS-proxied HTTP API для browser extension, перенос существующей базы, backup/restore и rollback — описан в [docs/HOSTING_DOCKER.md](docs/HOSTING_DOCKER.md).
+
 Compose хранит SQLite в named volume `aiinbox_data`, а временные media files —
 в tmpfs `/tmp/aiinbox`. Проверенные backup snapshots хранятся отдельно в
 `aiinbox_backups`. Контейнер работает не от root; `TEMP_DIR` в Compose
@@ -136,7 +138,8 @@ check для защищённой ветки `main`, поэтому merge тре
 - [docs/BOT_USAGE.md](docs/BOT_USAGE.md) — пользовательская поверхность Telegram;
 - [docs/PRODUCT_SPEC.md](docs/PRODUCT_SPEC.md) — текущий product contract;
 - [docs/DECISIONS.md](docs/DECISIONS.md) — архитектурные инварианты;
-- [docs/RUNBOOK.md](docs/RUNBOOK.md) — запуск, диагностика и recovery.
+- [docs/RUNBOOK.md](docs/RUNBOOK.md) — запуск, диагностика и recovery;
+- [docs/HOSTING_DOCKER.md](docs/HOSTING_DOCKER.md) — полный VPS/Docker Compose deployment, TLS, перенос данных и rollback.
 
 История implementation/review хранится в GitHub PR, commits и Actions, а не
 дублируется отдельными repo-журналами.
