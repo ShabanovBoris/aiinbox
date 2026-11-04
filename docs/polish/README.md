@@ -83,7 +83,7 @@ Some implementation work may overlap, but each PR should remain independently re
 - POLISH-05 — DONE (PR #51 merged)
 - POLISH-06 — DONE (PR #52 merged)
 - POLISH-07 — DONE (PR #53 merged)
-- POLISH-08 — IN_REVIEW
+- POLISH-08 — DONE (PR #54 merged)
 
 POLISH-06 closed the Inbox/category reachability, Item-row navigation,
 failed-Item identity, Export shortcut, and Profile editing gaps. POLISH-07
@@ -91,10 +91,9 @@ captures follow-up failures from real user testing: guided command parity,
 content-only topic classification, lexical Search disclosure, visible local
 time, and explainable Attention eligibility. POLISH-08 removes aggregate
 analytics from ordinary user surfaces and returns concrete saved content from
-daily, weekly, and motivation flows. PM-14 remains ON HOLD until POLISH-08 is
-approved by both requested review conversations. Approval alone does not resume
-PM-14; real usage must be reviewed and resumption explicitly decided. PM-16+
-remains on hold pending a separate sequencing decision.
+daily, weekly, and motivation flows. The polish milestone is complete. PM-14
+remains ON HOLD pending a separate decision based on real usage. PM-16 and
+PM-17 remain on hold pending a separate sequencing decision.
 
 ## Product invariant after the milestone
 
@@ -124,18 +123,18 @@ are not the default presentation.
 
 ## Freeze policy
 
-Until POLISH-01…08 are accepted and reviewed together:
+After completion of POLISH-01…08:
 
 - PM-14 Hybrid Semantic Search: ON HOLD;
-- PM-16+ feature expansion: ON HOLD;
+- PM-16 and PM-17: ON HOLD;
 - bug/security/reliability fixes remain allowed;
 - PM-15 remains supported and DONE.
 
 This is a product sequencing decision, not a hard technical dependency.
 
-After all requested POLISH-08 reviews approve, review real usage and explicitly
-decide whether to resume PM-14. Keep PM-16+ on hold until a separate sequencing
-decision; approval of this milestone alone does not resume later feature work.
+Review real usage before explicitly deciding whether to resume PM-14. The
+browser and integrations track is the current focus, as documented in the
+[roadmap](../post-mvp/ROADMAP.md).
 
 ## Cross-PR invariants
 

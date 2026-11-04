@@ -2,7 +2,7 @@
 
 Type: Stabilization / Engagement quality specification  
 Depends on: POLISH-01, POLISH-03  
-Status: IN_REVIEW
+Status: DONE (PR #50 merged)
 
 ## 1. Problem
 
@@ -364,4 +364,3 @@ POLISH-04 is complete when a proactive notification feels like a specific reason
   policy are unchanged.
 - No migration or dependency change is required. PM-08 pacing and PM-11 event
   semantics remain unchanged.
-- Merged into `main` in PR #50. POLISH-05 is the next implementation review.

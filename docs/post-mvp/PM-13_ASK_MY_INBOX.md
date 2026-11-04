@@ -3,7 +3,7 @@
 Type: Post-MVP Epic + Detailed Technical Specification  
 Prerequisite: existing SQLite FTS5 search and persisted Item/Content data
 
-Status: IN_REVIEW
+Status: DONE (PR #42 merged)
 
 ## 1. Epic
 

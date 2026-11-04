@@ -2,7 +2,7 @@
 
 Type: Post-MVP Epic + Detailed Technical Specification  
 Prerequisite: existing provider boundaries; PM-13 Ask operation; PM-14 embedding operation if implemented  
-Status: PLANNED
+Status: ON HOLD pending a separate sequencing decision
 
 ## 1. Problem
 

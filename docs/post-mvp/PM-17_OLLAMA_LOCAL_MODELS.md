@@ -2,7 +2,7 @@
 
 Type: Post-MVP Epic + Detailed Technical Specification  
 Prerequisite: PM-16 Per-operation LLM Routing  
-Status: PLANNED
+Status: ON HOLD; depends on PM-16
 
 ## 1. Problem
 

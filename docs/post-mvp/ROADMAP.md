@@ -101,8 +101,7 @@ All post-MVP work must preserve the current architecture:
 
 ## 3.2 Quality & UX Polish — completed gate
 
-Before resuming PM-14+ feature expansion, complete all eight stabilization and
-corrective UX PRs:
+All eight stabilization and corrective UX PRs are merged:
 
 - [POLISH-01 — AI Analysis v2](../polish/POLISH-01_AI_ANALYSIS_V2.md)
 - [POLISH-02 — Compact Telegram Item UI](../polish/POLISH-02_COMPACT_TELEGRAM_UI.md)
@@ -130,7 +129,7 @@ Current sequencing:
 ~~~text
 PM-18 HTTP API — DONE
         ↓
-PM-33 Browser Extension — IN_REVIEW
+PM-33 Browser Extension — DONE (PR #58 merged)
         ↓
 Integration Sync Foundation — NEXT
         ↓
@@ -230,14 +229,14 @@ resume automatically.
 ### Milestone G — Knowledge
 
 - PM-13 Ask My Inbox — DONE (PR #42 merged)
-- PM-14 Hybrid Semantic Search — EVIDENCE CONFIRMED; runtime ON HOLD through POLISH-08 review and pending an explicit post-review usage decision
+- PM-14 Hybrid Semantic Search — EVIDENCE CONFIRMED; runtime ON HOLD pending an explicit usage decision
 
 Goal: make stored material queryable as a personal knowledge base.
 
 ### Milestone H — Portability & Cost
 
 - PM-15 Export / Ownership — DONE (PR #44 merged)
-- PM-16 LLM Routing — ON HOLD until polish milestone review
+- PM-16 LLM Routing — ON HOLD pending a separate sequencing decision
 - PM-17 Ollama — ON HOLD; depends on PM-16
 
 ### Milestone I — Additional Clients & Context
@@ -248,7 +247,7 @@ Goal: make stored material queryable as a personal knowledge base.
 
 ### Milestone J — Browser & External Integrations — CURRENT FOCUS
 
-- PM-33 Browser Extension — IN_REVIEW
+- PM-33 Browser Extension — DONE (PR #58 merged)
 - Integration Sync Foundation — NEXT
 - Miro Connector v1 — PLANNED, first destination
 - Additional destinations — EVIDENCE-DRIVEN after Miro
@@ -312,7 +311,8 @@ Detailed specification: [PM-03_TELEGRAM_VIDEO_DOCUMENTS.md](PM-03_TELEGRAM_VIDEO
 
 ## 8. PM-04 — Instagram Reels
 
-Current state: DONE. PM-04 was implemented and merged to main in PR #31.
+Current state: DONE. Reel support merged in PR #31; PR #60 added photo, video and
+carousel posts at Instagram `/p/` URLs.
 
 Recognize Instagram Reel URLs before generic web routing and process them as media:
 
@@ -492,8 +492,9 @@ Record reminder-specific outcomes:
 
 Reminder UI should allow a quick negative signal such as “Fewer like this”.
 
-Current state: IN_REVIEW. Reminder-attributed outcomes feed bounded deterministic
-ranking and scheduling adjustments; normal Item lifecycle Events remain canonical.
+Current state: DONE (PR #40 merged). Reminder-attributed outcomes feed bounded
+deterministic ranking and scheduling adjustments; normal Item lifecycle Events
+remain canonical.
 
 This closes:
 
@@ -549,8 +550,7 @@ Answers must identify source Items so hallucinated “memory” cannot silently 
 
 ## 18. PM-14 — Hybrid Semantic Search
 
-Status: EVIDENCE CONFIRMED; runtime remains ON HOLD through the POLISH-08 review
-gate. Approval alone does not resume PM-14: first review real usage, then make
+Status: EVIDENCE CONFIRMED; runtime remains ON HOLD. Review real usage and make
 an explicit decision to lift the hold. If resumed, add further PM-13 examples
 only if usage shows concrete vocabulary-mismatch queries where relevant saved
 Items are not usefully retrieved by FTS5.
@@ -581,7 +581,7 @@ Detailed specification: [PM-15_EXPORT_OWNERSHIP.md](PM-15_EXPORT_OWNERSHIP.md).
 
 ## 20. PM-16 — Per-operation LLM Routing
 
-Status: ON HOLD until the Quality & UX Polish milestone is reviewed.
+Status: ON HOLD pending a separate sequencing decision.
 
 Route explicit operation classes such as FINAL_ANALYSIS, CHUNK_SUMMARY, VISION,
 TRANSCRIPTION, PROFILE_PATCH, ATTENTION_HOOK, ASK_INBOX and EMBEDDING through a
@@ -596,7 +596,7 @@ Detailed specification: [PM-16_PER_OPERATION_LLM_ROUTING.md](PM-16_PER_OPERATION
 
 ## 21. PM-17 — Ollama / Local Models
 
-Status: ON HOLD. Depends on PM-16 and the Quality & UX Polish milestone review.
+Status: ON HOLD. Depends on PM-16.
 
 Add `ollama` as an optional routed provider for selected low-risk/private
 operations. Initial targets are CHUNK_SUMMARY, ATTENTION_HOOK and EMBEDDING.
@@ -659,6 +659,8 @@ Detailed specification: [PM-20_CALENDAR_AWARE_ATTENTION.md](PM-20_CALENDAR_AWARE
 ## 24.1 Promoted PM-33 and integration track
 
 ### PM-33 — Browser Extension
+
+Status: DONE (PR #58 merged).
 
 Use the existing PM-18 authenticated API for explicit browser capture. V1 saves
 the current page or selected text plus page URL, keeps explicit user notes

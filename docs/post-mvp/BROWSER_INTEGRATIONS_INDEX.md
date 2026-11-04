@@ -1,16 +1,16 @@
 # Browser & Integration Track
 
 Status: current product direction  
-Baseline: PM-18 HTTP API DONE in PR #56
+Baseline: PM-18 HTTP API and PM-33 Browser Extension are merged
 
 ## 1. Execution sequence
 
 ~~~text
 PM-18 HTTP API — DONE
         ↓
-PM-33 Browser Extension
+PM-33 Browser Extension — DONE
         ↓
-Integration Sync Foundation
+Integration Sync Foundation — NEXT
         ↓
 Miro Connector v1
         ↓
@@ -80,8 +80,8 @@ Remote edits/deletions do not silently mutate canonical AIInbox state.
 ## 5. Current milestone statuses
 
 - PM-18 HTTP API — DONE, PR #56.
-- PM-33 Browser Extension — IN_REVIEW.
-- Integration Sync Foundation — NEXT after PM-33 review.
+- PM-33 Browser Extension — DONE, PR #58.
+- Integration Sync Foundation — NEXT, planned.
 - Miro Connector v1 — PLANNED, first destination over the foundation.
 - Additional destinations — SELECT AFTER REAL MIRO USAGE.
 

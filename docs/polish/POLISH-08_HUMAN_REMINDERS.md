@@ -1,5 +1,7 @@
 # POLISH-08 — Human-facing Reminders & Russian Object-centric UX
 
+Status: DONE (PR #54 merged)
+
 ## Goal
 
 Ordinary Telegram messages return the user's saved material instead of
@@ -37,5 +39,4 @@ No schema migration or dependency is required.
 
 ## Verification
 
-POLISH-08 is reviewed on its dedicated branch and PR. See the PR's exact-head
-verification and external review results for the accepted revision.
+See [PR #54](https://github.com/ShabanovBoris/aiinbox/pull/54) for verification and review.
