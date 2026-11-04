@@ -9,7 +9,6 @@ import subprocess
 import httpx
 import pytest
 from sqlalchemy import select
-from yt_dlp import YoutubeDL
 from yt_dlp.extractor.instagram import InstagramIE
 from yt_dlp.networking import Request, Response
 
@@ -18,7 +17,8 @@ from app.bot.keyboards import item_keyboard
 from app.domain.enums import ContentKind, ProcessingStatus, SourceType
 from app.errors import AppError
 from app.extractors import instagram_post_media as media
-from app.extractors.instagram_worker import _with_post_query, post_info
+from app.extractors import instagram_post_metadata as metadata
+from app.extractors.instagram_worker import _compact_element, _with_post_query, post_info
 from app.extractors.web import PinningTransport
 from app.llm.base import TranscriptionSegmentCheckpoint
 from app.services.actions import apply_item_action
@@ -67,14 +67,14 @@ def test_real_ytdlp_raw_parser_preserves_album_order_and_share_query(monkeypatch
     body = f'<script type="application/json" data-sjs>{json.dumps(script)}</script>'.encode()
     requests = []
 
-    def open_post(self, request):
+    def open_post(request, *args):
         requests.append(request.url)
         return Response(io.BytesIO(body), request.url, {"Content-Type": "text/html; charset=utf-8"})
 
     monkeypatch.setattr(InstagramIE, "_real_initialize", lambda self: None)
     monkeypatch.setattr(InstagramIE, "_can_impersonate", False)
     monkeypatch.setattr(InstagramIE, "_download_json", lambda *args, **kwargs: {})
-    monkeypatch.setattr(YoutubeDL, "urlopen", open_post)
+    monkeypatch.setattr(metadata, "open_post_metadata", open_post)
     result = post_info(POST, {"quiet": True, "no_warnings": True})
     assert requests == ["https://www.instagram.com/p/FakePost?xtok=share%3D%3D"]
     assert [part["kind"] for part in result["elements"]] == kinds
@@ -116,6 +116,21 @@ def test_share_query_is_not_forwarded_to_api_or_another_post():
         assert "xtok" not in request.url
 
 
+def test_post_photo_uses_highest_resolution_allowed_cdn_variant():
+    element = _compact_element(
+        {
+            "id": "photo",
+            "thumbnails": [
+                {"width": 1080, "url": f"{CDN}/full.jpg"},
+                {"width": 4000, "url": "https://example.org/not-instagram.jpg"},
+                {"width": 150, "url": f"{CDN}/tiny.jpg"},
+                {"width": 640, "url": f"{CDN}/medium.jpg"},
+            ],
+        }
+    )
+    assert element["url"] == f"{CDN}/full.jpg"
+
+
 @pytest.mark.parametrize("target", ["https://127.0.0.1/media", "https://alias.fbcdn.net/media"])
 async def test_media_redirects_check_hosts_and_pinned_ips(tmp_path, target):
     hosts = []
@@ -136,6 +151,60 @@ async def test_media_redirects_check_hosts_and_pinned_ips(tmp_path, target):
     assert not list(tmp_path.iterdir())
 
 
+@pytest.mark.parametrize(
+    "target",
+    [
+        "https://127.0.0.1/private",
+        "https://i.instagram.com/private",
+        "https://www.instagram.com/private",
+        "http://www.instagram.com/private",
+    ],
+)
+async def test_metadata_redirects_check_origin_and_pinned_ips(target):
+    calls = []
+    resolutions = []
+
+    async def resolver(host):
+        resolutions.append(host)
+        return ["8.8.8.8"] if len(resolutions) == 1 else ["127.0.0.1"]
+
+    def server(request):
+        calls.append((request.url.host, request.headers["host"]))
+        return httpx.Response(302, headers={"location": target})
+
+    transport = PinningTransport(httpx.MockTransport(server), resolver=resolver)
+    async with httpx.AsyncClient(transport=transport) as client:
+        with pytest.raises(AppError) as failure:
+            await metadata._fetch_metadata(client, Request(POST))
+    assert failure.value.code == "SECURITY_REJECTED"
+    assert calls == [("8.8.8.8", "www.instagram.com")]
+    if target == "https://www.instagram.com/private":
+        assert resolutions == ["www.instagram.com", "www.instagram.com"]
+
+
+async def test_metadata_cookies_use_original_host_and_body_is_bounded():
+    async def resolver(host):
+        return ["8.8.8.8"]
+
+    def server(request):
+        if request.url.path.startswith("/p/"):
+            return httpx.Response(
+                302,
+                headers={
+                    "location": "/next",
+                    "set-cookie": "csrftoken=fixture; Domain=.instagram.com; Path=/; Secure",
+                },
+            )
+        assert request.headers["cookie"] == "csrftoken=fixture"
+        return httpx.Response(200, stream=httpx.ByteStream(b"0123456789"))
+
+    transport = PinningTransport(httpx.MockTransport(server), resolver=resolver)
+    async with httpx.AsyncClient(transport=transport) as client:
+        with pytest.raises(AppError) as failure:
+            await metadata._fetch_metadata(client, Request(POST), byte_limit=8)
+    assert failure.value.code == "TOO_LARGE"
+
+
 async def test_media_stream_byte_cap_without_content_length(tmp_path):
     def server(request):
         return httpx.Response(
@@ -149,10 +218,25 @@ async def test_media_stream_byte_cap_without_content_length(tmp_path):
     assert (tmp_path / "photo").stat().st_size <= 8
 
 
+async def test_media_byte_budget_covers_more_than_one_download(tmp_path):
+    def server(request):
+        return httpx.Response(
+            200, headers={"content-type": "image/jpeg"}, stream=httpx.ByteStream(b"abcdef")
+        )
+
+    budget = media._PostBudget(10)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(server)) as client:
+        await media._download(f"{CDN}/one", tmp_path / "one", 8, {"image/jpeg"}, client, budget)
+        with pytest.raises(AppError) as failure:
+            await media._download(f"{CDN}/two", tmp_path / "two", 8, {"image/jpeg"}, client, budget)
+    assert failure.value.code == "POST_BUDGET_EXHAUSTED"
+    assert budget.used == 10
+
+
 @pytest.mark.skipif(
     not shutil.which("ffmpeg") or not shutil.which("ffprobe"), reason="ffmpeg tools unavailable"
 )
-@pytest.mark.parametrize("kind", ["photo", "silent", "video"])
+@pytest.mark.parametrize("kind", ["photo", "silent", "video", "oversized"])
 def test_real_media_preparation(tmp_path, monkeypatch, kind):
     sample = tmp_path / ("sample.png" if kind == "photo" else "sample.mp4")
     seconds = "0.2" if kind == "silent" else "2"
@@ -160,19 +244,25 @@ def test_real_media_preparation(tmp_path, monkeypatch, kind):
     if kind == "photo":
         cmd += ["-frames:v", "1", "-threads", "1"]
     else:
-        if kind == "video":
+        if kind in {"video", "oversized"}:
             cmd += ["-f", "lavfi", "-i", "sine=frequency=800:sample_rate=16000:d=2", "-c:a", "aac"]
         cmd += ["-c:v", "mpeg4", "-pix_fmt", "yuv420p"]
     subprocess.run([*cmd, str(sample)], check=True, timeout=15, capture_output=True)
 
-    async def fetch(url, path, limit, types):
+    async def fetch(url, path, limit, types, budget):
+        if kind == "oversized" and url.endswith("/sample"):
+            raise AppError("TOO_LARGE", "video stream too large", True)
         shutil.copyfile(sample, path)
 
     monkeypatch.setattr(media, "_fetch", fetch)
     directory = tmp_path / "work"
     result = media.prepare_post_media(
         {
-            "element": {"kind": "photo" if kind == "photo" else "video", "url": f"{CDN}/sample"},
+            "element": {
+                "kind": "photo" if kind == "photo" else "video",
+                "url": f"{CDN}/sample",
+                "audio_url": f"{CDN}/track" if kind == "oversized" else None,
+            },
             "download_dir": str(directory),
             "audio": kind != "photo",
             "visual": True,
@@ -182,11 +272,16 @@ def test_real_media_preparation(tmp_path, monkeypatch, kind):
             "max_duration": 30,
             "video_bytes": 50_000_000,
             "audio_bytes": 50_000_000,
+            "download_bytes_remaining": media.POST_DOWNLOAD_BYTES,
         }
     )
-    assert 1 <= len(result["images"]) <= 6
-    assert (directory / result["images"][0]).read_bytes().startswith(b"\xff\xd8\xff")
-    if kind == "video":
+    if kind == "oversized":
+        assert result["visual_error"] == {"code": "TOO_LARGE", "permanent": True}
+        assert not result["images"]
+    else:
+        assert 1 <= len(result["images"]) <= 6
+        assert (directory / result["images"][0]).read_bytes().startswith(b"\xff\xd8\xff")
+    if kind in {"video", "oversized"}:
         assert (directory / result["audio"]).stat().st_size > 0
         assert result["duration"] == 2
     if kind == "silent":
@@ -205,6 +300,7 @@ class FixturePosts:
         self.manifest_error = None
         self.block_on = None
         self.started = asyncio.Event()
+        self.bytes_per_element = 0
 
     async def get_post(self, url):
         assert url == POST
@@ -228,7 +324,13 @@ class FixturePosts:
             await asyncio.Future()
         if error := self.errors.get(identifier):
             raise error
-        result = {"duration": 10 if element["kind"] == "video" else None, "images": []}
+        if self.bytes_per_element > kwargs["download_bytes_remaining"]:
+            return {"media_error": {"code": "POST_BUDGET_EXHAUSTED", "permanent": False}}
+        result = {
+            "duration": 10 if element["kind"] == "video" else None,
+            "images": [],
+            "downloaded_bytes": self.bytes_per_element,
+        }
         if visual:
             (directory / "photo.jpg").write_text(identifier)
             result["images"] = ["photo.jpg"]
@@ -248,6 +350,25 @@ async def _state(factory, item_id):
 
 def _buttons(item, source):
     return [button for row in item_keyboard(item, [source]).inline_keyboard for button in row]
+
+
+async def test_carousel_budget_returns_partial_and_manual_retry_resumes(tmp_path, session_factory):
+    item = await ingest_reel(session_factory, text=POST)
+    extractor = FixturePosts(tmp_path, ["photo", "photo"])
+    extractor.bytes_per_element = media.POST_DOWNLOAD_BYTES // 2 + 1
+    worker = make_worker(session_factory, extractor, FakeLlmProvider(vision=True))
+    assert await worker.process_one()
+    partial, source, _ = await _state(session_factory, item.id)
+    assert partial.analysis_completeness == "PARTIAL"
+    assert source.instagram_post_progress["budget_exhausted"]
+    assert "Лимит загрузки поста исчерпан" in format_ready_item(partial, [source])
+    assert await apply_item_action(session_factory, 42, item.id, "retry")
+    assert await worker.process_one()
+    ready, source, rows = await _state(session_factory, item.id)
+    assert ready.analysis_completeness == "VISUAL_ONLY"
+    assert not source.instagram_post_progress["budget_exhausted"]
+    assert [call[0] for call in extractor.prepared] == ["1", "2", "2"]
+    assert sum(row.kind is ContentKind.VISUAL_NOTES for row in rows) == 2
 
 
 async def test_carousel_retry_recovers_only_missing_element_and_keeps_open_link(

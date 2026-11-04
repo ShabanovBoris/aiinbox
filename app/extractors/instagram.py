@@ -148,24 +148,33 @@ class InstagramExtractor:
         frame_interval: int,
         max_frames: int,
         scene_threshold: float,
+        download_bytes_remaining: int,
     ) -> dict:
-        return await self._run_ytdlp_process(
-            {
-                "mode": "post_media",
-                "element": element,
-                "download_dir": str(directory),
-                "audio": audio,
-                "visual": visual,
-                "frame_interval": frame_interval,
-                "max_frames": min(max_frames, 6),
-                "scene_threshold": scene_threshold,
-                "max_duration": self.max_duration_seconds,
-                "audio_bytes": self.max_audio_bytes,
-                "video_bytes": self.max_video_bytes,
-            },
-            directory,
-            True,
-        )
+        try:
+            return await self._run_ytdlp_process(
+                {
+                    "mode": "post_media",
+                    "element": element,
+                    "download_dir": str(directory),
+                    "audio": audio,
+                    "visual": visual,
+                    "frame_interval": frame_interval,
+                    "max_frames": min(max_frames, 6),
+                    "scene_threshold": scene_threshold,
+                    "max_duration": self.max_duration_seconds,
+                    "audio_bytes": self.max_audio_bytes,
+                    "video_bytes": self.max_video_bytes,
+                    "download_bytes_remaining": download_bytes_remaining,
+                },
+                directory,
+                True,
+            )
+        except AppError as exc:
+            # A terminated worker cannot report bytes it already received.
+            return {
+                "media_error": {"code": exc.code, "permanent": exc.permanent},
+                "downloaded_bytes": download_bytes_remaining,
+            }
 
     async def extract(
         self,

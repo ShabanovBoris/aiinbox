@@ -4,6 +4,7 @@ import asyncio
 import json
 import math
 import subprocess
+from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urljoin, urlsplit
 
@@ -14,6 +15,7 @@ from app.extractors.web import PinningTransport
 from app.services.frames import extract_representative_frames
 
 _PHOTO_BYTES = 10_000_000
+POST_DOWNLOAD_BYTES = 150_000_000
 _MAX_MEDIA_URL = 2_500
 _CDN_DOMAINS = ("cdninstagram.com", "fbcdn.net")
 _LOCAL_MOV = [
@@ -28,6 +30,24 @@ _LOCAL_MOV = [
 ]
 _IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp", "application/octet-stream"}
 _VIDEO_TYPES = {"video/mp4", "audio/mp4", "application/mp4", "application/octet-stream"}
+
+
+@dataclass
+class _PostBudget:
+    limit: int
+    used: int = 0
+
+    def require(self, size: int) -> None:
+        if size > self.limit - self.used:
+            raise AppError("POST_BUDGET_EXHAUSTED", "Instagram post download budget exhausted")
+
+    def consume(self, size: int) -> None:
+        try:
+            self.require(size)
+        except AppError:
+            self.used = self.limit
+            raise
+        self.used += size
 
 
 def is_instagram_cdn_url(url: str) -> bool:
@@ -48,7 +68,12 @@ def is_instagram_cdn_url(url: str) -> bool:
 
 
 async def _download(
-    url: str, path: Path, byte_limit: int, types: set[str], client: httpx.AsyncClient
+    url: str,
+    path: Path,
+    byte_limit: int,
+    types: set[str],
+    client: httpx.AsyncClient,
+    budget: _PostBudget | None = None,
 ) -> None:
     for _ in range(5):
         if not is_instagram_cdn_url(url):
@@ -79,11 +104,17 @@ async def _download(
                 ):
                     raise AppError("UNSUPPORTED_SOURCE", "unexpected Instagram media type", True)
                 length = res.headers.get("content-length", "")
-                if length.isdecimal() and int(length) > byte_limit:
-                    raise AppError("TOO_LARGE", "Instagram media exceeds the byte limit", True)
+                if length.isdecimal():
+                    size = int(length)
+                    if size > byte_limit:
+                        raise AppError("TOO_LARGE", "Instagram media exceeds the byte limit", True)
+                    if budget:
+                        budget.require(size)
                 size = 0
                 with path.open("wb") as output:
                     async for chunk in res.aiter_raw(chunk_size=65_536):
+                        if budget:
+                            budget.consume(len(chunk))
                         size += len(chunk)
                         if size > byte_limit:
                             raise AppError(
@@ -100,7 +131,7 @@ async def _download(
     raise AppError("DOWNLOAD_FAILED", "Instagram media redirect limit exceeded", True)
 
 
-async def _fetch(url: str, path: Path, limit: int, types: set[str]) -> None:
+async def _fetch(url: str, path: Path, limit: int, types: set[str], budget: _PostBudget) -> None:
     async with httpx.AsyncClient(
         transport=PinningTransport(),
         follow_redirects=False,
@@ -109,7 +140,7 @@ async def _fetch(url: str, path: Path, limit: int, types: set[str]) -> None:
     ) as client:
         for attempt in range(2):
             try:
-                await _download(url, path, limit, types, client)
+                await _download(url, path, min(limit, POST_DOWNLOAD_BYTES), types, client, budget)
                 return
             except AppError as exc:
                 if attempt or exc.permanent or exc.code not in {"TIMEOUT", "DOWNLOAD_FAILED"}:
@@ -290,6 +321,15 @@ def _video_frames(video: Path, directory: Path, request: dict, duration: int) ->
 
 def prepare_post_media(request: dict) -> dict:
     """Materialize only the local files needed by STT and Vision for this element."""
+    budget = _PostBudget(request["download_bytes_remaining"])
+    try:
+        result = _prepare_post_media(request, budget)
+    except AppError as exc:
+        result = {"media_error": _error(exc)}
+    return {**result, "downloaded_bytes": budget.used}
+
+
+def _prepare_post_media(request: dict, budget: _PostBudget) -> dict:
     element = request["element"]
     url = element.get("url")
     directory = Path(request["download_dir"])
@@ -298,7 +338,7 @@ def prepare_post_media(request: dict) -> dict:
         if not url:
             raise AppError("UNSUPPORTED_SOURCE", "Instagram photo URL is unavailable", True)
         raw, jpeg = directory / "photo", directory / "photo.jpg"
-        asyncio.run(_fetch(url, raw, _PHOTO_BYTES, _IMAGE_TYPES))
+        asyncio.run(_fetch(url, raw, _PHOTO_BYTES, _IMAGE_TYPES, budget))
         _jpeg(raw, jpeg)
         return {"images": [jpeg.name]}
     if element["kind"] != "video":
@@ -314,11 +354,17 @@ def prepare_post_media(request: dict) -> dict:
     video = directory / "video.mp4"
     duration, streams = None, set()
     if url and (request["visual"] or (request["audio"] and not audio_url)):
+        video_downloaded = False
         try:
-            asyncio.run(_fetch(url, video, request["video_bytes"], _VIDEO_TYPES))
+            asyncio.run(_fetch(url, video, request["video_bytes"], _VIDEO_TYPES, budget))
+            video_downloaded = True
             duration, streams = _probe(video, max_duration)
         except AppError as exc:
-            if not audio_url or exc.code in {"TOO_LARGE", "SECURITY_REJECTED"}:
+            if (
+                not (request["audio"] and audio_url)
+                or exc.code == "SECURITY_REJECTED"
+                or (video_downloaded and exc.code == "TOO_LARGE")
+            ):
                 raise
             result["visual_error"] = _error(exc)
 
@@ -327,7 +373,9 @@ def prepare_post_media(request: dict) -> dict:
             audio_source = video
             if "audio" not in streams and audio_url:
                 audio_source = directory / "track.mp4"
-                asyncio.run(_fetch(audio_url, audio_source, request["audio_bytes"], _VIDEO_TYPES))
+                asyncio.run(
+                    _fetch(audio_url, audio_source, request["audio_bytes"], _VIDEO_TYPES, budget)
+                )
                 audio_duration, audio_streams = _probe(audio_source, max_duration)
                 duration = duration or audio_duration
             else:

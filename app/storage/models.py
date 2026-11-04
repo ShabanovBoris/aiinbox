@@ -239,7 +239,8 @@ class ItemSource(Base):
         return bool(
             progress
             and (
-                progress.get("refresh_error", {}).get("permanent") is False
+                progress.get("budget_exhausted")
+                or progress.get("refresh_error", {}).get("permanent") is False
                 or any(
                     not error["permanent"]
                     for part in progress["parts"]

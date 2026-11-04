@@ -36,6 +36,9 @@ def _instagram_post_failure_reason(code: str | None) -> str:
         "SECURITY_REJECTED": "Медиа не удалось безопасно скачать.",
         "TOO_LARGE": "Медиа превышает ограничение по размеру или длительности.",
         "UNSUPPORTED_SOURCE": "Instagram не предоставил поддерживаемый формат медиа.",
+        "POST_BUDGET_EXHAUSTED": (
+            "Лимит загрузки поста исчерпан. Нажмите «Повторить», чтобы продолжить."
+        ),
     }.get(code, "Не удалось получить пригодное для анализа содержимое поста.")
 
 
@@ -91,9 +94,11 @@ def _analysis_completeness_warning(
         for part in post["parts"]
         for error in part.get("errors", {}).values()
     } | {post["refresh_error"]["code"] for post in posts if post.get("refresh_error")}
+    if any(post.get("budget_exhausted") for post in posts):
+        post_errors.add("POST_BUDGET_EXHAUSTED")
     post_hints = [
         _instagram_post_failure_reason(code)
-        for code in ("AUTH_REQUIRED", "RATE_LIMITED", "VISION_UNAVAILABLE")
+        for code in ("AUTH_REQUIRED", "RATE_LIMITED", "VISION_UNAVAILABLE", "POST_BUDGET_EXHAUSTED")
         if code in post_errors
     ]
     if completeness == "VISUAL_ONLY":
@@ -231,7 +236,11 @@ def format_item_failure(item: Item, sources: Sequence[ItemSource]) -> str:
         and not llm_failure
     ):
         reason = _instagram_post_failure_reason(error_code) + "\nСсылка сохранена."
-        if retryable and error_code not in {"AUTH_REQUIRED", "RATE_LIMITED"}:
+        if retryable and error_code not in {
+            "AUTH_REQUIRED",
+            "RATE_LIMITED",
+            "POST_BUDGET_EXHAUSTED",
+        }:
             reason += " Можно повторить попытку."
     elif instagram_failure and error_code == "AUTH_REQUIRED":
         reason = (

@@ -103,12 +103,21 @@ def post_info(url: str, options: dict, ydl_factory=None) -> dict:
     if not instagram_post_shortcode(url):
         raise AppError("UNSUPPORTED_SOURCE", "invalid Instagram post URL", True)
     if ydl_factory is None:
+        from app.extractors.instagram_post_metadata import open_post_metadata
 
         class PostYoutubeDL(yt_dlp.YoutubeDL):
+            def _impersonate_target_available(self, target):
+                # The pinned HTTP transport does not offer yt-dlp's curl backends.
+                return False
+
             def urlopen(self, req):
-                if isinstance(req, Request):
-                    req = _with_post_query(req, url)
-                return super().urlopen(req)
+                request = _with_post_query(req if isinstance(req, Request) else Request(req), url)
+                return open_post_metadata(
+                    request,
+                    self.cookiejar,
+                    self.params["http_headers"],
+                    self.params.get("socket_timeout", 15),
+                )
 
         ydl_factory = PostYoutubeDL
 
@@ -184,14 +193,21 @@ def _compact_element(entry: Any) -> dict:
     result["kind"] = "photo"
     images = entry.get("thumbnails")
     if isinstance(images, list):
-        result["url"] = next(
-            (
-                image["url"]
-                for image in reversed(images)
-                if isinstance(image, dict) and media_url(image.get("url"))
-            ),
-            None,
-        )
+        valid = [
+            image
+            for image in reversed(images)
+            if isinstance(image, dict) and media_url(image.get("url"))
+        ]
+        if valid:
+
+            def resolution(image):
+                dimensions = [
+                    value if type(value) is int and value > 0 else 0
+                    for value in (image.get("width"), image.get("height"))
+                ]
+                return (max(dimensions), min(dimensions))
+
+            result["url"] = max(valid, key=resolution)["url"]
     return result
 
 

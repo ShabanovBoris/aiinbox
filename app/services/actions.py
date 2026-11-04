@@ -235,7 +235,12 @@ async def _apply_item_action_in_session(
                 if source.id in reopened and source.instagram_post_progress:
                     source.metadata_json = {
                         **source.metadata_json,
-                        "instagram_post": {**source.instagram_post_progress, "complete": False},
+                        "instagram_post": {
+                            **source.instagram_post_progress,
+                            "complete": False,
+                            "downloaded_bytes": 0,
+                            "budget_exhausted": False,
+                        },
                     }
             if reopened:
                 await session.execute(

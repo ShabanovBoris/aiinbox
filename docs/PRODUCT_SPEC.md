@@ -816,7 +816,7 @@ Defaults:
 - YouTube media download timeout: 300 s;
 - Instagram video duration: 7200 s;
 - Instagram audio/video: 50 MB;
-- Instagram post photo: 10 MB; up to 20 elements per post;
+- Instagram post photo: 10 MB; up to 20 elements and 150 MB of media per attempt;
 - subtitles: 2 MB.
 
 Все значения задаются config и валидируются на startup.

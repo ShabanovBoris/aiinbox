@@ -12,6 +12,7 @@ from app.domain.enums import ContentKind, SourceType
 from app.domain.models import NormalizedContent
 from app.errors import AppError
 from app.extractors.instagram import InstagramExtractor
+from app.extractors.instagram_post_media import POST_DOWNLOAD_BYTES
 from app.extractors.subprocess_runner import cleanup_temporary_directory
 from app.llm.base import LlmProvider, TranscriptionSegmentCheckpoint
 from app.services.profile import get_profile
@@ -175,6 +176,7 @@ async def extract_post(
         "author": (metadata.get("uploader") or metadata.get("creator") or "").strip() or None,
         "parts": parts,
         "complete": False,
+        "downloaded_bytes": previous.get("downloaded_bytes", 0),
     }
     rows = await _post_rows(session, source)
     valid_keys = {part["key"] for part in parts}
@@ -211,7 +213,11 @@ async def extract_post(
         # Each replacement gets its own JSON value for SQLAlchemy change tracking.
         if part.get("done"):
             continue
-        outcome = await _extract_element(
+        remaining = POST_DOWNLOAD_BYTES - progress["downloaded_bytes"]
+        if remaining <= 0:
+            progress = {**progress, "budget_exhausted": True}
+            break
+        outcome, downloaded = await _extract_element(
             session,
             source,
             extractor,
@@ -228,15 +234,23 @@ async def extract_post(
             max_frames=max_frames,
             scene_threshold=scene_threshold,
             single=post["total"] == 1,
+            download_bytes_remaining=remaining,
         )
         parts = [*parts[:index], outcome, *parts[index + 1 :]]
+        budget_exhausted = any(
+            error["code"] == "POST_BUDGET_EXHAUSTED" for error in outcome["errors"].values()
+        )
         progress = {
             **progress,
             "parts": parts,
             "processed": sum(p.get("done", False) for p in parts),
+            "downloaded_bytes": progress["downloaded_bytes"] + downloaded,
+            "budget_exhausted": budget_exhausted,
         }
         _save_progress(source, progress)
         await session.commit()
+        if budget_exhausted:
+            break
 
     progress = {**progress, "processed": sum(p.get("done", False) for p in parts), "complete": True}
     _save_progress(source, progress)
@@ -268,13 +282,15 @@ async def _extract_element(
     max_frames: int,
     scene_threshold: float,
     single: bool,
-) -> dict:
+    download_bytes_remaining: int,
+) -> tuple[dict, int]:
     key = part["key"]
     photo = part["kind"] == "photo"
     transcript = evidence.get((key, ContentKind.TRANSCRIPT))
     visual_notes = evidence.get((key, ContentKind.VISUAL_NOTES))
     no_speech = part.get("no_speech", False)
     errors = dict(part.get("errors", {}))
+    downloaded = 0
     if transcript:
         errors.pop("audio", None)
     if visual_notes:
@@ -316,7 +332,11 @@ async def _extract_element(
                     frame_interval=frame_interval,
                     max_frames=max_frames,
                     scene_threshold=scene_threshold,
+                    download_bytes_remaining=download_bytes_remaining,
                 )
+                downloaded = media.get("downloaded_bytes", 0)
+                if error := media.get("media_error"):
+                    raise AppError(error["code"], "Instagram media unavailable", error["permanent"])
                 if single and media.get("duration"):
                     source.content_duration_seconds = media["duration"]
                 if audio:
@@ -389,4 +409,4 @@ async def _extract_element(
         "no_speech": no_speech,
         "errors": errors,
         "done": bool(transcript or visual_notes) and not errors,
-    }
+    }, downloaded
