@@ -23,9 +23,10 @@ from app.llm.base import TranscriptionSegmentCheckpoint
 from app.services.analysis import Analyzer
 from app.services.delivery import ITEM_READY, enqueue_item_delivery, wants_telegram_item_delivery
 from app.services.frames import extract_representative_frames
+from app.services.instagram_posts import extract_post, restore_post
 from app.services.profile import get_profile
 from app.services.retrieval import sync_item_search
-from app.services.url_parsing import parse_message
+from app.services.url_parsing import instagram_post_shortcode, parse_message
 from app.storage.models import Content, Item, ItemSource
 
 log = logging.getLogger(__name__)
@@ -248,6 +249,9 @@ class ProcessingPipeline:
         if successful_source_count and caption_only_sources == successful_source_count:
             return "CAPTION_ONLY"
 
+        if content.metadata.get("instagram_post_partial"):
+            return "PARTIAL"
+
         visual_only_sources = int(content.metadata.get("visual_only_source_count") or 0)
         if visual_only_sources:
             return "VISUAL_ONLY" if visual_only_sources == successful_source_count else "PARTIAL"
@@ -459,6 +463,23 @@ class ProcessingPipeline:
         if source.source_type is SourceType.INSTAGRAM:
             if self.instagram_extractor is None:
                 raise AppError("UNSUPPORTED_SOURCE", "Instagram extractor not wired")
+            if isinstance(source, ItemSource) and instagram_post_shortcode(source.source_url):
+                return await extract_post(
+                    session,
+                    source,
+                    self.instagram_extractor,
+                    self.analyzer.provider,
+                    user_id=item.user_id,
+                    checkpoints=lambda key: self._transcript_checkpoints(
+                        session, item, source_id, media_key=key
+                    ),
+                    clear_checkpoints=lambda key: self._delete_transcript_checkpoints(
+                        session, item.id, source_id, media_key=key
+                    ),
+                    frame_interval=self.visual_frame_interval_seconds,
+                    max_frames=self.visual_max_frames,
+                    scene_threshold=self.visual_scene_threshold,
+                )
             completed_segments, on_segment = await self._transcript_checkpoints(
                 session, item, source_id
             )
@@ -962,8 +983,15 @@ class ProcessingPipeline:
                 "caption_only_source_count": caption_only_source_count,
                 "visual_source_count": len(visual_sources),
                 "visual_only_source_count": visual_only_source_count,
+                "instagram_post_partial": any(
+                    content.metadata.get("instagram_post_partial") for content in extracted
+                ),
                 "visual_source_count_with_notes": sum(
-                    bool(content.metadata.get("visual_notes")) for content in visual_sources
+                    bool(
+                        content.metadata.get("visual_notes")
+                        or content.metadata.get("instagram_post_visual")
+                    )
+                    for content in visual_sources
                 ),
             }
         )
@@ -987,7 +1015,11 @@ class ProcessingPipeline:
 
     @staticmethod
     async def _delete_transcript_checkpoints(
-        session: AsyncSession, item_id: int, source_id: int | None = None
+        session: AsyncSession,
+        item_id: int,
+        source_id: int | None = None,
+        *,
+        media_key: str | None = None,
     ) -> None:
         """Remove STT work-in-progress rows only after a final transcript exists.
 
@@ -999,11 +1031,17 @@ class ProcessingPipeline:
         where.append(
             Content.source_id == source_id if source_id is not None else Content.source_id.is_(None)
         )
+        if media_key is not None:
+            where.append(Content.metadata_json["instagram_element"].as_string() == media_key)
         await session.execute(delete(Content).where(*where))
 
     @staticmethod
     async def _transcript_checkpoints(
-        session: AsyncSession, item: Item, source_id: int | None = None
+        session: AsyncSession,
+        item: Item,
+        source_id: int | None = None,
+        *,
+        media_key: str | None = None,
     ):
         """Expose durable per-segment STT progress without leaking DB into providers.
 
@@ -1015,6 +1053,8 @@ class ProcessingPipeline:
         where.append(
             Content.source_id == source_id if source_id is not None else Content.source_id.is_(None)
         )
+        if media_key is not None:
+            where.append(Content.metadata_json["instagram_element"].as_string() == media_key)
         rows = (await session.scalars(select(Content).where(*where).order_by(Content.id))).all()
         completed: dict[int, TranscriptionSegmentCheckpoint] = {}
         for row in rows:
@@ -1058,6 +1098,7 @@ class ProcessingPipeline:
                             "model": checkpoint.model,
                             "segment_seconds": checkpoint.segment_seconds,
                             "format_version": checkpoint.format_version,
+                            **({"instagram_element": media_key} if media_key is not None else {}),
                         },
                     )
                 )
@@ -1146,6 +1187,10 @@ class ProcessingPipeline:
         session: AsyncSession, item: Item, source: ItemSource
     ) -> NormalizedContent | None:
         """Restore one source checkpoint by durable source id."""
+        if source.source_type is SourceType.INSTAGRAM and instagram_post_shortcode(
+            source.source_url
+        ):
+            return await restore_post(session, source)
         kind = ContentKind.WEB_TEXT
         if source.source_type in (
             SourceType.VOICE,

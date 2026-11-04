@@ -90,7 +90,13 @@ https://www.youtube.com/watch?v=...
 только аудио и укажет это в подписи. Если аудио тоже слишком большое, бот сообщит
 об этом отдельно.
 
-### Instagram Reels
+### Instagram
+
+По ссылке `https://www.instagram.com/p/ABC123/` бот разберёт одиночное фото,
+видео или карусель (до 20 элементов в порядке публикации). Для фото нужен
+анализ изображений; если он отключён, бот явно укажет, когда результат основан
+только на подписи. При частичной обработке видно, сколько элементов разобрано.
+Кнопка «Открыть в Instagram» ведёт к исходному посту.
 
 Можно отправить ссылку на конкретный Reel:
 
@@ -183,8 +189,8 @@ Telegram не предоставляет постоянную ссылку на 
 
 ### Что не поддерживается
 
-Video note и direct image не обрабатываются. Instagram поддерживается только для
-конкретных Reel URL; extraction зависит от текущего поведения yt-dlp и Instagram.
+Video note и direct image не обрабатываются. Instagram поддерживается для
+конкретных Reel и post URL; доступ зависит от текущего поведения yt-dlp и Instagram.
 Если Telegram прислал видео как `Document` (`video/*` или распознаваемое
 video-расширение), оно всё равно идёт в
 VIDEO pipeline. Обычный Telegram video и forwarded video используют transcript
@@ -704,7 +710,8 @@ https://example.com/c
 - URL PDF использует тот же web download cap 5 MB и SSRF-защиту;
 - voice/audio ограничены 20 MB по умолчанию;
 - YouTube ограничен 2 часами и media caps из конфигурации;
-- Instagram Reel ограничен `INSTAGRAM_MAX_DURATION_SECONDS` и отдельными audio/video caps;
+- видео Instagram ограничено `INSTAGRAM_MAX_DURATION_SECONDS` и отдельными audio/video caps;
+  для постов `/p/` действует лимит 20 элементов и 10 МБ на фото;
 - для OpenRouter long-audio STT и video visual analysis нужен `ffmpeg`;
 - без vision-модели YouTube/Telegram video всё равно обрабатываются по transcript;
 - вывод Telegram ограничивается 4096 символами, поэтому длинные ответы

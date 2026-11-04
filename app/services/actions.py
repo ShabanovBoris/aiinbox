@@ -6,7 +6,7 @@ from sqlalchemy import and_, case, false, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.sql import text
 
-from app.domain.enums import ItemState, ProcessingStatus
+from app.domain.enums import ItemState, ProcessingStatus, SourceType
 from app.services.delivery import ITEM_FAILED
 from app.services.notifications import add_snooze_reminder, cancel_snooze_reminders
 from app.storage.models import Delivery, Event, Item, ItemSource, User
@@ -136,18 +136,32 @@ async def _apply_item_action_in_session(
             .returning(Item.id)
         )
     elif action == "retry":
-        failed_sources = list(
+        retry_sources = list(
             (
                 await session.scalars(
                     select(ItemSource).where(
                         ItemSource.item_id == item_id,
-                        ItemSource.extraction_status == "FAILED",
+                        or_(
+                            ItemSource.extraction_status == "FAILED",
+                            and_(
+                                ItemSource.extraction_status == "READY",
+                                ItemSource.source_type == SourceType.INSTAGRAM,
+                            ),
+                        ),
                     )
                 )
             ).all()
         )
+        failed_sources = [
+            source for source in retry_sources if source.extraction_status == "FAILED"
+        ]
         retryable_source_ids = [
             source.id for source in failed_sources if not source.failure_is_permanent
+        ]
+        retryable_posts = [
+            source
+            for source in retry_sources
+            if source.extraction_status == "READY" and source.has_retryable_post_elements
         ]
         # ❌ Удалено правило «любой FAILED child можно retry»: permanent source
         # failures должны оставаться durable FAILED и не запускать заведомо
@@ -155,9 +169,12 @@ async def _apply_item_action_in_session(
         retryable_partial = (
             and_(
                 Item.processing_status == ProcessingStatus.READY,
-                Item.analysis_completeness == "PARTIAL",
+                or_(
+                    Item.analysis_completeness == "PARTIAL",
+                    and_(bool(retryable_posts), Item.analysis_completeness == "CAPTION_ONLY"),
+                ),
             )
-            if retryable_source_ids
+            if retryable_source_ids or retryable_posts
             else false()
         )
         failed_item_retryable_at_extraction = not failed_sources or bool(retryable_source_ids)
@@ -207,10 +224,23 @@ async def _apply_item_action_in_session(
             # Failure delivery belongs to the FAILED state being left. Marking
             # it terminal in the same transaction prevents the outbox from
             # announcing an obsolete failure after the user has already retried.
-            if retryable_source_ids:
+            if (
+                retryable_posts
+                and await session.scalar(select(Item.processing_stage).where(Item.id == item_id))
+                == "EXTRACTING"
+            ):
+                retryable_source_ids.extend(source.id for source in retryable_posts)
+            reopened = set(retryable_source_ids)
+            for source in retry_sources:
+                if source.id in reopened and source.instagram_post_progress:
+                    source.metadata_json = {
+                        **source.metadata_json,
+                        "instagram_post": {**source.instagram_post_progress, "complete": False},
+                    }
+            if reopened:
                 await session.execute(
                     update(ItemSource)
-                    .where(ItemSource.id.in_(retryable_source_ids))
+                    .where(ItemSource.id.in_(reopened))
                     .values(
                         extraction_status="PENDING",
                         error_code=None,

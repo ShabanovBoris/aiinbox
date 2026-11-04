@@ -25,6 +25,23 @@ _URL_RE = re.compile(r"https?://[^\s<>\"']+")
 _TRAILING_PUNCT = "[.,;:!?)\\]\"']*"
 
 
+def instagram_post_shortcode(url: str | None) -> str | None:
+    """Recognize a single HTTPS post on the canonical Instagram hosts."""
+    try:
+        parts = urlsplit((url or "").strip())
+        if (
+            parts.scheme != "https"
+            or parts.hostname not in {"instagram.com", "www.instagram.com"}
+            or parts.username is not None
+            or parts.port is not None
+        ):
+            return None
+    except ValueError:
+        return None
+    match = re.fullmatch(r"/p/([A-Za-z0-9_-]{1,128})/?", parts.path)
+    return match[1] if match else None
+
+
 def normalize_url(url: str) -> str:
     """Минимальная нормализация (ТЗ §62): fragment, lowercase host, tracking-параметры.
     Порт, path (включая trailing slash) и остальные query-параметры не меняются —

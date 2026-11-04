@@ -86,7 +86,7 @@ durable `DeliveryWorker`. `AskWorker` и `ExportWorker` обрабатывают
 - plain text;
 - web URL;
 - YouTube URL;
-- public Instagram Reel URL, processed best-effort through yt-dlp;
+- public Instagram Reel or post URL (photo, video or carousel), processed best-effort;
 - Telegram voice;
 - Telegram audio;
 - Telegram video: transcript + optional representative-frame vision;
@@ -117,7 +117,7 @@ PDF не выполняется.
 Video note, direct image и остальные document formats не поддерживаются.
 Forwarded photo с caption сохраняет и анализирует caption/ссылки; само изображение
 пока не анализируется. Photo без caption остаётся неподдерживаемым.
-Instagram support is limited to one canonical Reel URL per source. Profile feeds,
+Instagram accepts one canonical Reel or post URL per source. Profile feeds,
 Stories and protected/private media are not crawled or bypassed. Speech uses the
 existing transcription provider; caption remains description context, and visual
 analysis uses the shared representative-frame pipeline.
@@ -288,7 +288,7 @@ vision capability сохраняются `VISUAL_NOTES`, и Item получае�
 
 Vision также остаётся опциональным обогащением успешной транскрипции.
 
-Instagram Reel: only `/reel/<id>` URLs on `instagram.com` and `www.instagram.com`
+Instagram: `/reel/<id>` and `/p/<id>` URLs on `instagram.com` and `www.instagram.com`
 are routed to the Instagram ItemSource before generic WEB routing. yt-dlp metadata
 is fetched before media; audio/video, duration, output path and temporary storage
 are bounded. The configured cookie file is optional and operator-provisioned;
@@ -296,6 +296,12 @@ private-account bypass and browser-cookie harvesting are unsupported. A
 meaningful caption may become a `CAPTION_ONLY` source when speech is unavailable;
 it is stored as `DESCRIPTION`, never `TRANSCRIPT`. Transcript and visual notes
 reuse the existing source-local durable checkpoints and aggregate analysis.
+
+A `/p/` post stays one source. Up to 20 elements are analyzed in order: photos
+use the configured vision model, and videos use speech and up to six frames.
+The caption and each element's completed evidence survive restart. A partial
+result reports how many elements completed; Retry reopens only missing work with
+recoverable errors. Caption-only and visual-only results are identified as such.
 
 ## 23. Анализ визуальной части видео
 
@@ -808,8 +814,9 @@ Defaults:
 - YouTube duration: 7200 s;
 - YouTube audio/video: 50 MB;
 - YouTube media download timeout: 300 s;
-- Instagram Reel duration: 7200 s;
-- Instagram Reel audio/video: 50 MB;
+- Instagram video duration: 7200 s;
+- Instagram audio/video: 50 MB;
+- Instagram post photo: 10 MB; up to 20 elements per post;
 - subtitles: 2 MB.
 
 Все значения задаются config и валидируются на startup.
@@ -872,12 +879,14 @@ original message id.
 source action и Original только для уже подтверждённых цитат; составной Item без
 единственного source URL не выбирает произвольную ссылку.
 
-READY YouTube/Instagram ItemSource получает отдельное действие отправки этого
+READY YouTube/Instagram Reel ItemSource получает отдельное действие отправки этого
 источника в Telegram. Callback только ставит source-scoped intent в durable
 outbox; DeliveryWorker ограничивает скачивание размером Bot API, отправляет
 аудио вместе с видео, удаляет локальную временную копию и сохраняет Telegram
 `file_id` для повторной отправки. MP4 уходит как video preview; другие контейнеры
 сохраняются как document.
+
+У постов Instagram `/p/` доступна ссылка на оригинал без отправки медиа в Telegram.
 
 ## 71. Персонализация
 

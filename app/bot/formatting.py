@@ -4,6 +4,7 @@ from app.bot.presentation import item_display_title, item_navigation_entries, it
 from app.domain.enums import SourceType
 from app.domain.models import AskReference, UserProfile
 from app.services.attention_ranking import AttentionRank
+from app.services.url_parsing import instagram_post_shortcode
 from app.services.weekly_review import WeeklyReview
 from app.storage.models import Item, ItemSource
 
@@ -23,6 +24,19 @@ def format_instagram_failure_reason(error_code: str | None) -> str:
         "RATE_LIMITED": "обработка временно ограничена Instagram",
         "UNSUPPORTED_SOURCE": "ссылка на этот Reel не поддерживается",
     }.get(error_code or "", "обработать Reel не удалось")
+
+
+def _instagram_post_failure_reason(code: str | None) -> str:
+    return {
+        "AUTH_REQUIRED": (
+            "Instagram требует авторизацию. После настройки доступа нажмите «Повторить»."
+        ),
+        "RATE_LIMITED": "Instagram временно ограничил доступ. Повторите позже.",
+        "VISION_UNAVAILABLE": "Для анализа фото и кадров нужна модель с поддержкой изображений.",
+        "SECURITY_REJECTED": "Медиа не удалось безопасно скачать.",
+        "TOO_LARGE": "Медиа превышает ограничение по размеру или длительности.",
+        "UNSUPPORTED_SOURCE": "Instagram не предоставил поддерживаемый формат медиа.",
+    }.get(code, "Не удалось получить пригодное для анализа содержимое поста.")
 
 
 def _fit_message(lines: list[str]) -> str:
@@ -66,9 +80,29 @@ def _analysis_completeness_warning(
 ) -> list[str]:
     """Keep only trust-relevant extraction limits beside the user's saved summary."""
     completeness = item.analysis_completeness
+    posts = [
+        progress
+        for source in sources or ()
+        if source.extraction_status == "READY" and (progress := source.instagram_post_progress)
+    ]
+    post_errors = {
+        error["code"]
+        for post in posts
+        for part in post["parts"]
+        for error in part.get("errors", {}).values()
+    } | {post["refresh_error"]["code"] for post in posts if post.get("refresh_error")}
+    post_hints = [
+        _instagram_post_failure_reason(code)
+        for code in ("AUTH_REQUIRED", "RATE_LIMITED", "VISION_UNAVAILABLE")
+        if code in post_errors
+    ]
     if completeness == "VISUAL_ONLY":
+        if posts:
+            return ["⚠️ Анализ по изображениям и кадрам."]
         return ["⚠️ Анализ только по кадрам — транскрипт недоступен."]
     if completeness == "CAPTION_ONLY":
+        if posts:
+            return ["⚠️ Анализ только по подписи — медиа не обработано.", *post_hints]
         return ["⚠️ Анализ только по подписи — речь не распознана."]
     if completeness == "TRANSCRIPT_ONLY" and (
         item.source_type in (SourceType.YOUTUBE, SourceType.VIDEO, SourceType.INSTAGRAM)
@@ -81,7 +115,17 @@ def _analysis_completeness_warning(
     if completeness != "PARTIAL":
         return []
 
-    warnings = ["⚠️ Анализ частичный — часть источников не обработана."]
+    incomplete_posts = [post for post in posts if post["processed"] < post["total"]]
+    warnings = (
+        ["⚠️ Анализ частичный."]
+        if incomplete_posts
+        else ["⚠️ Анализ частичный — часть источников не обработана."]
+    )
+    warnings.extend(
+        f"Пост Instagram: полностью обработано {post['processed']} из {post['total']} элементов."
+        for post in incomplete_posts
+    )
+    warnings.extend(post_hints)
     instagram_failure = next(
         (
             source
@@ -91,8 +135,13 @@ def _analysis_completeness_warning(
         None,
     )
     if instagram_failure:
-        reason = format_instagram_failure_reason(instagram_failure.error_code)
-        warnings.append(f"Reel: {reason}.")
+        if instagram_post_shortcode(instagram_failure.source_url):
+            warnings.append(
+                f"Пост Instagram: {_instagram_post_failure_reason(instagram_failure.error_code)}"
+            )
+        else:
+            reason = format_instagram_failure_reason(instagram_failure.error_code)
+            warnings.append(f"Reel: {reason}.")
     return warnings
 
 
@@ -176,7 +225,15 @@ def format_item_failure(item: Item, sources: Sequence[ItemSource]) -> str:
         or any(not source.failure_is_permanent for source in failed_sources)
     )
     reason = _failure_copy(error_code, source_type)
-    if instagram_failure and error_code == "AUTH_REQUIRED":
+    if (
+        instagram_failure
+        and instagram_post_shortcode(instagram_failure.source_url)
+        and not llm_failure
+    ):
+        reason = _instagram_post_failure_reason(error_code) + "\nСсылка сохранена."
+        if retryable and error_code not in {"AUTH_REQUIRED", "RATE_LIMITED"}:
+            reason += " Можно повторить попытку."
+    elif instagram_failure and error_code == "AUTH_REQUIRED":
         reason = (
             "Не удалось получить Reel: "
             f"{format_instagram_failure_reason(error_code)}. Ссылка сохранена; "

@@ -8,7 +8,7 @@ from app.domain.enums import ContentKind, ProcessingStatus, SourceType
 from app.errors import AppError
 from app.extractors.instagram import is_instagram_reel_url
 from app.extractors.youtube import is_youtube_url
-from app.services.url_parsing import normalize_url, parse_message
+from app.services.url_parsing import instagram_post_shortcode, normalize_url, parse_message
 from app.storage.models import Content, Event, Item, ItemSource, User
 
 log = logging.getLogger(__name__)
@@ -242,7 +242,7 @@ def _normalized_urls(raw_urls: list[str]) -> list[tuple[SourceType, str]]:
         seen.add(normalized)
         if is_youtube_url(normalized):
             source_type = SourceType.YOUTUBE
-        elif is_instagram_reel_url(normalized):
+        elif is_instagram_reel_url(normalized) or instagram_post_shortcode(raw_url):
             source_type = SourceType.INSTAGRAM
         else:
             source_type = SourceType.WEB

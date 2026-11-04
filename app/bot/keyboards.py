@@ -53,6 +53,7 @@ def item_keyboard(
     )
     failed_sources = [source for source in sources or () if source.extraction_status == "FAILED"]
     has_retryable_source_failure = any(not source.failure_is_permanent for source in failed_sources)
+    has_retryable_post = any(source.has_retryable_post_elements for source in sources or ())
     # ❌ Удалено дублирующее построение source actions из этого метода: общий
     # projection сохраняет обычный Item UI и позволяет reminder заменить callback identity.
     # ❌ Удалено безусловное Retry для PARTIAL/FAILED: permanent extraction failure
@@ -63,11 +64,12 @@ def item_keyboard(
         or not failed_sources
         or has_retryable_source_failure
     )
-    partial_item_retryable = sources is None or has_retryable_source_failure
+    partial_item_retryable = (
+        item.analysis_completeness == "PARTIAL"
+        and (sources is None or has_retryable_source_failure or has_retryable_post)
+    ) or (item.analysis_completeness == "CAPTION_ONLY" and has_retryable_post)
     if (item.processing_status is ProcessingStatus.FAILED and failed_item_retryable) or (
-        item.processing_status is ProcessingStatus.READY
-        and item.analysis_completeness == "PARTIAL"
-        and partial_item_retryable
+        item.processing_status is ProcessingStatus.READY and partial_item_retryable
     ):
         rows.append(
             [InlineKeyboardButton(text="🔁 Повторить", callback_data=f"item:retry:{item.id}")]

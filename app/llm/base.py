@@ -109,7 +109,12 @@ class LlmProvider(Protocol):
         ...
 
     async def describe_images(
-        self, images: list[Path], context: str | None, *, preferred_language: str
+        self,
+        images: list[Path],
+        context: str | None,
+        *,
+        preferred_language: str,
+        photo: bool = False,
     ) -> str:
         """Компактное описание визуального контента кадров (ТЗ §23)."""
         ...
