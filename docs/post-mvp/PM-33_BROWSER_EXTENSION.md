@@ -2,7 +2,7 @@
 
 Type: Post-MVP Epic + Detailed Technical Specification  
 Prerequisite: PM-18 HTTP API  
-Status: IN_REVIEW
+Status: DONE (PR #58 merged)
 
 ## 1. Problem
 

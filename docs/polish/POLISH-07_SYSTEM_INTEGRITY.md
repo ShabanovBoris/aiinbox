@@ -66,5 +66,4 @@
 - Новых зависимостей и runtime PM-14 нет.
 
 Базовый `main` на момент разработки: `42e34692fc37b4114d4e4384befc87b86793e37c`.
-POLISH-07 завершён и вошёл в `main` через PR #53; POLISH-08 — отдельный текущий
-review gate, описанный в `POLISH-08_HUMAN_REMINDERS.md` и `README.md`.
+POLISH-07 вошёл в `main` через PR #53. Следующий этап, POLISH-08, завершён в PR #54.

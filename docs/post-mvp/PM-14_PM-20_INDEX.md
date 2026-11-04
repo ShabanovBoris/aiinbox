@@ -6,10 +6,11 @@ Originally prepared after PM-13. Current status update:
 PM-13 Ask My Inbox — DONE
 PM-15 Export / Ownership — DONE
 PM-18 HTTP API — DONE (PR #56)
+PM-33 Browser Extension — DONE (PR #58)
 ~~~
 
-PM-18 now provides the external-client transport needed by the promoted PM-33
-Browser Extension track. See
+PM-33 uses the PM-18 API. Integration Sync Foundation is next in the browser and
+integrations track. See
 [BROWSER_INTEGRATIONS_INDEX.md](BROWSER_INTEGRATIONS_INDEX.md).
 
 The remaining roadmap phases are documented in this package:
@@ -40,7 +41,7 @@ PM-17 Ollama / Local Models
 stable application services
    ↓
 PM-18 HTTP API (DONE)
-   ├→ PM-33 Browser Extension (current next client)
+   ├→ PM-33 Browser Extension (DONE)
    └→ PM-19 Android Client (deferred)
        ↓
 PM-20 Calendar-aware Attention (deferred)
@@ -56,7 +57,7 @@ additional destinations
 PM-07/08 Attention ───────────────────────────────┘
 ~~~
 
-PM-15 is largely independent and can be scheduled before or after PM-14 based on product priority.
+PM-15 is complete and independent of PM-14.
 
 ## Cross-phase architectural decisions
 
@@ -120,13 +121,13 @@ PM-15 is largely independent and can be scheduled before or after PM-14 based on
 ### Milestone G — Knowledge
 
 - PM-13 Ask My Inbox — DONE
-- PM-14 Hybrid Semantic Search — PLANNED, evidence-gated
+- PM-14 Hybrid Semantic Search — EVIDENCE CONFIRMED; runtime ON HOLD pending a usage decision
 
 ### Milestone H — Portability & Cost
 
-- PM-15 Export / Ownership
-- PM-16 Per-operation LLM Routing
-- PM-17 Ollama / Local Models
+- PM-15 Export / Ownership — DONE (PR #44)
+- PM-16 Per-operation LLM Routing — ON HOLD
+- PM-17 Ollama / Local Models — ON HOLD; depends on PM-16
 
 ### Milestone I — Additional Clients & Context
 
@@ -136,8 +137,8 @@ PM-15 is largely independent and can be scheduled before or after PM-14 based on
 
 ### Milestone J — Browser & External Integrations
 
-- PM-33 Browser Extension — NEXT
-- Integration Sync Foundation — PLANNED
+- PM-33 Browser Extension — DONE (PR #58)
+- Integration Sync Foundation — NEXT, planned
 - Miro Connector v1 — PLANNED
 - Additional destinations — EVIDENCE-DRIVEN
 
@@ -149,8 +150,8 @@ Current direction:
 
 ~~~text
 PM-18 HTTP API — DONE
-→ PM-33 Browser Extension
-→ Integration Sync Foundation
+→ PM-33 Browser Extension — DONE
+→ Integration Sync Foundation — NEXT
 → Miro
 → additional destinations
 ~~~

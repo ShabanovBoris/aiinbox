@@ -2,7 +2,7 @@
 
 Type: Post-MVP Epic + Detailed Technical Specification  
 Prerequisites: PM-07 Attention Ranking; PM-08 scheduling; PM-18 API; PM-19 Android recommended for initial calendar source  
-Status: PLANNED
+Status: DEFERRED
 
 ## 1. Problem
 

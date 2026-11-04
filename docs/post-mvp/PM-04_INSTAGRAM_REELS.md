@@ -1,7 +1,10 @@
 # PM-04 — Instagram Reels
 
 Type: Post-MVP Epic + Detailed Technical Specification  
-Status: DONE
+Status: DONE (PR #31 merged)
+
+Follow-up: PR #60 added Instagram `/p/` posts (photos, videos, and carousels).
+See the [current product contract](../PRODUCT_SPEC.md) for both URL types.
 Prerequisites: existing yt-dlp/media pipeline; PM-03 media reuse preferred
 
 ## 1. Epic

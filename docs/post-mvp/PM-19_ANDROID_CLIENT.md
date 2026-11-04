@@ -2,7 +2,7 @@
 
 Type: Post-MVP Epic + Detailed Technical Specification  
 Prerequisite: PM-18 HTTP API  
-Status: PLANNED
+Status: DEFERRED; PM-18 prerequisite is complete
 
 ## 1. Problem
 

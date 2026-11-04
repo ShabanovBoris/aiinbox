@@ -2,7 +2,7 @@
 
 Type: Post-MVP Architecture Epic + Detailed Technical Specification  
 Prerequisite: stable canonical Item services; PM-18 already DONE  
-Status: PLANNED
+Status: PLANNED — NEXT in the browser and integrations track
 
 ## 1. Problem
 

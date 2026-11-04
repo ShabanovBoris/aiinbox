@@ -2,8 +2,8 @@
 
 Type: Post-MVP Epic + Detailed Technical Specification  
 Prerequisite: PM-13 Ask My Inbox merged + documented lexical retrieval misses  
-Status: EVIDENCE CONFIRMED — runtime remains ON HOLD through POLISH-08 review;
-resume only after a separate explicit decision based on real usage
+Status: EVIDENCE CONFIRMED — runtime remains ON HOLD pending a separate decision
+based on real usage
 
 ## 1. Problem
 
@@ -39,10 +39,8 @@ Concrete PM-13 failure evidence is recorded in
 [PM-14_RETRIEVAL_EVIDENCE.md](PM-14_RETRIEVAL_EVIDENCE.md): the Russian query
 `Андроид` does not lexically match relevant saved material using `Android`.
 POLISH-07 makes that limitation visible but does not implement semantic
-retrieval. POLISH-08 is the current polish review gate. Runtime work remains on
-hold through its requested reviews; approval alone does not resume PM-14. Review
-real usage after the gate and explicitly decide whether to resume before
-starting runtime work.
+retrieval. POLISH-08 is complete. Review real usage and explicitly decide whether
+to lift the hold before starting PM-14 runtime work.
 
 Before enabling semantic retrieval, record concrete PM-13 failure cases showing:
 
