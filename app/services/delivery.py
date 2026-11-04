@@ -25,6 +25,7 @@ from app.domain.models import AskDeliveryPayload, AskReference
 from app.errors import AppError, MediaTooLargeError
 from app.extractors.subprocess_runner import cleanup_temporary_directory
 from app.services.ask_inbox import safe_http_url, unique_item_source_url
+from app.services.url_parsing import instagram_post_shortcode
 from app.storage.models import AskJob, Delivery, ExportJob, Item, ItemSource, User
 
 log = logging.getLogger(__name__)
@@ -161,6 +162,10 @@ async def enqueue_item_video_delivery_in_session(
         or source.extraction_status != "READY"
         or source.source_type not in {SourceType.YOUTUBE, SourceType.INSTAGRAM}
         or not source.source_url
+        or (
+            source.source_type is SourceType.INSTAGRAM
+            and instagram_post_shortcode(source.source_url)
+        )
     ):
         return None
 
@@ -601,6 +606,10 @@ class DeliveryWorker:
             or source.item_id != item.id
             or source.extraction_status != "READY"
             or not source.source_url
+            or (
+                source.source_type is SourceType.INSTAGRAM
+                and instagram_post_shortcode(source.source_url)
+            )
         ):
             raise RuntimeError("video source is no longer ready for delivery")
 

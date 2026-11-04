@@ -131,6 +131,22 @@ async def test_capture_is_canonical_idempotent_and_does_not_echo_private_content
     assert "USER_TEXT" not in detail.text
 
 
+async def test_capture_routes_one_instagram_post_with_its_share_query(api_client, session_factory):
+    await create_user(session_factory)
+    url = "https://www.instagram.com/p/FakePost/?xtok=share%3D%3D"
+    accepted = await api_client.post(
+        "/v1/items",
+        headers=auth_headers(key="instagram-post"),
+        json={"text": url},
+    )
+    assert accepted.status_code == 202
+    detail = await api_client.get(accepted.headers["location"], headers=auth_headers())
+    assert detail.status_code == 200
+    assert [
+        (source["source_type"], source["source_url"]) for source in detail.json()["sources"]
+    ] == [("INSTAGRAM", url)]
+
+
 @pytest.mark.asyncio
 async def test_auth_is_required_and_item_reads_are_owner_scoped(api_client, session_factory):
     owner_id = await create_user(session_factory)

@@ -228,6 +228,28 @@ class ItemSource(Base):
         return bool((self.metadata_json or {}).get("failure_permanent"))
 
     @property
+    def instagram_post_progress(self) -> dict | None:
+        if self.source_type is SourceType.INSTAGRAM:
+            return (self.metadata_json or {}).get("instagram_post")
+        return None
+
+    @property
+    def has_retryable_post_elements(self) -> bool:
+        progress = self.instagram_post_progress
+        return bool(
+            progress
+            and (
+                progress.get("budget_exhausted")
+                or progress.get("refresh_error", {}).get("permanent") is False
+                or any(
+                    not error["permanent"]
+                    for part in progress["parts"]
+                    for error in part.get("errors", {}).values()
+                )
+            )
+        )
+
+    @property
     def user_note(self) -> str:
         """Extractor compatibility: intent belongs to Item, never to one child source."""
         return ""

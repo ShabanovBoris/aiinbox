@@ -1,4 +1,4 @@
-"""Bounded Instagram Reel extraction through yt-dlp and the existing STT boundary.
+"""Bounded Instagram extraction through yt-dlp and the existing STT boundary.
 
 The adapter converts one validated Reel URL into NormalizedContent. The
 ProcessingPipeline owns persistence, vision, aggregation, and retry state.
@@ -22,7 +22,7 @@ import yt_dlp
 from app.domain.enums import SourceType
 from app.domain.models import NormalizedContent
 from app.errors import AppError, MediaTooLargeError
-from app.extractors.instagram_worker import size_limit_hook
+from app.extractors.instagram_worker import post_info, size_limit_hook
 from app.extractors.subprocess_runner import (
     cleanup_temporary_directory,
     run_killable_subprocess,
@@ -63,7 +63,7 @@ def default_ydl_factory(options: dict) -> yt_dlp.YoutubeDL:
     return yt_dlp.YoutubeDL(options)
 
 
-def _map_ytdlp_error(exc: Exception) -> AppError:
+def _map_ytdlp_error(exc: Exception, *, post: bool = False) -> AppError:
     """Map a few stable yt-dlp failure signals without exposing provider details."""
     message = str(exc).lower()
     if re.search(r"\b429\b", message) or "rate limit" in message or "too many requests" in message:
@@ -71,6 +71,7 @@ def _map_ytdlp_error(exc: Exception) -> AppError:
     if (
         re.search(r"\b(?:401|403)\b", message)
         or "login required" in message
+        or (post and "redirected to the login page" in message)
         or "log in" in message
         or "sign in" in message
         or "private account" in message
@@ -129,6 +130,51 @@ class InstagramExtractor:
         self.timeout_seconds = timeout_seconds
         self.max_attempts = max(1, max_attempts)
         self.backoff_seconds = max(0.0, backoff_seconds)
+
+    async def get_post(self, url: str) -> dict:
+        options = self._base_options(skip_download=True, proxy="")
+        return await self._call_ytdlp(
+            lambda: post_info(url, options, self._ydl_factory),
+            process_request={"mode": "post_info", "url": url, "options": options},
+        )
+
+    async def prepare_post_element(
+        self,
+        element: dict,
+        directory: Path,
+        *,
+        audio: bool,
+        visual: bool,
+        frame_interval: int,
+        max_frames: int,
+        scene_threshold: float,
+        download_bytes_remaining: int,
+    ) -> dict:
+        try:
+            return await self._run_ytdlp_process(
+                {
+                    "mode": "post_media",
+                    "element": element,
+                    "download_dir": str(directory),
+                    "audio": audio,
+                    "visual": visual,
+                    "frame_interval": frame_interval,
+                    "max_frames": min(max_frames, 6),
+                    "scene_threshold": scene_threshold,
+                    "max_duration": self.max_duration_seconds,
+                    "audio_bytes": self.max_audio_bytes,
+                    "video_bytes": self.max_video_bytes,
+                    "download_bytes_remaining": download_bytes_remaining,
+                },
+                directory,
+                True,
+            )
+        except AppError as exc:
+            # A terminated worker cannot report bytes it already received.
+            return {
+                "media_error": {"code": exc.code, "permanent": exc.permanent},
+                "downloaded_bytes": download_bytes_remaining,
+            }
 
     async def extract(
         self,
@@ -414,6 +460,7 @@ class InstagramExtractor:
     ) -> Any:
         """Keep provider retries here while production calls run in killable children."""
         last_error: AppError | None = None
+        is_post = process_request is not None and process_request["mode"] == "post_info"
 
         def cleanup_download_dir() -> None:
             """Release the private download directory after yt-dlp closes its files."""
@@ -448,7 +495,7 @@ class InstagramExtractor:
             except AppError as exc:
                 last_error = exc
             except yt_dlp.utils.YoutubeDLError as exc:
-                last_error = _map_ytdlp_error(exc)
+                last_error = _map_ytdlp_error(exc, post=is_post)
             except OSError:
                 last_error = AppError("DOWNLOAD_FAILED", "Instagram media file operation failed")
             finally:
@@ -459,7 +506,11 @@ class InstagramExtractor:
                     and not retain_cleanup
                 ):
                     shutil.rmtree(cleanup_dir, ignore_errors=True)
-            if last_error.permanent or attempt + 1 == self.max_attempts:
+            if (
+                last_error.permanent
+                or (is_post and last_error.code in {"AUTH_REQUIRED", "RATE_LIMITED"})
+                or attempt + 1 == self.max_attempts
+            ):
                 raise last_error
             await asyncio.sleep(self.backoff_seconds * (2**attempt))
         raise last_error  # pragma: no cover
@@ -476,6 +527,9 @@ class InstagramExtractor:
                 timeout_seconds=self.timeout_seconds,
                 cleanup_dir=cleanup_dir,
                 retain_dir_on_success=retain_on_success,
+                output_limit_bytes=(
+                    160_000 if request["mode"] == "post_info" else _WORKER_OUTPUT_LIMIT_BYTES
+                ),
             )
             try:
                 response = json.loads(output)
@@ -507,6 +561,8 @@ class InstagramExtractor:
                 raise AppError(
                     "DOWNLOAD_FAILED", "Instagram extraction worker returned invalid data"
                 )
+            if request["mode"] in {"post_info", "post_media"}:
+                return result
             info = result.get("info")
             if request["mode"] == "info":
                 self._validate_single_media(info)
@@ -530,6 +586,7 @@ class InstagramExtractor:
         timeout_seconds: float,
         cleanup_dir: Path | None = None,
         retain_dir_on_success: bool = False,
+        output_limit_bytes: int = _WORKER_OUTPUT_LIMIT_BYTES,
     ) -> bytes:
         """Delegate process ownership so Instagram and YouTube share cancellation semantics."""
         # ❌ Удалены _stop_subprocess() и _wait_for_process_group_exit():
@@ -538,7 +595,7 @@ class InstagramExtractor:
             command,
             payload,
             timeout_seconds=timeout_seconds,
-            output_limit_bytes=_WORKER_OUTPUT_LIMIT_BYTES,
+            output_limit_bytes=output_limit_bytes,
             operation_name="Instagram extraction",
             cleanup_dir=cleanup_dir,
             retain_dir_on_success=retain_dir_on_success,

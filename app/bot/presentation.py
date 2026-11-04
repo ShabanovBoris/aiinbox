@@ -9,6 +9,7 @@ from urllib.parse import urlsplit
 from app.bot.provenance import forward_original_url
 from app.domain.enums import ItemType, ProcessingStatus, SourceType
 from app.extractors.document import safe_document_file_name
+from app.services.url_parsing import instagram_post_shortcode
 from app.services.url_security import is_public_ip_address
 from app.storage.models import Item, ItemSource
 
@@ -116,7 +117,7 @@ def _source_fallback_title(source: ItemSource) -> str:
     if source.source_type is SourceType.YOUTUBE:
         return "YouTube-видео"
     if source.source_type is SourceType.INSTAGRAM:
-        return "Instagram Reel"
+        return "Пост Instagram" if instagram_post_shortcode(source.source_url) else "Instagram Reel"
     if source.source_type is SourceType.VIDEO:
         return "Видео"
     if source.source_type is SourceType.VOICE:
@@ -141,7 +142,7 @@ def _legacy_source_fallback(item: Item) -> str:
     if item.source_type is SourceType.YOUTUBE:
         return "YouTube-видео"
     if item.source_type is SourceType.INSTAGRAM:
-        return "Instagram Reel"
+        return "Пост Instagram" if instagram_post_shortcode(item.source_url) else "Instagram Reel"
     if item.source_type is SourceType.VIDEO:
         return "Видео"
     if item.source_type is SourceType.VOICE:
@@ -176,7 +177,12 @@ def item_reference_projection(
     security_rejected_urls = {
         source.source_url
         for source in ordered_sources
-        if source.error_code == "SECURITY_REJECTED" and source.source_url
+        if source.error_code == "SECURITY_REJECTED"
+        and source.source_url
+        and not (
+            source.source_type is SourceType.INSTAGRAM
+            and instagram_post_shortcode(source.source_url)
+        )
     }
     actions: list[SourceReferenceAction] = []
     if item.processing_status is ProcessingStatus.READY:
@@ -188,6 +194,10 @@ def item_reference_projection(
             and source.extraction_status == "READY"
             and source.source_url
             and source_url_label(source.source_type, source.source_url)
+            and not (
+                source.source_type is SourceType.INSTAGRAM
+                and instagram_post_shortcode(source.source_url)
+            )
         ]
         totals = {
             source_type: sum(source.source_type is source_type for source in video_sources)
@@ -288,7 +298,7 @@ def source_url_label(source_type: SourceType, url: str) -> str | None:
     if source_type is SourceType.YOUTUBE:
         label = "↗ YouTube"
     elif source_type is SourceType.INSTAGRAM:
-        label = "↗ Instagram Reel"
+        label = "↗ Открыть в Instagram" if instagram_post_shortcode(url) else "↗ Instagram Reel"
     elif source_type is SourceType.WEB and (host == "github.com" or host.endswith(".github.com")):
         label = "↗ GitHub"
     elif source_type is SourceType.WEB:

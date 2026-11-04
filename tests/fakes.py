@@ -105,7 +105,7 @@ class FakeLlmProvider:
             raise LlmError("LLM_FAILED", "summarize failed")
         return text
 
-    async def describe_images(self, images, context, *, preferred_language):
+    async def describe_images(self, images, context, *, preferred_language, photo=False):
         self.describe_calls += 1
         self.describe_languages.append(preferred_language)
         if self.describe_fail:

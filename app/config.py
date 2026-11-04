@@ -60,7 +60,7 @@ class Settings(BaseSettings):
     youtube_download_timeout_seconds: float = Field(300.0, gt=0)
     subtitle_langs: str = "ru,en"
 
-    # Instagram Reel extraction uses the same yt-dlp boundary with independently
+    # Instagram extraction uses the same yt-dlp boundary with independently
     # tunable remote-media limits and an optional operator-provided cookie file.
     instagram_max_duration_seconds: int = Field(7200, ge=1)
     instagram_max_audio_bytes: int = Field(50_000_000, ge=1)

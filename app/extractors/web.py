@@ -81,7 +81,11 @@ class PinningTransport(httpx.AsyncBaseTransport):
         # Connection: close — keep-alive пулла по IP-origin позволил бы redirect
         # A->B на один CDN IP переиспользовать TLS-сессию с SNI A.
         request.headers["connection"] = "close"
-        return await self._inner.handle_async_request(request)
+        try:
+            return await self._inner.handle_async_request(request)
+        finally:
+            # The client must associate the response and any cookies with its origin.
+            request.url = url
 
 
 class WebPageExtractor:

@@ -53,7 +53,7 @@ from app.api.models import (
 )
 from app.bot.presentation import item_display_title
 from app.config import Settings
-from app.domain.enums import ItemState, ItemType, ProcessingStatus
+from app.domain.enums import ItemState, ItemType, ProcessingStatus, SourceType
 from app.domain.models import AskDeliveryPayload
 from app.errors import AppError
 from app.services.actions import apply_item_action_for_user_id, set_item_interest_for_user_id
@@ -73,6 +73,7 @@ from app.services.retrieval import (
     load_item_sources_by_item,
     search_items,
 )
+from app.services.url_parsing import instagram_post_shortcode
 from app.services.weekly_review import WeeklyReviewService
 from app.storage.models import AskJob, Item, ItemSource, User
 
@@ -191,7 +192,9 @@ def _canonical_hash(value: dict) -> str:
 
 def _source_url(source: ItemSource) -> str | None:
     """Expose only validated HTTP(S) identities and hide rejected extraction URLs."""
-    if source.error_code == "SECURITY_REJECTED":
+    if source.error_code == "SECURITY_REJECTED" and not (
+        source.source_type is SourceType.INSTAGRAM and instagram_post_shortcode(source.source_url)
+    ):
         return None
     value = safe_http_url(source.source_url)
     return value[:700] if value else None
@@ -221,7 +224,9 @@ def _item_detail(item: Item, sources: list[ItemSource]) -> ItemDetailResponse:
     rejected_urls = {
         source.source_url
         for source in sources
-        if source.error_code == "SECURITY_REJECTED" and source.source_url
+        if source.error_code == "SECURITY_REJECTED"
+        and source.source_url
+        and _source_url(source) is None
     }
     primary_url = None if item.source_url in rejected_urls else safe_http_url(item.source_url)
     return ItemDetailResponse(
