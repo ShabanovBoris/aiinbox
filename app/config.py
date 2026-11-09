@@ -13,6 +13,7 @@ class Settings(BaseSettings):
 
     telegram_bot_token: str = ""
     allowed_telegram_user_ids: str = ""
+    telegram_item_widgets_enabled: bool = False
     database_url: str = "sqlite+aiosqlite:///data/app.db"
     # Backups live outside the canonical DB path and rotation is bounded.
     backup_dir: str = "./backups"

@@ -21,6 +21,17 @@ from app.storage.models import Item, ItemSource
 _MAX_CATEGORY_LABEL_LENGTH = 64
 _MAX_PRIMARY_SOURCE_ACTIONS = 2
 _MAX_SOURCE_MENU_ACTIONS = 12
+_UI_MARKERS = frozenset("✅ ⏰ 🗄 ⭐ 🛠 ℹ️ ↩️ 🔁 🔗 📩 ↗ ← → 👍 👎 🏷 🧩 ⬆ ⬇ 📝 ⏳".split())
+
+
+def plain_button_label(text: str) -> str:
+    prefix, _, body = text.partition(" ")
+    if prefix in _UI_MARKERS:
+        text = body
+    body, _, suffix = text.rpartition(" ")
+    if "\n" not in text and suffix in _UI_MARKERS:
+        return body
+    return text
 
 
 def item_keyboard(
@@ -73,6 +84,17 @@ def item_keyboard(
     ):
         rows.append(
             [InlineKeyboardButton(text="🔁 Повторить", callback_data=f"item:retry:{item.id}")]
+        )
+    if item.processing_status is ProcessingStatus.FAILED and item.state in {
+        ItemState.ACTIVE,
+        ItemState.SNOOZED,
+    }:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text="🗄 Убрать из входящих", callback_data=f"item:archive:{item.id}"
+                )
+            ]
         )
 
     if len(source_actions) <= _MAX_PRIMARY_SOURCE_ACTIONS:
@@ -279,7 +301,7 @@ def item_interest_keyboard(item: Item) -> InlineKeyboardMarkup:
         ]
         for level in (1, 2, 3)
     ]
-    rows.append([InlineKeyboardButton(text="← Назад", callback_data=f"item:more:{item.id}")])
+    rows.append([InlineKeyboardButton(text="← Назад", callback_data=f"item:back:{item.id}")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -345,6 +367,7 @@ def item_list_keyboard(
     *,
     previous_callback: str | None = None,
     next_callback: str | None = None,
+    extra_action: tuple[str, str] | None = None,
     back_label: str | None = None,
     back_callback: str = "nav:menu",
 ) -> InlineKeyboardMarkup | None:
@@ -365,6 +388,9 @@ def item_list_keyboard(
         page_actions.append(InlineKeyboardButton(text="Ещё →", callback_data=next_callback))
     if page_actions:
         rows.append(page_actions)
+    if extra_action:
+        label, callback = extra_action
+        rows.append([InlineKeyboardButton(text=label, callback_data=callback)])
     if back_label:
         rows.append([InlineKeyboardButton(text=back_label, callback_data=back_callback)])
     return InlineKeyboardMarkup(inline_keyboard=rows) if rows else None
@@ -564,7 +590,7 @@ def reminder_snooze_keyboard(reminder_id: int) -> InlineKeyboardMarkup:
 
 
 def feedback_menu_keyboard(item_id: int) -> InlineKeyboardMarkup:
-    """Keep every PM-05 signal in Feedback while More remains the parent menu."""
+    """Keep every PM-05 signal in its own menu."""
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
@@ -595,7 +621,7 @@ def feedback_menu_keyboard(item_id: int) -> InlineKeyboardMarkup:
                     callback_data=f"feedback:summary_wrong:{item_id}",
                 )
             ],
-            [InlineKeyboardButton(text="← Назад", callback_data=f"feedback:back:{item_id}")],
+            [InlineKeyboardButton(text="← Назад", callback_data=f"item:back:{item_id}")],
         ]
     )
 

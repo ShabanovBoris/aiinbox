@@ -24,6 +24,13 @@ uv run python -m app.main
 Без `TELEGRAM_BOT_TOKEN` Telegram polling отключён, workers остаются активны;
 export generation также работает без Telegram, а готовая Delivery ждёт включения бота.
 
+Чтобы открыть «Сохранённое» как HTML-виджет в личном чате, установите
+`TELEGRAM_ITEM_WIDGETS_ENABLED=true` и перезапустите приложение. Нужны Bot API 10.4
+и клиент Telegram с поддержкой виджетов. Для проверки сохраните короткий текст,
+откройте `/inbox` и нажмите название. Бот пришлёт форматированное сообщение со
+сводкой и действиями. В списке удержите название и проверьте перенос в архив.
+При `false` бот показывает обычный список.
+
 `EXPORT_DIR` (по умолчанию `./exports`) отделён от `BACKUP_DIR` и содержит
 временные пользовательские ZIP-артефакты. `EXPORT_RETENTION_SECONDS` задаёт
 retention abandoned/terminal artifacts (по умолчанию 86400 секунд), а

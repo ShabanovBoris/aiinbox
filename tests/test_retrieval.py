@@ -233,6 +233,36 @@ async def test_inbox_category_item_and_category_pages_have_no_total_twenty_cap(s
         assert (await list_category_items_page(session, user_id, "Shared", page=-1)).page == 0
 
 
+async def test_inbox_and_archive_paginate_only_matching_owner_rows(session_factory):
+    user_id = await make_user(session_factory)
+    other_id = await make_user(session_factory, telegram_user_id=1000)
+    async with session_factory() as session:
+        session.add_all(
+            [
+                make_item(
+                    user_id,
+                    state=ItemState.ARCHIVED,
+                    title=f"archived-{index}",
+                    created_at=datetime(2026, 1, 1) + timedelta(seconds=index),
+                )
+                for index in range(11)
+            ]
+            + [
+                make_item(user_id, state=ItemState.DONE, title="completed"),
+                make_item(other_id, state=ItemState.ARCHIVED, title="other user"),
+            ]
+        )
+        await session.commit()
+        inbox = await list_inbox_page(session, user_id, page=10)
+        assert inbox.page == 0 and not inbox.has_next
+        assert [item.title for item in inbox.items] == ["completed"]
+        first = await list_inbox_page(session, user_id, archived=True)
+        last = await list_inbox_page(session, user_id, page=10, archived=True)
+        assert first.has_next and len(first.items) == 10
+        assert last.page == 1 and last.has_previous and not last.has_next
+        assert [item.title for item in last.items] == ["archived-0"]
+
+
 async def test_processing_ready_commit_updates_fts_projection(session_factory):
     user_id = await make_user(session_factory)
     async with session_factory() as session:

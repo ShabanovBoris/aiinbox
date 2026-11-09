@@ -168,18 +168,21 @@ async def list_inbox_page(
     *,
     page: int = 0,
     page_size: int = _DEFAULT_PAGE_SIZE,
+    archived: bool = False,
 ) -> ItemPage:
-    """Return a page in Inbox order without imposing a total accessible-item cap."""
+    """Page through either the Inbox or its archive, scoped to the owner."""
     size = _page_size(page_size)
-    total = int(
-        await session.scalar(select(func.count(Item.id)).where(Item.user_id == user_id)) or 0
+    state_filter = (
+        Item.state == ItemState.ARCHIVED if archived else Item.state != ItemState.ARCHIVED
     )
+    filters = (Item.user_id == user_id, state_filter)
+    total = int(await session.scalar(select(func.count(Item.id)).where(*filters)) or 0)
     current_page = _page_for_total(page, total, size)
     rows = list(
         (
             await session.scalars(
                 select(Item)
-                .where(Item.user_id == user_id)
+                .where(*filters)
                 .order_by(Item.created_at.desc(), Item.id.desc())
                 .limit(size + 1)
                 .offset(current_page * size)

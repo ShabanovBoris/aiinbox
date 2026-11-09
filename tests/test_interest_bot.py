@@ -103,7 +103,7 @@ def test_interest_submenu_projects_current_level_and_details_are_read_only():
         "item:interest:7:1",
         "item:interest:7:2",
         "item:interest:7:3",
-        "item:more:7",
+        "item:back:7",
     ]
     assert _callback_data(item_details_keyboard(7)) == ["item:back:7"]
 

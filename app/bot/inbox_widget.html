@@ -1,0 +1,110 @@
+<style>
+  h3 { margin: 0 0 6px; font-size: 1.08em; }
+  button { min-width: 0; min-height: 38px; padding: 5px 8px; border: 0;
+    border-radius: 6px; background: transparent; font: inherit; color: var(--tg-theme-text-color); }
+  button:active { background: var(--tg-theme-secondary-bg-color); }
+  button[disabled] { color: var(--tg-theme-hint-color); }
+  .entry { display: block; width: 100%; text-align: left; touch-action: none;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .menu, #navigation { display: flex; flex-wrap: wrap; gap: 4px; }
+  .menu { background: var(--tg-theme-secondary-bg-color); border-radius: 8px; }
+  .archive { color: var(--tg-theme-link-color); }
+  #navigation { border-top: 1px solid var(--tg-theme-section-separator-color); margin-top: 5px; }
+  #notice, #empty { color: var(--tg-theme-hint-color); font-size: .88em; }
+  #navigation:empty, #notice:empty, #empty:empty { display: none; }
+  body { padding-bottom: 12px; }
+</style>
+<h3 id="heading"></h3><div id="items"></div><div id="empty"></div>
+<div id="navigation"></div><div id="notice" role="status"></div>
+<script>
+  const widget = TelegramWidget;
+  const heading = document.querySelector('#heading');
+  const items = document.querySelector('#items');
+  const empty = document.querySelector('#empty');
+  const navigation = document.querySelector('#navigation');
+  const notice = document.querySelector('#notice');
+  let page = __INBOX_DATA__;
+  let selected = null;
+  let held = null;
+  let pending = false;
+
+  function button(label, onClick, className = '') {
+    const element = document.createElement('button');
+    element.textContent = label;
+    element.className = className;
+    element.disabled = pending;
+    element.addEventListener('click', onClick);
+    return element;
+  }
+
+  function render() {
+    heading.textContent = page.archived ? 'Архив' : 'Сохранённое';
+    items.textContent = '';
+    empty.textContent = page.rows.length ? '' : 'Ничего не найдено.';
+    for (const [id, title, canArchive, canOpenOriginal] of page.rows) {
+      const open = () => request(`item:view:${id}`);
+      const entry = button(title, () => { if (held !== id) return open(); }, 'entry');
+      entry.addEventListener('pointerdown', () => { held = null; });
+      entry.addEventListener('contextmenu', (event) => {
+        event.preventDefault();
+        if (pending) return;
+        held = id;
+        selected = (canArchive || canOpenOriginal) && selected !== id ? id : null;
+        notice.textContent = '';
+        render();
+      });
+      items.appendChild(entry);
+      if (selected === id) {
+        const menu = document.createElement('div');
+        menu.className = 'menu';
+        if (canArchive) {
+          menu.appendChild(button('В архив', () => request(`inbox:archive:${id}:${page.number}`), 'archive'));
+        }
+        if (canOpenOriginal) {
+          menu.appendChild(button('Оригинал', () => request(`item:original:${id}`)));
+        }
+        items.appendChild(menu);
+      }
+    }
+    navigation.textContent = '';
+    const section = page.archived ? 'archive' : 'saved';
+    if (page.previous) {
+      navigation.appendChild(button('Назад', () => request(`inbox:page:${section}:${page.number - 1}`)));
+    }
+    if (page.next) {
+      navigation.appendChild(button('Далее', () => request(`inbox:page:${section}:${page.number + 1}`)));
+    }
+  }
+
+  function readState() {
+    const state = JSON.parse(widget.chatData || '{}');
+    if (state.inbox) {
+      page = state.inbox;
+      selected = null;
+    }
+    render();
+  }
+
+  async function request(value) {
+    if (pending) return;
+    pending = true;
+    notice.textContent = '';
+    try {
+      const answer = widget.request(value);
+      render();
+      const result = JSON.parse((await answer).result || '{}');
+      if (result.screen && result.screen.inbox) page = result.screen.inbox;
+      selected = null;
+      notice.textContent = result.notice || '';
+    } catch (error) {
+      notice.textContent = 'Нет ответа. Проверь список перед повтором.';
+    } finally {
+      pending = false;
+      render();
+    }
+  }
+
+  widget.onEvent('chatDataChanged', readState);
+  readState();
+  widget.ready();
+</script>

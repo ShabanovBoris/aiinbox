@@ -151,14 +151,22 @@ async def test_delivery_worker_sends_ready_item_and_marks_sent(session_factory):
     bot = FakeBot()
     worker = DeliveryWorker(session_factory, bot, retry_backoff_seconds=0)
     assert await worker.process_one() is True
-    expected = "✓ Сохранено\n\n🎯 Разобрать материал"
+    expected = "Разобрать материал"
     assert bot.messages == [(7777, expected)]
     labels = {
         button.text
         for row in bot.message_kwargs[0]["reply_markup"].inline_keyboard
         for button in row
     }
-    assert labels == {"↩️ Оригинал", "••• Ещё"}
+    assert labels == {
+        "Сделано",
+        "Отложить",
+        "В архив",
+        "Интерес",
+        "Обратная связь",
+        "Детали",
+        "Оригинал",
+    }
 
     async with session_factory() as session:
         delivery = await session.scalar(select(Delivery))
@@ -839,7 +847,7 @@ async def test_video_result_replies_to_input_and_keeps_forward_origin_link(
     buttons = [
         button for row in bot.message_kwargs[0]["reply_markup"].inline_keyboard for button in row
     ]
-    original_links = [button.url for button in buttons if button.text == "↗ Оригинальный пост"]
+    original_links = [button.url for button in buttons if button.text == "Оригинальный пост"]
     assert original_links == ([expected_original_url] if expected_original_url else [])
 
 

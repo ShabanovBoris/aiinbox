@@ -2,6 +2,7 @@ import asyncio
 import logging
 import signal
 from contextlib import nullcontext
+from functools import partial
 from pathlib import Path
 
 from alembic import command as alembic_command
@@ -203,9 +204,12 @@ async def _wait_for_shutdown_or_critical_exit(
         await asyncio.gather(shutdown_task, return_exceptions=True)
 
 
-async def _start_polling(dispatcher, bot) -> None:
+async def _start_polling(dispatcher, bot, *, widget_queries: bool = False) -> None:
     """Keep Telegram transport owned by the outer shutdown coordinator."""
-    await dispatcher.start_polling(bot, handle_signals=False, close_bot_session=False)
+    options = {}
+    if widget_queries:
+        options["allowed_updates"] = [*dispatcher.resolve_used_update_types(), "widget_query"]
+    await dispatcher.start_polling(bot, handle_signals=False, close_bot_session=False, **options)
 
 
 async def _ensure_http_api_user(session_factory, settings: Settings) -> None:
@@ -279,7 +283,8 @@ async def run(settings: Settings) -> None:
             from aiogram import Bot, Dispatcher
             from aiogram.fsm.storage.memory import MemoryStorage, SimpleEventIsolation
 
-            from app.bot.handlers import make_router
+            from app.bot.handlers import make_router, on_item_widget_callback
+            from app.bot.item_widgets import widget_update_middleware
             from app.bot.navigation import configure_bot_commands
 
             bot = Bot(settings.telegram_bot_token)
@@ -294,7 +299,17 @@ async def run(settings: Settings) -> None:
             dispatcher.include_router(
                 make_router(settings, session_factory, settings.max_audio_bytes)
             )
-            polling = asyncio.create_task(_start_polling(dispatcher, bot), name="telegram-polling")
+            if settings.telegram_item_widgets_enabled:
+                handle_widget = partial(
+                    on_item_widget_callback, settings=settings, session_factory=session_factory
+                )
+                dispatcher.update.outer_middleware(widget_update_middleware(handle_widget))
+            polling = asyncio.create_task(
+                _start_polling(
+                    dispatcher, bot, widget_queries=settings.telegram_item_widgets_enabled
+                ),
+                name="telegram-polling",
+            )
             log.info("telegram bot started")
         else:
             log.warning("TELEGRAM_BOT_TOKEN is empty — bot disabled, workers only")

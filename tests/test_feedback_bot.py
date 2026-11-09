@@ -374,7 +374,7 @@ async def test_item_view_sends_a_new_owner_scoped_card_without_events(settings, 
     assert callback.message.text_edits == 0
     assert len(callback.message.sent_answers) == 1
     text, kwargs = callback.message.sent_answers[0]
-    assert "✓ Сохранено" in text
+    assert text == "Feedback item\n\nСводка\nThe original summary"
     assert f"item:original:{item_id}" in _callback_data(kwargs["reply_markup"])
     assert callback.answers == [None]
     async with session_factory() as session:
@@ -937,7 +937,7 @@ async def test_category_callback_corrects_item_and_keeps_feedback_menu_open(
         assert event.payload_json["from"] == "Programming"
         assert event.payload_json["to"] == "AI"
     assert message.text == "Old result"
-    assert f"feedback:back:{item_id}" in _callback_data(message.reply_markup)
+    assert f"item:back:{item_id}" in _callback_data(message.reply_markup)
     assert f"feedback:useful:{item_id}" in _callback_data(message.reply_markup)
     assert callback.answers == ["Категория изменена"]
 
@@ -1026,7 +1026,7 @@ async def test_replayed_category_callback_keeps_feedback_menu_without_reapplying
         assert stored.category == "Piano"
         assert len(corrections) == 2
     assert message.text == "stale result"
-    assert f"feedback:back:{item_id}" in _callback_data(message.reply_markup)
+    assert f"item:back:{item_id}" in _callback_data(message.reply_markup)
     assert callback.answers == ["Категория без изменений"]
 
 
@@ -1109,7 +1109,7 @@ async def test_type_callback_updates_today_and_keeps_priority(settings, session_
         assert [item.id for item in today] == [item_id]
         assert event.event_type == "TYPE_CORRECTED"
     assert message.text is None
-    assert f"feedback:back:{item_id}" in _callback_data(message.reply_markup)
+    assert f"item:back:{item_id}" in _callback_data(message.reply_markup)
     assert callback.answers == ["Тип изменён"]
 
 
@@ -1128,7 +1128,7 @@ async def test_priority_feedback_stays_in_menu_without_changing_score(settings, 
         assert event.event_type == "PRIORITY_HIGHER"
         assert event.payload_json["priority_score_at_feedback"] == 72
     callbacks = _callback_data(message.reply_markup)
-    assert f"feedback:back:{item_id}" in callbacks
+    assert f"item:back:{item_id}" in callbacks
     assert f"feedback:priority_higher:{item_id}" in callbacks
     assert callback.answers == ["Учту пожелание"]
 

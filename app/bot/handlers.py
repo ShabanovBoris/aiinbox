@@ -7,16 +7,30 @@ from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
+from aiogram.types import (
+    CallbackQuery,
+    InaccessibleMessage,
+    InlineKeyboardMarkup,
+    InputRichMessage,
+    LinkPreviewOptions,
+    Message,
+)
+from aiogram.utils.formatting import Text
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.bot.formatting import (
     format_attention_item,
     format_item_details,
-    format_item_failure,
-    format_ready_item_compact,
+    format_rich_inbox,
     format_weekly_review,
+)
+from app.bot.item_card import build_item_card
+from app.bot.item_widgets import (
+    INBOX_ARCHIVED_NOTICE,
+    WidgetCallback,
+    inbox_widget_screen,
+    try_send_inbox_widget,
 )
 from app.bot.keyboards import (
     attention_chooser_keyboard,
@@ -44,7 +58,7 @@ from app.bot.keyboards import (
     search_empty_keyboard,
     settings_keyboard,
 )
-from app.bot.presentation import item_display_title, item_navigation_entries
+from app.bot.presentation import ItemNavigationEntry, item_display_title, item_navigation_entries
 from app.bot.provenance import normalize_forward_origin, text_with_entity_urls
 from app.config import Settings
 from app.domain.category_tokens import category_token
@@ -76,6 +90,7 @@ from app.services.original_access import item_original_target, reminder_original
 from app.services.profile import enqueue_profile_update
 from app.services.reminder_feedback import ReminderFeedbackService
 from app.services.retrieval import (
+    ItemPage,
     TodayService,
     list_categories_page,
     list_category_items_page,
@@ -801,8 +816,11 @@ def make_router(
         await on_weekly(message, settings, session_factory)
 
     @router.message(Command("inbox"))
-    async def inbox(message: Message) -> None:
-        await on_inbox(message, settings, session_factory)
+    async def inbox(message: Message, command: CommandObject) -> None:
+        mode = (command.args or "").strip()
+        await on_inbox(
+            message, settings, session_factory, plain=mode == "plain", archived=mode == "archive"
+        )
 
     @router.message(Command("category"))
     async def category(message: Message) -> None:
@@ -865,7 +883,9 @@ def make_router(
 
 
 async def on_item_callback(
-    callback: CallbackQuery, settings: Settings, session_factory: async_sessionmaker
+    callback: CallbackQuery | WidgetCallback,
+    settings: Settings,
+    session_factory: async_sessionmaker,
 ) -> None:
     """Translate an inline callback into one scoped application action."""
     user = callback.from_user
@@ -877,12 +897,15 @@ async def on_item_callback(
         await callback.answer("Неизвестное действие")
         return
     action, raw_item_id = parts[1], parts[2]
+    if action == "full_text":
+        # Refresh cards whose old keyboard offered a text attachment.
+        action = "back"
     try:
         item_id = int(raw_item_id)
     except ValueError:
         await callback.answer("Некорректное сохранение")
         return
-    if item_id < 1:
+    if not 1 <= item_id <= 2**63 - 1:
         await callback.answer("Некорректное сохранение")
         return
     current_chat_id = getattr(getattr(callback.message, "chat", None), "id", None)
@@ -938,35 +961,37 @@ async def on_item_callback(
         if len(parts) != 3:
             await callback.answer("Некорректное действие")
             return
-        if action == "view" and current_chat_id is None:
+        native_card = action == "view" or (
+            action == "back" and not isinstance(callback, WidgetCallback)
+        )
+        if native_card and current_chat_id is None:
             await callback.answer("Сохранение недоступно")
             return
         projection = await _load_item_ui_projection(
             session_factory,
             user.id,
             item_id,
-            current_chat_id=current_chat_id if action == "view" else None,
+            current_chat_id=current_chat_id if native_card else None,
         )
         if projection is None:
             await callback.answer("Сохранение недоступно")
             return
         item, sources, original_available = projection
-        if action == "view":
-            if item.processing_status is ProcessingStatus.READY:
-                text = format_ready_item_compact(item, sources)
-            elif item.processing_status is ProcessingStatus.FAILED:
-                text = format_item_failure(item, sources)
-            else:
-                text = f"⏳ Обрабатывается: {item_display_title(item, sources)}"
-            if callback.message is not None:
-                await callback.message.answer(
-                    text,
-                    reply_markup=item_keyboard(
-                        item,
-                        sources,
-                        original_available=original_available,
-                    ),
+        if native_card:
+            text, markup = build_item_card(item, sources, original_available=original_available)
+            message = (
+                callback.message.target
+                if isinstance(callback, WidgetCallback)
+                else callback.message
+            )
+            if action == "view":
+                await message.answer(
+                    reply_markup=markup,
+                    link_preview_options=LinkPreviewOptions(is_disabled=True),
+                    **text.as_kwargs(),
                 )
+            else:
+                await _edit_item_message_if_changed(message, text, markup)
         elif action == "more":
             await _edit_reply_markup_if_changed(callback.message, item_more_keyboard(item))
         elif action == "interest_menu":
@@ -991,15 +1016,8 @@ async def on_item_callback(
                 callback.message, item_sources_keyboard(item, sources)
             )
         else:
-            if item.processing_status is ProcessingStatus.READY:
-                text = format_ready_item_compact(item, sources)
-            elif item.processing_status is ProcessingStatus.FAILED:
-                text = format_item_failure(item, sources)
-            else:
-                text = "Сохранение пока обрабатывается."
-            await _edit_item_message_if_changed(
+            await _edit_reply_markup_if_changed(
                 callback.message,
-                text,
                 item_keyboard(item, sources, original_available=original_available),
             )
         await callback.answer()
@@ -1091,7 +1109,12 @@ async def on_item_callback(
         return
 
     item = await apply_item_action(
-        session_factory, user.id, item_id, action_name, snoozed_until=snoozed_until
+        session_factory,
+        user.id,
+        item_id,
+        action_name,
+        snoozed_until=snoozed_until,
+        idempotency_key=callback.id if isinstance(callback, WidgetCallback) else None,
     )
     if item is None:
         await callback.answer("Сохранение не найдено")
@@ -1099,7 +1122,12 @@ async def on_item_callback(
     # ❌ Удален label lookup только по requested action: при concurrent CAS он
     # мог подтверждать проигравшее действие вместо persisted результата.
     if callback.message:
-        await callback.message.edit_text(_item_action_label(item, action_name), reply_markup=None)
+        markup = None
+        if action_name == "archive" and item.state is ItemState.ARCHIVED:
+            markup = item_list_keyboard(
+                (), back_label="← Сохранённое", back_callback="nav:inbox:page:0"
+            )
+        await callback.message.edit_text(_item_action_label(item, action_name), reply_markup=markup)
     await callback.answer()
 
 
@@ -1390,27 +1418,35 @@ async def _edit_reply_markup_if_changed(message, reply_markup) -> None:
 
 # ❌ Удалена перерисовка READY-карточки после correction callbacks: изменённые поля
 # остаются доступны в Details, а пользователь остаётся в Feedback submenu.
-async def _edit_item_message_if_changed(message, text: str, reply_markup) -> None:
-    """Idempotently switch between compact text projections and their matching keyboards."""
+async def _edit_item_message_if_changed(
+    message, content: str | Text | InputRichMessage, reply_markup: InlineKeyboardMarkup | None
+) -> None:
+    """Edit a Telegram screen, treating an identical server-side edit as a no-op."""
     if message is None or not hasattr(message, "edit_text"):
         return
-    if (
-        getattr(message, "text", None) == text
-        and getattr(message, "reply_markup", None) == reply_markup
-    ):
-        return
-    if getattr(message, "text", None) == text:
+    if isinstance(content, str) and getattr(message, "text", None) == content:
         await _edit_reply_markup_if_changed(message, reply_markup)
         return
     try:
-        await message.edit_text(text, reply_markup=reply_markup)
+        if isinstance(content, InputRichMessage):
+            await message.edit_text(rich_message=content, reply_markup=reply_markup)
+        elif isinstance(content, Text):
+            await message.edit_text(
+                reply_markup=reply_markup,
+                link_preview_options=LinkPreviewOptions(is_disabled=True),
+                **content.as_kwargs(),
+            )
+        else:
+            await message.edit_text(content, reply_markup=reply_markup)
     except TelegramBadRequest as exc:
         if "message is not modified" not in str(exc).casefold():
             raise
 
 
 async def on_feedback_callback(
-    callback: CallbackQuery, settings: Settings, session_factory: async_sessionmaker
+    callback: CallbackQuery | WidgetCallback,
+    settings: Settings,
+    session_factory: async_sessionmaker,
 ) -> None:
     """Translate feedback callbacks into scoped service calls and UI projections."""
     if not settings.is_allowed(callback.from_user.id) or not callback.data:
@@ -1456,11 +1492,13 @@ async def on_feedback_callback(
             markup = feedback_type_keyboard(item_id)
         elif action == "category_menu":
             async with session_factory() as session:
+                page_options = {"page_size": 4} if isinstance(callback, WidgetCallback) else {}
                 categories = await list_categories_page(
                     session,
                     item.user_id,
                     page=category_page_number,
                     by_frequency=True,
+                    **page_options,
                 )
             markup = feedback_category_keyboard(
                 item_id,
@@ -1603,6 +1641,31 @@ async def on_feedback_callback(
         return
 
     await callback.answer("Неизвестное действие")
+
+
+async def on_item_widget_callback(
+    callback: WidgetCallback, settings: Settings, session_factory: async_sessionmaker
+) -> None:
+    """Route widget actions through the same owner-scoped handlers as inline buttons."""
+    if not settings.is_allowed(callback.from_user.id):
+        await callback.answer("Сохранение недоступно")
+        return
+    namespace, _, action = callback.data.partition(":")
+    if namespace == "item" and action.split(":", 1)[0] not in {"sources", "back"}:
+        await on_item_callback(callback, settings, session_factory)
+    elif namespace == "inbox":
+        await _on_inbox_widget_action(callback, settings, session_factory, action)
+    elif namespace == "feedback":
+        await on_feedback_callback(callback, settings, session_factory)
+    elif callback.data == "nav:inbox":
+        await _send_inbox_for_actor(
+            telegram_user_id=callback.from_user.id,
+            message=callback.message.target,
+            settings=settings,
+            session_factory=session_factory,
+        )
+    else:
+        await callback.answer("Действие недоступно")
 
 
 # Callback text is derived from canonical persisted state, not requested input:
@@ -2069,31 +2132,81 @@ async def _send_attention_for_actor(
             await session.commit()
 
 
-async def on_inbox(message: Message, settings: Settings, session_factory) -> None:
+async def on_inbox(
+    message: Message,
+    settings: Settings,
+    session_factory,
+    *,
+    plain: bool = False,
+    archived: bool = False,
+) -> None:
     if not await _allowed(message, settings):
         return
     await _send_inbox_for_actor(
         telegram_user_id=message.from_user.id,
-        chat_id=message.chat.id,
+        message=message,
         settings=settings,
         session_factory=session_factory,
-        send=message.answer,
+        archived=archived,
+        rich=not plain,
     )
 
 
 async def _send_inbox_for_actor(
     *,
     telegram_user_id: int,
-    chat_id: int,
+    message: Message | InaccessibleMessage,
     settings: Settings,
     session_factory,
-    send,
     page: int = 0,
+    archived: bool = False,
+    rich: bool = True,
+    edit: bool = False,
 ) -> None:
-    """Project one shared, bounded Inbox page for slash and inline entry points."""
+    """Project a bounded Inbox or archive page for slash and inline entry points."""
     if not settings.is_allowed(telegram_user_id):
         return
-    from app.bot.formatting import format_item_list
+    item_page, entries = await _load_inbox_page_for_actor(
+        telegram_user_id, message.chat.id, settings, session_factory, page=page, archived=archived
+    )
+    rich = rich and message.chat.type == "private"
+    if rich and not edit and settings.telegram_item_widgets_enabled:
+        screen = inbox_widget_screen(item_page, entries, archived=archived)
+        if await try_send_inbox_widget(message, screen):
+            return
+    route = "nav:archive" if archived else "nav:inbox"
+    keyboard = item_list_keyboard(
+        () if rich else entries,
+        previous_callback=(
+            f"{route}:page:{item_page.page - 1}" if item_page.has_previous else None
+        ),
+        next_callback=(f"{route}:page:{item_page.page + 1}" if item_page.has_next else None),
+        extra_action=None if archived else ("🗄 Архив", "nav:archive"),
+        back_label="← Сохранённое" if archived else "← Меню",
+        back_callback="nav:inbox:page:0" if archived else "nav:menu",
+    )
+    heading = "🗄 Архив" if archived else "📥 Сохранённое"
+    if rich:
+        content: str | InputRichMessage = format_rich_inbox(heading, entries)
+    else:
+        content = heading if entries else f"{heading}\n\nНичего не найдено."
+    if edit:
+        await _edit_item_message_if_changed(message, content, keyboard)
+    elif isinstance(content, InputRichMessage):
+        await message.answer_rich(content, reply_markup=keyboard)
+    else:
+        await message.answer(content, reply_markup=keyboard)
+
+
+async def _load_inbox_page_for_actor(
+    telegram_user_id: int,
+    chat_id: int,
+    settings: Settings,
+    session_factory: async_sessionmaker,
+    *,
+    page: int,
+    archived: bool,
+) -> tuple[ItemPage, tuple[ItemNavigationEntry, ...]]:
     from app.services.ingestion import get_or_create_user
 
     async with session_factory() as session:
@@ -2103,24 +2216,59 @@ async def _send_inbox_for_actor(
             chat_id=chat_id,
             timezone=settings.default_timezone,
         )
-        item_page = await list_inbox_page(session, user.id, page=page)
+        item_page = await list_inbox_page(session, user.id, page=page, archived=archived)
         sources_by_item = await load_item_sources_by_item(
             session, [item.id for item in item_page.items]
         )
         await session.commit()
-    entries = item_navigation_entries(item_page.items, sources_by_item)
-    keyboard = item_list_keyboard(
-        entries,
-        previous_callback=(
-            f"nav:inbox:page:{item_page.page - 1}" if item_page.has_previous else None
-        ),
-        next_callback=(f"nav:inbox:page:{item_page.page + 1}" if item_page.has_next else None),
-        back_label="← Меню",
+    return item_page, item_navigation_entries(item_page.items, sources_by_item)
+
+
+async def _on_inbox_widget_action(
+    callback: WidgetCallback,
+    settings: Settings,
+    session_factory: async_sessionmaker,
+    action: str,
+) -> None:
+    if action == "menu":
+        await callback.message.target.answer("Главное меню:", reply_markup=main_menu_keyboard())
+        return
+    parts = action.split(":")
+    if len(parts) != 3 or (page := _page_callback_value(parts[2])) is None:
+        await callback.answer("Страница больше недоступна")
+        return
+    operation, value, _ = parts
+    archived = False
+    if operation == "page" and value in {"saved", "archive"}:
+        archived = value == "archive"
+    elif operation == "archive" and value.isascii() and value.isdecimal():
+        item_id = int(value)
+        if not 1 <= item_id <= 2**63 - 1:
+            await callback.answer("Сохранение недоступно")
+            return
+        item = await apply_item_action(
+            session_factory,
+            callback.from_user.id,
+            item_id,
+            "archive",
+            idempotency_key=callback.id,
+        )
+        if item is None or item.state is not ItemState.ARCHIVED:
+            await callback.answer("Архивирование недоступно для этой записи")
+            return
+        await callback.answer(INBOX_ARCHIVED_NOTICE)
+    else:
+        await callback.answer("Действие недоступно")
+        return
+    item_page, entries = await _load_inbox_page_for_actor(
+        callback.from_user.id,
+        callback.message.chat.id,
+        settings,
+        session_factory,
+        page=page,
+        archived=archived,
     )
-    await send(
-        format_item_list(list(item_page.items), "📥 Сохранённое", sources_by_item),
-        reply_markup=keyboard,
-    )
+    callback.message.screen = inbox_widget_screen(item_page, entries, archived=archived)
 
 
 async def on_category(message: Message, settings: Settings, session_factory, category: str) -> None:
@@ -2645,24 +2793,28 @@ async def on_navigation_callback(
         await callback.answer()
         await _send_inbox_for_actor(
             telegram_user_id=telegram_user_id,
-            chat_id=chat_id,
+            message=callback.message,
             settings=settings,
             session_factory=session_factory,
-            send=send,
         )
-    elif data.startswith("nav:inbox:page:"):
-        page = _page_callback_value(data.removeprefix("nav:inbox:page:"))
+    elif data == "nav:archive" or data.startswith(("nav:inbox:page:", "nav:archive:page:")):
+        archived = data.startswith("nav:archive")
+        route = "nav:archive" if archived else "nav:inbox"
+        page = 0 if data == route else _page_callback_value(data.removeprefix(f"{route}:page:"))
         if page is None:
             await callback.answer("Страница больше недоступна")
             return
         await callback.answer()
         await _send_inbox_for_actor(
             telegram_user_id=telegram_user_id,
-            chat_id=chat_id,
+            message=callback.message,
             settings=settings,
             session_factory=session_factory,
-            send=edit_current_page,
             page=page,
+            archived=archived,
+            rich=isinstance(callback.message, Message)
+            and callback.message.rich_message is not None,
+            edit=True,
         )
     elif data == "nav:weekly":
         await callback.answer()

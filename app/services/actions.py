@@ -8,6 +8,7 @@ from sqlalchemy.sql import text
 
 from app.domain.enums import ItemState, ProcessingStatus, SourceType
 from app.services.delivery import ITEM_FAILED
+from app.services.feedback import claim_feedback_callback_receipt
 from app.services.notifications import add_snooze_reminder, cancel_snooze_reminders
 from app.storage.models import Delivery, Event, Item, ItemSource, User
 
@@ -23,6 +24,8 @@ async def apply_item_action(
     item_id: int,
     action: str,
     snoozed_until: datetime | None = None,
+    *,
+    idempotency_key: str | None = None,
 ) -> Item | None:
     """Apply one scoped, idempotent transition and persist its event atomically.
 
@@ -30,11 +33,19 @@ async def apply_item_action(
     and render the result, so retries cannot bypass user scoping or transactions.
     """
     async with session_factory() as session:
+        if idempotency_key is not None:
+            await session.execute(text("BEGIN IMMEDIATE"))
         user_id = await session.scalar(
             select(User.id).where(User.telegram_user_id == telegram_user_id)
         )
         if user_id is None:
             return None
+        if idempotency_key is not None and not await claim_feedback_callback_receipt(
+            session, user_id, idempotency_key
+        ):
+            return await session.scalar(
+                select(Item).where(Item.id == item_id, Item.user_id == user_id)
+            )
 
         item, _transitioned = await _apply_item_action_in_session(
             session, user_id, item_id, action, snoozed_until=snoozed_until

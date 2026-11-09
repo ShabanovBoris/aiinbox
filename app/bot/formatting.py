@@ -1,7 +1,21 @@
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 
-from app.bot.presentation import item_display_title, item_navigation_entries, item_type_label
-from app.domain.enums import SourceType
+from aiogram.types import (
+    InputRichBlockButtons,
+    InputRichBlockParagraph,
+    InputRichBlockSectionHeading,
+    InputRichMessage,
+    RichMessageButton,
+)
+
+from app.bot.presentation import (
+    ItemNavigationEntry,
+    item_display_title,
+    item_navigation_entries,
+    item_type_label,
+)
+from app.domain.enums import ProcessingStatus, SourceType
 from app.domain.models import AskReference, UserProfile
 from app.services.attention_ranking import AttentionRank
 from app.services.url_parsing import instagram_post_shortcode
@@ -78,9 +92,7 @@ def _summary_preview(item: Item, limit: int) -> str:
     return summary
 
 
-def _analysis_completeness_warning(
-    item: Item, sources: Sequence[ItemSource] | None = None
-) -> list[str]:
+def item_analysis_warnings(item: Item, sources: Sequence[ItemSource] | None = None) -> list[str]:
     """Keep only trust-relevant extraction limits beside the user's saved summary."""
     completeness = item.analysis_completeness
     posts = [
@@ -103,12 +115,12 @@ def _analysis_completeness_warning(
     ]
     if completeness == "VISUAL_ONLY":
         if posts:
-            return ["⚠️ Анализ по изображениям и кадрам."]
-        return ["⚠️ Анализ только по кадрам — транскрипт недоступен."]
+            return ["Анализ по изображениям и кадрам."]
+        return ["Анализ только по кадрам — транскрипт недоступен."]
     if completeness == "CAPTION_ONLY":
         if posts:
-            return ["⚠️ Анализ только по подписи — медиа не обработано.", *post_hints]
-        return ["⚠️ Анализ только по подписи — речь не распознана."]
+            return ["Анализ только по подписи — медиа не обработано.", *post_hints]
+        return ["Анализ только по подписи — речь не распознана."]
     if completeness == "TRANSCRIPT_ONLY" and (
         item.source_type in (SourceType.YOUTUBE, SourceType.VIDEO, SourceType.INSTAGRAM)
         or any(
@@ -116,15 +128,15 @@ def _analysis_completeness_warning(
             for source in sources or ()
         )
     ):
-        return ["⚠️ Анализ по транскрипту — без визуальной части."]
+        return ["Анализ по транскрипту — без визуальной части."]
     if completeness != "PARTIAL":
         return []
 
     incomplete_posts = [post for post in posts if post["processed"] < post["total"]]
     warnings = (
-        ["⚠️ Анализ частичный."]
+        ["Анализ частичный."]
         if incomplete_posts
-        else ["⚠️ Анализ частичный — часть источников не обработана."]
+        else ["Анализ частичный — часть источников не обработана."]
     )
     warnings.extend(
         f"Пост Instagram: полностью обработано {post['processed']} из {post['total']} элементов."
@@ -157,9 +169,9 @@ def format_ready_item_compact(item: Item, sources: Sequence[ItemSource] | None =
     lines = ["✓ Сохранено", "", f"🎯 {item_display_title(item, sources or ())}"]
     if item.summary and item.summary.strip():
         lines.extend(["", item.summary.strip()])
-    warnings = _analysis_completeness_warning(item, sources)
+    warnings = item_analysis_warnings(item, sources)
     if warnings:
-        lines.extend(["", *warnings])
+        lines.extend(["", f"⚠️ {warnings[0]}", *warnings[1:]])
     return _fit_message(lines)
 
 
@@ -203,6 +215,37 @@ def format_item_details(item: Item) -> str:
 
 def format_item_failure(item: Item, sources: Sequence[ItemSource]) -> str:
     """Show a recognizable saved Item and explain failure without internal error codes."""
+    return f"⚠️ {item_display_title(item, sources)}\n\n{item_failure_reason(item, sources)}"
+
+
+@dataclass(frozen=True, slots=True)
+class ItemCardContent:
+    title: str
+    text: str
+    warnings: tuple[str, ...] = ()
+    badge: str = ""
+
+
+def item_card_content(item: Item, sources: Sequence[ItemSource]) -> ItemCardContent:
+    """Project the saved summary and trust indicators."""
+    title = item_display_title(item, sources)
+    if item.processing_status is ProcessingStatus.FAILED:
+        return ItemCardContent(title, item_failure_reason(item, sources), badge="Ошибка обработки")
+    if item.processing_status is not ProcessingStatus.READY:
+        return ItemCardContent(title, "", badge="Обрабатывается")
+    warnings = tuple(item_analysis_warnings(item, sources))
+    badge = ""
+    if warnings:
+        badge = {
+            "TRANSCRIPT_ONLY": "По транскрипту",
+            "CAPTION_ONLY": "По подписи",
+            "VISUAL_ONLY": "Визуальный анализ",
+        }.get(item.analysis_completeness, "Частично обработано")
+    return ItemCardContent(title, (item.summary or "").strip(), warnings, badge)
+
+
+def item_failure_reason(item: Item, sources: Sequence[ItemSource]) -> str:
+    """Explain the persisted failure and available recovery in both card layouts."""
     failed_sources = [source for source in sources if source.extraction_status == "FAILED"]
     instagram_failure = next(
         (source for source in failed_sources if source.source_type is SourceType.INSTAGRAM), None
@@ -260,7 +303,7 @@ def format_item_failure(item: Item, sources: Sequence[ItemSource]) -> str:
         )
     elif retryable:
         reason += "\nМожно повторить попытку."
-    return f"⚠️ {item_display_title(item, sources)}\n\n{reason}"
+    return reason
 
 
 def _failure_copy(error_code: str | None, source_type: SourceType) -> str:
@@ -476,6 +519,29 @@ def format_item_list(
     for entry in entries:
         lines.append(f"• {entry.label}")
     return _fit_message(lines)
+
+
+def format_rich_inbox(heading: str, entries: Sequence[ItemNavigationEntry]) -> InputRichMessage:
+    rows = [
+        InputRichBlockButtons(
+            align="left",
+            buttons=[
+                RichMessageButton(
+                    text=entry.label,
+                    style="link",
+                    callback_data=f"item:view:{entry.item_id}",
+                )
+            ],
+        )
+        for entry in entries
+    ]
+    return InputRichMessage(
+        blocks=[
+            InputRichBlockSectionHeading(text=heading, size=3),
+            *(rows or [InputRichBlockParagraph(text="Ничего не найдено.")]),
+        ],
+        skip_entity_detection=True,
+    )
 
 
 def format_ask_answer(answer: str, references: Sequence[AskReference]) -> str:
