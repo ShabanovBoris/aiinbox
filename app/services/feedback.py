@@ -56,7 +56,7 @@ async def _has_callback_event(session: AsyncSession, user_id: int, idempotency_k
     )
 
 
-async def _has_callback_receipt(session: AsyncSession, user_id: int, idempotency_key: str) -> bool:
+async def has_callback_receipt(session: AsyncSession, user_id: int, idempotency_key: str) -> bool:
     """Detect a callback identity already consumed independently of Event history."""
     return (
         await session.scalar(
@@ -73,7 +73,7 @@ async def _callback_was_consumed(session: AsyncSession, user_id: int, idempotenc
     """Check both semantic Event keys and receipts for no-op/unapplied outcomes."""
     return await _has_callback_event(
         session, user_id, idempotency_key
-    ) or await _has_callback_receipt(session, user_id, idempotency_key)
+    ) or await has_callback_receipt(session, user_id, idempotency_key)
 
 
 async def claim_feedback_callback_receipt(

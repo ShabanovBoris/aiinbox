@@ -542,14 +542,16 @@ async def test_worker_sends_generic_claim_with_feedback_controls_and_send_attrib
     callbacks = {
         button.callback_data for row in kwargs["reply_markup"].inline_keyboard for button in row
     }
-    assert any(value.startswith("reminder:more:") for value in callbacks)
-    assert not any(value.startswith("nav:attention:show:") for value in callbacks)
     assert hooks.calls == 0
 
     async with session_factory() as session:
         reminder = await session.scalar(select(Reminder).where(Reminder.type == MOTIVATION_NUDGE))
         assert reminder.user_id == user_id
         assert reminder.item_id is None
+        assert callbacks == {
+            f"item:archive:{reminder.payload_json['focus_item_id']}",
+            f"reminder:more:{reminder.id}",
+        }
         assert reminder.status == "SENT"
         assert reminder.sent_at == now
         assert reminder.scheduled_at == datetime(2026, 9, 24, 0, 0, 1)

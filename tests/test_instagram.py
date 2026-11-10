@@ -657,7 +657,7 @@ async def test_worker_timeout_does_not_wait_for_yt_dlp_thread_and_defers_cleanup
             if download:
                 started.set()
                 try:
-                    release.wait(timeout=2)
+                    release.wait()
                 finally:
                     finished.set()
             return super().extract_info(url, download)
@@ -681,14 +681,14 @@ async def test_worker_timeout_does_not_wait_for_yt_dlp_thread_and_defers_cleanup
             instagram_extractor=extractor,
         ),
         poll_seconds=0.01,
-        processing_timeout_seconds=0.03,
+        processing_timeout_seconds=2,
     )
     processing = asyncio.create_task(worker.process_one())
     try:
-        assert await asyncio.to_thread(started.wait, 1)
-        done, _ = await asyncio.wait({processing}, timeout=0.2)
-        assert processing in done
-        assert await processing is True
+        assert await asyncio.to_thread(started.wait, 3)
+        # The release event, not a competing wall-clock timeout, keeps the downloader blocked.
+        assert await asyncio.wait_for(asyncio.shield(processing), timeout=5) is True
+        assert not finished.is_set()
 
         async with session_factory() as session:
             stored = await session.get(Item, item.id)

@@ -508,11 +508,16 @@ PM-12 v1 не пишет Item/Event/Reminder, не меняет профиль �
 
 ## 43. /inbox
 
-Возвращает последние Items без lifecycle-фильтра через страницы по 10 Items;
-порядок — `created_at DESC, id DESC`. Запрос страницы использует ограниченный
-`LIMIT page_size + 1`, а кнопки перехода позволяют дойти до любого сохранённого
-Item. Размер страницы ограничивает один ответ Telegram, но не доступное число
-Items и не является storage/user quota.
+Показывает неархивные Items страницами по 10, а архив открывается отдельно.
+Порядок в обоих списках — `created_at DESC, id DESC`. Запрос страницы использует
+`LIMIT page_size + 1`, а кнопки перехода позволяют дойти до любого сохранённого Item.
+В личном чате при `TELEGRAM_ITEM_WIDGETS_ENABLED` список открывается как HTML-виджет.
+Короткое нажатие на название открывает карточку. Долгое нажатие открывает меню
+выбранной записи. «В архив» доступно для неархивных записей и обновляет
+страницу в том же сообщении. «Оригинал» повторно присылает исходное сообщение,
+если сохранена его Telegram identity. Внизу виджета остаётся перелистывание.
+Архив открывается через `/inbox archive`. Без виджетов список использует Rich
+Message, а `/inbox plain` открывает список с обычными кнопками.
 
 ## 44. /category
 
@@ -671,8 +676,10 @@ evidence новой генерации hook. В тексте уведомлен�
 interest, возраста Item или объяснения ranking; эти данные остаются внутри
 selection, claim и Reminder snapshot.
 
-Основная клавиатура Reminder оставляет Original и максимум два source actions;
-overflow открывается в `Источники`, а реакции PM-11 находятся за `••• Ещё`.
+На карточке Reminder видны «В архив» и «Ещё». В меню «Ещё» доступны Original,
+до двух source actions и реакции PM-11. Остальные источники доступны через
+«Источники». Напоминание по сроку и ручная подборка «Внимание» открывают
+полную карточку через «Ещё».
 Навигация меню не создаёт Events и не меняет Item/Reminder. Наблюдаемость
 Original и video resend, а также необозримость прямых URL-click сохраняются.
 
@@ -711,8 +718,8 @@ Event хранит bounded snapshot отправки, а не source content. De
 текущую PM-08 at-least-once семантику при сбое между Telegram и SQLite.
 
 Proactive и focused motivation используют Original и доступные source actions
-выбранного сохранения. В More для focused motivation доступны «Отложить»,
-«Сделано» и «Меньше таких». «Не сейчас» остаётся только у proactive Reminder,
+выбранного сохранения. В More для focused motivation доступны «Отложить»
+и «Меньше таких». «Не сейчас» остаётся только у proactive Reminder,
 где его callback участвует в существующем same-Item cooldown.
 Reminder Done/Snooze фиксируют дополнительный
 outcome в транзакции с canonical lifecycle event; normal Item Done/Snooze не
@@ -731,11 +738,14 @@ Item-specific `REMINDER_DISLIKED` даёт ограниченную, не нак
 ## 53. Done
 
 Atomic transition → `DONE` + `completed_at` + event.
+Новые карточки предлагают архивирование. Переход в `DONE` остаётся доступен
+через API и ранее отправленные кнопки.
 
 ## 54. Archive
 
-Atomic transition → `ARCHIVED` + `archived_at` + event.
-Archived Item остаётся searchable.
+Atomic transition from `ACTIVE`, `SNOOZED` or `DONE` → `ARCHIVED` + `archived_at` + event.
+Архивные сохранения исключаются из обычного `/inbox` и доступны в отдельном
+постраничном архиве и поиске. «В архив» использует один переход для всех карточек.
 
 ## 55. Retry
 
@@ -845,12 +855,15 @@ category, локализованный type, interest и next action досту�
 значения completeness enum не показываются.
 Числовой priority score и ranking reason в обычной Telegram-карточке не показываются.
 
-Первичная inline-клавиатура отдаёт приоритет возврату к содержимому: кнопки
-открытия и повторной отправки источника и `••• Ещё`. Жизненный цикл Item, уровень интереса,
-явная обратная связь и Details находятся за дополнительным меню. Interest,
-feedback, lifecycle Events, retry и durable video Delivery сохраняют прежние
-application-service semantics. Навигация по меню — read-only projection и не
-создаёт в SQLite состояние открытого меню.
+Карточки из списков и результаты обработки используют форматированные сообщения
+Telegram с заголовком, бейджем состояния и сводкой. Извлечённые материалы служат
+входом для анализа и не выводятся в карточке.
+
+Клавиатура карточки сразу показывает доступные действия жизненного цикла, уровень
+интереса, обратную связь, детали и действия с источниками. «В архив» и доступное
+«Повторить» используют встроенные стили кнопок Telegram. Навигация
+по меню не создаёт в SQLite состояние открытого меню. Действия сохраняют
+существующую семантику application services.
 
 URL source action показывается только для корректного HTTP(S) URL с hostname; на
 кнопке отображается bounded destination label без query/path. Public forwarded
@@ -1126,7 +1139,7 @@ or dependency is introduced.
 ## 104. POLISH-08 — Human-facing reminders and Russian object-centric UX
 
 Ordinary Telegram copy uses Russian product vocabulary: сохранение/материал,
-`✅ Сделано`, `⏰ Отложить`, `🗄 В архив`, `🔄 Повторить`, `📥 Сохранённое`,
+`⏰ Отложить`, «В архив», `🔄 Повторить`, `📥 Сохранённое`,
 `🧠 Спросить`, `✨ Внимание`, `Ежедневная подборка`, and `Дополнительные напоминания`.
 Internal Python/SQLite identifiers and event types remain unchanged.
 

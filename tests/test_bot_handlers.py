@@ -9,6 +9,7 @@ from aiogram.types import (
     InlineKeyboardMarkup,
     Message,
     MessageOriginChannel,
+    RichMessage,
     Update,
 )
 from aiogram.types import User as TgUser
@@ -31,6 +32,7 @@ from app.bot.handlers import (
     on_guided_search_input,
     on_help,
     on_inbox,
+    on_item_callback,
     on_navigation_callback,
     on_profile,
     on_profile_update,
@@ -825,8 +827,9 @@ async def test_category_chooser_pages_past_twenty_categories(
     )
 
 
+@pytest.mark.parametrize("plain", [False, True])
 async def test_inbox_rows_page_through_all_twenty_seven_items(
-    settings, session_factory, monkeypatch
+    settings, session_factory, monkeypatch, plain
 ):
     async with session_factory() as session:
         user = User(telegram_user_id=42, telegram_chat_id=42)
@@ -860,63 +863,165 @@ async def test_inbox_rows_page_through_all_twenty_seven_items(
             ).all()
         )
 
-    sent = []
-    edited = []
+    bot = Bot("123456:TEST")
+    dispatcher = Dispatcher()
+    dispatcher.include_router(make_router(settings, session_factory))
+    calls = []
+
+    async def bot_call(self, method, request_timeout=None):
+        if method.__api_method__ != "answerCallbackQuery":
+            calls.append(method)
+        return True
+
+    monkeypatch.setattr(Bot, "__call__", bot_call)
+
+    async def tap(page_message, data):
+        callback = make_callback(42, data).model_copy(update={"message": page_message})
+        await dispatcher.feed_update(bot, Update(update_id=len(calls) + 1, callback_query=callback))
+        return calls[-1]
+
+    def received_page(method):
+        rich = getattr(method, "rich_message", None)
+        return make_bot_message().model_copy(
+            update={
+                "text": None if rich else getattr(method, "text", "📥 Сохранённое"),
+                "rich_message": RichMessage.model_validate(rich.model_dump()) if rich else None,
+                "reply_markup": method.reply_markup,
+            }
+        )
+
+    try:
+        command = make_message(42, text="/inbox plain" if plain else "/inbox")
+        await dispatcher.feed_update(bot, Update(update_id=1, message=command))
+        page = calls[-1]
+        assert page.__api_method__ == ("sendMessage" if plain else "sendRichMessage")
+
+        seen_ids = []
+        for index, page_size in enumerate((10, 10, 7)):
+            markup = page.reply_markup.inline_keyboard
+            selectors = [button for row in markup for button in row if button.callback_data]
+            item_buttons = [
+                button for button in selectors if button.callback_data.startswith("item:")
+            ]
+            if plain:
+                if hasattr(page, "text"):
+                    assert page.text == "📥 Сохранённое"
+            else:
+                assert item_buttons == []
+                assert page.rich_message.blocks[0].text == "📥 Сохранённое"
+                item_buttons = [block.buttons[0] for block in page.rich_message.blocks[1:]]
+                assert all(button.style == "link" for button in item_buttons)
+
+            assert len(item_buttons) == page_size
+            assert all(button.text.startswith("Item ") for button in item_buttons)
+            seen_ids.extend(
+                int(button.callback_data.removeprefix("item:view:")) for button in item_buttons
+            )
+
+            if index == 2:
+                assert all(button.text != "Ещё →" for button in selectors)
+                break
+            next_page = next(button.callback_data for button in selectors if button.text == "Ещё →")
+            page = await tap(received_page(page), next_page)
+            assert page.message_id == 700
+            assert page.__api_method__ == ("editMessageReplyMarkup" if plain else "editMessageText")
+
+        assert seen_ids == expected_ids
+
+        item = await tap(received_page(page), item_buttons[0].callback_data)
+        assert item.__api_method__ == "sendMessage"
+        assert item_buttons[0].text in item.text
+
+        archive = await tap(received_page(page), "nav:archive")
+        assert archive.message_id == 700
+        if plain:
+            assert archive.text == "🗄 Архив\n\nНичего не найдено."
+        else:
+            assert [block.text for block in archive.rich_message.blocks] == [
+                "🗄 Архив",
+                "Ничего не найдено.",
+            ]
+        inbox = await tap(received_page(archive), "nav:inbox:page:0")
+        assert inbox.message_id == 700
+        assert inbox.reply_markup == calls[0].reply_markup
+        menu = await tap(received_page(inbox), "nav:menu")
+        assert menu.text == "Главное меню:"
+        menu_inbox = await tap(received_page(menu), "nav:inbox")
+        assert menu_inbox.__api_method__ == "sendRichMessage"
+    finally:
+        await bot.session.close()
+
+
+async def test_failed_card_can_be_removed_from_inbox_and_opened_in_archive(
+    settings, session_factory, monkeypatch
+):
+    async with session_factory() as session:
+        user = User(telegram_user_id=42, telegram_chat_id=42)
+        session.add(user)
+        await session.flush()
+        failed, already_archived = (
+            Item(
+                user_id=user.id,
+                processing_status=ProcessingStatus.FAILED,
+                processing_stage="EXTRACTING",
+                state=state,
+                source_type=SourceType.WEB,
+                source_url="https://www.instagram.com/p/example/",
+                error_code="EXTRACTION_FAILED",
+                user_note="",
+            )
+            for state in (ItemState.ACTIVE, ItemState.ARCHIVED)
+        )
+        session.add_all([failed, already_archived])
+        await session.commit()
+
+    sent, edited = [], []
 
     async def answer_message(self, text, **kwargs):
-        sent.append((text, kwargs))
+        sent.append((text, kwargs["reply_markup"]))
 
     async def edit_message(self, text, **kwargs):
-        edited.append((text, kwargs))
+        edited.append((text, kwargs["reply_markup"]))
 
     async def answer_callback(self, text=None, **kwargs):
-        return None
+        pass
+
+    def actions(message):
+        return {
+            button.callback_data: button.text
+            for row in message[1].inline_keyboard
+            for button in row
+            if button.callback_data
+        }
 
     monkeypatch.setattr(Message, "answer", answer_message)
     monkeypatch.setattr(Message, "edit_text", edit_message)
     monkeypatch.setattr(CallbackQuery, "answer", answer_callback)
+    state = FakeFSMContext()
 
-    await on_inbox(make_message(42), settings, session_factory)
-    assert (
-        len(
-            [
-                button
-                for row in sent[0][1]["reply_markup"].inline_keyboard
-                for button in row
-                if button.callback_data.startswith("item:view:")
-            ]
-        )
-        == 10
-    )
+    await on_inbox(make_message(42), settings, session_factory, plain=True)
+    assert f"item:view:{failed.id}" in actions(sent[-1])
+    assert f"item:view:{already_archived.id}" not in actions(sent[-1])
+    await on_item_callback(make_callback(42, f"item:view:{failed.id}"), settings, session_factory)
+    archive = f"item:archive:{failed.id}"
+    assert actions(sent[-1])[archive] == "В архив"
 
-    next_callback = next(
-        button.callback_data
-        for row in sent[0][1]["reply_markup"].inline_keyboard
-        for button in row
-        if button.callback_data.startswith("nav:inbox:page:")
-    )
-    for _ in range(2):
-        await on_navigation_callback(
-            make_callback(42, next_callback), settings, session_factory, FakeFSMContext()
-        )
-        next_buttons = [
-            button.callback_data
-            for row in edited[-1][1]["reply_markup"].inline_keyboard
-            for button in row
-            if button.callback_data.startswith("nav:inbox:page:")
-        ]
-        next_callback = next_buttons[-1] if next_buttons else ""
+    await on_item_callback(make_callback(42, archive), settings, session_factory)
+    assert edited[-1][0] == "В архиве 🗄"
+    back = "nav:inbox:page:0"
+    assert back in actions(edited[-1])
+    await on_navigation_callback(make_callback(42, back), settings, session_factory, state)
+    assert f"item:view:{failed.id}" not in actions(edited[-1])
+    assert "nav:archive" in actions(edited[-1])
 
-    seen_ids = []
-    for _text, kwargs in [sent[0], *edited]:
-        seen_ids.extend(
-            int(button.callback_data.removeprefix("item:view:"))
-            for row in kwargs["reply_markup"].inline_keyboard
-            for button in row
-            if button.callback_data.startswith("item:view:")
-        )
-    assert seen_ids == expected_ids
-    assert len(set(seen_ids)) == 27
+    await on_navigation_callback(make_callback(42, "nav:archive"), settings, session_factory, state)
+    assert edited[-1][0].startswith("🗄 Архив")
+    assert {f"item:view:{failed.id}", f"item:view:{already_archived.id}", back} == actions(
+        edited[-1]
+    ).keys()
+    await on_item_callback(make_callback(42, f"item:view:{failed.id}"), settings, session_factory)
+    assert "Не удалось" in sent[-1][0]
+    assert archive not in actions(sent[-1])
 
 
 async def test_category_item_callbacks_page_through_all_twenty_seven_items(
@@ -1248,6 +1353,7 @@ async def test_first_read_only_command_persists_user(
     settings, session_factory, monkeypatch, handler, args
 ):
     capture_answers(monkeypatch)
+    monkeypatch.setattr(Message, "answer_rich", Message.answer)
 
     await handler(make_message(42), settings, session_factory, *args)
 
@@ -1257,10 +1363,10 @@ async def test_first_read_only_command_persists_user(
         assert user.telegram_chat_id == 42
 
 
-async def test_inbox_category_and_search_selectors_match_visible_list_order(
+async def test_category_and_search_selectors_match_visible_list_order(
     settings, session_factory, monkeypatch
 ):
-    from app.services.retrieval import list_category_items_page, list_inbox_page, search_items
+    from app.services.retrieval import list_category_items_page, search_items
 
     async with session_factory() as session:
         user = User(telegram_user_id=42, telegram_chat_id=42)
@@ -1291,7 +1397,6 @@ async def test_inbox_category_and_search_selectors_match_visible_list_order(
             item.created_at = created_at
         await session.commit()
         expected = {
-            "📥 Сохранённое": (await list_inbox_page(session, user.id)).items,
             "Категория: Shared": (await list_category_items_page(session, user.id, "Shared")).items,
             "Результаты поиска:": await search_items(session, user.id, "needle"),
         }
@@ -1302,7 +1407,6 @@ async def test_inbox_category_and_search_selectors_match_visible_list_order(
         sent.append((text, kwargs.get("reply_markup")))
 
     monkeypatch.setattr(Message, "answer", capture)
-    await on_inbox(make_message(42), settings, session_factory)
     await on_category(make_message(42), settings, session_factory, "Shared")
     await on_search(make_message(42), settings, session_factory, "needle")
 

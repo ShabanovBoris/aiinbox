@@ -25,9 +25,8 @@ from app.bot.formatting import (
     format_today,
 )
 from app.bot.keyboards import (
-    item_keyboard,
+    compact_item_keyboard,
     item_list_keyboard,
-    proactive_reminder_keyboard,
 )
 from app.bot.presentation import item_navigation_entries
 from app.domain.enums import ACTIONABLE_ITEM_TYPES, ItemState, ProcessingStatus
@@ -1752,7 +1751,7 @@ class ReminderWorker:
                 chat_id,
                 format_proactive_attention_reminder(item, sources=sources),
                 claimed_at=claimed_at,
-                reply_markup=proactive_reminder_keyboard(reminder_id, item, sources),
+                reply_markup=compact_item_keyboard(item, reminder_id=reminder_id),
             )
         except Exception:
             log.exception(
@@ -1852,9 +1851,6 @@ class ReminderWorker:
                 claim_generation=claim_generation,
                 timeout_seconds=hook_timeout,
             )
-        focus_source_id = (
-            hook_presentation.hook.source_id if hook_presentation is not None else None
-        )
         prepared = await self._prepare_proactive_send(
             reminder_id, user_id, item_id, claim_generation, sent_at_override
         )
@@ -1872,13 +1868,7 @@ class ReminderWorker:
                     sources=sources,
                 ),
                 claimed_at=claimed_at,
-                reply_markup=proactive_reminder_keyboard(
-                    reminder_id,
-                    item,
-                    sources,
-                    focus_source_id=focus_source_id,
-                    original_available=chat_id is not None,
-                ),
+                reply_markup=compact_item_keyboard(item, reminder_id=reminder_id),
             )
         except Exception:
             log.exception(
@@ -2359,11 +2349,7 @@ class ReminderWorker:
                     )
                 ).all()
             )
-            keyboard = item_keyboard(
-                item,
-                sources,
-                original_available=user.telegram_chat_id is not None,
-            )
+            keyboard = compact_item_keyboard(item)
             await session.flush()
             claimed = (
                 user.id,

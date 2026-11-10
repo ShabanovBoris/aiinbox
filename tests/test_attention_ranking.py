@@ -1,13 +1,13 @@
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from aiogram.types import Chat, Message
+from aiogram.types import CallbackQuery, Chat, Message
 from aiogram.types import User as TgUser
 from sqlalchemy import event as sqlalchemy_event
 from sqlalchemy import select
 
 from app.bot.formatting import format_attention_item, format_attention_reason
-from app.bot.handlers import on_attention
+from app.bot.handlers import on_attention, on_item_callback
 from app.domain.enums import ItemState, ItemType, ProcessingStatus, SourceType
 from app.services.attention_ranking import (
     AttentionRank,
@@ -719,10 +719,32 @@ async def test_attention_preview_keeps_item_source_actions_and_canonical_state(
     async def answer(self, text, **kwargs):
         delivered.append((text, kwargs.get("reply_markup")))
 
+    async def acknowledge(self, **kwargs):
+        pass
+
     monkeypatch.setattr(Message, "answer", answer)
-    await on_attention(_message(42), settings, session_factory, "3")
+    monkeypatch.setattr(CallbackQuery, "answer", acknowledge)
+    message = _message(42)
+    await on_attention(message, settings, session_factory, "3")
     card, markup = next((text, markup) for text, markup in delivered if "Video source" in text)
-    labels = {button.text for row in markup.inline_keyboard for button in row}
+    archive, more = markup.inline_keyboard[0]
+    assert [(archive.text, archive.callback_data), (more.text, more.callback_data)] == [
+        ("В архив", f"item:archive:{item_id}"),
+        ("Ещё", f"item:view:{item_id}"),
+    ]
+    await on_item_callback(
+        CallbackQuery(
+            id="focus-more",
+            from_user=message.from_user,
+            chat_instance="private",
+            message=message,
+            data=more.callback_data,
+        ),
+        settings,
+        session_factory,
+    )
+    _, expanded = delivered[-1]
+    labels = {button.text for row in expanded.inline_keyboard for button in row}
     async with session_factory() as session:
         item = await session.get(Item, item_id)
         events = (await session.scalars(select(Event).where(Event.item_id == item_id))).all()
@@ -730,8 +752,8 @@ async def test_attention_preview_keeps_item_source_actions_and_canonical_state(
     assert "Video source" in card
     assert "Внимание:" not in card and "Приоритет:" not in card
     assert "Интерес:" not in card and "Возраст:" not in card and "Почему сейчас:" not in card
-    assert {"📩 Прислать YouTube", "↗ YouTube", "••• Ещё"} <= labels
-    assert not {"✅ Готово", "⏰ Позже", "🗄 Архив"} & labels
+    assert {"Прислать YouTube", "YouTube", "В архив"} <= labels
+    assert "Сделано" not in labels
     assert item.priority_score == 80
     assert item.interest_level == 3
     assert item.state is ItemState.ACTIVE

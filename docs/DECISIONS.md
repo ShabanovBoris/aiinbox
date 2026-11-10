@@ -680,8 +680,13 @@ Items could show `Без названия` with raw internal failure codes. Main
 also required an unnecessary mode step, and Profile had no visible edit action.
 
 Decision: saved Item collections have no presentation-level total cap. Telegram
-uses bounded SQL pages and full-width title actions that reuse the existing
-owner-scoped `item:view` callback. The analyzed `Item.title` stays canonical;
+uses bounded SQL pages and title actions that reuse the existing owner-scoped
+`item:view` callback. In private chats, Inbox uses an HTML widget when enabled
+and a Rich Message otherwise. A hold on a widget row opens local actions for that
+Item. `/inbox plain` offers regular buttons and pagination preserves the format
+of the current message. Archived Items have their own pages, so they
+leave the Inbox but remain reachable even when no analysis was produced.
+The analyzed `Item.title` stays canonical;
 when missing, presentation derives a deterministic local fallback from safe
 persisted source metadata without changing the Item. Main-menu Export means
 COMPACT, explicit FULL remains in Help and `/export full`, and Profile editing is
@@ -692,7 +697,7 @@ unbounded Telegram messages, numeric button walls, or dependence on successful
 AI processing.
 
 Consequences: each retrieval page remains bounded while the owner's total
-accessible Inbox is not. Fallback titles do not alter analysis, search or export
+accessible collection is not. Fallback titles do not alter analysis, search or export
 fields. Failure copy does not expose internal error codes. No storage quota,
 migration, dependency, queue or parallel Item identity system is introduced.
 
@@ -807,3 +812,20 @@ incremental idempotent updates, rate-limit handling and crash-after-create
 recovery. Remote edits/deletions never silently mutate canonical AIInbox data.
 The next destination is selected only after real Miro usage; bidirectional sync
 requires a separate explicit decision.
+
+## D-048 — Telegram inbox widgets reuse the inline action handlers
+
+Bot API 10.4 widgets run in private chats and use their own query update. The
+Telegram adapter translates these queries into existing Item actions. The inbox
+stores the current bounded page in Telegram's `chat_data`. Opening a row sends
+the ordinary Item card. Archiving uses the existing lifecycle transition and
+reloads the owner-scoped page in the same widget. Previously sent widget cards
+can still invoke their actions through the same adapter.
+Widget mode is opt-in while client support varies and Telegram protects widget
+messages from forwarding.
+
+## D-049 — Item cards display content in native Telegram messages
+
+Native text entities give the card headings and status badges without widget
+height limits or a hosted reader. The card displays the stored summary. Extracted
+materials are inputs to analysis and stay outside the card.

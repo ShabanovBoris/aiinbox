@@ -15,7 +15,7 @@ from app.bot.keyboards import (
     item_keyboard,
     item_list_keyboard,
     item_sources_keyboard,
-    proactive_reminder_keyboard,
+    reminder_more_keyboard,
 )
 from app.bot.presentation import ItemNavigationEntry
 from app.domain.enums import ItemState, ItemType, ProcessingStatus, SourceType
@@ -358,7 +358,7 @@ def test_title_item_navigation_preserves_order_and_callback_bounds():
         user_note="",
     )
     callbacks = _callback_data(item_keyboard(item)) + _callback_data(
-        proactive_reminder_keyboard(high_id, item)
+        reminder_more_keyboard(high_id, item)
     )
     assert f"item:original:{high_id}" in callbacks
     assert f"reminder:original:{high_id}" in callbacks
@@ -374,7 +374,7 @@ async def test_item_view_sends_a_new_owner_scoped_card_without_events(settings, 
     assert callback.message.text_edits == 0
     assert len(callback.message.sent_answers) == 1
     text, kwargs = callback.message.sent_answers[0]
-    assert "✓ Сохранено" in text
+    assert text == "Feedback item\n\nСводка\nThe original summary"
     assert f"item:original:{item_id}" in _callback_data(kwargs["reply_markup"])
     assert callback.answers == [None]
     async with session_factory() as session:
@@ -799,7 +799,8 @@ async def test_reminder_more_sources_and_back_are_owner_scoped_read_only_navigat
     await on_reminder_callback(more, settings, session_factory)
     more_callbacks = _callback_data(message.reply_markup)
     assert {
-        f"reminder:done:{reminder_id}",
+        f"reminder:original:{reminder_id}",
+        f"reminder:sources:{reminder_id}",
         f"reminder:later:{reminder_id}",
         f"reminder:dismiss:{reminder_id}",
         f"reminder:less:{reminder_id}",
@@ -820,15 +821,7 @@ async def test_reminder_more_sources_and_back_are_owner_scoped_read_only_navigat
     back.message = message
     await on_reminder_callback(back, settings, session_factory)
     primary_callbacks = _callback_data(message.reply_markup)
-    assert f"reminder:original:{reminder_id}" in primary_callbacks
-    assert f"reminder:sources:{reminder_id}" in primary_callbacks
-    assert f"reminder:more:{reminder_id}" in primary_callbacks
-    assert not any(
-        value.startswith(
-            ("reminder:done:", "reminder:later:", "reminder:dismiss:", "reminder:less:")
-        )
-        for value in primary_callbacks
-    )
+    assert primary_callbacks == [f"item:archive:{item_id}", f"reminder:more:{reminder_id}"]
     async with session_factory() as session:
         reminder = await session.get(Reminder, reminder_id)
         item = await session.get(Item, item_id)
@@ -865,10 +858,10 @@ async def test_focused_motivation_reminder_menu_omits_unsupported_dismiss_action
     callbacks = set(_callback_data(message.reply_markup))
     assert {
         f"reminder:later:{reminder_id}",
-        f"reminder:done:{reminder_id}",
         f"reminder:less:{reminder_id}",
         f"reminder:back:{reminder_id}",
     } <= callbacks
+    assert f"reminder:done:{reminder_id}" not in callbacks
     assert f"reminder:dismiss:{reminder_id}" not in callbacks
 
     # A stale or crafted callback cannot create feedback with no matching cooldown.
@@ -937,7 +930,7 @@ async def test_category_callback_corrects_item_and_keeps_feedback_menu_open(
         assert event.payload_json["from"] == "Programming"
         assert event.payload_json["to"] == "AI"
     assert message.text == "Old result"
-    assert f"feedback:back:{item_id}" in _callback_data(message.reply_markup)
+    assert f"item:back:{item_id}" in _callback_data(message.reply_markup)
     assert f"feedback:useful:{item_id}" in _callback_data(message.reply_markup)
     assert callback.answers == ["Категория изменена"]
 
@@ -1026,7 +1019,7 @@ async def test_replayed_category_callback_keeps_feedback_menu_without_reapplying
         assert stored.category == "Piano"
         assert len(corrections) == 2
     assert message.text == "stale result"
-    assert f"feedback:back:{item_id}" in _callback_data(message.reply_markup)
+    assert f"item:back:{item_id}" in _callback_data(message.reply_markup)
     assert callback.answers == ["Категория без изменений"]
 
 
@@ -1109,7 +1102,7 @@ async def test_type_callback_updates_today_and_keeps_priority(settings, session_
         assert [item.id for item in today] == [item_id]
         assert event.event_type == "TYPE_CORRECTED"
     assert message.text is None
-    assert f"feedback:back:{item_id}" in _callback_data(message.reply_markup)
+    assert f"item:back:{item_id}" in _callback_data(message.reply_markup)
     assert callback.answers == ["Тип изменён"]
 
 
@@ -1128,7 +1121,7 @@ async def test_priority_feedback_stays_in_menu_without_changing_score(settings, 
         assert event.event_type == "PRIORITY_HIGHER"
         assert event.payload_json["priority_score_at_feedback"] == 72
     callbacks = _callback_data(message.reply_markup)
-    assert f"feedback:back:{item_id}" in callbacks
+    assert f"item:back:{item_id}" in callbacks
     assert f"feedback:priority_higher:{item_id}" in callbacks
     assert callback.answers == ["Учту пожелание"]
 

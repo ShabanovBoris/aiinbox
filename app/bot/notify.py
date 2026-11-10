@@ -2,13 +2,12 @@ import logging
 
 from aiogram import Bot
 from aiogram.exceptions import TelegramBadRequest
-from aiogram.types import ReplyParameters
-from sqlalchemy import select
+from aiogram.types import LinkPreviewOptions, ReplyParameters
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
-from app.bot.formatting import format_item_failure, format_ready_item_compact
-from app.bot.keyboards import item_keyboard
-from app.storage.models import Item, ItemSource, User
+from app.bot.item_card import build_item_card
+from app.services.retrieval import load_item_sources_by_item
+from app.storage.models import Item, User
 
 log = logging.getLogger(__name__)
 
@@ -38,71 +37,55 @@ def _reply_target_is_missing(exc: TelegramBadRequest) -> bool:
     )
 
 
-async def _send_item_notification(bot, chat_id: int, item: Item, text: str, sources) -> None:
+async def _send_item_notification(
+    bot: Bot, session_factory: async_sessionmaker, item: Item
+) -> None:
     """Retry once without anchoring only when Telegram says the source message vanished."""
-    common_kwargs = {
-        "reply_markup": item_keyboard(item, sources, original_available=True),
-    }
-    reply_parameters = _item_reply_parameters(item)
-    if reply_parameters is None:
-        await bot.send_message(chat_id, text, **common_kwargs)
-        return
-    try:
+    async with session_factory() as session:
+        user = await session.get(User, item.user_id)
+        chat_id = user.telegram_chat_id if user else None
+        if chat_id is None:
+            log.warning("no chat_id for item delivery item_id=%s user_id=%s", item.id, item.user_id)
+            return
+        sources = (await load_item_sources_by_item(session, [item.id]))[item.id]
+    text, markup = build_item_card(item, sources, original_available=True)
+
+    async def send(reply_parameters: ReplyParameters | None) -> None:
+        kwargs = text.as_kwargs()
+        if reply_parameters is not None:
+            kwargs["reply_parameters"] = reply_parameters
         await bot.send_message(
             chat_id,
-            text,
-            **common_kwargs,
-            reply_parameters=reply_parameters,
+            reply_markup=markup,
+            link_preview_options=LinkPreviewOptions(is_disabled=True),
+            **kwargs,
         )
+
+    reply_parameters = _item_reply_parameters(item)
+    try:
+        await send(reply_parameters)
     except TelegramBadRequest as exc:
-        if not _reply_target_is_missing(exc):
+        if reply_parameters is None or not _reply_target_is_missing(exc):
             raise
-        await bot.send_message(chat_id, text, **common_kwargs)
+        await send(None)
 
 
-async def send_item_result(bot: Bot, session_factory: async_sessionmaker, item: Item) -> None:
+async def send_item_result(
+    bot: Bot,
+    session_factory: async_sessionmaker,
+    item: Item,
+) -> None:
     """Доставка готового результата пользователю (auxiliary-операция).
 
     Ошибки доставки логируются вызывающим кодом и не переводят READY Item в FAILED.
     """
-    async with session_factory() as session:
-        user = await session.get(User, item.user_id)
-        chat_id = user.telegram_chat_id if user else None
-        sources = list(
-            (
-                await session.scalars(
-                    select(ItemSource)
-                    .where(ItemSource.item_id == item.id)
-                    .order_by(ItemSource.source_index, ItemSource.id)
-                )
-            ).all()
-        )
-    if chat_id is None:
-        log.warning("no chat_id for result delivery item_id=%s user_id=%s", item.id, item.user_id)
-        return
-    await _send_item_notification(
-        bot, chat_id, item, format_ready_item_compact(item, sources), sources
-    )
+    await _send_item_notification(bot, session_factory, item)
 
 
-async def send_item_failure(bot: Bot, session_factory: async_sessionmaker, item: Item) -> None:
+async def send_item_failure(
+    bot: Bot,
+    session_factory: async_sessionmaker,
+    item: Item,
+) -> None:
     """Expose a failed Item's Retry action without pretending analysis succeeded."""
-    async with session_factory() as session:
-        user = await session.get(User, item.user_id)
-        chat_id = user.telegram_chat_id if user else None
-        sources = list(
-            (
-                await session.scalars(
-                    select(ItemSource)
-                    .where(ItemSource.item_id == item.id)
-                    .order_by(ItemSource.source_index, ItemSource.id)
-                )
-            ).all()
-        )
-    if chat_id is None:
-        log.warning("no chat_id for failure delivery item_id=%s user_id=%s", item.id, item.user_id)
-        return
-    # ❌ Удалено локальное дублирование failure-copy: чистый formatter нужен и
-    # доставке, и кнопке Back, чтобы обе проекции восстанавливали один текст.
-    message = format_item_failure(item, sources)
-    await _send_item_notification(bot, chat_id, item, message, sources)
+    await _send_item_notification(bot, session_factory, item)

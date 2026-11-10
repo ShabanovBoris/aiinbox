@@ -4,9 +4,9 @@ import pytest
 from sqlalchemy import func, select
 
 from app.bot.keyboards import (
+    compact_item_keyboard,
     item_keyboard,
     item_more_keyboard,
-    proactive_reminder_keyboard,
     reminder_more_keyboard,
     reminder_snooze_keyboard,
 )
@@ -783,23 +783,22 @@ def test_reminder_keyboards_are_compact_identity_preserving_and_bounded(session_
         source_url="https://www.youtube.com/watch?v=abc",
         extraction_status="READY",
     )
-    proactive = proactive_reminder_keyboard(456, item, [source], focus_source_id=321)
+    proactive = compact_item_keyboard(item, reminder_id=456)
+    more = reminder_more_keyboard(456, item, [source], focus_source_id=321)
     snooze = reminder_snooze_keyboard(456)
-    callbacks = _callback_data(proactive) + _callback_data(snooze)
+    callbacks = _callback_data(proactive) + _callback_data(more) + _callback_data(snooze)
     assert all(len(value.encode("utf-8")) <= 64 for value in callbacks)
     assert "reminder:open:456:321" in callbacks
     proactive_actions = {
         "reminder:later:456",
-        "reminder:done:456",
         "reminder:dismiss:456",
         "reminder:less:456",
     }
-    assert "reminder:more:456" in _callback_data(proactive)
-    assert not proactive_actions & set(_callback_data(proactive))
-    assert proactive_actions <= set(_callback_data(reminder_more_keyboard(456)))
+    assert _callback_data(proactive) == ["item:archive:123", "reminder:more:456"]
+    assert proactive_actions <= set(_callback_data(more))
     assert "reminder:snooze:456:tomorrow" in _callback_data(snooze)
-    reminder_actions = reminder_more_keyboard(456).inline_keyboard
-    assert any(button.text == "✅ Сделано" for row in reminder_actions for button in row)
+    reminder_actions = more.inline_keyboard
+    assert "reminder:done:456" not in _callback_data(more)
     assert any(button.text == "⏰ Отложить" for row in reminder_actions for button in row)
 
     primary = _callback_data(item_keyboard(item, [source]))
@@ -810,13 +809,13 @@ def test_reminder_keyboards_are_compact_identity_preserving_and_bounded(session_
         for value in primary
     )
     secondary = _callback_data(item_more_keyboard(item))
-    assert f"item:done:{item.id}" in secondary
+    assert f"item:done:{item.id}" not in secondary
     assert f"item:later:{item.id}" in secondary
     assert f"item:archive:{item.id}" in secondary
     assert f"feedback:menu:{item.id}" in secondary
 
 
-def test_reminder_primary_keeps_hook_source_ahead_of_other_media_actions():
+def test_reminder_more_keeps_hook_source_ahead_of_other_media_actions():
     item = Item(
         id=124,
         user_id=1,
@@ -846,13 +845,13 @@ def test_reminder_primary_keeps_hook_source_ahead_of_other_media_actions():
         extraction_status="READY",
     )
 
-    markup = proactive_reminder_keyboard(456, item, [*videos, focus], focus_source_id=focus.id)
+    markup = reminder_more_keyboard(456, item, [*videos, focus], focus_source_id=focus.id)
     buttons = [button for row in markup.inline_keyboard for button in row]
 
     assert buttons[0].url == "https://focus.example.com/result"
     assert (
         sum(
-            button.url is not None or button.callback_data.startswith("reminder:open:")
+            button.url is not None or (button.callback_data or "").startswith("reminder:open:")
             for button in buttons
         )
         <= 2

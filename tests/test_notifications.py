@@ -584,7 +584,7 @@ async def test_snoozed_item_becomes_active_and_notifies(session_factory):
         for button in row
         if button.callback_data
     }
-    assert f"item:original:{item_id}" in callbacks
+    assert callbacks == {f"item:archive:{item_id}", f"item:view:{item_id}"}
 
 
 async def test_failed_snooze_send_does_not_start_proactive_minimum_gap(session_factory):
@@ -1058,29 +1058,13 @@ async def test_proactive_delivery_persists_reminder_and_exposure(session_factory
     urls = {
         button.url for row in kwargs["reply_markup"].inline_keyboard for button in row if button.url
     }
-    assert all(
-        button.callback_data is None
-        for row in kwargs["reply_markup"].inline_keyboard
-        for button in row
-        if button.url
-    )
-    assert any(value.startswith("reminder:more:") for value in callbacks)
-    assert not any(
-        value.startswith(
-            ("reminder:done:", "reminder:later:", "reminder:dismiss:", "reminder:less:")
-        )
-        for value in callbacks
-    )
-    assert any(value.startswith("reminder:open:") for value in callbacks)
-    assert any(value.startswith("reminder:original:") for value in callbacks)
-    assert not any(value.startswith("item:done:") for value in callbacks)
-    assert not any(value.startswith("item:archive:") for value in callbacks)
-    assert "https://www.youtube.com/watch?v=example" in urls
+    assert not urls
 
     async with session_factory() as session:
         reminder = await session.scalar(
             select(Reminder).where(Reminder.type == PROACTIVE_ATTENTION)
         )
+        assert callbacks == {f"item:archive:{item_id}", f"reminder:more:{reminder.id}"}
         event = await session.scalar(select(Event).where(Event.event_type == "ATTENTION_SHOWN"))
         sent_event = await session.scalar(
             select(Event).where(
@@ -1173,10 +1157,9 @@ async def test_proactive_hook_keeps_source_provenance_and_focuses_its_action(ses
     _, message, kwargs = bot.messages[0]
     assert message == "🎯 Сделать задачу\n\nIt reduced repeated work."
     assert "canonical summary" not in message
-    urls = [
-        button.url for row in kwargs["reply_markup"].inline_keyboard for button in row if button.url
-    ]
-    assert urls[0] == "https://example.com/source-1"
+    assert all(
+        button.url is None for row in kwargs["reply_markup"].inline_keyboard for button in row
+    )
     async with session_factory() as session:
         hook = await session.scalar(
             select(Content).where(
@@ -1190,6 +1173,7 @@ async def test_proactive_hook_keeps_source_provenance_and_focuses_its_action(ses
         assert hook.source_id == supporting_source_id
         assert reminder.status == "SENT"
         assert reminder.payload_json["hook_content_id"] == hook.id
+        assert reminder.payload_json["focus_source_id"] == supporting_source_id
         assert reminder.payload_json["template_id"] == "direct_v2"
         assert (
             reminder.payload_json["attention_score"] >= attention_policy(3).minimum_proactive_score

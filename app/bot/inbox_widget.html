@@ -1,0 +1,128 @@
+<style>
+  h3 { margin: 0 0 6px; font-size: 1.08em; }
+  button { min-width: 0; min-height: 38px; padding: 5px 8px; border: 0;
+    border-radius: 6px; background: transparent; font: inherit; color: var(--tg-theme-text-color); }
+  button:active { background: var(--tg-theme-secondary-bg-color); }
+  button[disabled] { color: var(--tg-theme-hint-color); }
+  .entry { display: block; width: 100%; text-align: left; touch-action: none;
+    box-sizing: border-box; height: var(--inbox-row-height); white-space: nowrap; overflow: hidden;
+    text-overflow: ellipsis; }
+  .entry ~ .entry { border-top: 1px solid var(--tg-theme-section-separator-color); }
+  .menu { display: flex; flex-wrap: wrap; gap: 4px;
+    background: var(--tg-theme-secondary-bg-color); border-radius: 8px; }
+  .archive { color: var(--tg-theme-link-color); }
+  #navigation { justify-content: space-between; gap: 4px; margin-top: 5px;
+    border-top: 1px solid var(--tg-theme-section-separator-color); }
+  #notice, #empty { color: var(--tg-theme-hint-color); font-size: .88em; }
+  #notice:empty, #empty:empty { display: none; }
+  body { --inbox-row-height: 38px; padding-bottom: 22px;
+    padding-bottom: max(22px, env(safe-area-inset-bottom, 0px)); }
+</style>
+<h3 id="heading"></h3>
+<div id="items" style="min-height: calc(__ROW_COUNT__ * var(--inbox-row-height))"></div>
+<div id="empty"></div><div id="notice" role="status"></div>
+<nav id="navigation" style="display: __PAGER_DISPLAY__">
+  <button id="previous" style="visibility: __PREVIOUS_VISIBILITY__">Назад</button>
+  <button id="next" style="visibility: __NEXT_VISIBILITY__">Далее</button>
+</nav>
+<script>
+  const widget = TelegramWidget;
+  const heading = document.querySelector('#heading');
+  const items = document.querySelector('#items');
+  const empty = document.querySelector('#empty');
+  const navigation = document.querySelector('#navigation');
+  const previous = document.querySelector('#previous');
+  const next = document.querySelector('#next');
+  const notice = document.querySelector('#notice');
+  let page = __INBOX_DATA__;
+  let selected = null;
+  let held = null;
+  let pending = false;
+
+  function button(label, onClick, className = '') {
+    const element = document.createElement('button');
+    element.textContent = label;
+    element.className = className;
+    element.disabled = pending;
+    element.addEventListener('click', onClick);
+    return element;
+  }
+
+  function render() {
+    heading.textContent = page.archived ? 'Архив' : 'Сохранённое';
+    items.textContent = '';
+    items.style.minHeight = `calc(${page.rows.length} * var(--inbox-row-height))`;
+    empty.textContent = page.rows.length ? '' : 'Ничего не найдено.';
+    for (const [id, title, canArchive, canOpenOriginal] of page.rows) {
+      const open = () => request(`item:view:${id}`);
+      const entry = button(title, () => { if (held !== id) return open(); }, 'entry');
+      entry.addEventListener('pointerdown', () => { held = null; });
+      entry.addEventListener('contextmenu', (event) => {
+        event.preventDefault();
+        if (pending) return;
+        held = id;
+        selected = (canArchive || canOpenOriginal) && selected !== id ? id : null;
+        notice.textContent = '';
+        render();
+      });
+      items.appendChild(entry);
+      if (selected === id) {
+        const menu = document.createElement('div');
+        menu.className = 'menu';
+        if (canArchive) {
+          menu.appendChild(button('В архив', () => request(`inbox:archive:${id}:${page.number}`), 'archive'));
+        }
+        if (canOpenOriginal) {
+          menu.appendChild(button('Оригинал', () => request(`item:original:${id}`)));
+        }
+        items.appendChild(menu);
+      }
+    }
+    navigation.style.display = page.previous || page.next ? 'flex' : 'none';
+    previous.style.visibility = page.previous ? 'visible' : 'hidden';
+    next.style.visibility = page.next ? 'visible' : 'hidden';
+    previous.disabled = pending || !page.previous;
+    next.disabled = pending || !page.next;
+  }
+
+  function turnPage(direction) {
+    const section = page.archived ? 'archive' : 'saved';
+    if (direction < 0 ? page.previous : page.next) {
+      return request(`inbox:page:${section}:${page.number + direction}`);
+    }
+  }
+
+  function readState() {
+    const state = JSON.parse(widget.chatData || '{}');
+    if (state.inbox) {
+      page = state.inbox;
+      selected = null;
+    }
+    render();
+  }
+
+  async function request(value) {
+    if (pending) return;
+    pending = true;
+    notice.textContent = '';
+    try {
+      const answer = widget.request(value);
+      render();
+      const result = JSON.parse((await answer).result || '{}');
+      if (result.screen && result.screen.inbox) page = result.screen.inbox;
+      selected = null;
+      notice.textContent = result.notice || '';
+    } catch (error) {
+      notice.textContent = 'Нет ответа. Проверь список перед повтором.';
+    } finally {
+      pending = false;
+      render();
+    }
+  }
+
+  previous.addEventListener('click', () => turnPage(-1));
+  next.addEventListener('click', () => turnPage(1));
+  widget.onEvent('chatDataChanged', readState);
+  readState();
+  widget.ready();
+</script>
