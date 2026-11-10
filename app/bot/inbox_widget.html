@@ -7,6 +7,7 @@
   .entry { display: block; width: 100%; text-align: left; touch-action: none;
     box-sizing: border-box; height: var(--inbox-row-height); white-space: nowrap; overflow: hidden;
     text-overflow: ellipsis; }
+  .entry ~ .entry { border-top: 1px solid var(--tg-theme-section-separator-color); }
   .menu { display: flex; flex-wrap: wrap; gap: 4px;
     background: var(--tg-theme-secondary-bg-color); border-radius: 8px; }
   .archive { color: var(--tg-theme-link-color); }
