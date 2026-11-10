@@ -102,7 +102,7 @@ def inbox_widget_screen(
         [
             str(entry.item_id),
             entry.label,
-            item.state in {ItemState.ACTIVE, ItemState.SNOOZED},
+            item.state is not ItemState.ARCHIVED,
             item.telegram_message_id is not None,
         ]
         for item, entry in zip(item_page.items, entries, strict=True)
@@ -180,7 +180,7 @@ class _WidgetQuery(BaseModel):
     from_user: TelegramUser = Field(alias="from")
     chat: Chat
     message_id: int = Field(gt=0)
-    type: _DataQuery
+    type: _DataQuery | None = None
     data: str
 
 

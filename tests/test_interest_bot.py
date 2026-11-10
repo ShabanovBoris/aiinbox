@@ -114,10 +114,10 @@ def test_more_menu_contains_secondary_controls_and_returns_to_primary():
     callbacks = _callback_data(markup)
     labels = [button.text for row in markup.inline_keyboard for button in row]
 
-    assert {"✅ Сделано", "⏰ Отложить", "🗄 В архив", "⭐ Интерес"} <= set(labels)
+    assert {"⏰ Отложить", "В архив", "⭐ Интерес"} <= set(labels)
+    assert "item:done:7" not in callbacks
     assert {"🛠 Обратная связь", "ℹ️ Детали", "← Назад"} <= set(labels)
     assert {
-        "item:done:7",
         "item:later:7",
         "item:archive:7",
         "item:interest_menu:7",
@@ -476,7 +476,7 @@ async def test_more_navigation_is_owner_scoped_and_presentation_only(settings, s
     labels = {
         button.text for row in callback.message.reply_markup.inline_keyboard for button in row
     }
-    assert {"✅ Сделано", "⏰ Отложить", "🗄 В архив", "⭐ Интерес"} <= labels
+    assert {"⏰ Отложить", "В архив", "⭐ Интерес"} <= labels
     assert {"🛠 Обратная связь", "ℹ️ Детали", "← Назад"} <= labels
     assert callback.message.text == "✓ Сохранено\n\n🎯 PM-01"
     assert callback.answers == [None]
@@ -603,11 +603,8 @@ async def test_stale_interest_callback_after_archive_is_rejected_without_event(
     await on_item_callback(stale_more, settings, session_factory)
     stale_callbacks = _callback_data(stale_more.message.reply_markup)
     assert f"item:interest_menu:{item_id}" not in stale_callbacks
-    assert not {
-        f"item:done:{item_id}",
-        f"item:later:{item_id}",
-        f"item:archive:{item_id}",
-    } & set(stale_callbacks)
+    assert not {f"item:done:{item_id}", f"item:later:{item_id}"} & set(stale_callbacks)
+    assert f"item:archive:{item_id}" not in stale_callbacks
 
 
 async def test_malformed_interest_callback_does_not_mutate(settings, session_factory):

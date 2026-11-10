@@ -1,5 +1,5 @@
 <style>
-  h3 { margin: 0 0 6px; font-size: 1.08em; }
+  h3 { margin: 0; font-size: 1.08em; }
   button { min-width: 0; min-height: 38px; padding: 5px 8px; border: 0;
     border-radius: 6px; background: transparent; font: inherit; color: var(--tg-theme-text-color); }
   button:active { background: var(--tg-theme-secondary-bg-color); }
@@ -9,13 +9,14 @@
   .menu, #navigation { display: flex; flex-wrap: wrap; gap: 4px; }
   .menu { background: var(--tg-theme-secondary-bg-color); border-radius: 8px; }
   .archive { color: var(--tg-theme-link-color); }
-  #navigation { border-top: 1px solid var(--tg-theme-section-separator-color); margin-top: 5px; }
+  .header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between;
+    gap: 4px; margin-bottom: 6px; }
   #notice, #empty { color: var(--tg-theme-hint-color); font-size: .88em; }
   #navigation:empty, #notice:empty, #empty:empty { display: none; }
   body { padding-bottom: 12px; }
 </style>
-<h3 id="heading"></h3><div id="items"></div><div id="empty"></div>
-<div id="navigation"></div><div id="notice" role="status"></div>
+<div class="header"><h3 id="heading"></h3><div id="navigation"></div></div>
+<div id="items"></div><div id="empty"></div><div id="notice" role="status"></div>
 <script>
   const widget = TelegramWidget;
   const heading = document.querySelector('#heading');

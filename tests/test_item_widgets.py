@@ -51,7 +51,6 @@ def _widget_update(query_id, data, *, actor=42, chat_id=42):
             "chat": {"id": chat_id, "type": "private"},
             "message_id": 701,
             "chat_instance": "test-chat",
-            "type": {"type": "data"},
             "data": data,
         },
     }
@@ -128,11 +127,11 @@ async def test_text_card_opens_and_legacy_widget_snooze_replay_keeps_one_deadlin
         for button in row
     }
     assert {
-        f"item:{action}:{item.id}" for action in ("archive", "done", "later", "original")
+        f"item:{action}:{item.id}" for action in ("archive", "later", "original")
     } <= buttons.keys()
     assert buttons[f"item:archive:{item.id}"].text == "В архив"
     assert buttons[f"item:archive:{item.id}"].style == "danger"
-    assert buttons[f"item:done:{item.id}"].text == "Сделано"
+    assert f"item:done:{item.id}" not in buttons
     assert buttons["https://example.org/article"].text == "Статья — example.org"
     assert f"item:more:{item.id}" not in buttons
 
@@ -230,7 +229,8 @@ async def test_inbox_widget_opens_cards_and_archives_in_place(widget_bot, sessio
     page = json.loads(inbox.html.split("let page = ", 1)[1].split(";\n", 1)[0])
     assert page["number"] == 0 and page["next"]
     assert len(page["rows"]) == 10
-    assert [str(done.id), done.title, False, False] in page["rows"]
+    assert [str(done.id), done.title, True, False] in page["rows"]
+    assert inbox.html.index('id="navigation"') < inbox.html.index('id="items"')
 
     await dispatcher.feed_raw_update(bot, _widget_update("next", "inbox:page:saved:1"))
     edit, answer = calls[-2:]
@@ -239,7 +239,9 @@ async def test_inbox_widget_opens_cards_and_archives_in_place(widget_bot, sessio
     assert page["rows"] == [[str(target.id), target.title, True, True]]
     assert json.loads(answer.data)["screen"]["inbox"] == page
 
-    await dispatcher.feed_raw_update(bot, _widget_update("open", f"item:view:{target.id}"))
+    open_card = _widget_update("open", f"item:view:{target.id}")
+    open_card["widget_query"]["type"] = {"type": "data"}
+    await dispatcher.feed_raw_update(bot, open_card)
     card, answer = calls[-2:]
     assert card.__api_method__ == "sendMessage" and target.title in card.text
     assert json.loads(answer.data)["screen"] is None
@@ -258,6 +260,11 @@ async def test_inbox_widget_opens_cards_and_archives_in_place(widget_bot, sessio
         bot, _widget_update("foreign", f"inbox:archive:{foreign.id}:1")
     )
     assert json.loads(calls[-1].data)["screen"] is None
+
+    wallet_query = _widget_update("wallet-query", f"inbox:archive:{target.id}:1")
+    wallet_query["widget_query"]["type"] = {"type": "sent_transaction"}
+    await dispatcher.feed_raw_update(bot, wallet_query)
+    assert json.loads(calls[-1].data) == {"notice": "Действие недоступно"}
 
     archive = _widget_update("archive-last", f"inbox:archive:{target.id}:1")
     for _ in range(2):

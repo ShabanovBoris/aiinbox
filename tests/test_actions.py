@@ -66,6 +66,17 @@ async def test_archive_and_snooze_survive_new_session(session_factory):
     assert archived.archived_at is not None
 
 
+async def test_archive_accepts_previously_completed_items(session_factory):
+    _, item_id = await make_failed_item(session_factory)
+    completed = await apply_item_action(session_factory, 42, item_id, "done")
+
+    archived = await apply_item_action(session_factory, 42, item_id, "archive")
+
+    assert archived.state is ItemState.ARCHIVED
+    assert archived.completed_at == completed.completed_at
+    assert archived.archived_at is not None
+
+
 async def test_retry_clears_error_and_reuses_checkpoint(session_factory):
     _, item_id = await make_failed_item(session_factory)
     item = await apply_item_action(session_factory, 42, item_id, "retry")
@@ -224,7 +235,7 @@ async def test_concurrent_done_creates_one_transition_event(session_factory):
         )
 
 
-async def test_concurrent_terminal_actions_have_one_winner(session_factory):
+async def test_concurrent_archive_finishes_in_archive_even_if_done_happens_first(session_factory):
     _, item_id = await make_failed_item(session_factory)
 
     await asyncio.gather(
@@ -242,14 +253,11 @@ async def test_concurrent_terminal_actions_have_one_winner(session_factory):
                 )
             )
         ).all()
-        assert len(events) == 1
-        if item.state is ItemState.DONE:
-            assert item.completed_at is not None
-            assert item.archived_at is None
-        else:
-            assert item.state is ItemState.ARCHIVED
-            assert item.archived_at is not None
-            assert item.completed_at is None
+        event_types = [event.event_type for event in events]
+        assert event_types.count("ARCHIVED") == 1
+        assert event_types.count("DONE") == int(item.completed_at is not None)
+        assert item.state is ItemState.ARCHIVED
+        assert item.archived_at is not None
 
 
 async def test_concurrent_same_snooze_creates_one_event_and_reminder(session_factory):

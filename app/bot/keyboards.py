@@ -22,6 +22,7 @@ _MAX_CATEGORY_LABEL_LENGTH = 64
 _MAX_PRIMARY_SOURCE_ACTIONS = 2
 _MAX_SOURCE_MENU_ACTIONS = 12
 _UI_MARKERS = frozenset("✅ ⏰ 🗄 ⭐ 🛠 ℹ️ ↩️ 🔁 🔗 📩 ↗ ← → 👍 👎 🏷 🧩 ⬆ ⬇ 📝 ⏳".split())
+_ARCHIVABLE_STATES = {ItemState.ACTIVE, ItemState.SNOOZED, ItemState.DONE}
 
 
 def plain_button_label(text: str) -> str:
@@ -256,15 +257,11 @@ def item_more_keyboard(item: Item) -> InlineKeyboardMarkup:
     """Expose lifecycle and READY-only controls one level below the content card."""
     rows = []
     if item.state in {ItemState.ACTIVE, ItemState.SNOOZED}:
-        rows.extend(
-            [
-                [
-                    InlineKeyboardButton(text="✅ Сделано", callback_data=f"item:done:{item.id}"),
-                    InlineKeyboardButton(text="⏰ Отложить", callback_data=f"item:later:{item.id}"),
-                ],
-                [InlineKeyboardButton(text="🗄 В архив", callback_data=f"item:archive:{item.id}")],
-            ]
+        rows.append(
+            [InlineKeyboardButton(text="⏰ Отложить", callback_data=f"item:later:{item.id}")]
         )
+    if item.state in _ARCHIVABLE_STATES:
+        rows.append([_archive_button(item.id)])
     if item.processing_status is ProcessingStatus.READY:
         if item.state in {ItemState.ACTIVE, ItemState.SNOOZED}:
             rows.append(
@@ -459,15 +456,32 @@ def _source_action_rows(
     ]
 
 
-def proactive_reminder_keyboard(
+def _archive_button(item_id: int) -> InlineKeyboardButton:
+    return InlineKeyboardButton(
+        text="В архив", style="danger", callback_data=f"item:archive:{item_id}"
+    )
+
+
+def compact_item_keyboard(item: Item, *, reminder_id: int | None = None) -> InlineKeyboardMarkup:
+    """Expose Archive and let the existing card or reminder menu handle other actions."""
+    more_callback = (
+        f"item:view:{item.id}" if reminder_id is None else f"reminder:more:{reminder_id}"
+    )
+    buttons = [_archive_button(item.id)] if item.state in _ARCHIVABLE_STATES else []
+    buttons.append(InlineKeyboardButton(text="Ещё", callback_data=more_callback))
+    return InlineKeyboardMarkup(inline_keyboard=[buttons])
+
+
+def reminder_more_keyboard(
     reminder_id: int,
     item: Item,
     sources: Sequence[ItemSource] | None = None,
     *,
+    dismiss_available: bool = True,
     focus_source_id: int | None = None,
     original_available: bool | None = None,
 ) -> InlineKeyboardMarkup:
-    """Keep source access primary and move PM-11 reactions to an ephemeral More menu."""
+    """Expose the reminder's source actions and reactions under More."""
     reference = item_reference_projection(
         item,
         sources,
@@ -502,23 +516,8 @@ def proactive_reminder_keyboard(
             ]
         )
     rows.append(
-        [InlineKeyboardButton(text="••• Ещё", callback_data=f"reminder:more:{reminder_id}")]
+        [InlineKeyboardButton(text="⏰ Отложить", callback_data=f"reminder:later:{reminder_id}")]
     )
-    return InlineKeyboardMarkup(inline_keyboard=rows)
-
-
-def reminder_more_keyboard(
-    reminder_id: int, *, dismiss_available: bool = True
-) -> InlineKeyboardMarkup:
-    """Project existing PM-11 reactions into a read-only Reminder submenu."""
-    # Callback identities remain the same so this UI projection cannot change
-    # the durable feedback semantics owned by ReminderFeedbackService.
-    rows = [
-        [
-            InlineKeyboardButton(text="⏰ Отложить", callback_data=f"reminder:later:{reminder_id}"),
-            InlineKeyboardButton(text="✅ Сделано", callback_data=f"reminder:done:{reminder_id}"),
-        ],
-    ]
     if dismiss_available:
         rows.append(
             [

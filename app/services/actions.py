@@ -109,7 +109,7 @@ async def _apply_item_action_in_session(
             .where(
                 Item.id == item_id,
                 Item.user_id == user_id,
-                Item.state.in_((ItemState.ACTIVE, ItemState.SNOOZED)),
+                Item.state.in_((ItemState.ACTIVE, ItemState.SNOOZED, ItemState.DONE)),
             )
             .values(
                 state=ItemState.ARCHIVED,

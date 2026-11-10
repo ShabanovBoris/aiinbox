@@ -8,7 +8,7 @@ from app.bot.keyboards import item_keyboard, item_more_keyboard, plain_button_la
 from app.domain.enums import ProcessingStatus
 from app.storage.models import Item, ItemSource
 
-_STYLES = {"done": "success", "archive": "danger", "retry": "primary"}
+_STYLES = {"archive": "danger", "retry": "primary"}
 _MESSAGE_LIMIT = 4096
 
 

@@ -159,7 +159,6 @@ async def test_delivery_worker_sends_ready_item_and_marks_sent(session_factory):
         for button in row
     }
     assert labels == {
-        "Сделано",
         "Отложить",
         "В архив",
         "Интерес",

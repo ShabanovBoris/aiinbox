@@ -15,7 +15,7 @@ from app.bot.keyboards import (
     item_keyboard,
     item_list_keyboard,
     item_sources_keyboard,
-    proactive_reminder_keyboard,
+    reminder_more_keyboard,
 )
 from app.bot.presentation import ItemNavigationEntry
 from app.domain.enums import ItemState, ItemType, ProcessingStatus, SourceType
@@ -358,7 +358,7 @@ def test_title_item_navigation_preserves_order_and_callback_bounds():
         user_note="",
     )
     callbacks = _callback_data(item_keyboard(item)) + _callback_data(
-        proactive_reminder_keyboard(high_id, item)
+        reminder_more_keyboard(high_id, item)
     )
     assert f"item:original:{high_id}" in callbacks
     assert f"reminder:original:{high_id}" in callbacks
@@ -799,7 +799,8 @@ async def test_reminder_more_sources_and_back_are_owner_scoped_read_only_navigat
     await on_reminder_callback(more, settings, session_factory)
     more_callbacks = _callback_data(message.reply_markup)
     assert {
-        f"reminder:done:{reminder_id}",
+        f"reminder:original:{reminder_id}",
+        f"reminder:sources:{reminder_id}",
         f"reminder:later:{reminder_id}",
         f"reminder:dismiss:{reminder_id}",
         f"reminder:less:{reminder_id}",
@@ -820,15 +821,7 @@ async def test_reminder_more_sources_and_back_are_owner_scoped_read_only_navigat
     back.message = message
     await on_reminder_callback(back, settings, session_factory)
     primary_callbacks = _callback_data(message.reply_markup)
-    assert f"reminder:original:{reminder_id}" in primary_callbacks
-    assert f"reminder:sources:{reminder_id}" in primary_callbacks
-    assert f"reminder:more:{reminder_id}" in primary_callbacks
-    assert not any(
-        value.startswith(
-            ("reminder:done:", "reminder:later:", "reminder:dismiss:", "reminder:less:")
-        )
-        for value in primary_callbacks
-    )
+    assert primary_callbacks == [f"item:archive:{item_id}", f"reminder:more:{reminder_id}"]
     async with session_factory() as session:
         reminder = await session.get(Reminder, reminder_id)
         item = await session.get(Item, item_id)
@@ -865,10 +858,10 @@ async def test_focused_motivation_reminder_menu_omits_unsupported_dismiss_action
     callbacks = set(_callback_data(message.reply_markup))
     assert {
         f"reminder:later:{reminder_id}",
-        f"reminder:done:{reminder_id}",
         f"reminder:less:{reminder_id}",
         f"reminder:back:{reminder_id}",
     } <= callbacks
+    assert f"reminder:done:{reminder_id}" not in callbacks
     assert f"reminder:dismiss:{reminder_id}" not in callbacks
 
     # A stale or crafted callback cannot create feedback with no matching cooldown.

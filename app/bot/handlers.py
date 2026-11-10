@@ -37,6 +37,7 @@ from app.bot.keyboards import (
     attention_settings_keyboard,
     attention_status_keyboard,
     category_navigation_keyboard,
+    compact_item_keyboard,
     export_chooser_keyboard,
     feedback_category_keyboard,
     feedback_menu_keyboard,
@@ -50,7 +51,6 @@ from app.bot.keyboards import (
     item_more_keyboard,
     item_sources_keyboard,
     main_menu_keyboard,
-    proactive_reminder_keyboard,
     profile_keyboard,
     reminder_more_keyboard,
     reminder_snooze_keyboard,
@@ -1164,20 +1164,19 @@ async def on_reminder_callback(
             focus_source_id = None
         if callback_action == "more":
             keyboard = reminder_more_keyboard(
-                reminder_id, dismiss_available=reminder.type != MOTIVATION_NUDGE
+                reminder_id,
+                item,
+                sources,
+                dismiss_available=reminder.type != MOTIVATION_NUDGE,
+                focus_source_id=focus_source_id,
+                original_available=original_available,
             )
         elif callback_action == "sources":
             keyboard = reminder_sources_keyboard(
                 reminder_id, item, sources, focus_source_id=focus_source_id
             )
         else:
-            keyboard = proactive_reminder_keyboard(
-                reminder_id,
-                item,
-                sources,
-                focus_source_id=focus_source_id,
-                original_available=original_available,
-            )
+            keyboard = compact_item_keyboard(item, reminder_id=reminder_id)
         await _edit_reply_markup_if_changed(callback.message, keyboard)
         await callback.answer()
         return
@@ -1281,19 +1280,9 @@ async def on_reminder_callback(
             if projection is None:
                 await _edit_reply_markup_if_changed(callback.message, None)
             else:
-                reminder, item, sources, original_available = projection
-                focus_source_id = (reminder.payload_json or {}).get("focus_source_id")
-                if type(focus_source_id) is not int:
-                    focus_source_id = None
+                _, item, _, _ = projection
                 await _edit_reply_markup_if_changed(
-                    callback.message,
-                    proactive_reminder_keyboard(
-                        reminder_id,
-                        item,
-                        sources,
-                        focus_source_id=focus_source_id,
-                        original_available=original_available,
-                    ),
+                    callback.message, compact_item_keyboard(item, reminder_id=reminder_id)
                 )
         await callback.answer("Выбор отменён")
         return
@@ -2107,7 +2096,6 @@ async def _send_attention_for_actor(
             for source in sources:
                 sources_by_item[source.item_id].append(source)
         user_id = user.id
-        original_available = user.telegram_chat_id is not None
         await session.commit()
 
     if not ranked:
@@ -2119,11 +2107,7 @@ async def _send_attention_for_actor(
     for index, (item, rank) in enumerate(ranked, start=1):
         await send(
             format_attention_item(index, count, item, rank, sources_by_item[item.id]),
-            reply_markup=item_keyboard(
-                item,
-                sources_by_item[item.id],
-                original_available=original_available,
-            ),
+            reply_markup=compact_item_keyboard(item),
         )
         # Exposure is durable only after Telegram accepted this card; each Item
         # commits independently so a later delivery failure leaves a truthful prefix.
