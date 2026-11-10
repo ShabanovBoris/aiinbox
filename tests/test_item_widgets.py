@@ -230,7 +230,12 @@ async def test_inbox_widget_opens_cards_and_archives_in_place(widget_bot, sessio
     assert page["number"] == 0 and page["next"]
     assert len(page["rows"]) == 10
     assert [str(done.id), done.title, True, False] in page["rows"]
-    assert inbox.html.index('id="navigation"') < inbox.html.index('id="items"')
+    initial_html = inbox.html.split("<script>", 1)[0]
+    assert initial_html.index('id="items"') < initial_html.index('id="navigation"')
+    assert "min-height: calc(10 * var(--inbox-row-height))" in initial_html
+    assert '<nav id="navigation" style="display: flex">' in initial_html
+    assert '<button id="previous" style="visibility: hidden">Назад</button>' in initial_html
+    assert '<button id="next" style="visibility: visible">Далее</button>' in initial_html
 
     await dispatcher.feed_raw_update(bot, _widget_update("next", "inbox:page:saved:1"))
     edit, answer = calls[-2:]
@@ -295,9 +300,45 @@ async def test_inbox_widget_opens_cards_and_archives_in_place(widget_bot, sessio
     assert calls[-1].__api_method__ == "sendWidget"
     opened_archive = json.loads(calls[-1].html.split("let page = ", 1)[1].split(";\n", 1)[0])
     assert opened_archive == page
+    assert '<nav id="navigation" style="display: none">' in calls[-1].html
 
     await dispatcher.feed_raw_update(bot, _inbox_command("/inbox plain"))
     assert calls[-1].__api_method__ == "sendMessage"
+
+
+@pytest.mark.parametrize(
+    ("action", "send_method"), [("view", "sendMessage"), ("original", "copyMessage")]
+)
+async def test_widget_message_delivery_retries_failures_and_deduplicates_success(
+    widget_bot, session_factory, monkeypatch, action, send_method
+):
+    bot, dispatcher, calls = widget_bot
+    item = await _seed(session_factory)
+    call_bot = Bot.__call__
+    fail_first_send = True
+
+    async def call_with_failure(self, method, request_timeout=None):
+        nonlocal fail_first_send
+        if method.__api_method__ == send_method and fail_first_send:
+            fail_first_send = False
+            raise TelegramBadRequest(method=method, message="Temporary failure")
+        return await call_bot(self, method, request_timeout=request_timeout)
+
+    monkeypatch.setattr(Bot, "__call__", call_with_failure)
+    callback = f"item:{action}:{item.id}"
+    original_query = _widget_update("first-tap", callback)
+    with pytest.raises(TelegramBadRequest, match="Temporary failure"):
+        await dispatcher.feed_raw_update(bot, original_query)
+
+    await dispatcher.feed_raw_update(bot, original_query)
+    assert calls[-2].__api_method__ == send_method
+
+    await dispatcher.feed_raw_update(bot, original_query)
+    assert json.loads(calls[-1].data) == {"screen": None, "notice": "Уже отправлено"}
+    assert sum(method.__api_method__ == send_method for method in calls) == 1
+
+    await dispatcher.feed_raw_update(bot, _widget_update("second-tap", callback))
+    assert sum(method.__api_method__ == send_method for method in calls) == 2
 
 
 def test_inbox_widget_preserves_every_id_with_long_unicode_titles():

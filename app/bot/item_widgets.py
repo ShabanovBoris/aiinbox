@@ -132,11 +132,19 @@ def inbox_widget_screen(
 
 async def try_send_inbox_widget(message: Message | InaccessibleMessage, screen: dict) -> bool:
     template = Path(__file__).with_name("inbox_widget.html").read_text(encoding="utf-8")
-    data = _json(screen["inbox"]).replace("<", "\\u003c")
+    page = screen["inbox"]
+    data = _json(page).replace("<", "\\u003c")
+    html = (
+        template.replace("__ROW_COUNT__", str(len(page["rows"])), 1)
+        .replace("__PAGER_DISPLAY__", "flex" if page["previous"] or page["next"] else "none", 1)
+        .replace("__PREVIOUS_VISIBILITY__", "visible" if page["previous"] else "hidden", 1)
+        .replace("__NEXT_VISIBILITY__", "visible" if page["next"] else "hidden", 1)
+        .replace("__INBOX_DATA__", data, 1)
+    )
     return await _try_send_widget_html(
         message.bot,
         message.chat.id,
-        template.replace("__INBOX_DATA__", data, 1),
+        html,
         message_thread_id=(
             message.message_thread_id
             if isinstance(message, Message) and message.is_topic_message

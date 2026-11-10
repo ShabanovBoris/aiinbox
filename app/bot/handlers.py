@@ -16,7 +16,7 @@ from aiogram.types import (
     Message,
 )
 from aiogram.utils.formatting import Text
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.bot.formatting import (
@@ -71,8 +71,10 @@ from app.services.attention_ranking import AttentionRankingService
 from app.services.delivery import enqueue_item_video_delivery
 from app.services.export import COMPACT, FULL, enqueue_export
 from app.services.feedback import (
+    claim_feedback_callback_receipt,
     correct_item_category_by_token,
     correct_item_type,
+    has_callback_receipt,
     record_item_feedback,
 )
 from app.services.ingestion import ingest_media, ingest_message
@@ -886,8 +888,8 @@ async def on_item_callback(
     callback: CallbackQuery | WidgetCallback,
     settings: Settings,
     session_factory: async_sessionmaker,
-) -> None:
-    """Translate an inline callback into one scoped application action."""
+) -> bool | None:
+    """Translate an inline callback and report when Telegram confirms a new message."""
     user = callback.from_user
     if not settings.is_allowed(user.id) or not callback.data:
         await callback.answer()
@@ -955,7 +957,7 @@ async def on_item_callback(
             await callback.answer("Оригинал недоступен")
             return
         await callback.answer("Оригинал отправлен")
-        return
+        return True
 
     if action in {"view", "more", "details", "sources", "interest_menu", "back"}:
         if len(parts) != 3:
@@ -990,6 +992,8 @@ async def on_item_callback(
                     link_preview_options=LinkPreviewOptions(is_disabled=True),
                     **text.as_kwargs(),
                 )
+                await callback.answer()
+                return True
             else:
                 await _edit_item_message_if_changed(message, text, markup)
         elif action == "more":
@@ -1640,8 +1644,26 @@ async def on_item_widget_callback(
         await callback.answer("Сохранение недоступно")
         return
     namespace, _, action = callback.data.partition(":")
-    if namespace == "item" and action.split(":", 1)[0] not in {"sources", "back"}:
-        await on_item_callback(callback, settings, session_factory)
+    item_action = action.partition(":")[0]
+    if namespace == "item" and item_action not in {"sources", "back"}:
+        if item_action not in {"view", "original"}:
+            await on_item_callback(callback, settings, session_factory)
+            return
+
+        async with session_factory() as session:
+            user_id = await session.scalar(
+                select(User.id).where(User.telegram_user_id == callback.from_user.id)
+            )
+            if user_id is not None and await has_callback_receipt(session, user_id, callback.id):
+                await callback.answer("Уже отправлено")
+                return
+
+        # Widget middleware serializes callbacks for this user. A failed send stays retryable.
+        if await on_item_callback(callback, settings, session_factory) and user_id is not None:
+            async with session_factory() as session:
+                await session.execute(text("BEGIN IMMEDIATE"))
+                await claim_feedback_callback_receipt(session, user_id, callback.id)
+                await session.commit()
     elif namespace == "inbox":
         await _on_inbox_widget_action(callback, settings, session_factory, action)
     elif namespace == "feedback":
