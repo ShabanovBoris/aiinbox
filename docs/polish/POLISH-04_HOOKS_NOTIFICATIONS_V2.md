@@ -60,9 +60,10 @@ A valid hook should normally expose at least one of:
 - surprising result;
 - before/after contrast;
 - counterintuitive claim;
-- concrete consequence;
-- question whose answer is actually present in supplied evidence;
-- practical challenge directly supported by source evidence.
+- concrete consequence or practical result.
+
+Copy one complete, standalone source statement. A matching substring is not
+enough: preserve negations and qualifications and reject copied source instructions.
 
 Bad:
 
@@ -88,11 +89,11 @@ A specific technique/result the user can get from reopening the Item.
 
 ### QUESTION
 
-A concise curiosity gap whose answer is represented in the supplied evidence/context. Never generic “Хочешь узнать больше?”.
+Retained in the schema for compatibility; not eligible for display.
 
 ### CHALLENGE
 
-A source-grounded invitation to test/reconsider something. No guilt or pressure.
+Retained in the schema for compatibility; not eligible for display.
 
 ### CONTRAST
 
@@ -100,9 +101,7 @@ A meaningful before/after, expected/actual, or common-practice/author-conclusion
 
 ## 6. Hook length
 
-Prefer one or two short sentences.
-
-Keep a strict bound and consider lowering the current 320-character maximum after fixture testing.
+Use one complete sentence of at most 280 characters. Do not translate or paraphrase.
 
 Do not wrap a good hook in another generic paragraph.
 
@@ -127,14 +126,12 @@ if the hook already stands on its own.
 Preferred final reminder structure:
 
 ~~~text
-<title>
-
 <hook>
+
+🎯 <title>
 ~~~
 
-or the reverse if usability tests show it reads better.
-
-Use one consistent layout.
+PM-10 retains title-first rendering.
 
 ## 8. Hide ranking internals
 
@@ -306,7 +303,7 @@ For deterministic provider fixtures/mocks verify:
 - evidence excerpt is exact;
 - no outside statistic/fact;
 - no generic “this material is interesting” wording;
-- QUESTION is tied to answerable supplied evidence;
+- questions, translations and source-prescribed answers are rejected;
 - candidates differ meaningfully;
 - zero candidates is valid when grounding is weak.
 
@@ -354,8 +351,9 @@ POLISH-04 is complete when a proactive notification feels like a specific reason
 - Attention Hook generation uses version 2, keeps exact original-Content evidence
   validation, stores at most one candidate per hook type, and selects bounded
   transcript regions near the beginning, one-third, two-thirds, and end.
-- Reminder copy is `🎯 title` plus a direct grounded hook, a whitespace-normalized
-  summary preview capped at 700 characters, or the title alone. Summary is only
+- Proactive copy leads with the validated hook, or a whitespace-normalized
+  summary preview capped at 700 characters, followed by `🎯 title`. If both are
+  unavailable, show only the title. Summary is only
   a presentation fallback and is never supplied as hook evidence.
 - Source/original actions stay primary. Up to two source actions appear beside
   Original; overflow opens Sources, while PM-11 reactions live under More.

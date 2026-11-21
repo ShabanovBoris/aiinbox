@@ -18,11 +18,10 @@ The system should give a concrete, grounded reason to return to a forgotten arti
 Lazily generate and persist a small set of grounded hooks:
 - SURPRISING_FACT;
 - PRACTICAL_VALUE;
-- QUESTION;
-- CHALLENGE;
 - CONTRAST.
 
-Every factual hook must be backed by persisted source Content.
+`QUESTION` and `CHALLENGE` remain schema values but are not eligible for display.
+Every hook must be a complete statement copied from persisted source Content.
 
 No invented “interesting fact”.
 
@@ -99,7 +98,7 @@ Ground only in original persisted content:
 
 Do not use ATTENTION_HOOK.
 
-CHUNK_SUMMARY may help select a region but must not be sole factual evidence.
+Do not use `CHUNK_SUMMARY` or `Item.summary` as hook context or evidence.
 
 ## 7. Structured output
 
@@ -114,7 +113,7 @@ AttentionHookCandidate:
 ~~~
 
 Bounds:
-- text <= 320 chars;
+- text <= 280 chars;
 - evidence <= 300 chars;
 - max candidates = 3.
 
@@ -130,12 +129,15 @@ Mandatory:
 
 1. source_content_id belongs to Item;
 2. content kind is allowed;
-3. evidence non-empty for factual hooks;
+3. hook equals its non-empty evidence excerpt;
 4. normalize harmless whitespace only;
-5. evidence must occur in referenced persisted text;
+5. the excerpt must be a standalone, concrete statement in the current
+   persisted text, not a clause or prescribed answer;
 6. otherwise reject.
 
-QUESTION hooks still require supporting evidence.
+For new candidates, also require the exact statement in a supplied excerpt.
+For persisted hooks, revalidate the statement and source identity on reuse
+without rewriting old rows. Do not translate, paraphrase or omit qualifications.
 
 No validated evidence -> no stored hook.
 
@@ -197,17 +199,7 @@ Do not translate evidence and call it an exact excerpt.
 
 ## 13. Templates
 
-Persist semantic hook, vary wording with deterministic templates.
-
-Examples:
-
-~~~text
-"Вот что здесь действительно цепляет: {hook}"
-
-"Причина всё-таки вернуться к этому: {hook}"
-
-"Ты сохранил это давно. Одна сильная мысль внутри: {hook}"
-~~~
+Render the literal quote with `direct_v2`; retain deterministic hook/template attribution.
 
 Avoid immediate repeat of the same hook+template.
 
@@ -230,15 +222,9 @@ This supports PM-11 feedback attribution.
 Example:
 
 ~~~text
-Ты сохранил это 47 дней назад.
-
-Одна из сильных мыслей внутри:
 <hook>
 
-Почему сейчас:
-priority 82 · interest 3 · давно не показывалось
-
-~18 минут
+🎯 <title>
 ~~~
 
 Avoid claiming “the most interesting fact” when only representative chunks were examined.
@@ -362,7 +348,8 @@ fairness. For sufficiently long Content the representative regions are now
 start, roughly one-third, roughly two-thirds, and end. The LLM chooses which
 excerpt supports a hook; the ending is not preferred automatically.
 
-Proactive reminders render the v2 hook directly. When no current valid hook is
-available, `Item.summary` is a bounded display fallback only; it is never added
-to hook context or accepted as evidence. Provider timeout/failure and zero valid
-candidates leave the normal reminder path available.
+Only proactive reminders lead with the validated quote, followed by the title.
+If none is valid, lead with the whitespace-normalized `Item.summary` preview
+(up to 700 characters), or show only the title. The summary is never added to
+hook context or accepted as evidence. Provider timeout/failure and zero valid
+candidates leave the normal reminder path available. PM-10 stays title-first.

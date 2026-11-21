@@ -446,11 +446,13 @@ allowed original Content row, carries a whitespace-exact evidence excerpt and
 generator version, and inherits `source_id` from that evidence. Revalidate stored
 hooks on reuse and exclude them from FTS. Generate lazily after a durable PM-08
 claim, outside SQLite transactions, under the existing absolute send deadline;
-run PM-08's final revalidation afterward and fall back to its deterministic
-reason on hook/provider failure.
+run PM-08's final revalidation afterward. Require a standalone, concrete
+statement copied verbatim except for whitespace. If evidence, boundaries or
+context are ambiguous, lead with the summary, or show only the title.
 
 Reason: the `contents` table already owns durable source text and provenance, so
 it can preserve evidence without another table or any repeated web extraction.
+Prefer fewer hooks to promoting claims the stored text cannot substantiate.
 
 Consequences: generated hooks remain presentation derivatives, cannot ground
 later hooks or pollute source search, and are reused across reminders with a

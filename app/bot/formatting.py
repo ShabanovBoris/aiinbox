@@ -482,8 +482,10 @@ def format_proactive_attention_reminder(
     item: Item,
     hook_text: str | None = None,
     sources: Sequence[ItemSource] = (),
+    *,
+    lead_with_content: bool = False,
 ) -> str:
-    """Project an Item reminder as title plus hook, summary fallback, or title alone."""
+    """Lead with evidence or fallback for PM-08, keeping PM-10 title-first."""
     # ❌ Удалены wrapper, ranking reason, scores, interest and age from reminder copy:
     # они объясняли выбор планировщика вместо содержательной причины открыть материал.
     lines = [f"🎯 {item_display_title(item, sources)}"]
@@ -492,7 +494,7 @@ def format_proactive_attention_reminder(
         # Item.summary is presentation fallback only; AttentionHookService never reads it.
         content = _summary_preview(item, _PROACTIVE_SUMMARY_PREVIEW_LENGTH)
     if content:
-        lines.extend(("", content))
+        lines = [content, "", *lines] if lead_with_content else [*lines, "", content]
     return _fit_message(lines)
 
 
