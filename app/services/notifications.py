@@ -20,10 +20,10 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from app.bot.formatting import (
     format_attention_reason,
+    format_daily_digest,
     format_motivation_reminder,
     format_proactive_attention_reminder,
     format_snooze_reminder,
-    format_today,
 )
 from app.bot.keyboards import (
     compact_item_keyboard,
@@ -759,7 +759,7 @@ class ReminderWorker:
         try:
             await self._send_with_retry(
                 user.telegram_chat_id,
-                format_today(items, sources_by_item, heading="☀️ На сегодня"),
+                format_daily_digest(items, sources_by_item),
                 claimed_at=lease_now,
                 reply_markup=item_list_keyboard(item_navigation_entries(items, sources_by_item)),
             )
