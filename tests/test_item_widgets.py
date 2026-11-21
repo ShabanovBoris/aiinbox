@@ -3,7 +3,7 @@ from functools import partial
 
 import pytest
 from aiogram import Bot, Dispatcher
-from aiogram.exceptions import TelegramBadRequest
+from aiogram.exceptions import TelegramBadRequest, TelegramNetworkError, TelegramNotFound
 from aiogram.fsm.storage.memory import SimpleEventIsolation
 from sqlalchemy import func, select
 
@@ -304,6 +304,127 @@ async def test_inbox_widget_opens_cards_and_archives_in_place(widget_bot, sessio
 
     await dispatcher.feed_raw_update(bot, _inbox_command("/inbox plain"))
     assert calls[-1].__api_method__ == "sendMessage"
+
+
+def _reject_widget(monkeypatch, error, description):
+    previous_call = Bot.__call__
+
+    async def bot_call(self, method, request_timeout=None):
+        result = await previous_call(self, method, request_timeout)
+        if method.__api_method__ == "sendWidget":
+            raise error(method, description)
+        return result
+
+    monkeypatch.setattr(Bot, "__call__", bot_call)
+
+
+async def test_rejected_inbox_widget_keeps_rich_navigation(
+    widget_bot, session_factory, monkeypatch
+):
+    bot, dispatcher, calls = widget_bot
+    target = await _seed(session_factory)
+    async with session_factory() as session:
+        session.add_all(
+            Item(
+                user_id=target.user_id,
+                source_type=SourceType.TEXT,
+                state=ItemState.ACTIVE,
+                title=f"Запись {index}",
+                user_note="",
+            )
+            for index in range(10)
+        )
+        archived = Item(
+            user_id=target.user_id,
+            source_type=SourceType.TEXT,
+            state=ItemState.ARCHIVED,
+            title="Архивная запись",
+            user_note="",
+        )
+        session.add(archived)
+        await session.commit()
+
+    async def tap(page, data):
+        message = _inbox_command()["message"]
+        message.pop("text")
+        message["from"] = {"id": bot.id, "is_bot": True, "first_name": "Bot"}
+        message["rich_message"] = page.rich_message.model_dump(mode="json", exclude_none=True)
+        message["reply_markup"] = page.reply_markup.model_dump(mode="json", exclude_none=True)
+        before = len(calls)
+        await dispatcher.feed_raw_update(
+            bot,
+            {
+                "update_id": 19,
+                "callback_query": {
+                    "id": "tap",
+                    "from": _inbox_command()["message"]["from"],
+                    "chat_instance": "test-chat",
+                    "message": message,
+                    "data": data,
+                },
+            },
+        )
+        (response,) = [
+            call for call in calls[before:] if call.__api_method__ != "answerCallbackQuery"
+        ]
+        return response
+
+    def navigation(page):
+        return {button.callback_data for row in page.reply_markup.inline_keyboard for button in row}
+
+    with monkeypatch.context() as patch:
+        _reject_widget(patch, TelegramBadRequest, "Bad Request: INPUT_MEDIA_WIDGET_NOT_ALLOWED")
+        await dispatcher.feed_raw_update(bot, _inbox_command())
+        assert [call.__api_method__ for call in calls] == ["sendWidget", "sendRichMessage"]
+        inbox = calls[-1]
+        assert inbox.rich_message.blocks[0].text == "📥 Сохранённое"
+        assert len(inbox.rich_message.blocks[1:]) == 10
+        assert {"nav:archive", "nav:inbox:page:1"} <= navigation(inbox)
+
+        second = await tap(inbox, "nav:inbox:page:1")
+        assert second.__api_method__ == "editMessageText"
+        assert second.message_id == 700
+        assert "nav:inbox:page:0" in navigation(second)
+        assert len(second.rich_message.blocks[1:]) == 1
+        button = second.rich_message.blocks[1].buttons[0]
+        assert button.callback_data == f"item:view:{target.id}"
+        card = await tap(second, button.callback_data)
+        assert card.__api_method__ == "sendMessage" and target.title in card.text
+
+        archive = await tap(second, "nav:archive")
+        assert archive.__api_method__ == "editMessageText"
+        assert "nav:inbox:page:0" in navigation(archive)
+        await dispatcher.feed_raw_update(bot, _inbox_command("/inbox archive"))
+        assert [call.__api_method__ for call in calls[-2:]] == ["sendWidget", "sendRichMessage"]
+        assert calls[-1].rich_message == archive.rich_message
+        assert archive.rich_message.blocks[0].text == "🗄 Архив"
+        assert archive.rich_message.blocks[1].buttons[0].callback_data == f"item:view:{archived.id}"
+
+    await dispatcher.feed_raw_update(bot, _inbox_command())
+    assert calls[-1].__api_method__ == "sendWidget"
+
+
+async def test_missing_widget_method_still_falls_back(widget_bot, monkeypatch):
+    bot, dispatcher, calls = widget_bot
+    _reject_widget(monkeypatch, TelegramNotFound, "Not Found")
+    await dispatcher.feed_raw_update(bot, _inbox_command())
+    assert [call.__api_method__ for call in calls] == ["sendWidget", "sendRichMessage"]
+
+
+@pytest.mark.parametrize(
+    ("error", "description"),
+    [
+        (TelegramBadRequest, "Bad Request: invalid HTML (INPUT_MEDIA_WIDGET_NOT_ALLOWED)"),
+        (TelegramNetworkError, "connection failed"),
+    ],
+)
+async def test_other_widget_errors_propagate(widget_bot, monkeypatch, error, description):
+    bot, dispatcher, calls = widget_bot
+    _reject_widget(monkeypatch, error, description)
+    with pytest.raises(error) as exc:
+        await dispatcher.feed_raw_update(bot, _inbox_command())
+    assert exc.value.message == description
+    assert [call.__api_method__ for call in calls] == ["sendWidget"]
 
 
 @pytest.mark.parametrize(

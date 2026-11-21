@@ -9,7 +9,7 @@ from textwrap import wrap
 from typing import Literal
 
 from aiogram import Bot
-from aiogram.exceptions import TelegramAPIError, TelegramNotFound
+from aiogram.exceptions import TelegramAPIError, TelegramBadRequest, TelegramNotFound
 from aiogram.methods.base import TelegramMethod
 from aiogram.types import Chat, InaccessibleMessage, InlineKeyboardMarkup, Message
 from aiogram.types import User as TelegramUser
@@ -175,6 +175,11 @@ async def _try_send_widget_html(
         if exc.message.casefold() != "not found":
             raise
         log.info("Bot API server does not support sendWidget")
+        return False
+    except TelegramBadRequest as exc:
+        if exc.message.removeprefix("Bad Request: ") != "INPUT_MEDIA_WIDGET_NOT_ALLOWED":
+            raise
+        log.info("Bot API rejected sendWidget: INPUT_MEDIA_WIDGET_NOT_ALLOWED")
         return False
     return True
 
