@@ -9,13 +9,14 @@ from app.bot.formatting import (
     format_item_details,
     format_item_failure,
     format_item_list,
+    format_motivation_reminder,
     format_ready_item,
     format_snooze_reminder,
     format_today,
 )
 from app.bot.keyboards import item_keyboard
 from app.bot.presentation import item_display_title
-from app.domain.enums import ItemType, ProcessingStatus, SourceType
+from app.domain.enums import ItemType, MotivationKind, ProcessingStatus, SourceType
 from app.domain.models import DEFAULT_PROFILE, AnalysisResult, NormalizedContent
 from app.llm.base import LlmError
 from app.llm.openai import OpenAiProvider
@@ -38,6 +39,39 @@ def make_ready_item() -> Item:
         interest_level=2,
         next_action=analysis.next_action,
         priority_reason=analysis.priority_reason,
+    )
+
+
+@pytest.mark.parametrize(
+    ("kind", "intro"),
+    [
+        (MotivationKind.QUICK_WINS, "Можно начать с короткого шага."),
+        (MotivationKind.STALE_IMPORTANT, "Можно вернуться к этому материалу."),
+        (MotivationKind.HIGH_INTEREST_STALE, "Можно вернуться к этому материалу."),
+        (MotivationKind.INBOX_GROWTH, "Из сохранённого можно выбрать что-то одно."),
+        (MotivationKind.COMPLETION_STREAK, "Вот один материал, с которого можно начать."),
+        (MotivationKind.WEEKLY_PROGRESS, "Вот один материал, с которого можно начать."),
+    ],
+)
+def test_motivation_invites_one_step_without_repeating_summary(kind, intro):
+    item = make_ready_item()
+    item.next_action = "  Сравните два подхода.  "
+    item.estimated_action_minutes = 6
+
+    assert format_motivation_reminder(item, kind) == (
+        f"{intro}\n\n🎯 Архитектура AI-агентов\n\nСравните два подхода.\n≈ 6 мин"
+    )
+
+
+@pytest.mark.parametrize("next_action", [None, " \n "])
+def test_motivation_offers_opening_without_guessing_duration(next_action):
+    item = make_ready_item()
+    item.next_action = next_action
+    item.estimated_action_minutes = None
+
+    assert format_motivation_reminder(item, MotivationKind.INBOX_GROWTH) == (
+        "Из сохранённого можно выбрать что-то одно.\n\n"
+        "🎯 Архитектура AI-агентов\n\nОткройте материал через «Ещё»."
     )
 
 

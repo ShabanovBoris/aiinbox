@@ -632,13 +632,14 @@ Context: PM-07 correctly chooses which Item may deserve an interruption, but
 proactive reminders still exposed ranking scores, age, and generic hook
 wrappers. Generic motivation copy also read like backlog telemetry.
 
-Decision: Item-specific reminders show the Item title and either a current
+Decision: Proactive reminders show the Item title and either a current
 grounded v2 hook, the outcome-first summary as a bounded presentation fallback,
 or the title alone. Ranking values stay in scheduling and Reminder attribution,
 not default Telegram copy. Hook templates are direct; source/original access
 stays primary and PM-11 reactions move into an ephemeral More menu. Generic
 motivation facts select a focus Item as specified by D-045; its user-facing copy
-uses that saved title and summary with the same source actions and supported
+uses a reason-specific intro, the saved title, and the saved next action (or an
+invitation to open the material), with the same source actions and supported
 lifecycle actions. The proactive-only dismissal cooldown is not exposed for
 motivation. Aggregate motivation text and template rotation are not part of new
 sends.

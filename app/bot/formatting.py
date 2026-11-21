@@ -15,7 +15,7 @@ from app.bot.presentation import (
     item_navigation_entries,
     item_type_label,
 )
-from app.domain.enums import ProcessingStatus, SourceType
+from app.domain.enums import MotivationKind, ProcessingStatus, SourceType
 from app.domain.models import AskReference, UserProfile
 from app.services.attention_ranking import AttentionRank
 from app.services.url_parsing import instagram_post_shortcode
@@ -485,7 +485,7 @@ def format_proactive_attention_reminder(
     *,
     lead_with_content: bool = False,
 ) -> str:
-    """Lead with evidence or fallback for PM-08, keeping PM-10 title-first."""
+    """Show the grounded hook or saved summary for proactive attention."""
     # ❌ Удалены wrapper, ranking reason, scores, interest and age from reminder copy:
     # они объясняли выбор планировщика вместо содержательной причины открыть материал.
     lines = [f"🎯 {item_display_title(item, sources)}"]
@@ -495,6 +495,25 @@ def format_proactive_attention_reminder(
         content = _summary_preview(item, _PROACTIVE_SUMMARY_PREVIEW_LENGTH)
     if content:
         lines = [content, "", *lines] if lead_with_content else [*lines, "", content]
+    return _fit_message(lines)
+
+
+def format_motivation_reminder(
+    item: Item, kind: MotivationKind, sources: Sequence[ItemSource] = ()
+) -> str:
+    match kind:
+        case MotivationKind.QUICK_WINS:
+            intro = "Можно начать с короткого шага."
+        case MotivationKind.STALE_IMPORTANT | MotivationKind.HIGH_INTEREST_STALE:
+            intro = "Можно вернуться к этому материалу."
+        case MotivationKind.INBOX_GROWTH:
+            intro = "Из сохранённого можно выбрать что-то одно."
+        case _:
+            intro = "Вот один материал, с которого можно начать."
+    action = (item.next_action or "").strip() or "Откройте материал через «Ещё»."
+    lines = [intro, "", f"🎯 {item_display_title(item, sources)}", "", action]
+    if item.estimated_action_minutes is not None:
+        lines.append(f"≈ {item.estimated_action_minutes} мин")
     return _fit_message(lines)
 
 

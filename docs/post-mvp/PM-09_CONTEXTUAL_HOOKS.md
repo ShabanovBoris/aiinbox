@@ -352,4 +352,5 @@ Only proactive reminders lead with the validated quote, followed by the title.
 If none is valid, lead with the whitespace-normalized `Item.summary` preview
 (up to 700 characters), or show only the title. The summary is never added to
 hook context or accepted as evidence. Provider timeout/failure and zero valid
-candidates leave the normal reminder path available. PM-10 stays title-first.
+candidates leave the normal reminder path available. PM-10 uses a separate
+action-oriented message without hooks.
