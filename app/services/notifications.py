@@ -20,6 +20,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from app.bot.formatting import (
     format_attention_reason,
+    format_motivation_reminder,
     format_proactive_attention_reminder,
     format_snooze_reminder,
     format_today,
@@ -1782,7 +1783,7 @@ class ReminderWorker:
         try:
             await self._send_with_retry(
                 chat_id,
-                format_proactive_attention_reminder(item, sources=sources),
+                format_motivation_reminder(item, candidate.kind, sources=sources),
                 claimed_at=claimed_at,
                 reply_markup=compact_item_keyboard(item, reminder_id=reminder_id),
             )

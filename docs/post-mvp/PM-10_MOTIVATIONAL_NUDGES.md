@@ -174,16 +174,19 @@ No LLM ranking.
 
 ## 9. Presentation
 
-New motivation messages use the focused Item's saved title and bounded summary
-through the existing proactive reminder formatter. They expose that material's
-Original/source actions and supported lifecycle controls. “Не сейчас” is shown
+New motivation messages use a deterministic intro keyed by kind: a short step,
+a return to the material, a choice of one save from the inbox, or a neutral
+invitation to start. The message shows the focused Item's saved title and one
+saved next action, or invites the user to open it via “Ещё” if no action is saved.
+It displays `≈ N мин` only when the Item has a saved duration estimate.
+The messages expose that material's Original/source actions and supported
+lifecycle controls. “Не сейчас” is shown
 only for proactive reminders because its same-Item cooldown applies to that
 Reminder type. “Меньше таких” remains available for motivation-kind feedback.
 
-No aggregate fact, template id, rendered template, or motivation-kind reason is
-shown to the user. If there is no eligible focus, no candidate is sent. If the
-Item has no summary, the formatter shows its title only. No LLM is used to write
-or translate this message.
+No aggregate facts, counters, or internal identifiers are shown. If there is
+no eligible focus, no candidate is sent. No LLM is used to write or translate
+this message.
 
 ## 10. Truthfulness
 
@@ -301,7 +304,7 @@ at final preparation; there is no user-facing template rotation.
 ## 16. Interaction with PM-09 hooks
 
 Generic motivation does not use `ATTENTION_HOOK`. PM-09 hooks remain
-proactive-only; focused motivation shows the saved summary as presentation and
+proactive-only; focused motivation uses the saved next action as presentation and
 keeps source content and profile data out of the motivation copy path.
 
 ## 17. Tests
@@ -320,8 +323,8 @@ Exact tests for:
 
 - no eligible fact -> no nudge;
 - every new send has an eligible `focus_item_id`;
-- user-facing text comes from that Item's saved title and summary;
-- no aggregate metric or motivation reason is exposed.
+- user-facing text uses that Item's title and next action or opening prompt;
+- no aggregate metrics or internal selection labels are exposed.
 
 ### Policy
 
@@ -358,7 +361,7 @@ Exact tests for:
 - setting/UI;
 - MotivationService;
 - deterministic facts;
-- concrete focus selection and summary-based presentation;
+- concrete focus selection and action-oriented presentation;
 - MOTIVATION_NUDGE persistence;
 - worker integration;
 - tests;
@@ -374,7 +377,7 @@ existing PM-07 order. Its durable `MOTIVATION_NUDGE` Reminder keeps
 `Reminder.item_id=NULL`; the focus id lives in the existing payload and is used
 for owner-scoped source/lifecycle callbacks and focused Reminder Events.
 
-The message uses the focused Item's title and persisted summary, with no
+The message uses the focused Item's title and one next action, with no
 template rotation or LLM. A missing eligible focus produces no send. Historical
 focusless Reminder rows remain valid and are not rewritten. Fact thresholds,
 motivation scores, daily caps, four-hour repeat pacing, durable claims, and

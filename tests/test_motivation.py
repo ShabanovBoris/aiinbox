@@ -5,6 +5,7 @@ from zoneinfo import ZoneInfo
 import pytest
 from sqlalchemy import func, select
 
+from app.bot.keyboards import reminder_more_keyboard
 from app.domain.enums import ItemState, ItemType, MotivationKind, ProcessingStatus, SourceType
 from app.services.calendar_windows import local_day_window
 from app.services.motivation import MotivationService
@@ -15,6 +16,7 @@ from app.services.notifications import (
     format_attention_status,
     get_attention_status,
 )
+from app.services.reminder_feedback import ReminderFeedbackService
 from app.storage.models import Event, Item, Reminder, User
 
 
@@ -531,6 +533,7 @@ async def test_worker_sends_generic_claim_with_feedback_controls_and_send_attrib
     async with session_factory() as session:
         focus = await session.scalar(select(Item).where(Item.title == "Saved focus"))
         focus.summary = "Read the saved comparison."
+        focus.telegram_message_id = 321
         await session.commit()
     bot = RecordingBot()
     hooks = HookSpy()
@@ -540,7 +543,11 @@ async def test_worker_sends_generic_claim_with_feedback_controls_and_send_attrib
     assert len(bot.messages) == 1
     chat_id, text, kwargs = bot.messages[0]
     assert chat_id == 42
-    assert text == "🎯 Saved focus\n\nRead the saved comparison."
+    assert text == (
+        "Из сохранённого можно выбрать что-то одно.\n\n"
+        "🎯 Saved focus\n\nОткройте материал через «Ещё»."
+    )
+    assert kwargs["reply_markup"].inline_keyboard[0][-1].text == "Ещё"
     assert "INBOX_GROWTH" not in text
     assert not any(term in text for term in ("3 новых", "+3", "Item", "Done"))
     callbacks = {
@@ -555,6 +562,24 @@ async def test_worker_sends_generic_claim_with_feedback_controls_and_send_attrib
         assert callbacks == {
             f"item:archive:{reminder.payload_json['focus_item_id']}",
             f"reminder:more:{reminder.id}",
+        }
+        projection = await ReminderFeedbackService(session_factory).item_reminder_projection(
+            42, reminder.id
+        )
+        assert projection is not None
+        _, projected_item, sources, original_available = projection
+        menu = reminder_more_keyboard(
+            reminder.id,
+            projected_item,
+            sources,
+            dismiss_available=False,
+            original_available=original_available,
+        )
+        assert {button.callback_data for row in menu.inline_keyboard for button in row} == {
+            f"reminder:original:{reminder.id}",
+            f"reminder:later:{reminder.id}",
+            f"reminder:less:{reminder.id}",
+            f"reminder:back:{reminder.id}",
         }
         assert reminder.status == "SENT"
         assert reminder.sent_at == now
@@ -776,7 +801,10 @@ async def test_stale_generic_claim_recovers_same_slot_with_current_facts_and_fen
     worker = ReminderWorker(session_factory, bot)
 
     assert await worker.process_once(now) == 1
-    assert bot.messages[0][1] == "🎯 Saved focus"
+    assert bot.messages[0][1] == (
+        "Из сохранённого можно выбрать что-то одно.\n\n"
+        "🎯 Saved focus\n\nОткройте материал через «Ещё»."
+    )
     async with session_factory() as session:
         recovered = await session.get(Reminder, reminder_id)
         rows = (

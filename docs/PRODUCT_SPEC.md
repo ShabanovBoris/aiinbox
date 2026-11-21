@@ -684,7 +684,6 @@ revalidation. Старые версии hook остаются историчес
 Proactive Reminder начинается с подтверждённого хука, затем показывает `🎯`
 и название. Если подходящего хука нет, первой идёт нормализованная сводка
 `Item.summary` до 700 символов, а при пустой сводке остаётся только название.
-В мотивационных напоминаниях PM-10 название по-прежнему идёт первым.
 Summary используется только для показа и никогда не становится
 evidence новой генерации hook. В тексте уведомления нет attention/priority score,
 interest, возраста Item или объяснения ranking; эти данные остаются внутри
@@ -700,8 +699,11 @@ Original и video resend, а также необозримость прямых 
 PM-10 вычисляет только детерминированные факты из подходящих сохранений и
 lifecycle Events. Эти факты остаются внутренними сигналами; каждое новое
 sendable мотивационное напоминание связано с одним сохранением, выбранным в
-существующем PM-07 порядке. Telegram показывает его название и сохранённую сводку,
-а не агрегатную мотивационную фразу. Текст не использует LLM, профиль, исходное
+существующем PM-07 порядке. Telegram показывает короткое вступление по поводу
+напоминания, название и одно сохранённое следующее действие. Если действия нет,
+бот предлагает открыть материал через «Ещё». Известная длительность помечается
+как оценка (`≈ N мин`); неизвестная не показывается. Текст не повторяет сводку,
+не показывает агрегатные факты и не использует LLM, профиль, исходное
 содержимое или `ATTENTION_HOOK`. Факты охватывают старые важные и интересные
 сохранения, короткие задачи, дневную разницу новых/разрешённых записей, текущую
 серию завершений и последние семь локальных календарных дней. Календарные границы
@@ -1169,8 +1171,9 @@ page totals.
 Every new `MOTIVATION_NUDGE` candidate has a concrete `focus_item_id` selected in
 existing PM-07 order. The id is stored in the existing Reminder payload while the
 Reminder retains its user-level `item_id=NULL` claim identity; Reminder Events
-resolve and record the focused Item. The message projects the saved title and
-persisted summary, with Original/source actions and lifecycle controls whose
+resolve and record the focused Item. The message uses a reason-specific intro and
+the saved title, followed by the saved next action or a prompt to open the material.
+It exposes Original/source actions and lifecycle controls whose
 feedback rules apply to this reminder type. No eligible concrete save means no
 send. Historical `MOTIVATION_NUDGE` rows with no focus remain valid; no migration
 or new dependency is required. Motivation remains deterministic and LLM-free.
