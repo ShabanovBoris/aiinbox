@@ -100,11 +100,11 @@ async def _seed_claimed_item(
         return user.id, item.id, source.id if source is not None else None, evidence.id, claimed_at
 
 
-def _candidate(content_id: int, evidence: str, text: str = "Caching reduced latency."):
+def _candidate(content_id: int, evidence: str, text: str | None = None):
     """Build the strict provider contract used by grounding tests."""
     return AttentionHookCandidate(
         hook_type=AttentionHookType.PRACTICAL_VALUE,
-        text=text,
+        text=evidence if text is None else text,
         evidence_excerpt=evidence,
         source_content_id=content_id,
     )
@@ -114,7 +114,7 @@ async def test_provider_uses_strict_schema_and_returns_explicit_identity():
     """Keep Structured Outputs and OpenRouter identity inside the adapter boundary."""
     evidence_id = 71
     generation = AttentionHookGeneration(
-        candidates=[_candidate(evidence_id, "A study cut latency by 20%")]
+        candidates=[_candidate(evidence_id, "A study cut latency by 20% after caching.")]
     )
 
     class FakeCompletions:
@@ -179,7 +179,7 @@ async def test_generation_persists_grounded_hook_and_only_passes_response_langua
     )
     provider = FakeLlmProvider(
         attention_hook_generation=AttentionHookGeneration(
-            candidates=[_candidate(content_id, "A study cut latency by 20%")]
+            candidates=[_candidate(content_id, "A study cut latency by 20% after caching.")]
         )
     )
     service = AttentionHookService(session_factory, provider)
@@ -198,7 +198,7 @@ async def test_generation_persists_grounded_hook_and_only_passes_response_langua
     assert presentation.hook.generator_version == ATTENTION_HOOK_GENERATOR_VERSION
     assert ATTENTION_HOOK_GENERATOR_VERSION == 2
     assert presentation.template_id == "direct_v2"
-    assert "Caching reduced latency." in presentation.rendered_text
+    assert "A study cut latency by 20% after caching." in presentation.rendered_text
     prompt, language = provider.attention_hook_calls[0]
     assert language == "en"
     assert f"CONTENT_ID: {content_id}" in prompt
@@ -215,11 +215,11 @@ async def test_generation_persists_grounded_hook_and_only_passes_response_langua
         )
         reminder = await session.get(Reminder, 1)
         assert hook.source_id == source_id
-        assert hook.text == "Caching reduced latency."
+        assert hook.text == "A study cut latency by 20% after caching."
         assert hook.metadata_json == {
             "hook_type": "PRACTICAL_VALUE",
             "evidence_content_id": content_id,
-            "evidence_excerpt": "A study cut latency by 20%",
+            "evidence_excerpt": "A study cut latency by 20% after caching.",
             "generator_version": ATTENTION_HOOK_GENERATOR_VERSION,
             "provider": "fake",
             "model": "fake-model",
@@ -597,9 +597,9 @@ async def test_one_hook_per_type_avoids_filling_slots_with_paraphrases(session_f
     provider = FakeLlmProvider(
         attention_hook_generation=AttentionHookGeneration(
             candidates=[
-                _candidate(content_id, "A study cut latency by 20%", text)
+                _candidate(content_id, "A study cut latency by 20% after caching.", text)
                 for text in (
-                    "Caching reduced latency by 20%.",
+                    "A study cut latency by 20% after caching.",
                     "A 20% latency reduction came from caching.",
                     "Caching cut latency by one fifth.",
                 )
@@ -637,7 +637,7 @@ async def test_valid_hook_reuse_and_recovery_preserve_selected_pair(session_fact
     )
     provider = FakeLlmProvider(
         attention_hook_generation=AttentionHookGeneration(
-            candidates=[_candidate(content_id, "A study cut latency by 20%")]
+            candidates=[_candidate(content_id, "A study cut latency by 20% after caching.")]
         )
     )
     service = AttentionHookService(session_factory, provider)
@@ -673,15 +673,22 @@ async def test_success_history_avoids_immediate_pair_and_failed_pair_does_not_co
     session_factory,
 ):
     """Rotate deterministic hook/template pairs from successful Reminder history only."""
-    user_id, item_id, _source_id, content_id, claimed_at = await _seed_claimed_item(session_factory)
+    second_fact = "The study reduced cache misses by 30%."
+    user_id, item_id, _source_id, content_id, claimed_at = await _seed_claimed_item(
+        session_factory, text=f"A study cut latency by 20% after caching. {second_fact}"
+    )
     provider = FakeLlmProvider(
         attention_hook_generation=AttentionHookGeneration(
             candidates=[
-                _candidate(content_id, "A study cut latency by 20%", "Caching reduced latency."),
+                _candidate(
+                    content_id,
+                    "A study cut latency by 20% after caching.",
+                    "A study cut latency by 20% after caching.",
+                ),
                 AttentionHookCandidate(
                     hook_type=AttentionHookType.SURPRISING_FACT,
-                    text="The study cut latency by 20% after caching.",
-                    evidence_excerpt="A study cut latency by 20%",
+                    text=second_fact,
+                    evidence_excerpt=second_fact,
                     source_content_id=content_id,
                 ),
             ]
@@ -752,7 +759,7 @@ async def test_changed_evidence_is_ignored_and_regenerated_without_mutating_old_
     )
     provider = FakeLlmProvider(
         attention_hook_generation=AttentionHookGeneration(
-            candidates=[_candidate(content_id, "A study cut latency by 20%")]
+            candidates=[_candidate(content_id, "A study cut latency by 20% after caching.")]
         )
     )
     service = AttentionHookService(session_factory, provider)
@@ -768,7 +775,7 @@ async def test_changed_evidence_is_ignored_and_regenerated_without_mutating_old_
         source_content.text = "A revised study cut latency by 30% after caching."
         await session.commit()
     provider.attention_hook_generation = AttentionHookGeneration(
-        candidates=[_candidate(content_id, "A revised study cut latency by 30%")]
+        candidates=[_candidate(content_id, "A revised study cut latency by 30% after caching.")]
     )
 
     second = await service.for_reminder(
@@ -791,8 +798,14 @@ async def test_changed_evidence_is_ignored_and_regenerated_without_mutating_old_
             ).all()
         )
         assert len(hooks) == 2
-        assert hooks[0].metadata_json["evidence_excerpt"] == "A study cut latency by 20%"
-        assert hooks[1].metadata_json["evidence_excerpt"] == "A revised study cut latency by 30%"
+        assert (
+            hooks[0].metadata_json["evidence_excerpt"]
+            == "A study cut latency by 20% after caching."
+        )
+        assert (
+            hooks[1].metadata_json["evidence_excerpt"]
+            == "A revised study cut latency by 30% after caching."
+        )
 
 
 async def test_generator_version_change_regenerates_lazily_and_keeps_old_rows(
@@ -804,7 +817,7 @@ async def test_generator_version_change_regenerates_lazily_and_keeps_old_rows(
     )
     provider = FakeLlmProvider(
         attention_hook_generation=AttentionHookGeneration(
-            candidates=[_candidate(content_id, "A study cut latency by 20%", "Hook version one.")]
+            candidates=[_candidate(content_id, "A study cut latency by 20% after caching.")]
         )
     )
     service = AttentionHookService(session_factory, provider)
@@ -820,7 +833,7 @@ async def test_generator_version_change_regenerates_lazily_and_keeps_old_rows(
         ATTENTION_HOOK_GENERATOR_VERSION + 1,
     )
     provider.attention_hook_generation = AttentionHookGeneration(
-        candidates=[_candidate(content_id, "A study cut latency by 20%", "Hook version two.")]
+        candidates=[_candidate(content_id, "A study cut latency by 20% after caching.")]
     )
 
     second = await service.for_reminder(
@@ -843,7 +856,7 @@ async def test_generator_version_change_regenerates_lazily_and_keeps_old_rows(
                 )
             ).all()
         )
-        assert [hook.text for hook in hooks] == ["Hook version one.", "Hook version two."]
+        assert [hook.text for hook in hooks] == ["A study cut latency by 20% after caching."] * 2
 
 
 async def test_v1_hook_is_not_reused_and_remains_historical(session_factory):
@@ -860,7 +873,7 @@ async def test_v1_hook_is_not_reused_and_remains_historical(session_factory):
             metadata_json={
                 "hook_type": "PRACTICAL_VALUE",
                 "evidence_content_id": evidence_id,
-                "evidence_excerpt": "A study cut latency by 20%",
+                "evidence_excerpt": "A study cut latency by 20% after caching.",
                 "generator_version": 1,
             },
         )
@@ -869,7 +882,7 @@ async def test_v1_hook_is_not_reused_and_remains_historical(session_factory):
         old_hook_id = old_hook.id
     provider = FakeLlmProvider(
         attention_hook_generation=AttentionHookGeneration(
-            candidates=[_candidate(evidence_id, "A study cut latency by 20%", "Caching helps.")]
+            candidates=[_candidate(evidence_id, "A study cut latency by 20% after caching.")]
         )
     )
 
@@ -903,23 +916,24 @@ async def test_v1_hook_is_not_reused_and_remains_historical(session_factory):
 
 async def test_duplicate_hook_text_is_persisted_once(session_factory):
     """Deduplicate repeated phrasing even when the provider assigns different hook types."""
+    repeated = "A study cut latency by 20% after caching."
+    different = "A queue replaced two separate workers."
     user_id, item_id, _source_id, content_id, _claimed_at = await _seed_claimed_item(
-        session_factory
+        session_factory, text=f"{repeated} {different}"
     )
-    repeated = "A study cut latency by 20%"
     provider = FakeLlmProvider(
         attention_hook_generation=AttentionHookGeneration(
             candidates=[
                 AttentionHookCandidate(
                     hook_type=hook_type,
                     text=text,
-                    evidence_excerpt=repeated,
+                    evidence_excerpt=evidence,
                     source_content_id=content_id,
                 )
-                for hook_type, text in (
-                    (AttentionHookType.PRACTICAL_VALUE, "Practical value"),
-                    (AttentionHookType.QUESTION, " Practical   value "),
-                    (AttentionHookType.CONTRAST, "A different grounded frame"),
+                for hook_type, text, evidence in (
+                    (AttentionHookType.PRACTICAL_VALUE, repeated, repeated),
+                    (AttentionHookType.SURPRISING_FACT, repeated.replace(" ", "  "), repeated),
+                    (AttentionHookType.CONTRAST, different, different),
                 )
             ]
         )
@@ -942,25 +956,30 @@ async def test_duplicate_hook_text_is_persisted_once(session_factory):
                 )
             ).all()
         )
-        assert [hook.text for hook in hooks] == ["Practical value", "A different grounded frame"]
+        assert [hook.text for hook in hooks] == [repeated, different]
 
 
 async def test_concurrent_generation_never_persists_more_than_three_hooks(session_factory):
     """Serialize hook writes after parallel provider calls to enforce the per-version cap."""
+    facts = (
+        "A study cut latency by 20% after caching.",
+        "The study reduced cache misses by 30%.",
+        "A queue replaced two separate workers.",
+    )
     user_id, item_id, _source_id, content_id, _claimed_at = await _seed_claimed_item(
-        session_factory
+        session_factory, text=" ".join(facts)
     )
     candidates = [
         AttentionHookCandidate(
             hook_type=hook_type,
-            text=f"Grounded hook {index}",
-            evidence_excerpt="A study cut latency by 20%",
+            text=facts[index],
+            evidence_excerpt=facts[index],
             source_content_id=content_id,
         )
         for index, hook_type in enumerate(
             (
                 AttentionHookType.PRACTICAL_VALUE,
-                AttentionHookType.QUESTION,
+                AttentionHookType.SURPRISING_FACT,
                 AttentionHookType.CONTRAST,
             )
         )

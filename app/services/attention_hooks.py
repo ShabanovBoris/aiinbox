@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import re
 from dataclasses import dataclass
 
 from sqlalchemy import select, text
@@ -535,19 +536,16 @@ def _validated_candidates(
             continue
         evidence = contents_by_id.get(source_content_id)
         excerpt = candidate.evidence_excerpt
-        excerpt_normalized = _normalize_whitespace(excerpt)
-        hook_text = candidate.text.strip()
+        hook_text = _normalize_whitespace(candidate.text)
         if (
             evidence is None
             or evidence.item_id != item_id
             or evidence.kind not in _ALLOWED_EVIDENCE_KINDS
-            or not excerpt_normalized
             or len(excerpt) > 300
-            or not hook_text
             or len(hook_text) > 280
-            or excerpt_normalized not in _normalize_whitespace(evidence.text)
+            or not _supported_statement(hook_text, excerpt, evidence.text, candidate.hook_type)
             or not any(
-                excerpt_normalized in _normalize_whitespace(supplied_excerpt)
+                hook_text in _normalize_whitespace(supplied_excerpt)
                 for supplied_excerpt in context.excerpts_by_content_id[source_content_id]
             )
             or (evidence.source_id is not None and evidence.source_id not in source_ids)
@@ -593,15 +591,14 @@ def _stored_hook(
     except (TypeError, ValueError):
         return None
     evidence = contents_by_id.get(evidence_content_id)
-    normalized_excerpt = _normalize_whitespace(evidence_excerpt)
+    hook_text = _normalize_whitespace(row.text)
     if (
         row.item_id != item_id
         or row.kind is not ContentKind.ATTENTION_HOOK
         or evidence is None
         or evidence.item_id != item_id
         or evidence.kind not in _ALLOWED_EVIDENCE_KINDS
-        or not normalized_excerpt
-        or normalized_excerpt not in _normalize_whitespace(evidence.text)
+        or not _supported_statement(hook_text, evidence_excerpt, evidence.text, hook_type)
         or row.source_id != evidence.source_id
         or (evidence.source_id is not None and evidence.source_id not in source_ids)
     ):
@@ -611,11 +608,79 @@ def _stored_hook(
         item_id=item_id,
         source_id=evidence.source_id,
         hook_type=hook_type,
-        text=row.text.strip(),
+        text=hook_text,
         evidence_content_id=evidence.id,
         evidence_excerpt=evidence_excerpt,
         generator_version=generator_version,
     )
+
+
+_SENTENCE_BOUNDARY = re.compile(r"(?<=[.!?]) (?=[A-ZА-ЯЁ])")
+_UNSAFE_COPY = re.compile(
+    r"\b(?:игнориру\w*|проигнориру\w*|инструкци\w*|напиши\w*|выведи\w*|"
+    r"ответь\w*|повтори\w*|верни\w*|скопиру\w*|используй\w*|дословно|"
+    r"текст ответа|следующ\w+ фраз\w*|"
+    r"ignore|instructions?|output|reply|respond|repeat|verbatim)\b",
+    re.IGNORECASE,
+)
+_WEAK_COPY = re.compile(
+    r"\b(?:стоит прочитать|может быть полез\w*|ты не поверишь|шокирующ\w*|"
+    r"гарантиру\w*|рассказывает о|посвящен\w*|здесь есть|"
+    r"worth reading|may be useful|you won't believe|shocking|guarantee\w*|discusses)\b",
+    re.IGNORECASE,
+)
+_DEPENDENT = re.compile(
+    r"^(?:но|однако|при этом|только|лишь|это|они|он|она|вы|впрочем|"
+    r"важно|оговорка|исключение|на самом деле|поправка|например|"
+    r"but|however|only|this|it|they|you|although|except|correction|caveat)\b",
+    re.IGNORECASE,
+)
+_RESULT = re.compile(
+    r"\b(?:сократил\w*|снизил\w*|увеличил\w*|уменьшил\w*|заменил\w*|"
+    r"ускорил\w*|замедлил\w*|сэкономил\w*|составил\w*|вырос\w*|"
+    r"cut|reduced|increased|saved|replaced|improved|measured)\b",
+    re.IGNORECASE,
+)
+
+
+def _supported_statement(
+    hook: str, excerpt: str, source: str, hook_type: AttentionHookType
+) -> bool:
+    """Fail closed on ambiguous boundaries, copied instructions and weak standalone copy."""
+    if (
+        hook_type in {AttentionHookType.QUESTION, AttentionHookType.CHALLENGE}
+        or hook != _normalize_whitespace(excerpt)
+        or not re.fullmatch(r"""[A-ZА-ЯЁ][^!?«»"“”]*\.""", hook)
+        or len(hook.split()) < 4
+        or _DEPENDENT.search(hook)
+        or _WEAK_COPY.search(hook)
+        or not _RESULT.search(hook)
+        or _RESULT.match(hook)
+    ):
+        return False
+    normalized = _normalize_whitespace(source)
+    if _UNSAFE_COPY.search(normalized):
+        return False
+    sentences = _SENTENCE_BOUNDARY.split(normalized)
+    # Keep qualifications in the same sentence, and abstain when an adjacent
+    # sentence signals dependency or a caveat we cannot safely carry across.
+    found = False
+    previous = ""
+    for index, sentence in enumerate(sentences):
+        if sentence == hook:
+            found = True
+            following = sentences[index + 1] if index + 1 < len(sentences) else ""
+            if (
+                _DEPENDENT.search(previous)
+                or _DEPENDENT.search(following)
+                or previous.endswith(("?", "!"))
+                or previous.count("«") != previous.count("»")
+                or previous.count("“") != previous.count("”")
+                or previous.count('"') % 2
+            ):
+                return False
+        previous = sentence
+    return found
 
 
 def _diverse_candidates(candidates: list[_ValidatedCandidate]) -> list[_ValidatedCandidate]:

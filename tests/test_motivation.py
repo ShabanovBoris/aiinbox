@@ -528,6 +528,10 @@ async def test_worker_sends_generic_claim_with_feedback_controls_and_send_attrib
     now = datetime(2026, 9, 24, 12)
     user_id = await make_worker_user(session_factory)
     await add_growth_items(session_factory, user_id, now)
+    async with session_factory() as session:
+        focus = await session.scalar(select(Item).where(Item.title == "Saved focus"))
+        focus.summary = "Read the saved comparison."
+        await session.commit()
     bot = RecordingBot()
     hooks = HookSpy()
     worker = ReminderWorker(session_factory, bot, max_send_attempts=1, attention_hook_service=hooks)
@@ -536,7 +540,7 @@ async def test_worker_sends_generic_claim_with_feedback_controls_and_send_attrib
     assert len(bot.messages) == 1
     chat_id, text, kwargs = bot.messages[0]
     assert chat_id == 42
-    assert text == "🎯 Saved focus"
+    assert text == "🎯 Saved focus\n\nRead the saved comparison."
     assert "INBOX_GROWTH" not in text
     assert not any(term in text for term in ("3 новых", "+3", "Item", "Done"))
     callbacks = {

@@ -1899,6 +1899,7 @@ class ReminderWorker:
                         hook_presentation.rendered_text if hook_presentation is not None else None
                     ),
                     sources=sources,
+                    lead_with_content=True,
                 ),
                 claimed_at=claimed_at,
                 reply_markup=compact_item_keyboard(item, reminder_id=reminder_id),
