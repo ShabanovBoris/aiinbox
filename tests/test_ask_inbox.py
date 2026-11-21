@@ -193,15 +193,49 @@ async def test_ask_retrieval_is_bounded_user_scoped_and_keeps_all_lifecycle_stat
             )
         await session.commit()
 
-        hits = await search_item_hits(session, user_id, "Android local", limit=99)
+        hits = await search_item_hits(session, user_id, "Андроид", limit=99)
         assert len(hits) == MAX_ASK_RETRIEVAL_LIMIT
-        assert len(await search_item_hits(session, user_id, "Android local")) == 8
+        assert len(await search_item_hits(session, user_id, "Андроид")) == 8
         assert other.id not in {hit.item_id for hit in hits}
         lifecycle_hits = await search_item_hits(session, user_id, "distinctive lifecycle")
         assert {item.id for item in lifecycle_items} <= {hit.item_id for hit in lifecycle_hits}
 
         # User FTS metacharacters remain quoted tokens and cannot become raw MATCH syntax.
         assert await search_item_hits(session, user_id, '"foo" OR (bar*)') == []
+
+
+async def test_ask_worker_uses_variant_excerpt_and_rejects_foreign_citation(session_factory):
+    user_id = await make_user(session_factory)
+    other_id = await make_user(session_factory, 1000)
+    item_id = await add_ask_evidence(
+        session_factory, user_id, "background " * 2000 + "Android distinctive-evidence"
+    )
+    foreign_id = await add_ask_evidence(session_factory, other_id, "Android private-evidence")
+    question = "Что я сохранял об Андроид?"
+    job = await enqueue(session_factory, question)
+    provider = FakeAskProvider(
+        AskInboxResult(
+            answer="Недопустимый ответ",
+            citations=[AskInboxCitation(item_id=foreign_id)],
+            insufficient_context=False,
+        ),
+        AskInboxResult(
+            answer="Найден материал",
+            citations=[AskInboxCitation(item_id=item_id)],
+            insufficient_context=False,
+        ),
+    )
+
+    assert await AskWorker(session_factory, provider, poll_seconds=0).process_one()
+    assert len(provider.calls) == 2
+    for asked, context, _language in provider.calls:
+        assert asked == question
+        assert "Android distinctive-evidence" in context
+        assert "private-evidence" not in context
+    async with session_factory() as session:
+        delivery = await session.scalar(select(Delivery).where(Delivery.ask_job_id == job.id))
+        assert delivery.type == ASK_RESULT
+        assert delivery.payload_json["answer"] == "Найден материал"
 
 
 @pytest.mark.asyncio

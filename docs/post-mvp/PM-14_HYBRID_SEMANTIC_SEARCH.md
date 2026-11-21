@@ -35,12 +35,11 @@ The PM-13 grounding contract remains unchanged: the model may cite only Items/so
 
 Implementation must not start only because embeddings are fashionable.
 
-Concrete PM-13 failure evidence is recorded in
-[PM-14_RETRIEVAL_EVIDENCE.md](PM-14_RETRIEVAL_EVIDENCE.md): the Russian query
-`Андроид` does not lexically match relevant saved material using `Android`.
-POLISH-07 makes that limitation visible but does not implement semantic
-retrieval. POLISH-08 is complete. Review real usage and explicitly decide whether
-to lift the hold before starting PM-14 runtime work.
+The historical `Андроид` → `Android` miss is recorded in
+[PM-14_RETRIEVAL_EVIDENCE.md](PM-14_RETRIEVAL_EVIDENCE.md). It is now covered by
+an explicit lexical spelling pair and does not justify semantic retrieval.
+Review remaining misses in real usage and explicitly decide whether to lift
+the hold before starting PM-14 runtime work.
 
 Before enabling semantic retrieval, record concrete PM-13 failure cases showing:
 

@@ -1,16 +1,15 @@
 # PM-14 Retrieval Evidence
 
-## Confirmed lexical miss
+## Confirmed lexical miss (fixed by AIINBOX-1)
 
 - Query: `Андроид`
 - Existing saved corpus: contains relevant Items using `Android`.
-- Observed behavior: SQLite FTS5 does not return those Items for the Russian
-  spelling because the current retrieval path matches indexed words rather than
-  translating or transliterating them.
+- Previously, lexical retrieval did not return those Items for the Russian
+  spelling.
 - User impact: a materially relevant saved result is absent, with no indication
   in the previous empty-search response that vocabulary mismatch caused it.
 
-This is evidence for PM-14's hybrid retrieval gate. POLISH-07 discloses the
-lexical limitation in Search and Ask; it does not add aliases, embeddings, or
-semantic retrieval. POLISH-08 is complete. PM-14 runtime work remains on hold
-until a separate explicit decision based on real usage.
+Search and Ask now support the explicit bidirectional spelling pair on FTS5.
+This historical miss no longer demonstrates a gap in the current retrieval path.
+PM-14 runtime work remains on hold until a separate explicit decision based on
+real usage.
