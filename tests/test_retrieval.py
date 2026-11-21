@@ -145,6 +145,34 @@ async def test_fts_finds_title_transcript_web_text_and_archived(session_factory)
         assert (await search_items(session, user_id, "decision"))[0].id == archived_item.id
 
 
+async def test_search_spelling_variants_rank_after_literal_without_duplicates(session_factory):
+    user_id = await make_user(session_factory)
+    other_id = await make_user(session_factory, telegram_user_id=1000)
+    async with session_factory() as session:
+        variant = make_item(user_id, title="Android", note="Android " * 20)
+        literal = make_item(user_id, title="Андроид", note="Android")
+        session.add_all([variant, literal, make_item(other_id, title="Андроид Android")])
+        await session.commit()
+
+        assert [item.id for item in await search_items(session, user_id, "«АНДРОИД»")] == [
+            literal.id,
+            variant.id,
+        ]
+        assert [item.id for item in await search_items(session, user_id, "Андроид", limit=1)] == [
+            literal.id
+        ]
+        assert await search_items(session, user_id, '"unmatched" OR (missing*)') == []
+
+
+async def test_search_spelling_variants_are_bidirectional_and_bounded(session_factory):
+    user_id = await make_user(session_factory)
+    async with session_factory() as session:
+        session.add_all([make_item(user_id, title=f"Андроид {i}") for i in range(22)])
+        await session.commit()
+        assert len(await search_items(session, user_id, "Android")) == 10
+        assert len(await search_items(session, user_id, "Android", limit=99)) == 20
+
+
 async def test_inbox_and_categories_are_user_scoped(session_factory):
     user_id = await make_user(session_factory)
     other_id = await make_user(session_factory, telegram_user_id=1000)

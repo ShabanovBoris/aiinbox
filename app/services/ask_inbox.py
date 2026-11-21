@@ -22,7 +22,7 @@ from app.domain.models import (
 )
 from app.errors import AppError
 from app.llm.base import LlmError, LlmProvider, safe_llm_error_message
-from app.services.retrieval import SearchHit, search_item_hits
+from app.services.retrieval import SearchHit, search_excerpt_terms, search_item_hits
 from app.storage.models import AskJob, Content, Item, ItemSource
 
 log = logging.getLogger(__name__)
@@ -130,11 +130,6 @@ def safe_http_url(value: str | None) -> str | None:
     ):
         return None
     return value
-
-
-def _query_terms(question: str) -> frozenset[str]:
-    """Use Unicode word tokens like FTS5's tokenizer when locating local excerpts."""
-    return frozenset(match.group().casefold() for match in re.finditer(r"[^\W_]+", question))
 
 
 def _excerpt_windows(text: str, terms: frozenset[str]) -> list[tuple[int, int, str, int]]:
@@ -301,7 +296,7 @@ def build_ask_context(
     for item_contents in contents_by_item.values():
         item_contents.sort(key=lambda content: content.id)
 
-    terms = _query_terms(question)
+    terms = search_excerpt_terms(question)
     item_blocks: list[tuple[int, str, set[int], AskReference]] = []
     for item in hit_items:
         item_sources = sources_by_item[item.id]

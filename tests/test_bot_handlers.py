@@ -572,7 +572,7 @@ async def test_guided_search_uses_fts_without_ask_or_item_ingestion(
                 user_note="",
                 item_type=ItemType.LEARN,
                 title="Local Android models",
-                summary="Notes about on-device inference.",
+                summary="Notes about Android on-device inference.",
                 priority_score=50,
             )
         )
@@ -581,11 +581,11 @@ async def test_guided_search_uses_fts_without_ask_or_item_ingestion(
     sent = capture_answers(monkeypatch)
     state = FakeFSMContext(GuidedInput.search.state)
     await on_guided_search_input(
-        make_message(42, message_id=813, text="Android"), settings, session_factory, state
+        make_message(42, message_id=813, text="Андроид"), settings, session_factory, state
     )
 
     assert state.value is None
-    assert "Local Android models" in sent[0]
+    assert sent[0].count("Local Android models") == 1
     async with session_factory() as session:
         assert await session.scalar(select(func.count()).select_from(AskJob)) == 0
         assert await session.scalar(select(func.count()).select_from(Item)) == 1

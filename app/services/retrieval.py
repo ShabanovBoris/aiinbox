@@ -417,10 +417,28 @@ def _page_for_total(requested: int, total: int, page_size: int) -> int:
     return max(0, min(requested, last_page))
 
 
-def _fts_query(query: str) -> str:
+_SPELLING_VARIANTS = {"андроид": "android", "android": "андроид"}
+_WORD = re.compile(r"[^\W_]+")
+
+
+def _variant_words(tokens: Sequence[str]) -> set[str]:
+    variants = set()
+    for token in tokens:
+        words = _WORD.findall(token)
+        if len(words) == 1 and (variant := _SPELLING_VARIANTS.get(words[0].casefold())):
+            variants.add(variant)
+    return variants
+
+
+def search_excerpt_terms(query: str) -> frozenset[str]:
+    """Find literal words and supported spelling variants in persisted evidence."""
+    words = {word.casefold() for word in _WORD.findall(query)}
+    return frozenset(words | _variant_words(query.split()))
+
+
+def _fts_query(tokens: Sequence[str]) -> str:
     # Цитируем токены, чтобы пользовательский синтаксис MATCH не превращался
     # в SQL/FTS exception; OR сохраняет результаты для частичных запросов.
-    tokens = re.findall(r"[^\s]+", query.strip())
     return " OR ".join('"' + token.replace('"', '""') + '"' for token in tokens)
 
 
@@ -433,6 +451,56 @@ class SearchHit:
     matched_snippet: str | None
 
 
+async def _ranked_search(
+    session: AsyncSession,
+    user_id: int,
+    query: str,
+    *,
+    limit: int,
+) -> list[SearchHit]:
+    tokens = query.split()
+    if not tokens or not limit:
+        return []
+    await rebuild_user_search_index(session, user_id)
+    literal = _fts_query(tokens)
+    # Keep existing literal BM25 scores. The variant pass excludes literal hits
+    # before applying its limit; the rebuilt projection has one row per Item.
+    variants = _fts_query(sorted(_variant_words(tokens)))
+    hits: list[SearchHit] = []
+    for match, exclude_literal in ((literal, False), (variants, True)):
+        if not match or len(hits) == limit:
+            break
+        rows = await session.execute(
+            text(
+                "SELECT i.id AS item_id, bm25(item_search) AS fts_rank, "
+                "snippet(item_search, 6, '', '', ' … ', 18) AS matched_snippet "
+                "FROM item_search AS s JOIN items AS i ON i.id = CAST(s.item_id AS INTEGER) "
+                "WHERE s.user_id = :user_id AND i.user_id = :user_id "
+                "AND item_search MATCH :match "
+                "AND (:exclude_literal = 0 OR s.rowid NOT IN ("
+                "SELECT rowid FROM item_search WHERE user_id = :user_id "
+                "AND item_search MATCH :literal)) "
+                "ORDER BY bm25(item_search), i.created_at DESC, i.id DESC LIMIT :limit"
+            ),
+            {
+                "user_id": user_id,
+                "match": match,
+                "literal": literal,
+                "exclude_literal": exclude_literal,
+                "limit": limit - len(hits),
+            },
+        )
+        hits.extend(
+            SearchHit(
+                item_id=row.item_id,
+                fts_rank=float(row.fts_rank),
+                matched_snippet=row.matched_snippet[:1200] if row.matched_snippet else None,
+            )
+            for row in rows
+        )
+    return hits
+
+
 async def search_item_hits(
     session: AsyncSession,
     user_id: int,
@@ -440,51 +508,17 @@ async def search_item_hits(
     *,
     limit: int = _DEFAULT_ASK_LIMIT,
 ) -> list[SearchHit]:
-    """Return bounded user-scoped lexical hits without changing `/search` results."""
-    match = _fts_query(query)
-    if not match:
-        return []
-    limit = max(0, min(limit, _MAX_ASK_LIMIT))
-    await rebuild_user_search_index(session, user_id)
-    rows = await session.execute(
-        text(
-            "SELECT i.id AS item_id, bm25(item_search) AS fts_rank, "
-            "snippet(item_search, 6, '', '', ' … ', 18) AS matched_snippet "
-            "FROM item_search AS s JOIN items AS i ON i.id = CAST(s.item_id AS INTEGER) "
-            "WHERE s.user_id = :user_id AND i.user_id = :user_id "
-            "AND item_search MATCH :match "
-            "ORDER BY bm25(item_search), i.created_at DESC, i.id DESC LIMIT :limit"
-        ),
-        {"user_id": user_id, "match": match, "limit": limit},
-    )
-    return [
-        SearchHit(
-            item_id=row.item_id,
-            fts_rank=float(row.fts_rank),
-            matched_snippet=(row.matched_snippet[:1200] if row.matched_snippet else None),
-        )
-        for row in rows
-    ]
+    """Return bounded user-scoped lexical hits for Ask."""
+    return await _ranked_search(session, user_id, query, limit=max(0, min(limit, _MAX_ASK_LIMIT)))
 
 
 async def search_items(
     session: AsyncSession, user_id: int, query: str, limit: int = _DEFAULT_SEARCH_LIMIT
 ) -> list[Item]:
     """Ищет по Item и extracted content, включая DONE/ARCHIVED Items."""
-    match = _fts_query(query)
-    if not match:
-        return []
     limit = max(0, min(limit, _MAX_SEARCH_RESULTS))
-    await rebuild_user_search_index(session, user_id)
-    rows = await session.execute(
-        text(
-            "SELECT i.* FROM item_search AS s JOIN items AS i ON i.id = s.item_id "
-            "WHERE s.user_id = :user_id AND item_search MATCH :match "
-            "ORDER BY bm25(item_search), i.created_at DESC, i.id DESC LIMIT :limit"
-        ),
-        {"user_id": user_id, "match": match, "limit": limit},
-    )
-    item_ids = [row.id for row in rows]
+    hits = await _ranked_search(session, user_id, query, limit=limit)
+    item_ids = [hit.item_id for hit in hits]
     if not item_ids:
         return []
     items = (await session.scalars(select(Item).where(Item.id.in_(item_ids)))).all()

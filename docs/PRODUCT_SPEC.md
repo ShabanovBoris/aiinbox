@@ -531,7 +531,10 @@ handler разрешает его повторно против текущих �
 
 SQLite FTS5 ищет title, summary, user note, tags и persisted original source
 content. Derived `ATTENTION_HOOK` text не индексируется.
-DONE/ARCHIVED остаются searchable. Default limit — 10.
+DONE/ARCHIVED остаются searchable. По умолчанию — до 10 результатов, максимум — 20.
+`/search`, `GET /v1/search` и подбор источников `/ask` учитывают явно заданную
+пару `Андроид` ↔ `Android` без учёта регистра. Совпадения по исходным словам
+выше совпадений только по варианту; каждый Item возвращается один раз.
 
 ### `/ask`
 
@@ -1114,11 +1117,10 @@ candidate qualification, and arbitration rules. It reports local time, quiet
 hours, intensity, caps, latest/next delivery context, eligible candidates, and
 blockers without creating Reminders, Events, claims, or Item changes.
 
-Search remains SQLite FTS5 lexical retrieval. Empty results explain vocabulary
-mismatch such as translation or transliteration; Ask states that its answer is
-grounded in found saved material and does not claim semantic retrieval. The
-confirmed `Андроид` → `Android` miss is recorded as PM-14 evidence, while
-embeddings and semantic runtime remain on hold.
+Search remains SQLite FTS5 lexical retrieval. Beyond explicitly supported
+spellings, it does not automatically translate, transliterate or find synonyms.
+Ask answers from found saved material and does not claim semantic retrieval.
+Embeddings and semantic runtime remain on hold.
 
 Analysis category is finalized by a dedicated structured topic classifier that
 receives saved source content and category hints, never `UserProfile` or
