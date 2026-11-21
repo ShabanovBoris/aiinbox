@@ -624,6 +624,7 @@ _UNSAFE_COPY = re.compile(
     re.IGNORECASE,
 )
 _WEAK_COPY = re.compile(
+    r"^(?:сократи(?:те)?|снизь(?:те)?|увеличь(?:те)?|уменьши(?:те)?)\b|"
     r"\b(?:стоит прочитать|может быть полез\w*|ты не поверишь|шокирующ\w*|"
     r"гарантиру\w*|рассказывает о|посвящен\w*|здесь есть|"
     r"worth reading|may be useful|you won't believe|shocking|guarantee\w*|discusses)\b",
@@ -633,12 +634,6 @@ _DEPENDENT = re.compile(
     r"^(?:но|однако|при этом|только|лишь|это|они|он|она|вы|впрочем|"
     r"важно|оговорка|исключение|на самом деле|поправка|например|"
     r"but|however|only|this|it|they|you|although|except|correction|caveat)\b",
-    re.IGNORECASE,
-)
-_RESULT = re.compile(
-    r"\b(?:сократил\w*|снизил\w*|увеличил\w*|уменьшил\w*|заменил\w*|"
-    r"ускорил\w*|замедлил\w*|сэкономил\w*|составил\w*|вырос\w*|"
-    r"cut|reduced|increased|saved|replaced|improved|measured)\b",
     re.IGNORECASE,
 )
 
@@ -654,8 +649,6 @@ def _supported_statement(
         or len(hook.split()) < 4
         or _DEPENDENT.search(hook)
         or _WEAK_COPY.search(hook)
-        or not _RESULT.search(hook)
-        or _RESULT.match(hook)
     ):
         return False
     normalized = _normalize_whitespace(source)

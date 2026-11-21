@@ -1197,11 +1197,22 @@ _CACHE_RESULT = "Кэширование сократило задержку на
 
 
 @pytest.mark.parametrize(
-    "statement",
-    [_CACHE_RESULT, "Кэширование сократило задержку до 20 мс вместо прежних 80 мс."],
+    ("hook_type", "statement"),
+    [
+        ("PRACTICAL_VALUE", _CACHE_RESULT),
+        ("PRACTICAL_VALUE", "Кэширование сократило задержку до 20 мс вместо прежних 80 мс."),
+        (
+            "SURPRISING_FACT",
+            "В опросе 2025 года 68% команд назвали контекст главной причиной ошибок.",
+        ),
+        (
+            "CONTRAST",
+            "Раньше команда использовала десять инструментов, теперь оставила только два.",
+        ),
+    ],
 )
 async def test_proactive_hook_keeps_source_provenance_and_focuses_its_action(
-    session_factory, settings, statement
+    session_factory, settings, hook_type, statement
 ):
     """Enrich only the claimed proactive card and put its supporting source first."""
     _, item_id = await make_ready_item(
@@ -1230,7 +1241,7 @@ async def test_proactive_hook_keeps_source_provenance_and_focuses_its_action(
         attention_hook_generation=AttentionHookGeneration(
             candidates=[
                 AttentionHookCandidate(
-                    hook_type="PRACTICAL_VALUE",
+                    hook_type=hook_type,
                     text=statement,
                     evidence_excerpt=statement,
                     source_content_id=evidence_id,
