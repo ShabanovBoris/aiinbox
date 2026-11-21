@@ -15,7 +15,12 @@ from app.domain.priority import PriorityEngine
 from app.errors import AppError
 from app.llm.base import LlmError
 from app.services.actions import apply_item_action
-from app.services.analysis import CHUNK_SUMMARY_GENERATOR_VERSION, Analyzer, split_text
+from app.services.analysis import (
+    CHUNK_SUMMARY_GENERATOR_VERSION,
+    Analyzer,
+    bounded_chunk_aggregate,
+    split_text,
+)
 from app.services.delivery import ITEM_FAILED, ITEM_READY
 from app.services.ingestion import ingest_external_text, ingest_message
 from app.services.processing import ProcessingPipeline
@@ -494,6 +499,27 @@ async def test_compatible_versioned_chunk_summaries_are_reused(session_factory):
         )
 
     assert provider.summarize_calls == ["x" * 5]
+
+
+def test_bounded_aggregate_retains_every_late_conclusion_at_full_checkpoint_size():
+    """Twenty full 120-word checkpoints must not truncate the FINAL_ANSWER at each end."""
+    summaries = [
+        " ".join(f"evidence{index}word{word}" for word in range(115))
+        + f" FINAL_ANSWER_{index}: add a skill only after a demonstrated failure."
+        for index in range(20)
+    ]
+    assert all(len(summary) > 700 for summary in summaries)
+
+    aggregate = bounded_chunk_aggregate(summaries, chunk_size_chars=12_000)
+
+    assert len(aggregate) <= 12_000
+    assert "CHUNK 1/20:" in aggregate
+    assert "CHUNK 20/20:" in aggregate
+    assert " … " in aggregate  # the omitted middle is explicit, never silent
+    assert "evidence0word0" in aggregate  # opening context survives
+    for index in range(20):
+        assert f"FINAL_ANSWER_{index}:" in aggregate
+    assert aggregate.index("FINAL_ANSWER_0:") < aggregate.index("FINAL_ANSWER_19:")
 
 
 async def test_long_content_aggregate_preserves_order_and_late_conclusion(session_factory):

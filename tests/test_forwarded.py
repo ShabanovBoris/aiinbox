@@ -517,8 +517,10 @@ def test_video_response_language_uses_profile_instead_of_transcript_language(sou
     prompt = build_user_message(content, DEFAULT_PROFILE, [])
 
     assert "RESPONSE LANGUAGE (profile): ru" in prompt
-    assert "When the user message supplies RESPONSE LANGUAGE" in SYSTEM_PROMPT
-    assert "primary source language" in SYSTEM_PROMPT
+    assert "SOURCE LANGUAGE (extracted metadata): en" in prompt
+    system_prompt = " ".join(SYSTEM_PROMPT.split())
+    assert "The user message contains exactly one RESPONSE LANGUAGE line" in system_prompt
+    assert "never the response language" in system_prompt
 
 
 def test_nonvideo_content_keeps_its_existing_language_rule():
@@ -531,7 +533,10 @@ def test_nonvideo_content_keeps_its_existing_language_rule():
     prompt = build_user_message(content, DEFAULT_PROFILE, [])
 
     assert "RESPONSE LANGUAGE (profile)" not in prompt
-    assert "Otherwise, use the content's language" in SYSTEM_PROMPT
+    assert "RESPONSE LANGUAGE (content): en" in prompt
+    assert "write title, summary" in prompt.casefold()
+    assert "use the primary language of the captured text" in " ".join(SYSTEM_PROMPT.split())
+    assert '"preferred_language"' not in prompt
 
 
 def test_multi_source_prompt_requires_whole_item_synthesis():

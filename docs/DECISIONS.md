@@ -571,29 +571,43 @@ a memory bound, and sensitive temporary artifacts need bounded retention.
 
 Context: profile and historical categories were supplied beside source content and
 could pull topic classification toward the user's profession. Summaries also tended
-to describe the medium, while durable chunk summaries could outlive their prompt
+to describe the medium, titles still announced a topic after the material had already
+answered its question, while durable chunk summaries could outlive their prompt
 semantics.
 
 Decision: derive title, summary and category from captured content. Use the profile
-only for user-relative scoring and the existing response-language rule; treat
-existing categories as optional naming hints. Put supported outcomes first in
-summary, and version durable chunk summaries so incompatible checkpoints are
-recomputed and replaced rather than reused.
+only for user-relative scoring and the response-language rule; treat existing
+categories as optional naming hints. Make the title carry the supported answer,
+result or thesis, and make the summary carry the evidence that explains and
+qualifies it instead of restating it. Chunk summaries retain the question/goal/thesis,
+its resolved-or-open state, results with caveats, and contradictions; when one
+checkpoint exceeds its aggregate share, keep its opening and its late conclusion and
+mark the omitted middle rather than silently cutting the end. Version durable chunk
+summaries so incompatible checkpoints are recomputed and replaced rather than reused.
+Language is an explicit `RESPONSE LANGUAGE` line, and `preferred_language` is not
+duplicated inside profile JSON where it would compete with the content-language rule;
+extracted source language is a separate signal for the schema `language` field.
 
 Reason: topic identity must remain faithful to the saved source, while personalization
-belongs to relevance and priority.
+belongs to relevance and priority. A reader should get the conclusion from the title
+and the reasoning from the summary without opening the source, and a late answer must
+survive both chunking and language selection.
 
-Consequences: new analysis and explicit retries can produce more specific topics and
-outcome-first summaries; historical READY Items and manual category corrections are
-not rewritten. Any future change to chunk-summary semantics must increment its
-generator version. No schema migration is required.
+Consequences: new analysis and explicit retries that actually re-enter `ANALYZING`
+can produce answer-first titles and evidence-first summaries; historical READY Items
+and manual category corrections are not rewritten, and no backfill or migration is
+introduced. Any future change to chunk-summary semantics must increment its
+generator version. Real generation quality is reviewed only through the opt-in
+`eval-analysis-quality` command, not through pytest prompt-word assertions; that
+command checks title/summary evidence, category, injected scores, winner claims and
+independent-source coverage, and still requires semantic review.
 
 ## D-039 — Telegram Item cards separate saved content from controls
 
 Context: READY cards accumulated category/type/ranking fields and every available
 action, making the saved material harder to scan and reopen.
 
-Decision: default cards show confirmation, title, outcome-first summary and only
+Decision: default cards show confirmation, title, evidence-first summary and only
 material completeness warnings. Source/resend actions stay primary; lifecycle,
 interest, feedback and metadata move into ephemeral inline submenus that reload
 owner-scoped canonical Item state.
@@ -633,7 +647,7 @@ proactive reminders still exposed ranking scores, age, and generic hook
 wrappers. Generic motivation copy also read like backlog telemetry.
 
 Decision: Proactive reminders show the Item title and either a current
-grounded v2 hook, the outcome-first summary as a bounded presentation fallback,
+grounded v2 hook, the evidence-first summary as a bounded presentation fallback,
 or the title alone. Ranking values stay in scheduling and Reminder attribution,
 not default Telegram copy. Hook templates are direct; source/original access
 stays primary and PM-11 reactions move into an ephemeral More menu. Generic

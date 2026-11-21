@@ -1,18 +1,29 @@
 import argparse
 import asyncio
 import hashlib
+import json
+import logging
+import re
 import sqlite3
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
+from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.engine import make_url
 
 from app.config import Settings
+from app.domain.enums import SourceType
+from app.domain.models import AnalysisResult, NormalizedContent, UserProfile
+from app.llm.base import LlmError, LlmProvider
 from app.main import build_provider
+from app.services.analysis import bounded_chunk_aggregate, split_text
 from app.services.retrieval import rebuild_user_search_index
 from app.storage.database import make_engine, make_session_factory
 from app.storage.models import User
+
+log = logging.getLogger(__name__)
 
 
 def sqlite_database_path(database_url: str) -> Path:
@@ -284,6 +295,230 @@ async def smoke_external(settings: Settings) -> tuple[str, str]:
     return model, identity.username or str(identity.id)
 
 
+QUALITY_FIXTURE_VERSION = 3
+_CYRILLIC_LETTER = re.compile(r"[А-Яа-яЁё]")
+_LATIN_LETTER = re.compile(r"[A-Za-z]")
+
+
+@dataclass(frozen=True, slots=True)
+class QualityCaseReport:
+    """One opt-in evaluation result; lexical checks never replace human review."""
+
+    case_id: str
+    title: str
+    summary: str
+    category: str
+    language: str
+    goal_fit: float
+    failed_checks: tuple[str, ...]
+    title_chars: int
+    chunk_count: int
+
+
+def _match_any(text: str, alternatives: list[str]) -> str | None:
+    lowered = text.casefold()
+    return next((term for term in alternatives if term.casefold() in lowered), None)
+
+
+def _category_matches(actual: str, expected: str) -> bool:
+    """Accept a reused label or a more specific label that contains the expected topic."""
+    actual_normalized = _normalize(actual)
+    expected_normalized = _normalize(expected)
+    if not actual_normalized or not expected_normalized:
+        return False
+    if len(expected_normalized) < 4:
+        # Short labels such as “AI” or “ИИ” would otherwise match unrelated
+        # substrings such as “training”; accept them only as whole words.
+        return (
+            re.search(rf"(?<!\w){re.escape(expected_normalized)}(?!\w)", actual_normalized)
+            is not None
+        )
+    return (
+        actual_normalized == expected_normalized
+        or expected_normalized in actual_normalized
+        or actual_normalized in expected_normalized
+    )
+
+
+def _language_matches(text: str, language: str) -> bool:
+    """Detect the response language lexically; a human still reviews the actual prose."""
+    cyrillic = len(_CYRILLIC_LETTER.findall(text))
+    latin = len(_LATIN_LETTER.findall(text))
+    if language == "ru":
+        return cyrillic > 0 and cyrillic >= latin
+    if language == "en":
+        return latin > 0 and cyrillic == 0
+    raise ValueError(f"unsupported fixture response_language={language!r}")
+
+
+def _normalize(text: str) -> str:
+    # ё/е are interchangeable in Russian category labels and evidence terms.
+    return " ".join(text.casefold().replace("ё", "е").split()).rstrip(".")
+
+
+def analysis_quality_failures(
+    case: dict, result: AnalysisResult, category: str | None = None
+) -> list[str]:
+    """Check only measurable properties; semantic truthfulness stays a manual review step."""
+    expected = case["expected"]
+    title = result.title
+    summary = result.summary
+    checked_category = result.category if category is None else category
+    failures = []
+    if title.strip().endswith("?"):
+        failures.append("title_is_question")
+    source_title = case.get("source_title")
+    if source_title and _normalize(title) == _normalize(source_title):
+        failures.append("title_copies_source_title")
+    for alternatives in expected["title_evidence_groups"]:
+        if _match_any(title, alternatives) is None:
+            failures.append("title_missing:" + "|".join(alternatives))
+    for term in expected["title_forbidden_terms"]:
+        if term.casefold() in title.casefold():
+            failures.append(f"title_forbidden:{term}")
+    for alternatives in expected["summary_evidence_groups"]:
+        if _match_any(summary, alternatives) is None:
+            failures.append("summary_missing:" + "|".join(alternatives))
+    if expected["summary_adds_evidence"]:
+        normalized_title = _normalize(title)
+        normalized_summary = _normalize(summary)
+        # A summary may share vocabulary with the title; it must not repeat it
+        # verbatim at the start or anywhere later in the explanation.
+        if normalized_summary == normalized_title or normalized_summary.startswith(
+            normalized_title
+        ):
+            failures.append("summary_repeats_title")
+        elif len(normalized_title) >= 20 and normalized_title in normalized_summary:
+            failures.append("summary_repeats_title")
+    for term in expected.get("summary_forbidden_terms", []):
+        if term.casefold() in summary.casefold():
+            failures.append(f"summary_forbidden:{term}")
+    expected_category = expected.get("category")
+    if expected_category:
+        candidates = [expected_category, *expected.get("category_aliases", [])]
+        if not any(_category_matches(checked_category, candidate) for candidate in candidates):
+            failures.append(f"category_mismatch:{expected_category}")
+    for forbidden in expected.get("forbidden_categories", []):
+        if _category_matches(checked_category, forbidden):
+            failures.append(f"category_forbidden:{forbidden}")
+    max_goal_fit = expected.get("max_goal_fit")
+    if max_goal_fit is not None and result.goal_fit > max_goal_fit:
+        failures.append(f"goal_fit_above_max:{max_goal_fit:g}")
+    if expected.get("must_not_claim_winner"):
+        for term in expected.get("winner_forbidden_terms", []):
+            if term.casefold() in f"{title}\n{summary}".casefold():
+                failures.append(f"winner_claim:{term}")
+    if expected.get("must_represent_each_source"):
+        combined = f"{title}\n{summary}"
+        for alternatives in expected.get("distinct_topic_groups", []):
+            if _match_any(combined, alternatives) is None:
+                failures.append("source_missing:" + "|".join(alternatives))
+    for prefix in expected.get("forbidden_summary_prefixes", []):
+        if summary.strip().casefold().startswith(prefix.casefold()):
+            failures.append(f"summary_opener:{prefix}")
+    response_language = case["response_language"]
+    if not _language_matches(title, response_language):
+        failures.append(f"title_language:{response_language}")
+    if not _language_matches(summary, response_language):
+        failures.append(f"summary_language:{response_language}")
+    source_language = case.get("source_language")
+    if source_language and not result.language.casefold().startswith(source_language.casefold()):
+        failures.append(f"source_language:{source_language}")
+    return failures
+
+
+def load_quality_fixture(path: Path) -> list[dict]:
+    """Read the versioned manual-evaluation corpus; the path is explicit by design."""
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if payload.get("version") != QUALITY_FIXTURE_VERSION:
+        raise ValueError(f"fixture {path} must declare version {QUALITY_FIXTURE_VERSION}")
+    cases = payload.get("cases")
+    if not isinstance(cases, list) or not cases:
+        raise ValueError(f"fixture {path} has no cases")
+    return cases
+
+
+async def _evaluate_quality_case(provider: LlmProvider, case: dict) -> QualityCaseReport:
+    content = NormalizedContent(
+        source_type=SourceType(case["source_type"]),
+        title=case.get("source_title"),
+        text=case["content"],
+        language=case.get("source_language"),
+        user_note=case.get("user_note"),
+        metadata=case.get("metadata", {}),
+    )
+    chunk_count = 0
+    chunk_size_chars = case.get("chunk_size_chars")
+    if chunk_size_chars:
+        chunks = split_text(content.text, chunk_size_chars)
+        summaries = []
+        for chunk in chunks:
+            summary = (await provider.summarize_chunk(chunk)).strip()
+            if not summary:
+                raise RuntimeError(f"empty chunk summary for case {case['id']}")
+            summaries.append(summary)
+        content = content.model_copy(
+            update={
+                "text": bounded_chunk_aggregate(summaries, chunk_size_chars=chunk_size_chars),
+                "metadata": {
+                    **content.metadata,
+                    "_analysis_chunk_summary_count": len(summaries),
+                },
+            }
+        )
+        chunk_count = len(summaries)
+
+    result = await provider.analyze(
+        content,
+        UserProfile.model_validate(case.get("profile", {})),
+        case.get("existing_categories", []),
+    )
+    # Category is produced by the independent topic-classification stage in
+    # production, so the evaluation must check that stage rather than only the
+    # primary AnalysisResult field it later replaces.
+    classification = await provider.classify_topic(content, case.get("existing_categories", []))
+    return QualityCaseReport(
+        case_id=case["id"],
+        title=result.title,
+        summary=result.summary,
+        category=classification.category,
+        language=result.language,
+        goal_fit=result.goal_fit,
+        failed_checks=tuple(analysis_quality_failures(case, result, classification.category)),
+        title_chars=len(result.title),
+        chunk_count=chunk_count,
+    )
+
+
+async def evaluate_analysis_quality(
+    settings: Settings, fixture: Path, case_id: str | None = None
+) -> list[QualityCaseReport]:
+    """Run the real configured provider over the answer-first quality corpus.
+
+    This command is opt-in because it performs live paid LLM calls; it writes no
+    Telegram messages and no database rows. The chunked case performs real chunk
+    summaries and uses the production bounded aggregation.
+    """
+    cases = load_quality_fixture(fixture)
+    if case_id is not None:
+        cases = [case for case in cases if case["id"] == case_id]
+        if not cases:
+            raise ValueError(f"fixture {fixture} has no case {case_id!r}")
+    provider = build_provider(settings)
+    reports = []
+    for case in cases:
+        report = await _evaluate_quality_case(provider, case)
+        log.info(
+            "analysis quality eval case=%s title_chars=%s chunks=%s checks=%s",
+            report.case_id,
+            report.title_chars,
+            report.chunk_count,
+            "passed" if not report.failed_checks else "failed",
+        )
+        reports.append(report)
+    return reports
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Define one discoverable operational entry point for deployment tooling."""
     parser = argparse.ArgumentParser(prog="python -m app.ops")
@@ -311,6 +546,13 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("health", help="exit non-zero when the local DB/config is unhealthy")
     subparsers.add_parser("rebuild-search", help="rebuild derived FTS rows from canonical data")
     subparsers.add_parser("smoke", help="call the configured LLM and Telegram APIs")
+
+    quality_eval = subparsers.add_parser(
+        "eval-analysis-quality",
+        help="run the opt-in live answer-first analysis quality evaluation",
+    )
+    quality_eval.add_argument("--fixture", type=Path, required=True)
+    quality_eval.add_argument("--case")
     return parser
 
 
@@ -374,6 +616,33 @@ def main() -> None:
     if args.command == "smoke":
         model, telegram = asyncio.run(smoke_external(settings))
         print(f"smoke=ok provider={settings.llm_provider} model={model} telegram={telegram}")
+        return
+
+    if args.command == "eval-analysis-quality":
+        try:
+            reports = asyncio.run(evaluate_analysis_quality(settings, args.fixture, args.case))
+        except (LlmError, ValidationError, OSError, ValueError, RuntimeError) as exc:
+            # Operator command: fail fast with a bounded reason, never with content.
+            detail = exc.code if isinstance(exc, LlmError) else f"{type(exc).__name__}: {exc}"
+            raise SystemExit(f"eval=failed error={detail}") from None
+        for report in reports:
+            status = "PASS" if not report.failed_checks else "FAIL"
+            print(
+                f"case={report.case_id} status={status} title_chars={report.title_chars} "
+                f"chunks={report.chunk_count} category={report.category!r} "
+                f"language={report.language!r} goal_fit={report.goal_fit:.2f} "
+                f"title={report.title!r}"
+            )
+            print(f"case={report.case_id} summary={report.summary!r}")
+            if report.failed_checks:
+                print(f"case={report.case_id} checks={' '.join(report.failed_checks)}")
+        failed = [report.case_id for report in reports if report.failed_checks]
+        if failed:
+            raise SystemExit(f"eval=failed cases={','.join(failed)}")
+        print(
+            f"eval=passed cases={len(reports)} "
+            "note=lexical-checks-only; review title and summary semantics manually"
+        )
 
 
 if __name__ == "__main__":

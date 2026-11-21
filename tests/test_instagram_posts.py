@@ -21,6 +21,7 @@ from app.extractors import instagram_post_metadata as metadata
 from app.extractors.instagram_worker import _compact_element, _with_post_query, post_info
 from app.extractors.web import PinningTransport
 from app.llm.base import TranscriptionSegmentCheckpoint
+from app.llm.openai import build_user_message
 from app.services.actions import apply_item_action
 from app.services.delivery import enqueue_item_video_delivery
 from app.services.url_parsing import instagram_post_shortcode
@@ -356,11 +357,17 @@ async def test_carousel_budget_returns_partial_and_manual_retry_resumes(tmp_path
     item = await ingest_reel(session_factory, text=POST)
     extractor = FixturePosts(tmp_path, ["photo", "photo"])
     extractor.bytes_per_element = media.POST_DOWNLOAD_BYTES // 2 + 1
-    worker = make_worker(session_factory, extractor, FakeLlmProvider(vision=True))
+    provider = FakeLlmProvider(vision=True)
+    worker = make_worker(session_factory, extractor, provider)
     assert await worker.process_one()
     partial, source, _ = await _state(session_factory, item.id)
     assert partial.analysis_completeness == "PARTIAL"
     assert source.instagram_post_progress["budget_exhausted"]
+    analyzed_content, profile, _ = provider.calls[0]
+    assert analyzed_content.metadata["instagram_post_partial"] is True
+    prompt = build_user_message(analyzed_content, profile, [])
+    assert "PARTIAL EXTRACTION (Instagram post)" in prompt
+    assert "Missing elements are unavailable evidence" in prompt
     assert "Лимит загрузки поста исчерпан" in format_ready_item(partial, [source])
     assert await apply_item_action(session_factory, 42, item.id, "retry")
     assert await worker.process_one()

@@ -15,7 +15,7 @@ from app.storage.models import Content, Item
 
 # Increment when chunk-summary semantics change so durable evidence is not silently
 # reused after a prompt change that asks the model to preserve different information.
-CHUNK_SUMMARY_GENERATOR_VERSION = 2
+CHUNK_SUMMARY_GENERATOR_VERSION = 3
 
 
 def split_text(text: str, chunk_size_chars: int, overlap_chars: int = 0) -> list[str]:
@@ -91,7 +91,9 @@ class Analyzer:
             summaries = await self._durable_chunk_summaries(session, item_id, chunks)
             content = content.model_copy(
                 update={
-                    "text": self._bounded_aggregate(summaries),
+                    "text": bounded_chunk_aggregate(
+                        summaries, chunk_size_chars=self.chunk_size_chars
+                    ),
                     "metadata": {
                         **content.metadata,
                         "_analysis_chunk_summary_count": len(summaries),
@@ -225,28 +227,54 @@ class Analyzer:
             await session.commit()
         return summaries
 
-    def _bounded_aggregate(self, summaries: list[str]) -> str:
-        """Aggregate summaries while keeping final analyzer input bounded."""
-        if not summaries:
-            return ""
-        separator = "\n\n"
-        labels = [f"CHUNK {index + 1}/{len(summaries)}:\n" for index in range(len(summaries))]
-        label_budget = sum(map(len, labels)) + len(separator) * (len(summaries) - 1)
-        summary_budget = self.chunk_size_chars - label_budget
-        if summary_budget < len(summaries):
-            # Small test/config budgets cannot fit useful labels; retain equal-share
-            # truncation so each chunk still contributes when the bound permits.
-            budget = max(1, self.chunk_size_chars - len(separator) * (len(summaries) - 1))
-            per_summary = max(1, budget // len(summaries))
-            aggregate = separator.join(summary[:per_summary] for summary in summaries)
-            return aggregate[: self.chunk_size_chars]
 
-        per_summary = summary_budget // len(summaries)
-        # These order labels are prompt framing only; durable rows keep plain
-        # summaries so search/export never expose analyzer bookkeeping.
-        return separator.join(
-            f"{label}{summary[:per_summary]}" for label, summary in zip(labels, summaries)
-        )
+_OMISSION_MARKER = " … "
+
+
+def _bounded_summary(text: str, limit: int) -> str:
+    """Keep both the setup and the late conclusion when one checkpoint must shrink.
+
+    Head-only slicing silently drops a FINAL_ANSWER or caveat that the chunk prompt
+    deliberately puts at the end, so a bounded aggregate keeps both edges and marks
+    the omitted middle instead of pretending the summary was complete.
+    """
+    if len(text) <= limit:
+        return text
+    if limit <= len(_OMISSION_MARKER) + 2:
+        return text[:limit]
+    body = limit - len(_OMISSION_MARKER)
+    head = (body + 1) // 2
+    tail = body - head
+    return text[:head].rstrip() + _OMISSION_MARKER + text[-tail:].lstrip()
+
+
+def bounded_chunk_aggregate(summaries: list[str], *, chunk_size_chars: int) -> str:
+    """Aggregate ordered checkpoints within one bounded analyzer input.
+
+    Shared with the opt-in quality evaluation so manual review exercises exactly
+    the production aggregation instead of a reimplementation.
+    """
+    if not summaries:
+        return ""
+    separator = "\n\n"
+    labels = [f"CHUNK {index + 1}/{len(summaries)}:\n" for index in range(len(summaries))]
+    label_budget = sum(map(len, labels)) + len(separator) * (len(summaries) - 1)
+    summary_budget = chunk_size_chars - label_budget
+    if summary_budget < len(summaries):
+        # Small test/config budgets cannot fit useful labels; retain equal-share
+        # truncation so each chunk still contributes when the bound permits.
+        budget = max(1, chunk_size_chars - len(separator) * (len(summaries) - 1))
+        per_summary = max(1, budget // len(summaries))
+        aggregate = separator.join(_bounded_summary(summary, per_summary) for summary in summaries)
+        return aggregate[:chunk_size_chars]
+
+    per_summary = summary_budget // len(summaries)
+    # These order labels are prompt framing only; durable rows keep plain
+    # summaries so search/export never expose analyzer bookkeeping.
+    return separator.join(
+        f"{label}{_bounded_summary(summary, per_summary)}"
+        for label, summary in zip(labels, summaries)
+    )
 
 
 async def existing_categories(session: AsyncSession, user_id: int) -> list[str]:

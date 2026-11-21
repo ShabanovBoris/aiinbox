@@ -352,6 +352,57 @@ docker compose exec -T app python -m app.ops smoke
 возвращает provider/model и bot username, но не credentials. Live smoke не входит
 в default pytest/CI, чтобы тесты не зависели от внешней сети и production secrets.
 
+## Opt-in answer-first quality evaluation
+
+Deterministic pytest checks protect the prompt contract, the fixture corpus and the
+schema, but they cannot prove generation quality. After changing `SYSTEM_PROMPT`,
+`CHUNK_SUMMARY_SYSTEM_PROMPT`, or the analysis-quality fixture, run the live
+evaluation against the configured provider:
+
+```bash
+uv run python -m app.ops eval-analysis-quality \
+  --fixture tests/fixtures/analysis_quality_v3.json
+
+# one scenario:
+uv run python -m app.ops eval-analysis-quality \
+  --fixture tests/fixtures/analysis_quality_v3.json --case inconclusive
+```
+
+It uses the same environment as the app (`LLM_PROVIDER` plus `OPENAI_API_KEY` /
+`OPENAI_ANALYSIS_MODEL` or `OPENROUTER_API_KEY` / `OPENROUTER_ANALYSIS_MODEL`). Each
+case performs one real `analyze` call and one real `classify_topic` call, because
+production category comes from the separate classifier; cases with `chunk_size_chars`
+first perform one real `summarize_chunk` call per chunk and then use the production
+bounded aggregate. The cost is small but real. The command writes no database rows
+and sends no Telegram messages. It is not part of pytest or CI.
+
+The fixture path is explicit because the Docker image does not include `tests/`. To
+run it in a container, mount the corpus:
+
+```bash
+docker compose run --rm -v "$PWD/tests:/app/tests" app \
+  python -m app.ops eval-analysis-quality \
+  --fixture tests/fixtures/analysis_quality_v3.json
+```
+
+Checks are lexical and measurable: required title evidence groups, forbidden title
+terms, verbatim source-title reuse, required summary evidence, a summary that does
+not repeat the title verbatim, forbidden summary terms/openers, response language,
+source language, category match and forbidden categories, injected `goal_fit`,
+winner claims for inconclusive material, coverage of every independent source, and
+that the title is a statement rather than a question. `PASS` means those properties
+hold; it does not prove that a confident title is factually supported, and a correct
+paraphrase can miss an expected term. Review the printed title, summary, category and
+language semantically for every case before trusting the result. Any failed check
+prints `case=<id> checks=<...>` and the command exits non-zero.
+
+Generation remains stochastic even though the prompt now carries one explicit
+`RESPONSE LANGUAGE` line, omits `preferred_language` from profile JSON where it would
+compete, and passes extracted source language separately. A single full-corpus run is
+a sample, not a guarantee: repeat the named risky cases (`--case ...`) when reviewing
+a prompt change, and treat recurring language flips, category drift, or a confident
+title unsupported by the printed summary as real defects rather than lexical noise.
+
 ## Production deploy recipe
 
 Минимальный single-host deployment:
