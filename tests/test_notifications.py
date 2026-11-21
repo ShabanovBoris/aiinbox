@@ -96,6 +96,7 @@ async def make_ready_item(
     snoozed_until=None,
     attention_enabled=False,
     telegram_message_id=None,
+    next_action=None,
 ):
     async with session_factory() as session:
         user = User(
@@ -116,6 +117,7 @@ async def make_ready_item(
             user_note="item",
             item_type=ItemType.ACTION,
             title="Сделать задачу",
+            next_action=next_action,
             priority_score=80,
             snoozed_until=snoozed_until,
         )
@@ -244,7 +246,7 @@ async def test_empty_digest_cancels_slot_without_delivery(session_factory, defer
 
 
 async def test_timezone_digest_is_once_per_local_day(session_factory):
-    _, _ = await make_ready_item(session_factory)
+    _, item_id = await make_ready_item(session_factory, next_action="Проверить результаты.")
     bot = FakeBot()
     worker = ReminderWorker(session_factory, bot)
     now = datetime(2026, 9, 14, 6, 30)  # 09:30 in Europe/Moscow
@@ -252,7 +254,9 @@ async def test_timezone_digest_is_once_per_local_day(session_factory):
     assert await worker.process_once(now) == 1
     assert await worker.process_once(now + timedelta(minutes=1)) == 0
     assert len(bot.messages) == 1
-    assert bot.messages[0][1] == "☀️ На сегодня\n\n🎯 Сделать задачу"
+    assert bot.messages[0][1] == "🎯 Сделать задачу\nПроверить результаты."
+    [[button]] = bot.messages[0][2]["reply_markup"].inline_keyboard
+    assert (button.callback_data, button.url) == (f"item:view:{item_id}", None)
     await assert_digest_outcome(session_factory, slot="2026-09-14", now=now, sent_at=now)
 
 
@@ -638,6 +642,7 @@ async def test_snoozed_item_becomes_active_and_notifies(session_factory):
         state=ItemState.ACTIVE,
         snoozed_until=None,
         telegram_message_id=732,
+        next_action="Проверить результаты.",
     )
     await apply_item_action(session_factory, 42, item_id, "snooze", until)
     await update_notification_settings(session_factory, 42, daily_digest_enabled=False)
@@ -663,14 +668,16 @@ async def test_snoozed_item_becomes_active_and_notifies(session_factory):
         assert item.state is ItemState.ACTIVE
         assert item.snoozed_until is None
         assert reminder.status == "SENT"
-    assert "⏰ Вы хотели вернуться к этому:" in bot.messages[0][1]
-    callbacks = {
-        button.callback_data
+    assert len(bot.messages) == 1
+    assert bot.messages[0][1] == (
+        "⏰ Вы хотели вернуться к этому:\n\nСделать задачу\n\nПроверить результаты."
+    )
+    actions = {
+        (button.callback_data, button.url)
         for row in bot.messages[0][2]["reply_markup"].inline_keyboard
         for button in row
-        if button.callback_data
     }
-    assert callbacks == {f"item:archive:{item_id}", f"item:view:{item_id}"}
+    assert actions == {(f"item:archive:{item_id}", None), (f"item:view:{item_id}", None)}
 
 
 async def test_failed_snooze_send_does_not_start_proactive_minimum_gap(session_factory):

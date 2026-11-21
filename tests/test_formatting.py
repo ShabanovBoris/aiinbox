@@ -6,6 +6,7 @@ import pytest
 from app.bot.formatting import (
     format_attention_item,
     format_categories,
+    format_daily_digest,
     format_item_details,
     format_item_failure,
     format_item_list,
@@ -408,6 +409,7 @@ def test_manual_attention_and_snooze_copy_name_the_concrete_save():
     item = make_ready_item()
     item.title = "A saved title"
     item.summary = "Persisted content summary."
+    item.next_action = None
     attention = format_attention_item(2, 5, item, None)
     snooze = format_snooze_reminder(item)
 
@@ -417,6 +419,37 @@ def test_manual_attention_and_snooze_copy_name_the_concrete_save():
     assert snooze.startswith("⏰ Вы хотели вернуться к этому:")
     assert "A saved title" in snooze
     assert "Persisted content summary." in snooze
+
+
+@pytest.mark.parametrize(
+    ("action", "summary", "context"),
+    [
+        ("  Check the scan.  ", "Different summary.", "Check the scan."),
+        (" \n ", "  New API.\n  Migration notes. ", "New API. Migration notes."),
+        (None, " \n ", ""),
+    ],
+)
+def test_scheduled_messages_use_saved_action_then_summary_then_title(action, summary, context):
+    item = make_ready_item()
+    item.title = "Release notes"
+    item.next_action = action
+    item.summary = summary
+    item.estimated_action_minutes = None
+
+    digest = "🎯 Release notes" + (f"\n{context}" if context else "")
+    snooze = "⏰ Вы хотели вернуться к этому:\n\nRelease notes"
+    assert format_daily_digest([item]) == digest
+    assert format_today([item]) == f"🎯 Сегодня\n\n{digest}"
+    assert format_snooze_reminder(item) == snooze + (f"\n\n{context}" if context else "")
+
+
+def test_scheduled_summary_previews_are_bounded():
+    item = make_ready_item()
+    item.next_action = None
+    item.summary = "x" * 800
+
+    assert format_daily_digest([item]).splitlines()[-1] == "x" * 219 + "…"
+    assert format_snooze_reminder(item).splitlines()[-1] == "x" * 699 + "…"
 
 
 def test_category_format_stays_within_telegram_limit():

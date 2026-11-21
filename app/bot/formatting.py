@@ -373,26 +373,39 @@ def format_profile(profile: UserProfile) -> str:
 def format_today(
     items: list[Item],
     sources_by_item: Mapping[int, Sequence[ItemSource]] | None = None,
-    *,
-    heading: str = "🎯 Сегодня",
 ) -> str:
-    """Share one concrete-content projection for /today and scheduled подборку."""
     if not items:
-        return f"{heading}\n\nНа сегодня пока нечего вернуть в фокус."
+        return "🎯 Сегодня\n\nНа сегодня пока нечего вернуть в фокус."
+    return _fit_message(["🎯 Сегодня", "", *_today_item_lines(items, sources_by_item)])
 
-    # ❌ Удалены позиции и числовые рейтинги из списка дня: человеку показываются
-    # конкретные сохранения и следующий полезный шаг, а порядок остаётся у TodayService.
-    lines = [heading]
+
+def format_daily_digest(
+    items: list[Item],
+    sources_by_item: Mapping[int, Sequence[ItemSource]] | None = None,
+) -> str:
+    return _fit_message(_today_item_lines(items, sources_by_item))
+
+
+def _saved_context(item: Item, summary_limit: int) -> str:
+    return (item.next_action or "").strip() or _summary_preview(item, summary_limit)
+
+
+def _today_item_lines(
+    items: list[Item],
+    sources_by_item: Mapping[int, Sequence[ItemSource]] | None,
+) -> list[str]:
+    lines: list[str] = []
     entries = item_navigation_entries(items, sources_by_item)
     for item, entry in zip(items, entries, strict=True):
-        lines.extend(["", f"🎯 {entry.label}"])
-        action = item.next_action.strip() if item.next_action and item.next_action.strip() else ""
-        content = action or _summary_preview(item, 220)
+        if lines:
+            lines.append("")
+        lines.append(f"🎯 {entry.label}")
+        content = _saved_context(item, 220)
         if content:
             lines.append(content)
         if item.estimated_action_minutes is not None:
             lines.append(f"≈ {item.estimated_action_minutes} минут")
-    return _fit_message(lines)
+    return lines
 
 
 def format_weekly_review(
@@ -518,11 +531,10 @@ def format_motivation_reminder(
 
 
 def format_snooze_reminder(item: Item, sources: Sequence[ItemSource] = ()) -> str:
-    """Return a snoozed save with its title and persisted summary beside source actions."""
     lines = ["⏰ Вы хотели вернуться к этому:", "", item_display_title(item, sources)]
-    summary = _summary_preview(item, _PROACTIVE_SUMMARY_PREVIEW_LENGTH)
-    if summary:
-        lines.extend(("", summary))
+    content = _saved_context(item, _PROACTIVE_SUMMARY_PREVIEW_LENGTH)
+    if content:
+        lines.extend(("", content))
     return _fit_message(lines)
 
 
