@@ -690,6 +690,25 @@ class ReminderWorker:
                         )
                 await session.commit()
                 return 0
+            # A deferred slot may have been delivered today even though it was due yesterday.
+            _, day_start, next_day_start = _local_day_window(now, zone)
+            if (
+                await session.scalar(
+                    select(Reminder.id)
+                    .where(
+                        Reminder.user_id == user.id,
+                        Reminder.type == DAILY_DIGEST,
+                        Reminder.status == "SENT",
+                        Reminder.sent_at.is_not(None),
+                        Reminder.sent_at >= day_start,
+                        Reminder.sent_at < next_day_start,
+                    )
+                    .limit(1)
+                )
+                is not None
+            ):
+                await session.commit()
+                return 0
             deferred = await session.scalar(
                 select(Reminder)
                 .where(
@@ -720,6 +739,20 @@ class ReminderWorker:
             if claim_generation is None:
                 return 0
             items = await TodayService().list_items(session, user.id)
+            if not items:
+                await session.execute(
+                    update(Reminder)
+                    .where(
+                        Reminder.user_id == user.id,
+                        Reminder.type == DAILY_DIGEST,
+                        Reminder.scheduled_at == scheduled_at,
+                        Reminder.status == "CLAIMED",
+                        Reminder.claim_generation == claim_generation,
+                    )
+                    .values(status="CANCELLED", claimed_at=None)
+                )
+                await session.commit()
+                return 0
             sources_by_item = await load_item_sources_by_item(session, [item.id for item in items])
             await session.commit()
         try:

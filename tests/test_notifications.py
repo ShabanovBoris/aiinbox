@@ -180,6 +180,67 @@ async def add_hook_source(session_factory, item_id: int, *, source_index: int, t
         return source.id, content.id
 
 
+async def assert_digest_outcome(session_factory, *, slot, now, sent_at):
+    async with session_factory() as session:
+        reminder = (
+            await session.scalars(select(Reminder).where(Reminder.type == DAILY_DIGEST))
+        ).one()
+        assert reminder.payload_json["local_date"] == slot
+        assert reminder.status == ("SENT" if sent_at is not None else "CANCELLED")
+        assert reminder.sent_at == sent_at
+        assert reminder.claimed_at is None
+        assert await session.scalar(
+            select(func.count(Event.id)).where(Event.event_type == "REMINDER_SENT")
+        ) == int(sent_at is not None)
+    status = await ReminderWorker(session_factory, FakeBot()).attention_status(42, now)
+    assert status is not None
+    assert status.budget_used == int(sent_at is not None)
+    return status
+
+
+@pytest.mark.parametrize("deferred", [False, True])
+async def test_empty_digest_cancels_slot_without_delivery(session_factory, deferred):
+    async with session_factory() as session:
+        session.add(
+            User(
+                telegram_user_id=42,
+                telegram_chat_id=42,
+                timezone="Europe/Moscow",
+                daily_digest_enabled_at=datetime(2026, 9, 14),
+                settings_json={
+                    "attention_enabled": False,
+                    "attention_intensity": 1,
+                    "daily_digest_time": "23:00" if deferred else "09:00",
+                    "quiet_hours_start": "22:30",
+                    "quiet_hours_end": "08:00",
+                },
+            )
+        )
+        await session.commit()
+    bot = FakeBot()
+    worker = ReminderWorker(session_factory, bot)
+    now = datetime(2026, 9, 14, 6, 30)
+    if deferred:
+        now = datetime(2026, 9, 15, 5)
+        assert await worker.process_once(datetime(2026, 9, 14, 20)) == 0
+        assert await worker.process_once(now - timedelta(minutes=1)) == 0
+        assert bot.messages == []
+        async with session_factory() as session:
+            reminder = (await session.scalars(select(Reminder))).one()
+            assert reminder.status == "PENDING"
+            assert reminder.scheduled_at == datetime(2026, 9, 14)
+
+    assert await worker.process_once(now) == 0
+    assert await worker.process_once(now + timedelta(minutes=1)) == 0
+    assert await ReminderWorker(session_factory, bot).process_once(now + timedelta(minutes=2)) == 0
+    assert bot.messages == []
+    # Enable Attention only for the read-only status check so its budget gate is evaluated.
+    await update_notification_settings(session_factory, 42, attention_enabled=True)
+    status = await assert_digest_outcome(session_factory, slot="2026-09-14", now=now, sent_at=None)
+    assert status.policy.daily_cap == 1
+    assert "daily_cap" not in status.block_reasons
+
+
 async def test_timezone_digest_is_once_per_local_day(session_factory):
     _, _ = await make_ready_item(session_factory)
     bot = FakeBot()
@@ -190,9 +251,7 @@ async def test_timezone_digest_is_once_per_local_day(session_factory):
     assert await worker.process_once(now + timedelta(minutes=1)) == 0
     assert len(bot.messages) == 1
     assert bot.messages[0][1] == "☀️ На сегодня\n\n🎯 Сделать задачу"
-    async with session_factory() as session:
-        reminder = await session.scalar(select(Reminder).where(Reminder.type == DAILY_DIGEST))
-        assert reminder.status == "SENT"
+    await assert_digest_outcome(session_factory, slot="2026-09-14", now=now, sent_at=now)
 
 
 async def test_digest_claim_becomes_successful_only_after_telegram_accepts(session_factory):
@@ -405,12 +464,36 @@ async def test_digest_due_before_overnight_quiet_is_deferred_without_losing_date
     # `process_once` receives UTC; these instants are 23:00 local and then
     # 08:00/08:01 local in Europe/Moscow. The due moment at 21:00 was missed.
     assert await worker.process_once(datetime(2026, 9, 14, 20, 0)) == 0
-    assert await worker.process_once(datetime(2026, 9, 15, 5, 0)) == 1
+    sent_at = datetime(2026, 9, 15, 5)
+    assert await worker.process_once(sent_at) == 1
     assert await worker.process_once(datetime(2026, 9, 15, 5, 1)) == 0
+    restarted = ReminderWorker(session_factory, bot)
+    assert await restarted.process_once(datetime(2026, 9, 15, 5, 2)) == 0
+    evening = datetime(2026, 9, 15, 18)
+    assert await restarted.process_once(evening) == 0
     assert len(bot.messages) == 1
-    async with session_factory() as session:
-        reminder = await session.scalar(select(Reminder).where(Reminder.type == DAILY_DIGEST))
-        assert reminder.payload_json["local_date"] == "2026-09-14"
+    await assert_digest_outcome(session_factory, slot="2026-09-14", now=evening, sent_at=sent_at)
+
+
+async def test_digest_already_sent_today_does_not_create_recovered_slot(session_factory):
+    await make_ready_item(session_factory)
+    await update_notification_settings(
+        session_factory,
+        42,
+        daily_digest_time="09:00",
+        quiet_hours_start="22:30",
+        quiet_hours_end="08:00",
+    )
+    bot = FakeBot()
+    sent_at = datetime(2026, 9, 15, 6, 30)
+    assert await ReminderWorker(session_factory, bot).process_once(sent_at) == 1
+    await assert_digest_outcome(session_factory, slot="2026-09-15", now=sent_at, sent_at=sent_at)
+
+    await update_notification_settings(session_factory, 42, daily_digest_time="23:00")
+    now = sent_at + timedelta(minutes=1)
+    assert await ReminderWorker(session_factory, bot).process_once(now) == 0
+    assert len(bot.messages) == 1
+    await assert_digest_outcome(session_factory, slot="2026-09-15", now=now, sent_at=sent_at)
 
 
 async def test_digest_after_midnight_restart_is_deferred_from_previous_local_day(session_factory):
@@ -495,6 +578,7 @@ async def test_digest_does_not_duplicate_after_worker_restart(session_factory):
     second_bot = FakeBot()
     assert await ReminderWorker(session_factory, second_bot).process_once(now) == 0
     assert second_bot.messages == []
+    await assert_digest_outcome(session_factory, slot="2026-09-14", now=now, sent_at=now)
 
 
 async def test_concurrent_workers_claim_one_digest(session_factory):
@@ -668,12 +752,12 @@ async def test_notification_failure_is_recorded(session_factory):
 async def test_done_cancels_pending_snooze_notification(session_factory):
     until = datetime(2026, 9, 14, 6, 0)
     _, item_id = await make_ready_item(session_factory)
+    await update_notification_settings(session_factory, 42, daily_digest_enabled=False)
     await apply_item_action(session_factory, 42, item_id, "snooze", until)
     await apply_item_action(session_factory, 42, item_id, "done")
     bot = FakeBot()
-    assert (
-        await ReminderWorker(session_factory, bot).process_once(datetime(2026, 9, 14, 7, 0)) == 1
-    )  # only the daily digest; the stale snooze is cancelled
+    assert await ReminderWorker(session_factory, bot).process_once(datetime(2026, 9, 14, 7)) == 0
+    assert bot.messages == []
     async with session_factory() as session:
         reminder = await session.scalar(
             select(Reminder).where(Reminder.item_id == item_id, Reminder.type == SNOOZE_RESURFACE)

@@ -373,6 +373,26 @@ async def test_today_records_shown_event_after_successful_send(
         )
 
 
+async def test_today_explains_empty_result_without_recording_exposure(
+    settings, session_factory, monkeypatch
+):
+    async with session_factory() as session:
+        session.add(User(telegram_user_id=42, telegram_chat_id=42))
+        await session.commit()
+    sent = []
+
+    async def answer(self, text, **kwargs):
+        sent.append(text)
+
+    monkeypatch.setattr(Message, "answer", answer)
+    await on_today(make_message(42, text="/today"), settings, session_factory)
+    assert sent == ["🎯 Сегодня\n\nНа сегодня пока нечего вернуть в фокус."]
+    async with session_factory() as session:
+        assert (
+            await session.scalar(select(Event.id).where(Event.event_type == "TODAY_SHOWN")) is None
+        )
+
+
 # Failed transport must leave no persisted exposure for a later ranking request.
 async def test_today_send_failure_does_not_record_shown_event(
     settings, session_factory, monkeypatch
