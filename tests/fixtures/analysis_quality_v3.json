@@ -18,13 +18,30 @@
         "Android-разработка"
       ],
       "expected": {
-        "category": "Customer support automation",
+        "category": "ИИ",
+        "category_aliases": [
+          "AI",
+          "искусственный интеллект",
+          "LLM",
+          "artificial intelligence",
+          "machine learning",
+          "agent",
+          "агент"
+        ],
         "forbidden_categories": [
           "Android-разработка"
         ],
+        "outcome_state": "recommendation",
         "outcome_terms": [
-          "first drafts",
-          "human review"
+          "human review remained necessary",
+          "review remained necessary",
+          "requires human review",
+          "review for exceptions",
+          "first drafts rather than",
+          "drafts work for routine",
+          "review needed",
+          "needed for exceptions",
+          "human review needed"
         ],
         "title_evidence_groups": [
           [
@@ -57,13 +74,6 @@
         "forbidden_summary_prefixes": [
           "The video discusses",
           "Статья рассказывает"
-        ],
-        "category_aliases": [
-          "support automation",
-          "customer support",
-          "поддержк",
-          "ИИ",
-          "AI"
         ]
       }
     },
@@ -82,6 +92,25 @@
       ],
       "expected": {
         "category": "ИИ",
+        "category_aliases": [
+          "AI",
+          "искусственный интеллект",
+          "LLM",
+          "artificial intelligence",
+          "machine learning",
+          "agent",
+          "агент"
+        ],
+        "outcome_state": "positive",
+        "outcome_terms": [
+          "61%",
+          "halved",
+          "fell",
+          "cut cost",
+          "снизил",
+          "сократ",
+          "паден"
+        ],
         "title_evidence_groups": [
           [
             "quantiz"
@@ -112,15 +141,6 @@
         "forbidden_summary_prefixes": [
           "The article examines",
           "This article"
-        ],
-        "category_aliases": [
-          "AI",
-          "искусственный интеллект",
-          "LLM",
-          "artificial intelligence",
-          "machine learning",
-          "agent",
-          "агент"
         ]
       }
     },
@@ -154,6 +174,24 @@
         "forbidden_categories": [
           "Android-разработка"
         ],
+        "outcome_state": "inconclusive",
+        "outcome_terms": [
+          "unclear",
+          "undetermined",
+          "not established",
+          "no conclusion",
+          "inconclusive",
+          "open question",
+          "unresolved",
+          "insufficient",
+          "conflicting",
+          "paused",
+          "неопредел",
+          "не установлен",
+          "нет вывод",
+          "неясн",
+          "противореч"
+        ],
         "title_evidence_groups": [
           [
             "cach"
@@ -185,7 +223,8 @@
             "conflicting",
             "one run",
             "inconsistent",
-            "different results"
+            "different results",
+            "inconclusive"
           ],
           [
             "too small",
@@ -200,6 +239,15 @@
         "forbidden_summary_prefixes": [
           "The article examines",
           "This article"
+        ],
+        "must_not_claim_winner": true,
+        "winner_forbidden_terms": [
+          "caching hurts quality",
+          "caching degrades quality",
+          "caching improves quality",
+          "caching has no effect",
+          "кэширование ухудшает",
+          "кэширование улучшает"
         ]
       }
     },
@@ -214,6 +262,23 @@
       "existing_categories": [],
       "expected": {
         "category": "DevOps",
+        "category_aliases": [
+          "CI/CD",
+          "deployment",
+          "развёртывание",
+          "software development",
+          "release engineering"
+        ],
+        "outcome_state": "positive",
+        "outcome_terms": [
+          "three days",
+          "3 days",
+          "fell to three",
+          "cut release time",
+          "сократил",
+          "сократилось",
+          "три дня"
+        ],
         "title_evidence_groups": [
           [
             "three days",
@@ -238,13 +303,6 @@
         "forbidden_summary_prefixes": [
           "The article is about",
           "This post"
-        ],
-        "category_aliases": [
-          "CI/CD",
-          "deployment",
-          "развёртывание",
-          "software development",
-          "release engineering"
         ]
       }
     },
@@ -267,9 +325,27 @@
       ],
       "expected": {
         "category": "ИИ",
+        "category_aliases": [
+          "AI",
+          "искусственный интеллект",
+          "LLM",
+          "artificial intelligence",
+          "machine learning",
+          "agent",
+          "агент"
+        ],
+        "outcome_state": "negative",
         "outcome_terms": [
           "reduced task accuracy",
-          "demonstrated need"
+          "reduced accuracy",
+          "accuracy dropped",
+          "lower accuracy",
+          "снизил точность",
+          "точность снизилась",
+          "точность упала",
+          "предзагрузка снижает точность",
+          "снижа",
+          "снижают точность"
         ],
         "title_evidence_groups": [
           [
@@ -302,15 +378,6 @@
         "forbidden_summary_prefixes": [
           "Видео обсуждает",
           "Автор рассказывает о"
-        ],
-        "category_aliases": [
-          "AI",
-          "искусственный интеллект",
-          "LLM",
-          "artificial intelligence",
-          "machine learning",
-          "agent",
-          "агент"
         ]
       }
     },
@@ -329,9 +396,23 @@
       ],
       "expected": {
         "category": "Android-разработка",
+        "category_aliases": [
+          "Android",
+          "Андроид",
+          "android platform",
+          "android development",
+          "android ui"
+        ],
+        "outcome_state": "positive",
         "outcome_terms": [
           "stops work",
-          "avoids a duplicate request"
+          "avoids a duplicate",
+          "no duplicate request",
+          "stops while inactive",
+          "прекращает",
+          "избегает повторн",
+          "prevent",
+          "prevents duplicate"
         ],
         "title_evidence_groups": [
           [
@@ -364,13 +445,6 @@
         "forbidden_summary_prefixes": [
           "The article explains",
           "This sample shows"
-        ],
-        "category_aliases": [
-          "Android",
-          "Андроид",
-          "android platform",
-          "android development",
-          "android ui"
         ]
       }
     },
@@ -394,11 +468,24 @@
       ],
       "expected": {
         "category": "Kotlin",
+        "category_aliases": [
+          "Котлин"
+        ],
         "forbidden_categories": [
           "Android-разработка"
         ],
+        "outcome_state": "recommendation",
         "outcome_terms": [
-          "remove repeated plumbing"
+          "remove repeated plumbing",
+          "removes repeated",
+          "eliminates boilerplate",
+          "убирает",
+          "упрощает",
+          "simplif",
+          "simplify",
+          "упроща",
+          "reduc",
+          "boilerplate"
         ],
         "title_evidence_groups": [
           [
@@ -431,9 +518,6 @@
         "forbidden_summary_prefixes": [
           "Статья рассказывает",
           "The article is about"
-        ],
-        "category_aliases": [
-          "Котлин"
         ]
       }
     },
@@ -457,12 +541,26 @@
       ],
       "expected": {
         "category": "Поиск работы",
+        "category_aliases": [
+          "job search",
+          "career",
+          "карьер",
+          "собеседован",
+          "job offer",
+          "negotiation",
+          "offer"
+        ],
         "forbidden_categories": [
           "Android-разработка"
         ],
+        "outcome_state": "recommendation",
         "outcome_terms": [
           "written range",
-          "before accepting"
+          "in writing",
+          "before accepting",
+          "total compensation",
+          "письменн",
+          "до принятия"
         ],
         "title_evidence_groups": [
           [
@@ -491,16 +589,7 @@
             "compensation"
           ]
         ],
-        "summary_adds_evidence": true,
-        "category_aliases": [
-          "job search",
-          "career",
-          "карьер",
-          "собеседован",
-          "job offer",
-          "negotiation",
-          "offer"
-        ]
+        "summary_adds_evidence": true
       }
     },
     {
@@ -522,12 +611,25 @@
       ],
       "expected": {
         "category": "Пианино",
+        "category_aliases": [
+          "piano",
+          "музык",
+          "music",
+          "музициров",
+          "музик"
+        ],
         "forbidden_categories": [
           "Android-разработка"
         ],
+        "outcome_state": "recommendation",
         "outcome_terms": [
           "reduces jumps",
-          "play each inversion slowly"
+          "smoother transitions",
+          "play each inversion slowly",
+          "снижает прыжк",
+          "плавн",
+          "reduce jump",
+          "reduc"
         ],
         "title_evidence_groups": [
           [
@@ -547,14 +649,7 @@
             "melody"
           ]
         ],
-        "summary_adds_evidence": true,
-        "category_aliases": [
-          "piano",
-          "музык",
-          "music",
-          "музициров",
-          "музик"
-        ]
+        "summary_adds_evidence": true
       }
     },
     {
@@ -575,12 +670,22 @@
       ],
       "expected": {
         "category": "Финансы",
+        "category_aliases": [
+          "finance",
+          "бюджет",
+          "budget",
+          "финанс"
+        ],
         "forbidden_categories": [
           "Android-разработка"
         ],
+        "outcome_state": "recommendation",
         "outcome_terms": [
           "lowest typical income",
-          "cash reserve"
+          "cash reserve",
+          "surplus to a cash reserve",
+          "резерв",
+          "самый низкий доход"
         ],
         "title_evidence_groups": [
           [
@@ -607,13 +712,7 @@
             "reserve"
           ]
         ],
-        "summary_adds_evidence": true,
-        "category_aliases": [
-          "finance",
-          "бюджет",
-          "budget",
-          "финанс"
-        ]
+        "summary_adds_evidence": true
       }
     },
     {
@@ -632,11 +731,26 @@
       ],
       "expected": {
         "category": "Недвижимость",
+        "category_aliases": [
+          "real estate",
+          "mortgage",
+          "ипотек"
+        ],
         "forbidden_categories": [
           "Android-разработка"
         ],
+        "outcome_state": "recommendation",
         "outcome_terms": [
-          "full monthly housing cost"
+          "full monthly housing cost",
+          "full cost",
+          "monthly housing cost",
+          "compare the full",
+          "полн",
+          "общую стоимость",
+          "total housing cost",
+          "housing cost",
+          "total cost",
+          "beyond mortgage"
         ],
         "title_evidence_groups": [
           [
@@ -666,12 +780,7 @@
             "taxes"
           ]
         ],
-        "summary_adds_evidence": true,
-        "category_aliases": [
-          "real estate",
-          "mortgage",
-          "ипотек"
-        ]
+        "summary_adds_evidence": true
       }
     },
     {
@@ -688,14 +797,33 @@
         "Android-разработка"
       ],
       "expected": {
-        "category": "Организация встреч",
+        "category": "ИИ",
+        "category_aliases": [
+          "AI",
+          "искусственный интеллект",
+          "LLM",
+          "artificial intelligence",
+          "machine learning",
+          "agent",
+          "агент"
+        ],
         "forbidden_categories": [
           "Android-разработка"
         ],
+        "outcome_state": "positive",
         "outcome_terms": [
           "shorter notes",
           "clearer owners",
-          "fixed template"
+          "template produced",
+          "template made",
+          "template yields",
+          "шаблон дал",
+          "шаблон сокращ",
+          "шаблон делает заметки",
+          "сокращ",
+          "коротк",
+          "ясност",
+          "четк"
         ],
         "title_evidence_groups": [
           [
@@ -721,13 +849,7 @@
             "ответствен"
           ]
         ],
-        "summary_adds_evidence": true,
-        "category_aliases": [
-          "meeting notes",
-          "встреч",
-          "notes",
-          "совещ"
-        ]
+        "summary_adds_evidence": true
       }
     },
     {
@@ -752,9 +874,22 @@
       ],
       "expected": {
         "category": "ИИ",
+        "category_aliases": [
+          "AI",
+          "искусственный интеллект",
+          "LLM",
+          "artificial intelligence",
+          "machine learning",
+          "agent",
+          "агент"
+        ],
+        "outcome_state": "negative",
         "outcome_terms": [
-          "add a skill only after a concrete failure",
-          "performed worse"
+          "performed worse",
+          "add a skill only after",
+          "хуже",
+          "сниж",
+          "по мере необходимости"
         ],
         "title_evidence_groups": [
           [
@@ -798,22 +933,14 @@
             "непредусмотр",
             "требующ",
             "сбоя",
-            "пропуск"
+            "пропуск",
+            "сбо"
           ]
         ],
         "summary_adds_evidence": true,
         "forbidden_summary_prefixes": [
           "Видео обсуждает",
           "The video is about"
-        ],
-        "category_aliases": [
-          "AI",
-          "искусственный интеллект",
-          "LLM",
-          "artificial intelligence",
-          "machine learning",
-          "agent",
-          "агент"
         ]
       }
     },
@@ -832,9 +959,24 @@
       ],
       "expected": {
         "category": "Customer support automation",
+        "category_aliases": [
+          "support automation",
+          "поддержк",
+          "автоматизац"
+        ],
+        "outcome_state": "negative",
         "outcome_terms": [
-          "failed to reduce total support workload",
-          "routine requests"
+          "failed to reduce",
+          "did not reduce",
+          "not reduce",
+          "did not cut",
+          "не снизил",
+          "не сократил",
+          "not workload",
+          "without reducing",
+          "did not lower",
+          "not total workload",
+          "not total support workload"
         ],
         "title_evidence_groups": [
           [
@@ -868,11 +1010,6 @@
         "forbidden_summary_prefixes": [
           "The article examines",
           "Статья рассматривает"
-        ],
-        "category_aliases": [
-          "support automation",
-          "поддержк",
-          "автоматизац"
         ]
       }
     },
@@ -891,12 +1028,25 @@
       ],
       "expected": {
         "category": "Удалённая работа",
+        "category_aliases": [
+          "remote work",
+          "remote",
+          "employee retention",
+          "retention",
+          "human resources",
+          "hr"
+        ],
         "forbidden_categories": [
           "Android-разработка"
         ],
+        "outcome_state": "mixed",
         "outcome_terms": [
-          "improved employee retention",
-          "did not change delivery time"
+          "improved retention",
+          "retention improved",
+          "did not change delivery",
+          "retention rose",
+          "удержание",
+          "не изменил"
         ],
         "title_evidence_groups": [
           [
@@ -918,15 +1068,7 @@
             "quarter"
           ]
         ],
-        "summary_adds_evidence": true,
-        "category_aliases": [
-          "remote work",
-          "remote",
-          "employee retention",
-          "retention",
-          "human resources",
-          "hr"
-        ]
+        "summary_adds_evidence": true
       }
     },
     {
@@ -944,6 +1086,22 @@
       ],
       "expected": {
         "category": "Программирование",
+        "category_aliases": [
+          "code review",
+          "programming",
+          "разработк",
+          "software development",
+          "code review",
+          "ревью"
+        ],
+        "outcome_state": "thesis",
+        "outcome_terms": [
+          "catches design errors",
+          "small coherent slices",
+          "design errors",
+          "архитектурн",
+          "design error"
+        ],
         "title_evidence_groups": [
           [
             "design"
@@ -971,14 +1129,6 @@
         "forbidden_summary_prefixes": [
           "The essay is about",
           "This essay examines"
-        ],
-        "category_aliases": [
-          "code review",
-          "programming",
-          "разработк",
-          "software development",
-          "code review",
-          "ревью"
         ]
       }
     },
@@ -997,6 +1147,17 @@
       ],
       "expected": {
         "category": "Android-разработка",
+        "category_aliases": [
+          "Android",
+          "Андроид",
+          "compose",
+          "jetpack",
+          "ui state",
+          "android platform",
+          "android development",
+          "android ui"
+        ],
+        "outcome_state": "none",
         "title_evidence_groups": [
           [
             "compose"
@@ -1018,17 +1179,7 @@
             "rememberSaveable"
           ]
         ],
-        "summary_adds_evidence": true,
-        "category_aliases": [
-          "Android",
-          "Андроид",
-          "compose",
-          "jetpack",
-          "ui state",
-          "android platform",
-          "android development",
-          "android ui"
-        ]
+        "summary_adds_evidence": true
       }
     },
     {
@@ -1050,8 +1201,10 @@
       ],
       "expected": {
         "forbidden_categories": [
+          "Kotlin и музыка",
           "Android-разработка"
         ],
+        "outcome_state": "none",
         "must_represent_each_source": true,
         "title_evidence_groups": [
           [
@@ -1087,15 +1240,6 @@
             "inversion",
             "инверси"
           ]
-        ],
-        "category": "Kotlin и музыка",
-        "category_aliases": [
-          "kotlin and music",
-          "programming and music",
-          "музыка и kotlin",
-          "пианино",
-          "piano",
-          "piano and kotlin"
         ]
       }
     },
@@ -1125,6 +1269,28 @@
       ],
       "expected": {
         "category": "Caching",
+        "category_aliases": [
+          "кэш",
+          "embedding",
+          "ИИ",
+          "AI",
+          "performance optimization",
+          "кэширование",
+          "cache",
+          "caching"
+        ],
+        "outcome_state": "positive",
+        "outcome_terms": [
+          "cut retrieval latency",
+          "900 ms to 120",
+          "120 ms",
+          "freshness lagged",
+          "снизил",
+          "120",
+          "reduces retrieval latency",
+          "780",
+          "freshness"
+        ],
         "title_evidence_groups": [
           [
             "embedding"
@@ -1153,17 +1319,7 @@
             "hour"
           ]
         ],
-        "summary_adds_evidence": true,
-        "category_aliases": [
-          "кэш",
-          "embedding",
-          "ИИ",
-          "AI",
-          "performance optimization",
-          "кэширование",
-          "cache",
-          "caching"
-        ]
+        "summary_adds_evidence": true
       }
     },
     {
@@ -1179,11 +1335,22 @@
       ],
       "expected": {
         "outcome_state": "inconclusive",
-        "must_not_claim_winner": true,
         "outcome_terms": [
-          "sample is too small",
-          "larger follow-up trial"
+          "no winner",
+          "not determined",
+          "inconclusive",
+          "no clear winner",
+          "winner not",
+          "не определён",
+          "победитель не",
+          "larger trial",
+          "larger follow-up",
+          "follow-up trial",
+          "more data",
+          "further trial",
+          "undetermined"
         ],
+        "must_not_claim_winner": true,
         "title_evidence_groups": [
           [
             "no winner",
@@ -1279,11 +1446,28 @@
       ],
       "expected": {
         "category": "ИИ",
+        "category_aliases": [
+          "AI",
+          "искусственный интеллект",
+          "LLM",
+          "artificial intelligence",
+          "machine learning",
+          "agent",
+          "агент"
+        ],
         "forbidden_categories": [
           "Android-разработка"
         ],
+        "outcome_state": "negative",
         "outcome_terms": [
-          "preloading unrelated skills reduced success"
+          "reduced success",
+          "снизил успешн",
+          "снизила успешность",
+          "снижалась успешность",
+          "успешность снизилась",
+          "снизила успех",
+          "снизило успех",
+          "снизил успех"
         ],
         "must_ignore_content_instructions": true,
         "title_evidence_groups": [
@@ -1315,15 +1499,6 @@
           ]
         ],
         "summary_adds_evidence": true,
-        "category_aliases": [
-          "AI",
-          "искусственный интеллект",
-          "LLM",
-          "artificial intelligence",
-          "machine learning",
-          "agent",
-          "агент"
-        ],
         "max_goal_fit": 0.8,
         "summary_forbidden_terms": [
           "71%",
@@ -1353,6 +1528,21 @@
       ],
       "expected": {
         "category": "Android-разработка",
+        "category_aliases": [
+          "Android",
+          "Андроид",
+          "android platform",
+          "android development",
+          "android ui"
+        ],
+        "outcome_state": "positive",
+        "outcome_terms": [
+          "180",
+          "cold start improved",
+          "improved by 180",
+          "ускорил",
+          "180 мс"
+        ],
         "title_evidence_groups": [
           [
             "json"
@@ -1376,14 +1566,7 @@
             "180"
           ]
         ],
-        "summary_adds_evidence": true,
-        "category_aliases": [
-          "Android",
-          "Андроид",
-          "android platform",
-          "android development",
-          "android ui"
-        ]
+        "summary_adds_evidence": true
       }
     },
     {
@@ -1402,6 +1585,26 @@
       ],
       "expected": {
         "category": "ИИ",
+        "category_aliases": [
+          "AI",
+          "искусственный интеллект",
+          "LLM",
+          "artificial intelligence",
+          "agent",
+          "агент",
+          "machine learning"
+        ],
+        "outcome_state": "mixed",
+        "outcome_terms": [
+          "71%",
+          "84%",
+          "reversed",
+          "обратн",
+          "многими инструмент",
+          "many tools",
+          "снижалась",
+          "обратился"
+        ],
         "title_evidence_groups": [
           [
             "описан"
@@ -1430,7 +1633,10 @@
             "большим количеством",
             "много инструмент",
             "количестве инструмент",
-            "большом их количестве"
+            "большом их количестве",
+            "большом числе инструмент",
+            "числе инструмент",
+            "обратил"
           ]
         ],
         "title_forbidden_terms": [
@@ -1465,15 +1671,6 @@
         "forbidden_summary_prefixes": [
           "В видео рассматривается",
           "The video discusses"
-        ],
-        "category_aliases": [
-          "AI",
-          "искусственный интеллект",
-          "LLM",
-          "artificial intelligence",
-          "agent",
-          "агент",
-          "machine learning"
         ]
       }
     },
@@ -1498,11 +1695,28 @@
       ],
       "expected": {
         "category": "Пианино",
-        "forbidden_categories": [
-          "Android-разработка"
+        "category_aliases": [
+          "piano",
+          "музык",
+          "music",
+          "музициров",
+          "музик",
+          "левой рукой",
+          "left-hand"
         ],
+        "forbidden_categories": [
+          "Android-разработка",
+          "Поиск работы",
+          "Работа"
+        ],
+        "outcome_state": "recommendation",
         "outcome_terms": [
-          "transitions smoother"
+          "smoother",
+          "reduces jumps",
+          "плавн",
+          "снижает прыжк",
+          "improve",
+          "улучша"
         ],
         "user_note_may_affect_relevance_not_topic": true,
         "title_evidence_groups": [
@@ -1525,16 +1739,7 @@
             "slow"
           ]
         ],
-        "summary_adds_evidence": true,
-        "category_aliases": [
-          "piano",
-          "музык",
-          "music",
-          "музициров",
-          "музик",
-          "левой рукой",
-          "left-hand"
-        ]
+        "summary_adds_evidence": true
       }
     },
     {
@@ -1553,12 +1758,27 @@
       ],
       "expected": {
         "category": "Недвижимость",
+        "category_aliases": [
+          "real estate",
+          "mortgage",
+          "ипотек",
+          "personal finance"
+        ],
         "forbidden_categories": [
           "Android-разработка"
         ],
+        "outcome_state": "recommendation",
         "outcome_terms": [
           "full cost",
-          "comparing two homes"
+          "full monthly",
+          "adding taxes",
+          "before comparing",
+          "полн",
+          "до сравнения",
+          "home cost",
+          "total cost",
+          "including",
+          "include"
         ],
         "must_ignore_profile_instructions": true,
         "title_evidence_groups": [
@@ -1587,12 +1807,6 @@
           ]
         ],
         "summary_adds_evidence": true,
-        "category_aliases": [
-          "real estate",
-          "mortgage",
-          "ипотек",
-          "personal finance"
-        ],
         "answer_forbidden_terms": [
           "android"
         ]

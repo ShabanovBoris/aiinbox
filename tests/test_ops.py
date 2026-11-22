@@ -312,6 +312,8 @@ def _write_quality_fixture(tmp_path, case_overrides: dict) -> Path:
         "profile": {"preferred_language": "en"},
         "existing_categories": ["ИИ"],
         "expected": {
+            "outcome_state": "positive",
+            "outcome_terms": ["cut llm inference cost", "cut cost", "61%", "halved"],
             "title_evidence_groups": [["quantiz"], ["cost"]],
             "title_forbidden_terms": ["how to reduce"],
             "summary_evidence_groups": [["61%"], ["long-context"]],
@@ -572,9 +574,13 @@ def test_fixture_rejects_must_ignore_flags_without_measurable_expectations(tmp_p
                 "cases": [
                     {
                         "id": "decorative-injection",
+                        "response_language": "en",
                         "expected": {
+                            "outcome_state": "none",
                             "must_ignore_content_instructions": True,
                             "title_evidence_groups": [["skill"]],
+                            "summary_evidence_groups": [["skill"]],
+                            "summary_adds_evidence": True,
                         },
                     }
                 ],
@@ -652,6 +658,115 @@ def test_analysis_quality_flags_title_that_copies_the_source_title():
     failures = analysis_quality_failures(case, result)
 
     assert failures == ["title_copies_source_title"]
+
+
+_QUALITY_FIXTURE = Path(__file__).parent / "fixtures" / "analysis_quality_v3.json"
+
+
+def _quality_case(case_id: str) -> dict:
+    return next(case for case in load_quality_fixture(_QUALITY_FIXTURE) if case["id"] == case_id)
+
+
+@pytest.mark.parametrize(
+    ("case_id", "topic_only_title", "summary"),
+    [
+        (
+            "question-answered",
+            "Quantization and batching for LLM inference cost",
+            "4-bit quantization halved memory and batching raised throughput, cutting "
+            "cost 61%; quality dropped only on long-context tasks.",
+        ),
+        (
+            "general-ai",
+            "AI drafts and human review for support",
+            "A controlled trial found routine support drafts handled well, while "
+            "exceptions still needed human review.",
+        ),
+        (
+            "short-reel",
+            "Шаблон заметок для встреч",
+            "Шаблон даёт более короткие заметки с понятными владельцами для регулярных встреч.",
+        ),
+    ],
+)
+def test_analysis_quality_rejects_topic_only_titles(case_id, topic_only_title, summary):
+    """A title that names the subject but omits the supported outcome must fail."""
+    result = make_analysis(title=topic_only_title, summary=summary, language="en")
+
+    failures = analysis_quality_failures(_quality_case(case_id), result)
+
+    assert any(failure.startswith("title_missing_outcome:") for failure in failures)
+
+
+def test_analysis_quality_accepts_a_title_that_carries_the_supported_outcome():
+    """The same case passes when the title states the measured result."""
+    result = make_analysis(
+        title="Quantization and batching cut LLM inference cost 61%",
+        summary="4-bit quantization halved memory per replica and batching raised "
+        "throughput; cost per thousand tokens fell 61%, and quality dropped only on "
+        "long-context tasks.",
+        language="en",
+    )
+
+    assert analysis_quality_failures(_quality_case("question-answered"), result) == []
+
+
+@pytest.mark.parametrize("opener", ["This item covers", "This item combines", "Данный материал"])
+def test_analysis_quality_rejects_meta_openers_in_title_and_summary(opener):
+    """Container descriptions are not answers, wherever they appear."""
+    case = _quality_case("multi-source")
+    title = f"{opener} two distinct topics: Kotlin context parameters and piano inversions"
+    summary = (
+        f"{opener} two distinct topics. Kotlin context parameters simplify the API; "
+        "piano inversions reduce left-hand jumps."
+    )
+    result = make_analysis(title=title, summary=summary, language="en", category="Kotlin")
+
+    failures = analysis_quality_failures(case, result)
+
+    assert any(failure.startswith("title_opener:") for failure in failures)
+    assert any(failure.startswith("summary_opener:") for failure in failures)
+
+
+@pytest.mark.parametrize(
+    "expected_patch",
+    [
+        {"unknown_expectation": "x"},
+        {"outcome_state": "none", "outcome_terms": ["leftover"]},
+        {"outcome_state": "positive", "outcome_terms": []},
+        {"outcome_state": "inconclusive", "outcome_terms": ["no winner"]},
+    ],
+)
+def test_fixture_loader_rejects_unmeasurable_or_unknown_expectations(tmp_path, expected_patch):
+    """Dead keys and contradictory outcome declarations would weaken the evaluation."""
+    expected = {
+        "outcome_state": "none",
+        "title_evidence_groups": [["quantiz"]],
+        "summary_evidence_groups": [["61%"]],
+        "summary_adds_evidence": True,
+    }
+    expected.update(expected_patch)
+    fixture = tmp_path / "dead-expectation.json"
+    fixture.write_text(
+        json.dumps(
+            {
+                "version": 3,
+                "cases": [
+                    {
+                        "id": "dead-expectation",
+                        "source_type": "WEB",
+                        "content": "Quantization cut cost 61%.",
+                        "response_language": "en",
+                        "expected": expected,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError):
+        load_quality_fixture(fixture)
 
 
 def test_analysis_quality_eval_command_exits_non_zero_on_failed_checks(

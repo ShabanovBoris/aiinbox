@@ -298,6 +298,67 @@ async def smoke_external(settings: Settings) -> tuple[str, str]:
 QUALITY_FIXTURE_VERSION = 3
 _CYRILLIC_LETTER = re.compile(r"[А-Яа-яЁё]")
 _LATIN_LETTER = re.compile(r"[A-Za-z]")
+# Meta openers describe the container instead of delivering the answer. They are
+# forbidden in both title and summary, whatever the fixture case.
+_META_ANSWER_OPENERS = (
+    "this item covers",
+    "this item combines",
+    "this item contains",
+    "this item includes",
+    "this item presents",
+    "these two sources",
+    "this is a comparison of",
+    "this material covers",
+    "this material combines",
+    "данный материал",
+    "этот материал",
+    "данный элемент",
+    "этот элемент",
+    "это сравнение",
+)
+_OUTCOME_STATES = frozenset(
+    {"positive", "negative", "mixed", "recommendation", "thesis", "inconclusive", "none"}
+)
+_ALLOWED_EXPECTED_KEYS = frozenset(
+    {
+        "category",
+        "category_aliases",
+        "forbidden_categories",
+        "outcome_state",
+        "outcome_terms",
+        "title_evidence_groups",
+        "title_forbidden_terms",
+        "summary_evidence_groups",
+        "summary_adds_evidence",
+        "summary_forbidden_terms",
+        "forbidden_summary_prefixes",
+        "answer_forbidden_terms",
+        "max_goal_fit",
+        "must_not_claim_winner",
+        "winner_forbidden_terms",
+        "must_represent_each_source",
+        "distinct_topic_groups",
+        "must_ignore_content_instructions",
+        "must_ignore_profile_instructions",
+        "user_note_may_affect_relevance_not_topic",
+    }
+)
+_ALLOWED_CASE_KEYS = frozenset(
+    {
+        "id",
+        "source_type",
+        "source_title",
+        "content",
+        "source_language",
+        "response_language",
+        "user_note",
+        "profile",
+        "existing_categories",
+        "metadata",
+        "chunk_size_chars",
+        "expected",
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -374,6 +435,17 @@ def analysis_quality_failures(
     for alternatives in expected["title_evidence_groups"]:
         if _match_any(title, alternatives) is None:
             failures.append("title_missing:" + "|".join(alternatives))
+    outcome_state = expected.get("outcome_state")
+    outcome_terms = expected.get("outcome_terms", [])
+    if outcome_state and outcome_state != "none" and _match_any(title, outcome_terms) is None:
+        # A topic-only title must fail when the material has a supported result,
+        # thesis, recommendation, or an explicit inconclusive outcome.
+        failures.append("title_missing_outcome:" + "|".join(outcome_terms))
+    for opener in _META_ANSWER_OPENERS:
+        if title.strip().casefold().startswith(opener):
+            failures.append(f"title_opener:{opener}")
+        if summary.strip().casefold().startswith(opener):
+            failures.append(f"summary_opener:{opener}")
     for term in expected["title_forbidden_terms"]:
         if term.casefold() in title.casefold():
             failures.append(f"title_forbidden:{term}")
@@ -442,9 +514,55 @@ _SECURITY_EXPECTATION_KEYS = (
 )
 
 
+def _reject_unknown_keys(container: dict, allowed: frozenset[str], label: str) -> None:
+    """Dead fixture keys would silently weaken the evaluation, so reject them."""
+    unknown = sorted(set(container) - allowed)
+    if unknown:
+        raise ValueError(f"quality fixture {label} has unsupported keys: {unknown}")
+
+
 def _validate_quality_case(case: dict) -> None:
-    """Make every must_ignore_* claim measurable instead of a decorative flag."""
+    """Require every expectation to be measurable by ``analysis_quality_failures``."""
+    _reject_unknown_keys(case, _ALLOWED_CASE_KEYS, f"case {case.get('id')!r}")
     expected = case["expected"]
+    _reject_unknown_keys(expected, _ALLOWED_EXPECTED_KEYS, f"case {case['id']!r} expected")
+    if case.get("response_language") not in {"en", "ru"}:
+        raise ValueError(f"quality case {case['id']!r}: response_language must be en or ru")
+    for key in ("title_evidence_groups", "summary_evidence_groups"):
+        groups = expected.get(key)
+        if not groups or not all(group for group in groups):
+            raise ValueError(f"quality case {case['id']!r}: {key} must be non-empty")
+    if expected.get("summary_adds_evidence") is not True:
+        raise ValueError(f"quality case {case['id']!r}: summary_adds_evidence must be true")
+
+    outcome_state = expected.get("outcome_state")
+    if outcome_state not in _OUTCOME_STATES:
+        raise ValueError(
+            f"quality case {case['id']!r}: outcome_state must be one of "
+            f"{sorted(_OUTCOME_STATES)}, got {outcome_state!r}"
+        )
+    outcome_terms = expected.get("outcome_terms", [])
+    if outcome_state == "none":
+        if outcome_terms:
+            raise ValueError(
+                f"quality case {case['id']!r}: outcome_terms must be empty when "
+                "outcome_state is none"
+            )
+    elif not outcome_terms:
+        raise ValueError(
+            f"quality case {case['id']!r}: outcome_state {outcome_state!r} needs "
+            "title outcome_terms"
+        )
+    if outcome_state == "inconclusive":
+        if expected.get("must_not_claim_winner") is not True:
+            raise ValueError(
+                f"quality case {case['id']!r}: inconclusive outcome needs must_not_claim_winner"
+            )
+        if not expected.get("winner_forbidden_terms"):
+            raise ValueError(
+                f"quality case {case['id']!r}: inconclusive outcome needs winner_forbidden_terms"
+            )
+
     for key, enabled in expected.items():
         if not key.startswith("must_ignore_") or enabled is not True:
             continue
@@ -453,6 +571,19 @@ def _validate_quality_case(case: dict) -> None:
             raise ValueError(
                 f"quality case {case['id']!r}: {key} needs at least two measurable "
                 f"expectations from {_SECURITY_EXPECTATION_KEYS}, got {declared}"
+            )
+
+    if expected.get("user_note_may_affect_relevance_not_topic") is True:
+        if not case.get("user_note"):
+            raise ValueError(f"quality case {case['id']!r}: the note flag needs a user_note")
+        declared = [
+            name
+            for name in ("title_forbidden_terms", "answer_forbidden_terms", "forbidden_categories")
+            if expected.get(name)
+        ]
+        if not declared:
+            raise ValueError(
+                f"quality case {case['id']!r}: the note flag needs a note-derived topic expectation"
             )
 
 
