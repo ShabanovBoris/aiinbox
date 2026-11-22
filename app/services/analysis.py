@@ -5,18 +5,37 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.enums import ContentKind
+from app.domain.language import response_language_for
 from app.domain.models import (
     AnalysisResult,
     NormalizedContent,
     TopicClassificationResult,
     UserProfile,
 )
+from app.domain.signals import (
+    has_multiple_sources,
+    inconclusive_title_suffix,
+    states_inconclusive_comparison,
+    title_states_inconclusive,
+)
 from app.llm.base import LlmError, LlmProvider
+from app.llm.untrusted import without_control_instructions
 from app.storage.models import Content, Item
 
 # Increment when chunk-summary semantics change so durable evidence is not silently
 # reused after a prompt change that asks the model to preserve different information.
-CHUNK_SUMMARY_GENERATOR_VERSION = 3
+CHUNK_SUMMARY_GENERATOR_VERSION = 5
+
+
+def analysis_text_projection(text: str) -> str:
+    """The single sanitized evidence text shared by analysis and evaluation.
+
+    Prompt construction, chunking, and the deterministic inconclusive-title repair
+    must all see the same text; otherwise a command removed from the model input
+    can still change the generated title, and the evaluation would not reproduce
+    production behavior.
+    """
+    return without_control_instructions(text)
 
 
 def split_text(text: str, chunk_size_chars: int, overlap_chars: int = 0) -> list[str]:
@@ -45,6 +64,125 @@ def split_text(text: str, chunk_size_chars: int, overlap_chars: int = 0) -> list
             break
         start = end - overlap_chars
     return chunks
+
+
+_TITLE_LIMIT = 300
+# A long title keeps the final clause because it usually carries the verdict and
+# the condition that scopes it ("…, but the gain reversed under peak load"), while
+# the claim clause keeps its head (subject/verb/negation) even when a short label
+# precedes it or the clause itself must shrink.
+_TITLE_CLAUSE_BREAK = re.compile(
+    r"(?<=[,;:])\s+|\s+(?=\b(?:but|however|yet|while|whereas|но|однако)\b)"
+)
+
+
+def _head_words(text: str, budget: int) -> str:
+    """The first words of ``text`` that fit ``budget`` characters."""
+    words: list[str] = []
+    size = 0
+    for word in text.split():
+        extra = len(word) + (1 if words else 0)
+        if size + extra > budget:
+            break
+        words.append(word)
+        size += extra
+    return " ".join(words).rstrip(" ,;:")
+
+
+_TITLE_NEGATION = re.compile(r"(?i)\b(?:not|never|no|n't|не|ни)\b")
+
+
+def _trim_title_body(body: str, budget: int) -> str:
+    """Keep the claim and the evidence that scopes it inside ``budget``."""
+    clauses = [
+        clause.strip().rstrip(" ,;:")
+        for clause in _TITLE_CLAUSE_BREAK.split(body)
+        if clause.strip(" ,;:")
+    ]
+    if len(clauses) == 1:
+        # A single long claim has no later clause to preserve. Cutting its tail
+        # keeps the subject, verb, and negation; cutting its head would turn
+        # "Preloading did not improve accuracy" into "improve accuracy".
+        return _head_words(clauses[0], budget) or body[:budget]
+    # A negated claim is the one clause whose head must survive even when it does
+    # not fit whole: dropping it changes the result to its opposite.
+    negative_index = next(
+        (index for index, clause in enumerate(clauses[:-1]) if _TITLE_NEGATION.search(clause)),
+        None,
+    )
+    kept = clauses[-1]
+    for index in range(len(clauses) - 2, -1, -1):
+        clause = clauses[index]
+        candidate = f"{clause}, {kept}"
+        if len(candidate) <= budget:
+            kept = candidate
+            continue
+        spare = budget - len(kept) - 2
+        if index > 0 and index != negative_index:
+            # A middle clause that does not fit is dropped whole; the first clause
+            # and a negated claim still get their heads preserved.
+            continue
+        if spare <= 0:
+            break
+        partial = _head_words(clause, spare)
+        if partial:
+            kept = f"{partial}, {kept}"
+        if index == 0 or index == negative_index:
+            break
+    if len(kept) > budget:
+        # Never tail-cut a claim: the last words may be the predicate of a longer
+        # clause, so a head trim keeps at least the subject and its negation.
+        kept = _head_words(kept, budget)
+    if not kept:
+        # A single unbreakable token still has to fit the schema cap.
+        kept = body[:budget]
+    return kept
+
+
+def _fit_title_with_verdict(title: str, suffix: str) -> str:
+    """Keep the mandatory verdict and the condition that scopes it inside the cap.
+
+    The verdict is the conclusion the repair exists to preserve, so an over-long
+    title drops whole middle clauses and keeps the claim's subject/verb/negation,
+    rather than leaving a truncated predicate plus the suffix.
+    """
+    budget = _TITLE_LIMIT - len(suffix)
+    body = title.strip().rstrip(" .;,")
+    if budget <= 0:
+        return suffix.removeprefix("; ").strip()[:_TITLE_LIMIT]
+    if len(body) > budget:
+        body = _trim_title_body(body, budget)
+    if not body:
+        return suffix.removeprefix("; ").strip()[:_TITLE_LIMIT]
+    return (body + suffix)[:_TITLE_LIMIT]
+
+
+def ensure_explicit_inconclusive_title(
+    result: AnalysisResult,
+    evidence: str,
+    *,
+    response_language: str | None = None,
+    multi_source: bool = False,
+) -> AnalysisResult:
+    """Carry an explicit no-winner verdict into the title.
+
+    The prompt requires this, but live evaluation showed a stochastic omission that
+    silently drops a conclusion the source states. The repair appends only that
+    verdict and keeps every measured detail the model wrote; it never invents a
+    result or a winner. A title that already states the verdict is unchanged.
+    Independent sources get no invented shared verdict, and the suffix follows the
+    actual response language (an untranslatable language leaves the title alone
+    rather than leaking English into it).
+    """
+    if multi_source or not states_inconclusive_comparison(evidence):
+        return result
+    if title_states_inconclusive(result.title):
+        return result
+    suffix = inconclusive_title_suffix(result.title, response_language, evidence)
+    if not suffix:
+        return result
+    title = _fit_title_with_verdict(result.title, suffix)
+    return result.model_copy(update={"title": title})
 
 
 class Analyzer:
@@ -76,7 +214,13 @@ class Analyzer:
         # The provider call can take seconds; finish the read transaction first so
         # another worker can claim/update its SQLite outbox rows while analysis runs.
         await session.commit()
-        return await self.provider.analyze(content, profile, categories)
+        result = await self.provider.analyze(content, profile, categories)
+        return ensure_explicit_inconclusive_title(
+            result,
+            content.text,
+            response_language=response_language_for(content, profile),
+            multi_source=has_multiple_sources(content.metadata),
+        )
 
     async def prepare_content(
         self,
@@ -85,10 +229,18 @@ class Analyzer:
         item_id: int | None = None,
     ) -> NormalizedContent:
         """Prepare one bounded, durable evidence projection shared by both LLM stages."""
-        if len(content.text) > self.chunk_size_chars:
+        # Strip output-control commands before chunking: a checkpoint generated
+        # from an injected chunk would otherwise preserve the distortion, and a
+        # final aggregate filter cannot recover evidence that was never summarized.
+        prepared_text = analysis_text_projection(content.text)
+        # The model, deterministic repair, chunking, and the opt-in evaluation all
+        # read this one sanitized projection. Returning the raw short text here let
+        # a removed command still drive the repair decision.
+        content = content.model_copy(update={"text": prepared_text})
+        if len(prepared_text) > self.chunk_size_chars:
             if item_id is None:
                 raise ValueError("item_id is required for durable long-content analysis")
-            chunks = split_text(content.text, self.chunk_size_chars, self.overlap_chars)
+            chunks = split_text(prepared_text, self.chunk_size_chars, self.overlap_chars)
             summaries = await self._durable_chunk_summaries(session, item_id, chunks)
             content = content.model_copy(
                 update={
@@ -239,9 +391,23 @@ _EVIDENCE_CUE = re.compile(
     r"\d|\b(?:result|finding|found|shown?|measured|increas\w*|decreas\w*|reduc\w*|"
     r"improv\w*|worse|better|no conclusion|inconclusive|unresolved|caveat|however|"
     r"but|only|except|limit\w*|revers\w*|fail\w*|final|answer|conclusion|"
+    r"winner|mixed|undetermined|undecided|no verdict|"
     r"итог\w*|результат\w*|вывод\w*|выясн\w*|показа\w*|сниз\w*|увелич\w*|улучш\w*|"
-    r"хуже|лучше|не удалось|однако|только|кроме|огранич\w*|обратн\w*)\b",
+    r"хуже|лучше|не удалось|однако|только|кроме|огранич\w*|обратн\w*|"
+    r"победител\w*|неопределен\w*|смешанн\w*|противореч\w*)\b",
     re.IGNORECASE,
+)
+
+
+# A late practical answer ("Use lifecycle-aware collection to prevent duplicate
+# requests.") has no measurement cue, but it is still the conclusion the summary
+# must keep. This only ranks retention; it never rewrites the sentence.
+_FINAL_ANSWER_CUE = re.compile(
+    r"(?i)^(?:use|avoid|prefer|choose|adopt|apply|enable|disable|keep|switch|"
+    r"migrate|replace|store|cache|call|wrap|collect|implement|configure|set|"
+    r"do\s+not|don't|never)\b"
+    r"|\b(?:should|recommend\w*|best\s+practice|to\s+prevent|to\s+avoid|"
+    r"to\s+reduce|чтобы\s+избежать|следует|рекоменд\w*|используй\w*|избегай\w*)\b"
 )
 
 
@@ -252,10 +418,13 @@ def _sentences(text: str) -> list[str]:
 
 
 def _sentence_priority(sentence: str, index: int, count: int) -> int:
-    score = 0
-    if index == 0 or index == count - 1:
+    score = 4 if index == 0 else 0
+    cued = _EVIDENCE_CUE.search(sentence) is not None
+    if index == count - 1 and cued:
+        # A final verdict or recap earns its position only when it carries
+        # evidence; a cue-less closing sentence must not displace a measured result.
         score += 4
-    if _EVIDENCE_CUE.search(sentence):
+    if cued:
         score += 3
     return score
 
@@ -275,23 +444,51 @@ def _render_sentences(sentences: list[str], chosen: set[int]) -> str:
     return " ".join(pieces)
 
 
-def _select_sentences(sentences: list[str], limit: int) -> str | None:
-    """Keep complete sentences, preferring edges and explicitly cued outcomes."""
+def _answer_sentence_index(sentences: list[str]) -> int | None:
+    """The latest sentence that carries a result, verdict, limitation, or recommendation.
+
+    A cue-less closing recap is not an answer: on a small budget it must not displace
+    the measured result that precedes it.
+    """
     count = len(sentences)
-    # The first sentence carries the question/goal and the last carries the latest
-    # outcome or caveat, so both are mandatory unless the budget cannot fit them.
-    mandatory = {0, count - 1}
-    used = sum(len(sentences[index]) for index in mandatory)
-    if used + len(_OMISSION_MARKER) * (count - 1) > limit:
+    if count <= 1:
         return None
+    if _EVIDENCE_CUE.search(sentences[-1]) or _FINAL_ANSWER_CUE.search(sentences[-1]):
+        return count - 1
+    for index in range(count - 2, 0, -1):
+        if _EVIDENCE_CUE.search(sentences[index]):
+            return index
+    return None
+
+
+def _select_sentences(sentences: list[str], limit: int) -> str | None:
+    """Keep complete sentences, preferring cued outcomes and the latest caveat."""
+    count = len(sentences)
+    answer_index = _answer_sentence_index(sentences)
+    # The first sentence carries the question/goal; the answer carries the result.
+    # When both cannot fit, the answer wins: a question with no conclusion is worse
+    # than a conclusion without its setup.
+    mandatory = {0}
+    if answer_index is not None and answer_index != 0:
+        mandatory.add(answer_index)
+    used = len(_render_sentences(sentences, mandatory))
+    if used > limit:
+        if answer_index is None or answer_index == 0:
+            return None
+        mandatory = {answer_index}
+        used = len(_render_sentences(sentences, mandatory))
+        if used > limit:
+            return None
 
     priorities = {
         index: _sentence_priority(sentences[index], index, count) for index in range(count)
     }
     chosen = set(mandatory)
+    # Equal cues: keep the later sentence. A late conclusion must outrank earlier
+    # setup when a compressed checkpoint cannot retain everything.
     ordered_candidates = sorted(
         (index for index in range(count) if index not in chosen),
-        key=lambda index: (priorities[index], -index),
+        key=lambda index: (priorities[index], index),
         reverse=True,
     )
     for index in ordered_candidates:
@@ -302,9 +499,9 @@ def _select_sentences(sentences: list[str], limit: int) -> str | None:
 
     rendered = _render_sentences(sentences, chosen)
     # The greedy estimate can be off by a marker or two; drop the weakest optional
-    # sentence until the exact rendered text fits. Mandatory edges stay in place.
+    # sentence until the exact rendered text fits. Every mandatory sentence stays.
     while len(rendered) > limit and chosen - mandatory:
-        weakest = min(chosen - mandatory, key=lambda index: (priorities[index], -index))
+        weakest = min(chosen - mandatory, key=lambda index: (priorities[index], index))
         chosen.remove(weakest)
         rendered = _render_sentences(sentences, chosen)
     return rendered if len(rendered) <= limit else None
