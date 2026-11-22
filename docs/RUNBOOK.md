@@ -387,10 +387,12 @@ docker compose run --rm -v "$PWD/tests:/app/tests" app \
 
 Checks are lexical and measurable: required title evidence groups, forbidden title
 terms, verbatim source-title reuse, required summary evidence, a summary that does
-not repeat the title verbatim, forbidden summary terms/openers, response language,
-source language, category match and forbidden categories, injected `goal_fit`,
-winner claims for inconclusive material, coverage of every independent source, and
-that the title is a statement rather than a question. `PASS` means those properties
+not repeat the title verbatim, forbidden summary terms/openers, forbidden terms in
+the whole answer, response language, source language, category match and forbidden
+categories, injected `goal_fit`, winner claims for inconclusive material, coverage
+of every independent source, and that the title is a statement rather than a
+question. A `must_ignore_*` case must also declare at least two measurable negative
+expectations; the fixture loader rejects decorative security flags. `PASS` means those properties
 hold; it does not prove that a confident title is factually supported, and a correct
 paraphrase can miss an expected term. Review the printed title, summary, category and
 language semantically for every case before trusting the result. Any failed check

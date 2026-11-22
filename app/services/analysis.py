@@ -1,4 +1,5 @@
 import hashlib
+import re
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -229,19 +230,101 @@ class Analyzer:
 
 
 _OMISSION_MARKER = " … "
+_SENTENCE_BOUNDARY = re.compile(r"(?<=[.!?])\s+")
+# A checkpoint summary is already compressed prose. When the aggregate budget is
+# smaller than the checkpoint, drop whole filler sentences instead of cutting a
+# result sentence in half. These cues only rank sentences for retention; they never
+# create or rewrite evidence.
+_EVIDENCE_CUE = re.compile(
+    r"\d|\b(?:result|finding|found|shown?|measured|increas\w*|decreas\w*|reduc\w*|"
+    r"improv\w*|worse|better|no conclusion|inconclusive|unresolved|caveat|however|"
+    r"but|only|except|limit\w*|revers\w*|fail\w*|final|answer|conclusion|"
+    r"итог\w*|результат\w*|вывод\w*|выясн\w*|показа\w*|сниз\w*|увелич\w*|улучш\w*|"
+    r"хуже|лучше|не удалось|однако|только|кроме|огранич\w*|обратн\w*)\b",
+    re.IGNORECASE,
+)
+
+
+def _sentences(text: str) -> list[str]:
+    """Split compact summary prose into sentences without losing trailing content."""
+    parts = [part.strip() for part in _SENTENCE_BOUNDARY.split(text.strip()) if part.strip()]
+    return parts or [text.strip()]
+
+
+def _sentence_priority(sentence: str, index: int, count: int) -> int:
+    score = 0
+    if index == 0 or index == count - 1:
+        score += 4
+    if _EVIDENCE_CUE.search(sentence):
+        score += 3
+    return score
+
+
+def _render_sentences(sentences: list[str], chosen: set[int]) -> str:
+    """Join selected sentences in source order and mark every omitted gap."""
+    pieces: list[str] = []
+    skipped = False
+    for index, sentence in enumerate(sentences):
+        if index in chosen:
+            if skipped and pieces:
+                pieces.append(_OMISSION_MARKER.strip())
+                skipped = False
+            pieces.append(sentence)
+        else:
+            skipped = True
+    return " ".join(pieces)
+
+
+def _select_sentences(sentences: list[str], limit: int) -> str | None:
+    """Keep complete sentences, preferring edges and explicitly cued outcomes."""
+    count = len(sentences)
+    # The first sentence carries the question/goal and the last carries the latest
+    # outcome or caveat, so both are mandatory unless the budget cannot fit them.
+    mandatory = {0, count - 1}
+    used = sum(len(sentences[index]) for index in mandatory)
+    if used + len(_OMISSION_MARKER) * (count - 1) > limit:
+        return None
+
+    priorities = {
+        index: _sentence_priority(sentences[index], index, count) for index in range(count)
+    }
+    chosen = set(mandatory)
+    ordered_candidates = sorted(
+        (index for index in range(count) if index not in chosen),
+        key=lambda index: (priorities[index], -index),
+        reverse=True,
+    )
+    for index in ordered_candidates:
+        # +1 for the joining space and marker space keeps the bound conservative.
+        if used + len(sentences[index]) + 1 + len(_OMISSION_MARKER) <= limit:
+            chosen.add(index)
+            used += len(sentences[index]) + 1
+
+    rendered = _render_sentences(sentences, chosen)
+    # The greedy estimate can be off by a marker or two; drop the weakest optional
+    # sentence until the exact rendered text fits. Mandatory edges stay in place.
+    while len(rendered) > limit and chosen - mandatory:
+        weakest = min(chosen - mandatory, key=lambda index: (priorities[index], -index))
+        chosen.remove(weakest)
+        rendered = _render_sentences(sentences, chosen)
+    return rendered if len(rendered) <= limit else None
 
 
 def _bounded_summary(text: str, limit: int) -> str:
-    """Keep both the setup and the late conclusion when one checkpoint must shrink.
+    """Keep the evidence that must survive when one checkpoint has to shrink.
 
-    Head-only slicing silently drops a FINAL_ANSWER or caveat that the chunk prompt
-    deliberately puts at the end, so a bounded aggregate keeps both edges and marks
-    the omitted middle instead of pretending the summary was complete.
+    Character slicing silently drops a conclusion or caveat that sits inside a
+    long checkpoint. Sentence-aware selection keeps the opening and the latest
+    outcome plus cued result/limitation sentences, and marks every omitted gap
+    instead of pretending the summary was complete.
     """
     if len(text) <= limit:
         return text
     if limit <= len(_OMISSION_MARKER) + 2:
         return text[:limit]
+    selected = _select_sentences(_sentences(text), limit)
+    if selected is not None:
+        return selected
     body = limit - len(_OMISSION_MARKER)
     head = (body + 1) // 2
     tail = body - head

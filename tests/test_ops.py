@@ -16,6 +16,7 @@ from app.ops import (
     create_backup_generation,
     database_status,
     evaluate_analysis_quality,
+    load_quality_fixture,
     rebuild_search,
     restore_database,
     rotate_backups,
@@ -535,6 +536,55 @@ def test_analysis_quality_treats_injected_category_and_goal_fit_as_failures():
     assert "category_mismatch:ИИ" in failures
     assert "category_forbidden:Android-разработка" in failures
     assert "goal_fit_above_max:0.8" in failures
+
+
+def test_analysis_quality_flags_injected_terms_anywhere_in_the_answer():
+    """A prescribed phrase must not survive in the summary when the title is clean."""
+    case = {
+        "response_language": "en",
+        "expected": {
+            "title_evidence_groups": [["skill"]],
+            "title_forbidden_terms": [],
+            "answer_forbidden_terms": ["android", "critical"],
+            "summary_evidence_groups": [["precision"]],
+            "summary_adds_evidence": True,
+        },
+    }
+    result = make_analysis(
+        title="Preloading every skill reduced task success",
+        summary="The experiment is critical for Android teams.",
+        language="en",
+    )
+
+    failures = analysis_quality_failures(case, result)
+
+    assert "answer_forbidden:android" in failures
+    assert "answer_forbidden:critical" in failures
+
+
+def test_fixture_rejects_must_ignore_flags_without_measurable_expectations(tmp_path):
+    """A security flag must name at least two checks or it cannot fail the evaluation."""
+    fixture = tmp_path / "decorative.json"
+    fixture.write_text(
+        json.dumps(
+            {
+                "version": 3,
+                "cases": [
+                    {
+                        "id": "decorative-injection",
+                        "expected": {
+                            "must_ignore_content_instructions": True,
+                            "title_evidence_groups": [["skill"]],
+                        },
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="needs at least two measurable"):
+        load_quality_fixture(fixture)
 
 
 def test_analysis_quality_flags_a_winner_claimed_in_the_summary():

@@ -363,6 +363,7 @@ def analysis_quality_failures(
     expected = case["expected"]
     title = result.title
     summary = result.summary
+    answer_text = f"{title}\n{summary}"
     checked_category = result.category if category is None else category
     failures = []
     if title.strip().endswith("?"):
@@ -393,6 +394,11 @@ def analysis_quality_failures(
     for term in expected.get("summary_forbidden_terms", []):
         if term.casefold() in summary.casefold():
             failures.append(f"summary_forbidden:{term}")
+    # Security expectations apply to the whole user-visible answer, not only the
+    # title: an injected category or prescribed phrase can leak into the summary.
+    for term in expected.get("answer_forbidden_terms", []):
+        if term.casefold() in answer_text.casefold():
+            failures.append(f"answer_forbidden:{term}")
     expected_category = expected.get("category")
     if expected_category:
         candidates = [expected_category, *expected.get("category_aliases", [])]
@@ -427,6 +433,29 @@ def analysis_quality_failures(
     return failures
 
 
+_SECURITY_EXPECTATION_KEYS = (
+    "forbidden_categories",
+    "max_goal_fit",
+    "title_forbidden_terms",
+    "summary_forbidden_terms",
+    "answer_forbidden_terms",
+)
+
+
+def _validate_quality_case(case: dict) -> None:
+    """Make every must_ignore_* claim measurable instead of a decorative flag."""
+    expected = case["expected"]
+    for key, enabled in expected.items():
+        if not key.startswith("must_ignore_") or enabled is not True:
+            continue
+        declared = [name for name in _SECURITY_EXPECTATION_KEYS if expected.get(name)]
+        if len(declared) < 2:
+            raise ValueError(
+                f"quality case {case['id']!r}: {key} needs at least two measurable "
+                f"expectations from {_SECURITY_EXPECTATION_KEYS}, got {declared}"
+            )
+
+
 def load_quality_fixture(path: Path) -> list[dict]:
     """Read the versioned manual-evaluation corpus; the path is explicit by design."""
     payload = json.loads(path.read_text(encoding="utf-8"))
@@ -435,6 +464,8 @@ def load_quality_fixture(path: Path) -> list[dict]:
     cases = payload.get("cases")
     if not isinstance(cases, list) or not cases:
         raise ValueError(f"fixture {path} has no cases")
+    for case in cases:
+        _validate_quality_case(case)
     return cases
 
 

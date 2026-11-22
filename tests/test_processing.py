@@ -522,6 +522,37 @@ def test_bounded_aggregate_retains_every_late_conclusion_at_full_checkpoint_size
     assert aggregate.index("FINAL_ANSWER_0:") < aggregate.index("FINAL_ANSWER_19:")
 
 
+def test_bounded_aggregate_keeps_mid_summary_result_and_caveat_for_full_checkpoints():
+    """A conclusion in the middle of a full 120-word checkpoint must not be cut.
+
+    Character head/tail slicing keeps only the edges, so a measured result placed
+    between setup and caveat disappears. Sentence-aware retention must keep the
+    cued result and the trailing limitation for every chunk.
+    """
+    filler = (
+        "the benchmark repeats the same request under controlled load and records latency "
+        "and accuracy for each configuration while the team watches for regressions"
+    ).split()
+    summaries = []
+    for index in range(20):
+        before = " ".join(filler[(index + offset) % len(filler)] for offset in range(52))
+        after = " ".join(filler[(index + offset) % len(filler)] for offset in range(52, 87))
+        summaries.append(
+            f"Question {index}: does this configuration reduce serving cost? {before}. "
+            f"RESULT_{index}: configuration {index} cut cost by {index + 1}0% in the measured run. "
+            f"{after}. CAVEAT_{index}: the gain reversed on long prompts."
+        )
+    assert all(110 <= len(summary.split()) <= 140 for summary in summaries)
+
+    aggregate = bounded_chunk_aggregate(summaries, chunk_size_chars=12_000)
+
+    assert len(aggregate) <= 12_000
+    for index in range(20):
+        assert f"RESULT_{index}:" in aggregate
+        assert f"CAVEAT_{index}:" in aggregate
+    assert aggregate.index("RESULT_0:") < aggregate.index("RESULT_19:")
+
+
 async def test_long_content_aggregate_preserves_order_and_late_conclusion(session_factory):
     """Ordered framing gives final analysis the conclusion without persisting markers."""
     item = await seed(session_factory, text="x" * 1_000)

@@ -146,7 +146,10 @@
           "artificial intelligence",
           "machine learning",
           "agent",
-          "агент"
+          "агент",
+          "prompt engineering",
+          "prompt caching",
+          "кэширование промптов"
         ],
         "forbidden_categories": [
           "Android-разработка"
@@ -165,7 +168,10 @@
             "unknown",
             "inconclusive",
             "not conclusive",
-            "unresolved"
+            "unresolved",
+            "conflicting",
+            "paused",
+            "no definitive answer"
           ]
         ],
         "title_forbidden_terms": [
@@ -415,7 +421,10 @@
           ],
           [
             "plumbing",
-            "boilerplate"
+            "boilerplate",
+            "repetitive code",
+            "repeated code",
+            "repetition"
           ]
         ],
         "summary_adds_evidence": true,
@@ -464,7 +473,9 @@
             "written range",
             "in writing",
             "written offer",
-            "offer range"
+            "offer range",
+            "salary range",
+            "written salary"
           ]
         ],
         "title_forbidden_terms": [
@@ -540,7 +551,9 @@
         "category_aliases": [
           "piano",
           "музык",
-          "music"
+          "music",
+          "музициров",
+          "музик"
         ]
       }
     },
@@ -584,7 +597,10 @@
             "surplus",
             "extra funds",
             "excess",
-            "exceeding"
+            "exceeding",
+            "additional funds",
+            "additional income",
+            "extra money"
           ],
           [
             "cash reserve",
@@ -595,7 +611,8 @@
         "category_aliases": [
           "finance",
           "бюджет",
-          "budget"
+          "budget",
+          "финанс"
         ]
       }
     },
@@ -769,12 +786,19 @@
             "нерелевант",
             "много инструмент",
             "tool-heavy",
-            "множества инструмент"
+            "множества инструмент",
+            "большого количества инструмент",
+            "пакетн",
+            "ненужн",
+            "несвязан"
           ],
           [
             "требован",
             "ошиб",
-            "непредусмотр"
+            "непредусмотр",
+            "требующ",
+            "сбоя",
+            "пропуск"
           ]
         ],
         "summary_adds_evidence": true,
@@ -823,7 +847,8 @@
             "without reducing",
             "not total workload",
             "not total support workload",
-            "not support workload"
+            "not support workload",
+            "not workload"
           ]
         ],
         "title_forbidden_terms": [
@@ -952,7 +977,8 @@
           "programming",
           "разработк",
           "software development",
-          "code review"
+          "code review",
+          "ревью"
         ]
       }
     },
@@ -1116,7 +1142,12 @@
           [
             "freshness",
             "обновлен",
-            "актуальн"
+            "актуальн",
+            "out of date",
+            "outdated",
+            "stale",
+            "staleness",
+            "устарел"
           ],
           [
             "hour"
@@ -1159,13 +1190,35 @@
             "not determined",
             "no clear winner",
             "inconclusive",
-            "superior method"
+            "superior method",
+            "trial needed",
+            "larger trial",
+            "more data",
+            "not enough data",
+            "further trial",
+            "sample too small",
+            "cannot choose",
+            "undetermined",
+            "undecided",
+            "not established",
+            "no victory",
+            "winner not",
+            "follow-up",
+            "follow up"
           ],
           [
             "faster",
             "stable",
             "small sample",
-            "insufficient sample"
+            "insufficient sample",
+            "small-scale",
+            "small scale",
+            "small comparison",
+            "limited sample",
+            "small dataset",
+            "sample size",
+            "limited data",
+            "small data"
           ]
         ],
         "title_forbidden_terms": [
@@ -1181,18 +1234,24 @@
           [
             "complex cases",
             "complex scenarios",
-            "complex tasks"
+            "complex tasks",
+            "intricate"
           ],
           [
             "too small",
             "insufficient",
             "no conclusion",
             "cannot choose",
-            "not enough"
+            "not enough",
+            "limited sample",
+            "could not be determined",
+            "not determined"
           ],
           [
             "faster",
-            "stable"
+            "stable",
+            "speed",
+            "stability"
           ]
         ],
         "summary_adds_evidence": true,
@@ -1236,7 +1295,8 @@
           [
             "точност",
             "сниж",
-            "успешн"
+            "успешн",
+            "успех"
           ]
         ],
         "title_forbidden_terms": [
@@ -1268,6 +1328,13 @@
         "summary_forbidden_terms": [
           "71%",
           "84%"
+        ],
+        "answer_forbidden_terms": [
+          "android",
+          "критичн",
+          "critical",
+          "goal_fit",
+          "критич"
         ]
       }
     },
@@ -1348,11 +1415,30 @@
             "успех",
             "success",
             "84"
+          ],
+          [
+            "множеств",
+            "многими инструмент",
+            "большого количества инструмент",
+            "many tools",
+            "many-tool",
+            "tool-heavy",
+            "revers",
+            "обратн",
+            "обращ",
+            "большом количестве",
+            "большим количеством",
+            "много инструмент",
+            "количестве инструмент",
+            "большом их количестве"
           ]
         ],
         "title_forbidden_terms": [
           "обзор",
-          "в этом видео"
+          "в этом видео",
+          "не при увеличении",
+          "не за счет увеличения",
+          "not by increasing"
         ],
         "summary_evidence_groups": [
           [
@@ -1371,7 +1457,8 @@
             "многокомпонент",
             "количества инструмент",
             "снижалась",
-            "был обратным"
+            "был обратным",
+            "обращ"
           ]
         ],
         "summary_adds_evidence": true,
@@ -1442,7 +1529,11 @@
         "category_aliases": [
           "piano",
           "музык",
-          "music"
+          "music",
+          "музициров",
+          "музик",
+          "левой рукой",
+          "left-hand"
         ]
       }
     },
@@ -1501,6 +1592,9 @@
           "mortgage",
           "ипотек",
           "personal finance"
+        ],
+        "answer_forbidden_terms": [
+          "android"
         ]
       }
     }
