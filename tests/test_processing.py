@@ -12,7 +12,7 @@ from app.domain.models import (
     UserProfile,
 )
 from app.domain.priority import PriorityEngine
-from app.domain.signals import has_multiple_sources
+from app.domain.signals import _INCONCLUSIVE_SUFFIX, has_multiple_sources
 from app.errors import AppError
 from app.llm.base import LlmError
 from app.services.actions import apply_item_action
@@ -848,17 +848,33 @@ def test_title_cap_keeps_the_verdict_and_the_condition_that_scopes_it():
     assert "latency 40%,; no winner" not in updated.title
 
 
-@pytest.mark.parametrize(
-    ("language", "suffix"),
-    [
-        ("de", "; kein Sieger wurde ermittelt"),
-        ("es", "; no se determinó un ganador"),
-        ("fr", "; aucun gagnant n'a été établi"),
-    ],
-)
+# The expected suffixes are written down independently of the production mapping so
+# that a deleted or edited translation fails this contract instead of disappearing
+# together with its own parameter.
+_INCONCLUSIVE_SUFFIX_CONTRACT = {
+    "en": "; no winner was established",
+    "ru": "; победитель не определён",
+    "uk": "; переможця не визначено",
+    "de": "; kein Sieger wurde ermittelt",
+    "es": "; no se determinó un ganador",
+    "fr": "; aucun gagnant n'a été établi",
+    "it": "; nessun vincitore è stato stabilito",
+    "pt": "; nenhum vencedor foi determinado",
+    "nl": "; geen winnaar werd bepaald",
+    "pl": "; nie wyłoniono zwycięzcy",
+    "tr": "; kazanan belirlenmedi",
+}
+
+
+def test_every_supported_response_language_has_a_suffix():
+    """The 11 supported languages are the whole contract, not a growing accident."""
+    assert set(_INCONCLUSIVE_SUFFIX) == set(_INCONCLUSIVE_SUFFIX_CONTRACT)
+
+
+@pytest.mark.parametrize(("language", "suffix"), sorted(_INCONCLUSIVE_SUFFIX_CONTRACT.items()))
 def test_inconclusive_verdict_uses_the_response_language(language, suffix):
-    """A German, Spanish, or French answer must not receive an English suffix."""
-    result = make_analysis(title="Titel der Messung", summary="Detail.", language="en")
+    """Each response language gets its own exact no-winner wording, once."""
+    result = make_analysis(title="Measured title", summary="Detail.", language="en")
 
     updated = ensure_explicit_inconclusive_title(
         result,
@@ -866,7 +882,7 @@ def test_inconclusive_verdict_uses_the_response_language(language, suffix):
         response_language=language,
     )
 
-    assert updated.title == "Titel der Messung" + suffix
+    assert updated.title == "Measured title" + suffix
     assert (
         ensure_explicit_inconclusive_title(
             updated,
@@ -875,6 +891,20 @@ def test_inconclusive_verdict_uses_the_response_language(language, suffix):
         )
         is updated
     )
+
+
+@pytest.mark.parametrize("language", ["ja", "zz"])
+def test_unsupported_or_unrecognized_response_language_leaves_the_title_alone(language):
+    """Without a translation the repair returns the original object, never English."""
+    result = make_analysis(title="比較の結果", summary="詳細.", language="ja")
+
+    updated = ensure_explicit_inconclusive_title(
+        result,
+        "The comparison was inconclusive; no winner was established.",
+        response_language=language,
+    )
+
+    assert updated is result
 
 
 def test_inconclusive_suffix_infers_german_without_language_metadata():
