@@ -1413,6 +1413,7 @@ the reversal member. The cue lists are closed, so an unlisted predicate keeps it
 bare-cue reading. Two label boundaries are deliberate: “plan No. 2” stays graded,
 and a letter after a quantitative baseline (“the target B”) stays graded.
 
+
 ## D-059 — A return inside `for … in range` is not a compile hazard on CPython 3.12
 
 Context: a review turn reported that a title-trimming helper returned its start
@@ -1561,4 +1562,28 @@ keeps the append path; the boundary is shared with the evidence path through
 `CLAIM_CLAUSE_BREAK`, so it is not narrowed for the title scan alone. These should
 be extended only together with the evidence detectors, which share the same
 patterns.
+
+## D-061 — Internal review labels are not a contract; invariants and behavior tests are
+
+Context: the Answer-First signal, title-repair, and prompt work (D-054…D-058) left
+short in-code labels such as `COR-43-01`, `QUAL-42-01`, and `COMPAT-38-03` in
+comments and test docstrings. They were review-thread coordinates from the work
+that produced the fix, not identifiers defined in any repository document. Durable
+review evidence already lives in GitHub PRs and commits, so the labels duplicated
+history without giving a reader a rule to look up.
+
+Decision: remove the labels from `app/` and `tests/` without replacing them with a
+new registry. Each rule they annotated keeps its rationale as prose and its
+positive/negative control as a behavior test; the invariant name in the surrounding
+comment is the durable reference. Documented lexical limitations stay in
+D-058 and PRODUCT_SPEC §31.
+
+Reason: a label with no registry is an unverifiable claim. A reader cannot tell
+which behavior it pins, and deleting the test it accompanied would not be noticed.
+A named invariant plus a behavior test fails when the rule is removed, which is the
+only property worth preserving from the label.
+
+Consequences: review comments should point at the behavior test or the invariant
+name rather than mint new `PREFIX-NN-NN` coordinates. Historical PR discussion
+still mentions old labels; that is history, not repository state.
 

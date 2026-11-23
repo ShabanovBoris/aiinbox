@@ -210,7 +210,7 @@ _TITLE_PRESCRIPTION = (
     # A bare label needs a modal ("the title must say …") to be a command. Any
     # speech or state verb is accepted here: a closed verb list let "must convey /
     # express / make clear no winner was established" through as evidence while it
-    # prescribes the output (SEC-26-01). The value must still be a verdict, so
+    # prescribes the output. The value must still be a verdict, so
     # "the title must explain why the methods differ" and "the title must be
     # descriptive" stay ordinary instructional prose.
     rf"|{_TITLE_LABEL}\b\s*(?:{_TITLE_MODAL})\s+(?:that\s+)?"
