@@ -243,6 +243,7 @@ async def test_metadata_then_stt_uses_existing_transcription_checkpoints(tmp_pat
     assert content.source_context == reel_info()["description"]
     assert content.metadata["instagram_id"] == "ABC123"
     assert content.metadata["via_stt"] is True
+    assert content.metadata["instagram_has_video"] is True
     assert source.content_duration_seconds == 30
     assert transcriber.durations == [30]
     assert transcriber.completed_segments is completed
@@ -459,6 +460,10 @@ async def test_stt_transcript_and_visual_context_resume_without_redownload(
     message = build_user_message(provider.calls[-1][0], UserProfile(), [])
     assert "SOURCE CONTEXT" in message
     assert reel_info()["description"] in message
+    # A restored Reel keeps the extracted video fact, so the profile language
+    # contract survives a restart instead of falling back to the caption language.
+    assert provider.calls[-1][0].metadata["instagram_has_video"] is True
+    assert "RESPONSE LANGUAGE (profile)" in message
 
 
 async def test_partial_retry_reextracts_instagram_only_and_marks_failed_source_prompt(

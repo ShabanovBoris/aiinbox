@@ -8,6 +8,7 @@ import pytest
 from pydantic import ValidationError
 
 from app.domain.enums import ItemType, SourceType
+from app.domain.language import response_language_for
 from app.domain.models import (
     AnalysisResult,
     NormalizedContent,
@@ -176,6 +177,22 @@ def test_quality_fixture_corpus_covers_the_required_failure_modes():
         assert all(term.strip() for term in expected["title_forbidden_terms"])
         assert expected["summary_evidence_groups"]
         assert expected["summary_adds_evidence"] is True
+
+
+@pytest.mark.parametrize("case", _quality_cases(), ids=lambda case: case["id"])
+def test_fixture_response_language_matches_the_prompt_contract(case):
+    """The manual corpus cannot declare a language the prompt would never request."""
+    content = NormalizedContent(
+        source_type=SourceType(case["source_type"]),
+        text=case["content"],
+        language=case.get("source_language"),
+        metadata=case.get("metadata", {}),
+    )
+
+    assert (
+        response_language_for(content, UserProfile.model_validate(case.get("profile", {})))
+        == case["response_language"]
+    )
 
 
 @pytest.mark.parametrize("case", _quality_cases(), ids=lambda case: case["id"])

@@ -29,6 +29,7 @@ from app.bot.provenance import (
     normalize_forward_origin,
 )
 from app.domain.enums import ContentKind, ProcessingStatus, SourceType
+from app.domain.language import response_language_for
 from app.domain.models import DEFAULT_PROFILE, NormalizedContent
 from app.domain.priority import PriorityEngine
 from app.extractors.audio import AudioExtractor
@@ -537,6 +538,35 @@ def test_nonvideo_content_keeps_its_existing_language_rule():
     assert "write title, summary" in prompt.casefold()
     assert "use the primary language of the captured text" in " ".join(SYSTEM_PROMPT.split())
     assert '"preferred_language"' not in prompt
+
+
+@pytest.mark.parametrize(
+    ("has_video", "expected_language", "expected_line"),
+    [
+        (False, "en", "RESPONSE LANGUAGE (content): en"),
+        (True, "ru", "RESPONSE LANGUAGE (profile): ru"),
+    ],
+)
+def test_instagram_response_language_follows_extracted_media_kind(
+    has_video, expected_language, expected_line
+):
+    """A photo/text post answers in the content language; a Reel in the profile language."""
+    content = NormalizedContent(
+        source_type=SourceType.INSTAGRAM,
+        language="en",
+        text="An English caption",
+        metadata={
+            "instagram_has_video": has_video,
+            "instagram_post_partial": False,
+            "successful_source_types": [SourceType.INSTAGRAM.value],
+        },
+    )
+
+    prompt = build_user_message(content, DEFAULT_PROFILE, [])
+
+    assert response_language_for(content, DEFAULT_PROFILE) == expected_language
+    assert expected_line in prompt
+    assert "SOURCE LANGUAGE (extracted metadata): en" in prompt
 
 
 def test_multi_source_prompt_requires_whole_item_synthesis():

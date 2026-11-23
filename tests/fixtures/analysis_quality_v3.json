@@ -826,6 +826,9 @@
       "source_language": "en",
       "response_language": "ru",
       "content": "In a short screen recording, the creator compares meeting notes made from an unstructured prompt with notes made from a fixed template. The template produced shorter notes with clearer owners, so the creator recommends using it for recurring meetings.",
+      "metadata": {
+        "instagram_has_video": true
+      },
       "profile": {
         "profession": "Android developer"
       },

@@ -1013,10 +1013,13 @@ extraction отсутствующий контент не додумываетс
 `priority_reason` остаётся внутренним объяснением факторов и может учитывать
 профиль.
 
-Для Item с Telegram VIDEO/YouTube title, summary, next action и reason создаются на
-языке из профиля, даже если transcript на другом языке; поле `language` сохраняет
-язык исходного материала. Для остальных источников title, summary, next action и
-reason создаются на языке самого контента. В user message всегда присутствует
+Для Item с Telegram VIDEO/YouTube, а также с Instagram-контентом, содержащим видео
+(Reels и посты с видео-элементами), title, summary, next action и reason создаются
+на языке из профиля, даже если transcript на другом языке; поле `language`
+сохраняет язык исходного материала. Для остальных источников, включая
+Instagram-посты из фото и текста, title, summary, next action и reason создаются
+на языке самого контента: видеосодержимое определяется по фактически извлечённым
+медиа-элементам, а не по типу источника. В user message всегда присутствует
 ровно одна строка `RESPONSE LANGUAGE`; `preferred_language` не дублируется внутри
 profile JSON и не может переопределить языковой контракт. Если extraction дал
 язык исходника, он передаётся отдельной строкой `SOURCE LANGUAGE` и определяет
@@ -1080,7 +1083,9 @@ injected command не попадает в checkpoint; старые версии 
 Профиль может содержать profession, domains, weighted goals, interests,
 constraints, free text и `preferred_language` в формате BCP-47. По умолчанию
 используется `ru`; `/profile_update` меняет язык, например, на `en`. Параметр
-управляет ответом для видео-Items; язык исходного transcript его не переключает.
+управляет ответом для источников с видео: Telegram VIDEO, YouTube, Instagram Reels
+и посты с видео-элементами; язык исходного transcript его не переключает.
+Instagram-посты из фото и текста следуют языку контента.
 
 ## 36. /profile
 

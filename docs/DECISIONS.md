@@ -1662,3 +1662,22 @@ predicate stays a claim boundary, so “the gain reversed, accuracy held” is s
 claims. When the subject of a claim names no result, only the nearest earlier clause
 that names one lends it, so an unrelated claim further back no longer leaks into it.
 
+## D-063 — Instagram response language follows extracted media, not the source type
+
+Context: `includes_video_source` classified every `SourceType.INSTAGRAM` Item as
+video, so a photo or text post answered in the profile language instead of the
+language of its own caption. Instagram covers Reels, photo carousels and text
+posts under one source type, so the type cannot decide the language contract.
+
+Decision: extraction records `metadata["instagram_has_video"]` — `True` for a
+Reel and for a post with at least one extracted video element, `False` otherwise —
+and `includes_video_source` treats a missing flag on Instagram as "no video".
+Composite Items aggregate the fact with `any(...)` across extracted sources.
+
+Reason: only the extractor knows which media it actually produced. Guessing from
+the URL or defaulting to video would repeat the original bug for photo posts.
+
+Consequences: every Instagram producer and restore path must set the flag; a
+producer that forgets it yields the content-language branch. A post whose caption
+language is unknown keeps the existing content-primary fallback.
+
