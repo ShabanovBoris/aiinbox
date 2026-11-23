@@ -98,7 +98,7 @@ class FakeLlmProvider:
             raise self.topic_error
         return self.topic_result
 
-    async def summarize_chunk(self, text: str) -> str:
+    async def summarize_chunk(self, text: str, *, sanitize_untrusted: bool = True) -> str:
         self.summarize_calls.append(text)
         if self.summarize_failures > 0:
             self.summarize_failures -= 1

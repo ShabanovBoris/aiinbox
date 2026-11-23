@@ -104,8 +104,12 @@ class LlmProvider(Protocol):
         """Classify captured subject without receiving profile or user-intent data."""
         ...
 
-    async def summarize_chunk(self, text: str) -> str:
-        """Сжать один bounded fragment перед финальным анализом."""
+    async def summarize_chunk(self, text: str, *, sanitize_untrusted: bool = True) -> str:
+        """Сжать один bounded fragment перед финальным анализом.
+
+        ``sanitize_untrusted`` is False only for text the application already
+        projected; a second filter there can delete a surviving quotation.
+        """
         ...
 
     async def describe_images(

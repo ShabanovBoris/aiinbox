@@ -93,6 +93,9 @@ def _project_post(
             "visual_only": has_visual and not has_transcript,
             "instagram_post_partial": progress["processed"] < progress["total"],
             "instagram_post_visual": has_visual and not missing_video_visual,
+            # A photo/carousel post follows the content language; only an
+            # extracted video element switches it to the profile language.
+            "instagram_has_video": any(part["kind"] == "video" for part in progress["parts"]),
         },
     )
 
