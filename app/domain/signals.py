@@ -33,6 +33,9 @@ _NON_OUTCOME_EVENTS = (
     rf"{_NON_OUTCOME_WIN_OBJECTS_CYRILLIC}"
 )
 _EVENT_NOUN = rf"(?:{_NON_OUTCOME_EVENTS})\b"
+# A hyphenated compound ("an award-winning tool") describes the subject; it does not
+# name an event whose outcome the win reports.
+_EVENT_NOUN_ANY_CASE = re.compile(rf"(?i){_EVENT_NOUN}(?![\w-])")
 _WIN_NOUN = r"(?:no\s+winner|winners?|побед\w*|перемож\w*)"
 # The event frames the phrase from either side: "no winner … in the election",
 # "в рамках тендера победителя нет", "the election winner", "победителя тендера".
@@ -1176,12 +1179,20 @@ def _claim_window(sentence: str, clause: str, match: re.Match[str]) -> str:
     return f"{clause} {match.group()} {tail}"
 
 
-def _win_mention_rejected(sentence: str, clause: str, match: re.Match[str]) -> bool:
+def _win_mention_rejected(
+    sentence: str,
+    clause: str,
+    match: re.Match[str],
+    separate_scope: str | None = None,
+) -> bool:
     """Shared rejection filters for a decisive-win mention.
 
     Used both for a usable result and for a subset win that leaves the comparison
     open, so a negated, hedged, hypothetical, ambiguous, or separate-experiment claim
-    can never be read as either.
+    can never be read as either. The separate-experiment filter reads the whole
+    sentence, because that is the claim the evidence path evaluates; a caller that
+    has already isolated the win's own claim passes it as ``separate_scope`` so an
+    unrelated claim beside it cannot reject the win.
     """
     directional = match.group("directional") is not None
     # "ranked first", "finished first" and "put A ahead" also describe quizzes,
@@ -1200,7 +1211,8 @@ def _win_mention_rejected(sentence: str, clause: str, match: re.Match[str]) -> b
     # forecast, not a result; the clause check above cannot see this position.
     if directional and _HEDGED_WIN.search(match.group()):
         return True
-    return _SEPARATE_COMPARISON.search(sentence) is not None
+    scope = sentence if separate_scope is None else separate_scope
+    return _SEPARATE_COMPARISON.search(scope) is not None
 
 
 def _usable_wins_in_sentence(
@@ -2111,6 +2123,90 @@ def title_states_inconclusive(title: str) -> bool:
     )
 
 
+# A title that lists a trade-off can still close with the standing the comparison
+# reached. The evidence path accepts "In the end, A won" only with its comma, because
+# a sentence-initial phrase frames whatever follows it; a title drops the comma
+# ("…; in the end A won"), so the title scan reads these openers without one. The
+# overall adverbs ("overall", "on average") already come from `_OVERALL_RESULT`. A
+# false positive only exposes a win to the claim-scoped guards below, which still
+# require a real unscoped win before the title is replaced.
+_TITLE_RESULT_OPENER = re.compile(
+    r"(?i)\b(?:in\s+the\s+end|in\s+the\s+final\s+analysis|ultimately|all\s+in\s+all|"
+    r"at\s+the\s+end\s+of\s+the\s+day|when\s+all\s+is\s+said\s+and\s+done|"
+    r"в\s+итоге|в\s+конце\s+концов|в\s+целом|в\s+конечном\s+счете|"
+    r"у\s+підсумку|зрештою|загалом|кінець\s+кінцем)\b"
+)
+
+
+def _title_closes_trade_off(title: str) -> bool:
+    """Whether a split title ends with the standing the comparison reached."""
+    return (
+        _OVERALL_RESULT.search(title) is not None or _TITLE_RESULT_OPENER.search(title) is not None
+    )
+
+
+def title_claims_comparison_winner(title: str) -> bool:
+    """Whether a title asserts that one compared side came out ahead.
+
+    The deterministic repair uses this to keep two contradictory conclusions out of
+    one title. The evidence detectors answer the opposite question ("does the
+    source settle the comparison?"), so their frame requirement would miss an
+    ordinary "A won the benchmark"; this scan instead applies the shared rejection
+    filters to every decisive mention. A split claim ("A won on speed, but B won on
+    stability") reports a trade-off rather than an overall winner, and a win scoped
+    to a subset ("A won the small sample", "A won on accuracy in the final
+    benchmark") stays partial even inside a final round, while a subset in the
+    neighbouring claim belongs to that other win and leaves this one overall ("A won
+    the benchmark; B was faster on the small sample"). A split title that ends
+    with the standing it reached ("…; overall A won", "…; in the end A won") closes
+    the trade-off, so that closing win is read as the overall result. A final or
+    overall round is a frame instead, so "A won the final benchmark" and "The final
+    benchmark showed A won" claim the overall standing. A negated, hedged or
+    hypothetical mention claims no winner, and an event outcome ("Acme won the
+    tender", "Тендер выиграла компания Acme") settles an award or a race, not a
+    comparison of sides.
+    """
+    folded = _fold(title)
+    # A trade-off keeps its measured detail and receives the verdict; appending to a
+    # title that also states the overall winner would keep both conclusions (COR-16-07).
+    if _split_claim(folded) and not _title_closes_trade_off(folded):
+        return False
+    for match in _DECISIVE_WIN.finditer(folded):
+        if match.group("directional") is not None:
+            continue
+        clause = clause_before(folded, match.start())
+        # Read every guard on the win's own claim: its clause, the win and its
+        # object up to the next punctuation. An event noun or a separate experiment
+        # in another claim ("A, an award-winning tool, won the benchmark", "…; the
+        # award went to B") describes something else and must not decide how this
+        # win is read (GATE-16-02).
+        claim = _claim_window(folded, clause, match)
+        # An event win is reported with the same verbs as a comparison win in Russian
+        # and Ukrainian, where no object lookahead can reject it; only a claim that
+        # names a compared side keeps the comparison reading.
+        if _EVENT_NOUN_ANY_CASE.search(claim) and not _names_compared_sides(claim):
+            continue
+        if _win_mention_rejected(folded, clause, match, separate_scope=claim):
+            continue
+        # The evidence path's frame/limit fork: a final or overall round is a frame,
+        # a named subset is a limit the frame cannot override (GATE-16-01). The subset
+        # is read inside this win's own claim: a scope that belongs to the neighbouring
+        # claim about the other side ("A won the benchmark; B was faster on the small
+        # sample") describes that other side's win, and reading it here made an
+        # unscoped win look partial, so the repair appended the verdict beside "A won"
+        # (GATE-16-06).
+        if _PARTIAL_WIN_SCOPE.search(claim):
+            overall = (
+                _OVERALL_RESULT.search(claim)
+                if _LIMITING_WIN_SCOPE.search(claim)
+                else _OVERALL_MARKER.search(claim)
+            )
+            if not overall:
+                continue
+        return True
+    return False
+
+
 def _language_hint(text: str) -> str | None:
     """Recognize the languages the repair can write without importing a detector."""
     if _UKRAINIAN.search(text):
@@ -2163,6 +2259,17 @@ def inconclusive_title_suffix(
     """Pick the suffix for the actual response language."""
     language = inconclusive_title_language(title, response_language, evidence)
     return _INCONCLUSIVE_SUFFIX[language] if language else ""
+
+
+def inconclusive_title_statement(language: str) -> str:
+    """The verdict as a standalone title, for a title that must be replaced.
+
+    ``language`` comes from ``inconclusive_title_language``, so the replacement
+    stays in the actual response language; capitalizing the first letter lets it
+    stand alone as the title instead of a cut-off continuation.
+    """
+    verdict = _INCONCLUSIVE_SUFFIX[language].removeprefix("; ")
+    return verdict[:1].upper() + verdict[1:]
 
 
 # A measured change ("cut latency by 30%", "снизил задержку на 30%") reports a result
