@@ -967,8 +967,10 @@ claim that no cause was given. Condition scope is the reversal's own clause, so
 other clause's condition. A question or hedge (“researched whether the gain
 reversed”, “might show that the gain reversed”, «возможно») is not a measured
 reversal; “no longer held” is recognized; and a later explicit “the gain held”
-supersedes an earlier reversal as the source's final outcome. “Reversed the
-earlier conclusion/finding” is an action on a claim, not a result reversal.
+supersedes an earlier reversal only when it names the same measured result under
+the same condition (both unnamed scopes agree, one named and one unnamed never
+do). “Reversed the earlier conclusion/finding” is an action on a claim, not a
+result reversal.
 
 Reason: a deterministic hint must not manufacture a premise or a condition the
 source does not state, and it must not turn an unknown cause into an absence of
@@ -1140,10 +1142,11 @@ matched”) count as uncertainty, and later confirmed results
 suppress the suffix. The cheap control-filter gate additionally accepts standalone
 bare verdict imperatives (`say/state/claim` + verdict noun). A hedged forecast is
 never a measured reversal, even when the verb names the failure, and a later hold
-cancels a reversal only when it shares a named scope phrase. Plural forms, passive
-“could not be determined”, retraction of the verdict, and bare
-“won/favored/beat/superior” forms are handled explicitly, while “never announced”
-stays an absence. The prompt hint, repair, and oracle share one claim
+cancels a reversal only when it names the same measured result under the same
+condition (see D-059). Plural forms, passive “could not be determined”, retraction
+of the verdict, and bare “won/favored/beat/superior” forms are handled explicitly,
+while “never announced” stays an absence. The prompt hint, repair, and oracle share
+one claim
 boundary (`CLAIM_CLAUSE_BREAK`), so commas, colons, coordinators, and contrast
 words split negation and subject consistently. “Multi-source” means more than one
 successfully extracted evidence block; one surviving source still gets the hint
@@ -1413,3 +1416,76 @@ guard takes the reading that keeps the result, which can keep a condition inside
 the reversal member. The cue lists are closed, so an unlisted predicate keeps its
 bare-cue reading. Two label boundaries are deliberate: “plan No. 2” stays graded,
 and a letter after a quantitative baseline (“the target B”) stays graded.
+
+## D-059 — A hold cancels a reversal only for the same measured result and condition
+
+Context: a conditional reversal (“The measured gain reversed in large batches.”)
+was found while the phrases used to compare it with a later hold came from a
+second, narrower cue list that did not know “in”, “because”, or “since”. The
+reversal's scope key set therefore stayed empty, and an unrelated later hold (“The
+measured gain held in small batches.”, “… held overall.”) erased the reversal, so
+the condition-aware `REVERSAL IN SOURCE` guard never reached the prompt. The same
+check compared the whole candidate sentence instead of the hold's own clause,
+treated one empty scope set as a wildcard, and never compared the measured result,
+so “latency reversed on GPU … throughput held on CPU” and “gain reversed on GPU …
+latency held on GPU” also cancelled the reversal. Latency/throughput were missing
+from the measured-result vocabulary and GPU/CPU from the condition vocabulary, so
+those reversals were not detected as conditional at all.
+
+Decision: one private extractor (`_scope_details`) returns both the scope keys and
+the unknown-cause flag for a clause. A clause states a condition exactly when that
+single pass accepts a cue phrase, and the accepted phrase — normalized, at most six
+words, stopped at the clause break — is the key compared with a later hold. The
+hold check walks each `_RESOLVED_HOLD` match, reads its own clause, and cancels the
+reversal only when the measured results are the same and the conditions match: two
+unnamed scopes agree, two named scopes must share a phrase, and a one-sided pair
+never agrees. The measured result of a claim is the noun phrase its verb governs
+(`_claim_metrics`): the subject between the verb and the previous claim boundary. A
+coordinator or an enumerating comma between bare noun phrases joins one coordinated
+subject, so “the gain and accuracy reversed” and “the gain, accuracy, and reliability
+held” measure every member, while a coordinator or a comma after a predicate (“the
+gain reversed and accuracy held”, “the gain reversed, accuracy held”) stays a claim
+boundary. In an enumeration the member between a comma and its coordinator is the
+list's own punctuation rather than an elided result, so the member before that comma
+still decides; any other empty member ends the subject. When the subject names
+nothing at all (coreference, or a predicate split by a coordinator), only the
+nearest earlier clause that names a measured result lends its result; an unrelated
+clause further back does not, because it measures something else. A hold must cover
+every measured result the reversal names: “the gain and accuracy reversed … the
+accuracy held” and “the gain, accuracy reversed … the accuracy held” still leave the
+gain reversed. A specific measure (“latency”, “throughput”, “accuracy”,
+“reliability”) identifies the result, whether it qualifies a generic wrapper
+(“latency improvement”, “gain in accuracy”) or stands alone; a generic wrapper
+(“gain”, “improvement”, “performance”) identifies it only when the other side uses
+that same wrapper, so a bare wrapper hold after a qualified reversal (“the latency
+improvement reversed … the improvement held”) keeps the reversal. An empty result
+set means the identity is unknown and never rejects a hold by itself; two named,
+different results do. A coreferential “it/this” hold inherits the reversal's
+measured result only when the hold's own subject names none. A positive hold in a
+coreferential continuation is not also read as the reversal's condition, and a
+clause's own condition is still its own (`CLAIM_CLAUSE_BREAK` boundaries are not
+reused here because a comma can precede a restrictive scope).
+
+Reason: the condition and the measured result are independent qualifiers of the
+same finding. Treating either as a wildcard turns a scoped finding into a general
+one, which is the false claim the title guard exists to prevent. A wrapper noun
+names the shape of a result, not which quantity was measured, so it cannot make
+“latency improvement” and “throughput improvement” the same result.
+
+Consequences: scope and metric matching stay lexical and closed-vocabulary. A
+rephrased condition (“in large batching runs” vs “in large batches”) or an unlisted
+measure keeps the reversal, the accepted weaker-instruction default. Comma-spliced
+claims can still merge scopes, because a key stops at coordinators and sentence
+punctuation, not at a bare comma; a “while”-joined hold inside the reversal's own
+sentence can likewise contribute its condition to the reversal's scope. An
+unlisted measure inside a generic phrase (“the efficiency gain”) is read as the
+wrapper, so a hold about another unlisted measure under the same wrapper can still
+cancel the reversal. Coordination is read from position, not from syntax: a
+coordinator or an enumerating comma joins a subject only when the phrase before it
+ends on a bare result noun, so a coordinated subject with a modifier after the
+coordinator or an elided member after a bare comma can still be read by the wrong
+side, and a clause that ends on a result noun after a comma (“the team measured the
+gain, latency held”) enrolls a result its verb does not govern. A comma after a
+predicate stays a claim boundary, so “the gain reversed, accuracy held” is still two
+claims. When the subject of a claim names no result, only the nearest earlier clause
+that names one lends it, so an unrelated claim further back no longer leaks into it.
