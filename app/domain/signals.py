@@ -1970,6 +1970,25 @@ def _insufficiency_names_a_comparison(
     return len(_named_alternative_labels(text[start:end])) >= 2
 
 
+def _negation_scope(text: str, verdict_starts: list[int], verdict: re.Match[str]) -> str:
+    """The claim clause plus the next verdict, where a phrase-internal negation sits.
+
+    "were not inconclusive" keeps the negated adjective inside the verdict that ends
+    the scan. The window is bounded by the claim boundary and the next subject, so a
+    verdict on every claim costs linear time instead of rescanning the tail.
+    """
+    scope = _clause_before(text, verdict.start())
+    end = text.find(";", verdict.end(), verdict.end() + _CLAUSE_WINDOW)
+    position = bisect_right(verdict_starts, verdict.start())
+    following = verdict_starts[position] if position < len(verdict_starts) else len(text)
+    limit = min(
+        len(text) if end < 0 else end,
+        verdict.start() + _CLAUSE_WINDOW,
+        following,
+    )
+    return scope + text[verdict.start() : max(limit, verdict.end())]
+
+
 def _explicit_verdict(
     text: str,
     spans: list[tuple[int, int]],
@@ -1987,11 +2006,31 @@ def _explicit_verdict(
     wins_by_sentence: list[list[tuple[re.Match[str], int]]] | None = None
     decisive_indexes: dict[int, list[int]] = {}
     superseded = False
-    for match, needs_comparison in _verdict_mentions(text):
+    verdicts = _verdict_mentions(text)
+    starts_by_verdict = [match.start() for match, _ in verdicts]
+    for match, needs_comparison in verdicts:
         if _negated_at(text, match.start()):
             continue
-        # The negation may be part of the matched phrase ("were not inconclusive").
-        if _NEGATED_INCONCLUSIVE.search(_clause_before(text, match.start()) + match.group()):
+        # The negation may be part of the matched phrase ("were not inconclusive");
+        # the scan stops at the next verdict so a long document stays linear.
+        if (
+            _NEGATED_INCONCLUSIVE.search(_negation_scope(text, starts_by_verdict, match))
+            is not None
+        ):
+            continue
+        # A title or evidence that states a measured change after the verdict is a
+        # stronger claim: the source measured a result where the earlier comparison
+        # was open. The verdict cannot override it, whatever its scope.
+        result_claim = _next_claim(text, match.end())
+        # The claim must report a plain result the source measured. A claim scoped to
+        # another experiment, or one that compares the sides again ("A cut latency by
+        # 40% compared with the previous version"), leaves the verdict standing.
+        if (
+            _SEPARATE_COMPARISON.search(result_claim) is None
+            and _COMPARED_BASELINE.search(result_claim) is None
+            and _measured_change(result_claim)
+        ):
+            superseded = True
             continue
         # "В тендере победителя нет" and "no winner was announced in the election"
         # name an event, not a method comparison.
@@ -2153,3 +2192,102 @@ def inconclusive_title_suffix(
     """Pick the suffix for the actual response language."""
     language = inconclusive_title_language(title, response_language, evidence)
     return _INCONCLUSIVE_SUFFIX[language] if language else ""
+
+
+# A claim boundary: a sentence or clause break, or a coordinator that starts a new
+# claim. Shared with the verdict rule, which must see each claim's own result.
+_CLAIM_BREAK = re.compile(
+    r"(?i)[.;!?]|\b(?:but|however|although|though|whereas|yet|and|or|while|"
+    r"но|однако|а|и|или)\b"
+)
+
+
+def _next_claim(text: str, start: int) -> str:
+    """The one claim that follows the verdict, bounded by its own end.
+
+    Only the claim that introduces the next result decides whether the verdict is
+    overridden, so the scan stops at that claim's boundary instead of slicing the
+    rest of the document for every verdict.
+    """
+    tail_start = _CLAIM_BREAK.search(text, start, start + _CLAUSE_WINDOW)
+    begin = tail_start.end() if tail_start else start
+    tail_end = _CLAIM_BREAK.search(text, begin, begin + _CLAUSE_WINDOW)
+    return text[begin : tail_end.start() if tail_end else min(len(text), begin + _CLAUSE_WINDOW)]
+
+
+# A measured change ("cut latency by 30%", "снизил задержку на 30%") reports a
+# result the source actually observed, in the same way a decisive win does. It
+# needs a verb of change, a measured amount, and no hedge, hypothesis, negation,
+# or future frame: those describe an intention, not a measurement. The amount must
+# be a percentage or a ratio so an ordinary phrase ("increased by two people")
+# does not become a result.
+_CHANGE_VERB_HINTS = (
+    "cut",
+    "reduc",
+    "lower",
+    "decreas",
+    "accelerat",
+    "sped up",
+    "improved",
+    "rais",
+    "increas",
+    "boost",
+    "doubl",
+    "halv",
+    "tripl",
+    "снизил",
+    "сократил",
+    "ускорил",
+    "увеличил",
+    "уменьшил",
+    "повысил",
+    "зменшил",
+    "скоротив",
+    "збільшив",
+    "прискорив",
+)
+_MEASURED_CHANGE = re.compile(
+    r"(?i)"
+    r"\b(?:cut|cuts|cutting|reduced|reduces|lowered|lowers|decreased|decreases|"
+    r"accelerated|sped\s+up|sped|improved|improves|raised|raises|increased|"
+    r"increases|boosted|boosts|doubled|halved|tripled|"
+    r"снизил[аи]?|снизило|снизили|сократил[аи]?|сократило|сократили|"
+    r"ускорил[аи]?|ускорило|ускорили|увеличил[аи]?|увеличило|увеличили|"
+    r"уменьшил[аи]?|уменьшило|уменьшили|повысил[аи]?|повысило|повысили|"
+    r"зменшил\w*|скоротив\w*|збільшив\w*|прискорив\w*)\b"
+    r"[^.;!?]{0,40}?"
+    r"\b(?:by|на|в|з)\s+"
+    r"(?:\d+(?:[.,]\d+)?\s*(?:%|percent|процент\w*|відсот\w*|x\b|times\b|раз\w*))"
+)
+
+
+# A claim that measures against a named side ("compared with the previous version",
+# "than method B") is still a comparison measurement, so it does not override the
+# verdict; only a claim with no compared baseline is a plain measured result.
+_COMPARED_BASELINE = re.compile(
+    r"(?i)\b(?:compared\s+(?:with|to)|than|versus|vs\.?|over|against|"
+    r"чем|по\s+сравнению\s+с|в\s+сравнении\s+с|ніж|порівняно\s+з|проти)\b"
+)
+_FUTURE_CHANGE = re.compile(
+    r"(?i)\b(?:will|shall|going\s+to)|\b(?:собирает\w*ся|планиру\w*|буде(?:т|дут)|"
+    r"плану\w*)"
+)
+
+
+def _measured_change(text: str) -> bool:
+    """Whether a claim measures a change; a hedged, hypothetical or negated change does not.
+
+    The verb list is the same literal list the decisive-win scan uses as its cheap
+    pre-check: a claim without a change verb never reaches the regex, which keeps the
+    per-verdict scan linear in the document.
+    """
+    if not any(hint in text.casefold() for hint in _CHANGE_VERB_HINTS):
+        return False
+    measured = _MEASURED_CHANGE.search(text)
+    if measured is None or _negated_at(text, measured.start()):
+        return False
+    if _HEDGED_WIN.search(text) or _HYPOTHETICAL_WIN.search(text):
+        return False
+    if _FUTURE_CHANGE.search(text):
+        return False
+    return _NEGATED_VERDICT.search(text) is None

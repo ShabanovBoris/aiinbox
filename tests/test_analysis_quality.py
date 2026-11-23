@@ -1522,8 +1522,10 @@ def test_prior_work_or_explanation_is_not_a_no_winner_verdict(text):
         "The comparison was inconclusive. Method A is expected to be faster than B "
         "in the final benchmark.",
         "The comparison was inconclusive. Method A was faster than B, and overall costs rose.",
-        "The comparison was inconclusive. Method A cut latency by 40% "
-        "compared with the previous version.",
+        # A measured change is a stronger claim than the open verdict, so this case is
+        # no longer a non-verdict mention: the comparison of two methods was open, yet
+        # the source measured a concrete delta. It lives in
+        # test_measured_result_after_an_early_verdict_keeps_the_title.
         # A final round frames a result; it does not turn a small sample or one
         # metric into the overall standing.
         "The first round was inconclusive. The final benchmark found A was 40% faster "
@@ -6943,3 +6945,85 @@ def test_content_verb_before_the_failure_noun_keeps_the_negative_result(
     assert neutral not in body
     again = _repair_over_cap_claim(title, language)[0]
     assert again == title
+
+
+@pytest.mark.parametrize(
+    ("text", "title", "language"),
+    [
+        (
+            "The A/B test was inconclusive in week one. The full rollout showed method A cut "
+            "latency by 30%.",
+            "Method A cut p95 latency by 30%",
+            "en",
+        ),
+        (
+            "The A/B test was inconclusive in week one, but the full rollout showed method A "
+            "cut latency by 30%.",
+            "Method A cut p95 latency by 30%",
+            "en",
+        ),
+        (
+            "The pilot was inconclusive. The full rollout found method A cut latency by 30%.",
+            "Method A cut latency by 30% in production",
+            "en",
+        ),
+        (
+            "Сравнение методов не выявило победителя в первом раунде. Во втором раунде метод A "
+            "снизил задержку на 30%.",
+            "Метод A снизил задержку на 30%",
+            "ru",
+        ),
+        (
+            "Сравнение методов не выявило победителя в первом раунде; во втором раунде метод A "
+            "снизил задержку на 30%.",
+            "Метод A снизил задержку на 30%",
+            "ru",
+        ),
+    ],
+)
+def test_measured_result_after_an_early_verdict_keeps_the_title(text, title, language):
+    """A verdict scoped to an early phase must not override a later measured result.
+
+    "The A/B test was inconclusive in week one" is a verdict about the pilot, and the
+    full rollout that followed measured a concrete change: the title reports the
+    source's final answer, so the repair must not append "no winner". The rule is one
+    invariant — an open verdict never overrides a stronger later claim — and a
+    measured change is that claim once it belongs to a later phase of the document.
+    """
+    content = NormalizedContent(source_type=SourceType.WEB, text=text, language=language)
+    prompt = build_user_message(content, UserProfile(preferred_language=language), [])
+    summary = "Измеренная деталь." if language == "ru" else "Measured detail."
+    result = make_analysis(title=title, summary=summary, language=language)
+
+    repaired = ensure_explicit_inconclusive_title(result, text, response_language=language)
+
+    assert "INCONCLUSIVE COMPARISON IN SOURCE" not in prompt
+    assert repaired is result
+    assert repaired.title == title
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # A forecast, a hedge and a negation describe an intent or a failure, not a
+        # measurement the source observed.
+        "The pilot was inconclusive. The full rollout will cut latency by 30%.",
+        "The pilot was inconclusive. The full rollout may cut latency by 30%.",
+        "The pilot was inconclusive. The full rollout did not cut latency by 30%.",
+        "First round was inconclusive. Whether method A cut latency by 30% remains open.",
+        "Сравнение было неопределённым. Команда планирует снизить задержку на 30%.",
+        # A measured change before the verdict is the claim the verdict answers, so it
+        # must not override the verdict that follows it.
+        "The full rollout cut latency by 30%. The comparison was inconclusive.",
+        # A measured change that belongs to another experiment does not settle this one.
+        "The comparison was inconclusive. A separate benchmark showed the cache cut "
+        "latency by 30%.",
+        # A claim that measures against a named side keeps the verdict: the measurement
+        # reports that side's edge, not the overall standing.
+        "The comparison was inconclusive. Method A cut latency by 40% "
+        "compared with the previous version.",
+    ],
+)
+def test_measured_change_does_not_override_an_unsuperseded_verdict(text):
+    """Only a real measured result supersedes; intent, negation and other scopes do not."""
+    assert states_inconclusive_comparison(text) is True
