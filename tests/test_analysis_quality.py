@@ -7022,8 +7022,43 @@ def test_measured_result_after_an_early_verdict_keeps_the_title(text, title, lan
         # reports that side's edge, not the overall standing.
         "The comparison was inconclusive. Method A cut latency by 40% "
         "compared with the previous version.",
+        # A percentage without the compared quantity is not a result of the
+        # comparison: prices and costs move in every document.
+        "The comparison was inconclusive. Costs increased by 30%.",
+        "The comparison was inconclusive. The team cut costs by 30%.",
     ],
 )
 def test_measured_change_does_not_override_an_unsuperseded_verdict(text):
     """Only a real measured result supersedes; intent, negation and other scopes do not."""
     assert states_inconclusive_comparison(text) is True
+
+
+@pytest.mark.parametrize(
+    ("text", "title", "language"),
+    [
+        (
+            "Ни один проект не стал победителем премии «Продукт года».",
+            "Итоги премии: лауреат не выбран",
+            "ru",
+        ),
+        (
+            "No project won the Product of the Year award.",
+            "Award results: no laureate was selected",
+            "en",
+        ),
+        (
+            "Стоимость организации премии снизилась на 30%.",
+            "Итоги премии: лауреат не выбран",
+            "ru",
+        ),
+    ],
+)
+def test_award_verdict_is_not_a_comparison(text, title, language):
+    """An award has no compared alternatives, so the repair leaves the title alone."""
+    result = make_analysis(title=title, language=language)
+
+    repaired = ensure_explicit_inconclusive_title(result, text, response_language=language)
+
+    assert states_inconclusive_comparison(text) is False
+    assert repaired is result
+    assert repaired.title == title
