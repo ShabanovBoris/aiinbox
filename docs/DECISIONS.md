@@ -908,7 +908,17 @@ removed without leaving the politeness word behind. All other instructional
 prose and all whitespace, indentation and code blocks are preserved. The same
 helper filters captured text before chunking, each chunk before
 `summarize_chunk`, source metadata, user notes, visual notes, and
-`UserProfile.free_text`. Stored Content remains unchanged.
+`UserProfile.free_text`. Stored Content remains unchanged. A quotation is
+evidence, not a command: a command inside a Markdown blockquote, a table
+example/quotation, an indented block labelled as a quotation/attack, or a paragraph
+introduced or attributed as a prompt-injection/attack example stays in the model
+text byte-identically. This is a deliberate, narrow security trade-off: a source
+that writes “Example of a prompt injection:” above the payload, or wraps it in a
+blockquote/table, keeps that text visible to the model. Generic `Example:` headers
+and fenced code get no exception, commands inside a fence are still removed, the
+prompt guard and the absence of tools remain the defense, and every protected span
+is blanked from deterministic signals (D-054), so the excerpt cannot drive a title
+or a hint.
 
 Reason: prompt instructions alone are not a reliable security boundary for a small
 model, but deleting evidence is a correctness failure of its own. A bare “set the
@@ -1123,9 +1133,18 @@ created a measured-reversal premise, and a hold in a different scope (“at norm
 load”) erased a reversal reported “under peak load”. The 300-character trim cut
 the condition off the end of a title instead of dropping leading clauses.
 
-Decision: `analysis_text_projection` is the single sanitized text used by prompt
-construction, chunking, the inconclusive repair, and the opt-in eval; the prepared
-content always contains that projection. A later decisive win supersedes a verdict
+Decision: two projections share one command grammar. `analysis_text_projection`
+is the model/evidence text used by prompt construction, chunking,
+`summarize_chunk` and the opt-in evaluation; it removes commands outside
+quotation/example spans and keeps a quoted attack example byte-identical. The
+prepared content always contains that projection. `analysis_signal_projection`
+replaces every quotation/example span with spaces (newlines and offsets are
+preserved), then applies the same grammar without exceptions; the prompt
+no-winner hint, the reversal hint and the inconclusive repair read only that
+projection. A chunk checkpoint is keyed by the SHA-256 of the projected chunk, so
+a checkpoint built from a distorted projection is recomputed in place while
+unaffected chunks are reused, and `summarize_chunk` does not filter an
+already-projected chunk twice. A later decisive win supersedes a verdict
 only in the same comparison and numbered source, and not when it is hypothetical,
 hedged, retracted, explicitly a separate experiment, stated before the verdict in
 the same sentence, negative for an event participant (“neither vendor won the
@@ -1168,15 +1187,20 @@ positive result expectation. Polarity binding inherits a subject across a
 coordinated clause that starts with a verb, but not across a clause with its own
 subject.
 
-Reason: the model, repair, and eval must read identical evidence; otherwise a
-security filter silently changes product semantics and the eval cannot detect it.
-Uncertainty is only dropped when the same comparison is actually resolved, and
+Reason: the model, repair, and eval must read the same evidence contract; otherwise
+a security filter silently changes product semantics and the eval cannot detect it.
+Deterministic hints additionally need a quote-aware view, because a quoted sentence
+is not the source's own claim in either direction. Uncertainty is only dropped when
+the same comparison is actually resolved, and
 deterministic hints must not invent a direction the source does not state. Binding
 filter cost prevents a hostile document from blocking the event loop.
 
 Consequences: an unresolved or separately resolved comparison may keep the
 no-winner suffix even when a different comparison has a winner — the conservative
-choice. A prior-work verdict no longer forces uncertainty, so a source that only
+choice. A verdict or reversal stated only inside a blockquote, table or indented
+quotation produces no deterministic title suffix or hint, while the model still
+sees the quotation and may use it; an unquoted verdict keeps the previous
+behavior. A prior-work verdict no longer forces uncertainty, so a source that only
 reviews prior mixed results without stating its own conclusion may miss the
 suffix; the same applies to a win limited to a named sub-scope or phrased with
 unrecognized words. Scope comparison is lexical: a later hold phrased with
@@ -1212,7 +1236,10 @@ question consumed the budget.
 
 Decision: an ambiguity mention counts only when its sentence names a comparison
 (“which approach is better”, “whether A outperformed B”, a comparison/verdict
-noun); unrelated open questions and collocations stay evidence. A win is partial
+noun); unrelated open questions and collocations stay evidence. The uncertainty
+and reversal detectors read the quote-masked signal projection, so a quoted “no
+winner”/“mixed”/reversal is the quoted speaker's claim, not the source's verdict.
+A win is partial
 when it is scoped to a metric/round/workload or paired with a loss unless the
 sentence carries an overall marker (“final round”, “on all metrics”); lock-step
 wins with “and” count as a split. Generic better/showed/no-difference forms are

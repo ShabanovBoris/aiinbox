@@ -361,10 +361,36 @@ was found» удаляются и не создают ложный no-winner hin
 «Result rose 40%» остаётся evidence. Русские формы включают «скажи/напиши:
 победителя нет / победитель не определён / результаты смешанные» и позитивные
 «метод A победил / оказался лучше».
-Тот же очищенный projection, который видит
-модель, используется для chunking, deterministic title repair и opt-in
-evaluation; удалённая команда не может изменить title через repair, а hint о
-no-winner строится по очищенному тексту, а не по исходной injection. System
+У фильтрации два разных контракта. Model projection (`analysis_text_projection`)
+сохраняет protected quotation/example spans: Markdown blockquote (включая quoted
+blank lines), непрерывный table example/quotation, indented block с явной меткой
+quotation/attack, а также абзац под явным line-anchored заголовком об атаке
+(«Example of a prompt injection:», «Prompt injection example:», «Пример
+инъекции:», «Пример атаки:») или непосредственно перед post-attribution («The
+attack attempts…», «This prompt injection instructs…», «Атака пытается…»). Внутри
+таких spans команды остаются в тексте: источник описывает или цитирует атаку, а
+system prompt обязывает модель анализировать всё это как данные. Generic
+«Example:» и fenced code block исключением не являются: команды внутри fence
+удаляются так же, как standalone команда вне цитаты, а fence, отступы и
+окружающие факты сохраняются. Обычный indented code без метки quotation/attack
+тоже не получает нового исключения.
+Signal projection (`analysis_signal_projection`) маскирует каждый
+quotation/example span пробелами (переводы строк и длина сохраняются), затем
+применяет ту же строгую грамматику команд. Для signals indented block (≥4
+пробелов или tab) считается структурной цитатой, даже без метки, поэтому его
+содержимое не участвует в deterministic сигналах. Поэтому цитата не создаёт
+deterministic no-winner hint, title suffix или reversal hint, даже когда это
+обычное утверждение («The comparison results were mixed»), а не команда; при
+этом модель видит цитату целиком и учитывает её сама. `analysis_text_projection`
+используется для prompt, chunking и opt-in evaluation, а deterministic repair и
+hint читают signal projection: удалённая команда не может изменить title через
+repair, а quoted verdict не может фабриковать суффикс. Практическое следствие:
+настоящий verdict или reversal, встречающийся только внутри
+blockquote/indented/table цитаты, не даёт deterministic hint или суффикса.
+Chunk checkpoints хранят projected bytes и `chunk_sha256` именно projected
+chunk, поэтому checkpoint, построенный по искажённому тексту, не
+переиспользуется, а незатронутые chunks переиспользуются без повторной оплаты;
+хранимый Content при этом не меняется. System
 prompt запрещает выполнять оставшиеся
 инструкции; значение, запрошенное контентом, может появиться в ответе только если
 независимое evidence поддерживает его само по себе.
