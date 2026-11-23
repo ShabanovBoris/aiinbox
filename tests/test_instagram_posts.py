@@ -36,6 +36,7 @@ from tests.test_instagram import ingest_reel, make_worker
 POST = "https://www.instagram.com/p/FakePost/?xtok=share%3D%3D"
 CDN = "https://scontent.cdninstagram.com"
 CAPTION = "Подпись рассказывает, почему этот материал стоит прочитать внимательно."
+EN_CAPTION = "The best coffee in town is brewed slowly every morning."
 
 
 def photo(number):
@@ -629,3 +630,114 @@ async def test_stt_segments_are_isolated_between_videos_in_one_post(tmp_path, se
     assert sum(row.kind is ContentKind.TRANSCRIPT for row in rows) == 2
     assert not any(row.kind is ContentKind.TRANSCRIPT_CHUNK for row in rows)
     assert [entry[0] for entry in extractor.prepared] == ["1", "2", "2"]
+
+
+async def test_photo_caption_language_wins_over_profile_language_visual_notes(
+    tmp_path, session_factory
+):
+    """Russian visual notes must not decide the answer language of an English caption."""
+    item = await ingest_reel(session_factory, text=POST)
+    extractor = FixturePosts(tmp_path, ["photo"], caption=EN_CAPTION)
+    provider = FakeLlmProvider(vision=True)
+    assert await make_worker(session_factory, extractor, provider).process_one()
+
+    saved, _, _ = await _state(session_factory, item.id)
+    assert saved.processing_status is ProcessingStatus.READY
+    analyzed, profile, _ = provider.calls[0]
+    assert profile.preferred_language == "ru"
+    assert provider.describe_languages == ["ru"]
+    assert "Элемент 1" in analyzed.text
+    assert analyzed.source_context == EN_CAPTION
+    assert analyzed.language == "en"
+    assert response_language_for(analyzed, profile) == "en"
+    prompt = build_user_message(analyzed, profile, [])
+    assert "RESPONSE LANGUAGE (content): en (English)" in prompt
+    assert "SOURCE LANGUAGE (extracted metadata): en" in prompt
+
+
+@pytest.mark.parametrize(
+    ("caption", "expected"),
+    [(CAPTION, "ru"), (EN_CAPTION, "en"), ("🔥🔥🔥", None)],
+)
+async def test_photo_caption_language_is_published_only_when_detected(
+    tmp_path, session_factory, caption, expected
+):
+    """An undetectable caption keeps the old "guess from content" contract."""
+    item = await ingest_reel(session_factory, text=POST)
+    extractor = FixturePosts(tmp_path, ["photo"], caption=caption)
+    provider = FakeLlmProvider(vision=True)
+    assert await make_worker(session_factory, extractor, provider).process_one()
+
+    saved, _, _ = await _state(session_factory, item.id)
+    assert saved.processing_status is ProcessingStatus.READY
+    analyzed, profile, _ = provider.calls[0]
+    assert analyzed.language == expected
+    assert response_language_for(analyzed, profile) == expected
+    prompt = build_user_message(analyzed, profile, [])
+    if expected is None:
+        assert "RESPONSE LANGUAGE (content): the primary language of the captured text" in prompt
+        assert "SOURCE LANGUAGE (extracted metadata)" not in prompt
+    else:
+        assert f"RESPONSE LANGUAGE (content): {expected}" in prompt
+        assert f"SOURCE LANGUAGE (extracted metadata): {expected}" in prompt
+
+
+async def test_short_caption_without_language_evidence_keeps_content_fallback(
+    tmp_path, session_factory
+):
+    """A two-word Russian caption must not be published as a sister language."""
+    item = await ingest_reel(session_factory, text=POST)
+    extractor = FixturePosts(tmp_path, ["photo"], caption="Листайте вправо")
+    provider = FakeLlmProvider(vision=True)
+    assert await make_worker(session_factory, extractor, provider).process_one()
+
+    saved, _, _ = await _state(session_factory, item.id)
+    assert saved.processing_status is ProcessingStatus.READY
+    analyzed, profile, _ = provider.calls[0]
+    assert provider.describe_languages == ["ru"]
+    assert analyzed.language is None
+    assert response_language_for(analyzed, profile) is None
+    prompt = build_user_message(analyzed, profile, [])
+    assert "RESPONSE LANGUAGE (content): the primary language of the captured text" in prompt
+    assert "SOURCE LANGUAGE (extracted metadata)" not in prompt
+
+
+async def test_analysis_retry_detects_caption_language_from_stored_description(
+    tmp_path, session_factory
+):
+    """Restore rebuilds the language from the persisted caption, not from visual notes."""
+    item = await ingest_reel(session_factory, text=POST)
+    extractor = FixturePosts(tmp_path, ["photo"], caption=EN_CAPTION)
+    provider = FakeLlmProvider(vision=True, analyze_failures=1)
+    worker = make_worker(session_factory, extractor, provider)
+    assert await worker.process_one()
+    failed, _, _ = await _state(session_factory, item.id)
+    assert failed.processing_status is ProcessingStatus.FAILED
+
+    await apply_item_action(session_factory, 42, item.id, "retry")
+    assert await worker.process_one()
+    analyzed, profile, _ = provider.calls[-1]
+    assert analyzed.language == "en"
+    assert response_language_for(analyzed, profile) == "en"
+    assert len(extractor.prepared) == 1
+    assert extractor.manifest_reads == 1
+
+
+async def test_video_post_keeps_profile_language_even_with_english_caption(
+    tmp_path, session_factory
+):
+    """A Reel's primary source is its transcript, so its caption does not set the language."""
+    item = await ingest_reel(session_factory, text=POST)
+    extractor = FixturePosts(tmp_path, ["video"], caption=EN_CAPTION)
+    provider = FakeLlmProvider()
+    assert await make_worker(session_factory, extractor, provider).process_one()
+
+    saved, _, _ = await _state(session_factory, item.id)
+    assert saved.processing_status is ProcessingStatus.READY
+    analyzed, profile, _ = provider.calls[0]
+    assert analyzed.metadata["instagram_has_video"] is True
+    assert analyzed.language is None
+    assert response_language_for(analyzed, profile) == "ru"
+    prompt = build_user_message(analyzed, profile, [])
+    assert "RESPONSE LANGUAGE (profile): ru (Russian)" in prompt
+    assert "SOURCE LANGUAGE (extracted metadata)" not in prompt

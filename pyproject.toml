@@ -23,6 +23,7 @@ dependencies = [
     "pydantic>=2.7",
     "PyYAML>=6.0",
     "pydantic-settings>=2.3",
+    "py3langid>=0.4,<0.5",
 ]
 
 [dependency-groups]

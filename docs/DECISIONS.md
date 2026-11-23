@@ -1882,3 +1882,46 @@ verb and the amounts of "cut latency, cost, and error rate by 30%" would be spli
 apart.
 The measured-only frame does not affect decisive-win partiality ("won in the second
 round" stays partial).
+## D-066 — Instagram photo language comes from the caption, with an explicit abstention
+
+Context: `_project_post` built `NormalizedContent` without `language`, while
+`describe_images(..., preferred_language=profile.preferred_language)` wrote visual
+notes in the profile language into `content.text` and left the caption in
+`source_context`. For a photo post `response_language_for` therefore returned
+`None`, and the prompt asked the model to pick the primary language of mostly
+Russian generated text: an English caption on a Russian profile produced a
+Russian answer.
+
+Decision: `app/domain/language.detect_source_language` classifies the caption with
+`py3langid` after stripping URLs, hashtags and mentions. It publishes the top code
+only when the raw (unnormalized) log-posterior of that language exceeds the
+runner-up by at least 12 nats, and returns `None` for an empty caption or a `zxx`
+winner. `_project_post` publishes that value as `NormalizedContent.language` only
+when the post has no video part, using the same `has_video` value that becomes
+`metadata["instagram_has_video"]`. The caption language is not persisted; restore
+and refresh recompute it from the stored `DESCRIPTION` row.
+
+Reason: the caption is the only human-authored text of a photo post, so synthetic
+visual notes must not decide the answer language. `signals._language_hint` is
+built for verdict wording and misses ordinary captions ("Amazing coffee recipe"),
+while a script guess would invent `en` for any Latin caption. Markup is stripped
+because an English caption with Russian hashtags is otherwise classified as
+Russian. py3langid is unreliable on short captions and its normalized
+probabilities hide that: "Наконец-то пятница" scores 0.53 for Bulgarian and
+"Sunday morning vibes" 0.50 for Uzbek, because normalization rescales scores by
+the square root of the text length. The raw log-posterior gap grows with the
+actual evidence, so the 12-nat margin abstains on short and ambiguous captions
+(measured worst wrong gap across ru/en/uk/bg caption samples is ~7.5 nats) and
+still publishes ordinary captions ("Сегодня гуляли по набережной и пили кофе",
+"Rainy day in the city"). Abstaining beats a wrong explicit instruction. A Reel's
+primary source is its transcript, so its caption must not overwrite the schema
+language the model still decides for video.
+
+Consequences: `py3langid` and `numpy` are runtime dependencies (~4.6 MB wheel,
+~125–150 MB RSS once the model is lazily loaded). The first caption of a process
+pays a one-off model load of roughly 0.3 s inside the worker, later calls take well
+under a millisecond. Short, emoji-only and hashtag-only captions keep the
+content-primary fallback. A detected code outside `_INCONCLUSIVE_SUFFIX` makes
+`inconclusive_title_language` return `None`, so the deterministic repair leaves the
+title without a suffix instead of inventing one. Mixed-source Items keep their
+current rule: the caption language survives only for a single Instagram source.

@@ -569,6 +569,26 @@ def test_instagram_response_language_follows_extracted_media_kind(
     assert "SOURCE LANGUAGE (extracted metadata): en" in prompt
 
 
+def test_instagram_photo_without_detected_caption_language_keeps_content_fallback():
+    """An unknown caption language must not invent a code or a SOURCE LANGUAGE hint."""
+    content = NormalizedContent(
+        source_type=SourceType.INSTAGRAM,
+        language=None,
+        text="Элемент 1 — фото\nВизуальное описание: На фото чашка кофе.",
+        source_context="🔥🔥🔥",
+        metadata={
+            "instagram_has_video": False,
+            "successful_source_types": [SourceType.INSTAGRAM.value],
+        },
+    )
+
+    prompt = build_user_message(content, DEFAULT_PROFILE, [])
+
+    assert response_language_for(content, DEFAULT_PROFILE) is None
+    assert "RESPONSE LANGUAGE (content): the primary language of the captured text" in prompt
+    assert "SOURCE LANGUAGE (extracted metadata)" not in prompt
+
+
 def test_multi_source_prompt_requires_whole_item_synthesis():
     content = NormalizedContent(
         source_type=SourceType.TEXT,
