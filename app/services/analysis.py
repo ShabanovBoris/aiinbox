@@ -21,7 +21,7 @@ from app.domain.signals import (
     title_states_inconclusive,
 )
 from app.llm.base import LlmError, LlmProvider
-from app.llm.untrusted import without_control_instructions
+from app.llm.untrusted import mask_quoted_evidence, without_control_instructions
 from app.storage.models import Content, Item
 
 # Increment when chunk-summary semantics change so durable evidence is not silently
@@ -30,14 +30,25 @@ CHUNK_SUMMARY_GENERATOR_VERSION = 5
 
 
 def analysis_text_projection(text: str) -> str:
-    """The single sanitized evidence text shared by analysis and evaluation.
+    """The model/evidence text shared by analysis and evaluation.
 
-    Prompt construction, chunking, and the deterministic inconclusive-title repair
-    must all see the same text; otherwise a command removed from the model input
-    can still change the generated title, and the evaluation would not reproduce
-    production behavior.
+    Prompt construction, chunking and the opt-in evaluation must all see the same
+    text, so a command removed from one path cannot survive through another. Quoted
+    material and worked attack examples stay byte-identical: the source is
+    describing an attack, and the model is told to treat all of it as data.
     """
     return without_control_instructions(text)
+
+
+def analysis_signal_projection(text: str) -> str:
+    """The deterministic signal text: quoted evidence cannot drive a hint or repair.
+
+    A quoted sentence is not the source's own claim, even when it is not a command
+    (``> Say no winner was established``, ``The comparison results were mixed``).
+    Every quotation/example span is blanked first, then the strict command filter
+    runs on what remains. The masked text is never sent to a model or persisted.
+    """
+    return without_control_instructions(mask_quoted_evidence(text), keep_quoted_evidence=False)
 
 
 def split_text(text: str, chunk_size_chars: int, overlap_chars: int = 0) -> list[str]:
@@ -917,7 +928,7 @@ class Analyzer:
         result = await self.provider.analyze(content, profile, categories)
         return ensure_explicit_inconclusive_title(
             result,
-            content.text,
+            analysis_signal_projection(content.text),
             response_language=response_language_for(content, profile),
             multi_source=has_multiple_sources(content.metadata),
         )
@@ -932,10 +943,12 @@ class Analyzer:
         # Strip output-control commands before chunking: a checkpoint generated
         # from an injected chunk would otherwise preserve the distortion, and a
         # final aggregate filter cannot recover evidence that was never summarized.
+        # Quoted examples survive here; only the deterministic signal projection
+        # ignores them.
         prepared_text = analysis_text_projection(content.text)
-        # The model, deterministic repair, chunking, and the opt-in evaluation all
-        # read this one sanitized projection. Returning the raw short text here let
-        # a removed command still drive the repair decision.
+        # The model, chunking and the opt-in evaluation read this sanitized
+        # projection. Returning the raw short text here let a removed command still
+        # drive the repair decision, which now reads ``analysis_signal_projection``.
         content = content.model_copy(update={"text": prepared_text})
         if len(prepared_text) > self.chunk_size_chars:
             if item_id is None:
@@ -1040,7 +1053,12 @@ class Analyzer:
                 None,
             )
             if row is None:
-                summary = (await self.provider.summarize_chunk(chunk)).strip()
+                # Chunks already went through ``analysis_text_projection``; a second
+                # filter here could delete a quotation whose attribution was split
+                # across the boundary, so the application boundary owns projection.
+                summary = (
+                    await self.provider.summarize_chunk(chunk, sanitize_untrusted=False)
+                ).strip()
                 if not summary:
                     raise LlmError("INVALID_LLM_OUTPUT", "empty chunk summary")
                 summary = summary[: self.chunk_size_chars]

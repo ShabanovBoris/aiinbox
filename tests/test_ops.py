@@ -333,12 +333,14 @@ class _QualityProvider:
     def __init__(self, result: AnalysisResult):
         self.result = result
         self.chunk_inputs = []
+        self.chunk_sanitize_flags = []
         self.analyze_inputs = []
         self.unfiltered_inputs = []
         self.topic_inputs = []
 
-    async def summarize_chunk(self, text):
+    async def summarize_chunk(self, text, *, sanitize_untrusted=True):
         self.chunk_inputs.append(text)
+        self.chunk_sanitize_flags.append(sanitize_untrusted)
         return f"checkpoint {len(self.chunk_inputs)}"
 
     async def analyze(self, content, profile, categories):
@@ -389,6 +391,9 @@ async def test_analysis_quality_eval_reuses_chunk_aggregation_and_reports_pass(
     assert [report.case_id for report in reports] == ["answered"]
     assert reports[0].failed_checks == ()
     assert len(provider.chunk_inputs) == 2
+    # The eval owns projection: chunks are already projected (or intentionally raw
+    # in the probe), so the adapter must not filter them a second time.
+    assert provider.chunk_sanitize_flags == [False, False]
     analyzed_content, analyzed_profile, analyzed_categories = provider.analyze_inputs[0]
     assert analyzed_profile.preferred_language == "en"
     assert analyzed_categories == ["ИИ"]
@@ -472,6 +477,42 @@ async def test_analysis_quality_eval_filters_content_and_unfiltered_probe_does_n
     # The unfiltered probe leaves the model guard visible without letting the
     # injected command drive the deterministic repair.
     assert not reports[0].title.endswith("no winner was established")
+
+
+async def test_analysis_quality_eval_repairs_from_quote_masked_signals(tmp_path, monkeypatch):
+    """A quoted verdict cannot append a suffix in the filtered or unfiltered eval."""
+    content = "> The comparison results were mixed.\n\nAccuracy rose 40% on the benchmark."
+    fixture = _write_quality_fixture(
+        tmp_path,
+        {
+            "content": content,
+            "expected": {
+                "outcome_state": "positive",
+                "outcome_terms": ["rose 40%"],
+                "title_evidence_groups": [["accuracy"], ["40%"]],
+                "title_forbidden_terms": ["mixed"],
+                "summary_evidence_groups": [["40%"]],
+                "summary_adds_evidence": True,
+            },
+        },
+    )
+    provider = _QualityProvider(
+        make_analysis(
+            title="Accuracy rose 40%",
+            summary="Accuracy rose 40% on the benchmark.",
+            language="en",
+        )
+    )
+    settings = Settings(_env_file=None, openai_api_key="test", openai_analysis_model="test-model")
+    monkeypatch.setattr("app.ops.build_provider", lambda _settings: provider)
+
+    filtered = await evaluate_analysis_quality(settings, fixture)
+    assert provider.analyze_inputs[0][0].text == content
+    assert not filtered[0].title.endswith("no winner was established")
+
+    unfiltered = await evaluate_analysis_quality(settings, fixture, unfiltered=True)
+    assert provider.unfiltered_inputs[0][0].text == content
+    assert not unfiltered[0].title.endswith("no winner was established")
 
 
 async def test_analysis_quality_eval_uses_the_fixture_response_language(tmp_path, monkeypatch):

@@ -21,6 +21,7 @@ from app.domain.signals import CLAIM_CLAUSE_BREAK, clause_before, has_multiple_s
 from app.llm.base import LlmError, LlmProvider
 from app.main import build_provider
 from app.services.analysis import (
+    analysis_signal_projection,
     analysis_text_projection,
     bounded_chunk_aggregate,
     ensure_explicit_inconclusive_title,
@@ -995,7 +996,9 @@ async def _evaluate_quality_case(
         chunks = split_text(prepared_text, chunk_size_chars, chunk_overlap_chars)
         summaries = []
         for chunk in chunks:
-            summary = (await provider.summarize_chunk(chunk)).strip()
+            # The filtered path is already projected and the unfiltered probe must
+            # send raw chunks by design, so the eval owns projection, not the adapter.
+            summary = (await provider.summarize_chunk(chunk, sanitize_untrusted=False)).strip()
             if not summary:
                 raise RuntimeError(f"empty chunk summary for case {case['id']}")
             summaries.append(summary)
@@ -1023,9 +1026,10 @@ async def _evaluate_quality_case(
     )
     result = ensure_explicit_inconclusive_title(
         result,
-        # The repair always reads sanitized evidence, including the unfiltered
-        # probe: the probe measures the model guard, not a command-driven repair.
-        analysis_text_projection(content.text),
+        # The repair always reads the quote-masked signal projection, including the
+        # unfiltered probe: the probe measures the model guard, not command- or
+        # quotation-driven repair.
+        analysis_signal_projection(content.text),
         response_language=response_language_for(content, profile),
         multi_source=has_multiple_sources(content.metadata),
     )
