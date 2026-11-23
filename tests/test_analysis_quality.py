@@ -34,6 +34,7 @@ from app.llm.openai import (
 from app.ops import load_quality_fixture
 from app.services.analysis import (
     _TITLE_LIMITATION_MEMBER_CUE,
+    _answer_sentence_index,
     _subordinate_clause,
     analysis_text_projection,
     bounded_chunk_aggregate,
@@ -3276,6 +3277,20 @@ def test_bounded_chunk_aggregate_keeps_a_late_cue_less_verdict(verdict):
     aggregate = bounded_chunk_aggregate([summary], chunk_size_chars=len(verdict) + 15)
 
     assert verdict in aggregate
+
+
+def test_answer_sentence_index_returns_from_inside_the_loop_and_falls_through():
+    """Pin both exits of the in-loop multi-sentence search.
+
+    The scan returns from inside `for … in range`, and those returns are kept:
+    on CPython 3.12 the branch ends in `RETURN_VALUE`, so a silent skip here
+    would mean a data or caller bug, not a compiler one (D-059).
+    """
+    sentences = ["How to cut cost?", "Batching cut cost by 61%.", "This restates the plan."]
+    assert _answer_sentence_index(sentences) == 1
+
+    cue_less = ["How to cut cost?", "The team described the approach.", "This restates the plan."]
+    assert _answer_sentence_index(cue_less) is None
 
 
 @pytest.mark.parametrize(

@@ -1413,3 +1413,78 @@ guard takes the reading that keeps the result, which can keep a condition inside
 the reversal member. The cue lists are closed, so an unlisted predicate keeps its
 bare-cue reading. Two label boundaries are deliberate: “plan No. 2” stays graded,
 and a letter after a quantitative baseline (“the target B”) stays graded.
+
+## D-059 — A return inside `for … in range` is not a compile hazard on CPython 3.12
+
+Context: a review turn reported that a title-trimming helper returned its start
+offset instead of the index of the next delimiter, and that a following fragment
+came out empty. Its `dis` output appeared to show the `return` branch reaching a
+`JUMP_BACKWARD` with a negative offset, so the interpreter was suspected of
+skipping the return inside `if` inside `for … in range`. The transient helper is
+not in the repository; `app/domain/signals.py` has no `for … in range` loop whose
+body returns — its only `range` occurrences are list comprehensions (lines 1681
+and 2033 in this tree), which cannot carry a `return` — but the same loop shape
+survives in `app/services/analysis.py`.
+
+Decision: treat an in-loop `return` in `for … in range` as ordinary, correct code
+on CPython 3.12.13 and do not rewrite it on the suspicion of a miscompile. A
+return branch ends in a return instruction: `RETURN_VALUE` for a computed value
+and `RETURN_CONST` when the branch returns a literal such as `None` or `""`, so a
+`return None` guard legitimately shows `RETURN_CONST` and not `RETURN_VALUE`. The
+`JUMP_BACKWARD` printed next to the return is the loop back-edge, emitted
+immediately before the return block, and is never part of the return path. Accept
+a claim that the interpreter skipped a return only with a minimal fragment and
+its `dis` output from the exact interpreter and version in use.
+
+```python
+def content_start(text, begin):
+    for index in range(begin, len(text)):
+        if text[index] == ".":
+            return index + 1
+    return begin
+```
+
+`content_start("abc.def", 0) == 4` and `content_start("abcdef", 0) == 0` on
+CPython 3.12.13. The compact disassembly puts the back-edge before the return:
+
+```text
+ 44 FOR_ITER                17 (to 82)
+ 50 LOAD_FAST                0 (text)
+ 58 LOAD_CONST               1 ('.')
+ 60 COMPARE_OP              40 (==)
+ 64 POP_JUMP_IF_TRUE         1 (to 68)
+ 66 JUMP_BACKWARD           12 (to 44)
+ 68 LOAD_FAST                2 (index)
+ 72 BINARY_OP                0 (+)
+ 80 RETURN_VALUE
+ 82 END_FOR
+ 84 LOAD_FAST                1 (begin)
+ 86 RETURN_VALUE
+```
+
+The production `_answer_sentence_index` has the same layout. In
+`app/services/analysis.py` as of HEAD `466573e` the disassembly shows offset 226
+`POP_JUMP_IF_TRUE` jumping to 230, offset 228 `JUMP_BACKWARD` to 174, offsets
+230–236 loading `index` and returning it, and the fallback at 240 as
+`RETURN_CONST` for `None`. Byte offsets shift with any edit to the function; the
+durable shape is the loop back-edge printed immediately before the return block.
+Every code object compiled from `app/` and `tests/` was scanned on the project
+interpreter, and no `JUMP_BACKWARD` targets an offset after itself.
+
+Reason: the reported symptom did not reproduce on the minimal fragment or on the
+production helper, and a backward jump cannot transfer control into the return
+block that follows it. The visible back-edge sits between the predicate test and
+the return, which is exactly what reads as “the return jumped backwards” when the
+disassembly is scanned line by line.
+
+Consequences: the in-loop-return helpers in `app/services/analysis.py` stay
+unchanged, and `tests/test_analysis_quality.py` pins both the in-loop return and
+the post-loop fallback of `_answer_sentence_index`. When this shape appears to
+misbehave, the cause is in the data or the caller — a cue regex, a start offset,
+a wrong sentence list — not in the compiler.
+
+Reconstruction of the original symptom: the helper's own fallback explains it.
+The transient code never reached history, so this comes from the ticket rather
+than from a verified reading: when no delimiter follows the start offset,
+`_content_start` deliberately returns `begin` (29), and a slice taken at that
+same offset yields nothing usable, which is the empty `_next_claim` fragment.
