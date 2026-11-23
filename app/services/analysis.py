@@ -1,5 +1,6 @@
 import hashlib
 import re
+from functools import cache
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -14,6 +15,7 @@ from app.domain.models import (
 )
 from app.domain.signals import (
     has_multiple_sources,
+    inconclusive_title_language,
     inconclusive_title_suffix,
     states_inconclusive_comparison,
     title_states_inconclusive,
@@ -74,25 +76,711 @@ _TITLE_LIMIT = 300
 _TITLE_CLAUSE_BREAK = re.compile(
     r"(?<=[,;:])\s+|\s+(?=\b(?:but|however|yet|while|whereas|но|однако)\b)"
 )
+# A clause cut at a word budget can end on a function word ("…accuracy in",
+# "…coverage and"). Such a fragment is not a shorter claim: it is broken syntax in
+# the main user-facing field, so the dangling words are dropped. Negations are
+# never dropped because they invert the claim. Every language the repair can write
+# needs its own function words, otherwise a German or Spanish cut ends on "…und".
+_TITLE_FUNCTION_WORDS = (
+    r"the|an|of|in|into|to|and|or|but|while|whereas|because|with|without|for|on|"
+    r"at|by|from|as|that|than|which|whose|when|where|before|after|under|over|"
+    r"through|during|between|among|per|via|is|are|was|were|be|been|"
+    r"в|во|на|и|для|при|по|что|с|со|к|ко|из|от|до|под|над|о|об|за|у|же|ли|бы|"
+    r"как|чем|или|но|про|без|через|между|"
+    r"der|die|das|den|dem|des|und|oder|aber|mit|für|von|zu|auf|bei|aus|nach|"
+    r"über|unter|zwischen|dass|wie|als|ist|sind|war|waren|wird|werden|"
+    r"el|los|las|del|con|para|por|pero|que|como|son|fue|fueron|"
+    r"le|les|du|avec|pour|par|et|ou|mais|comme|sont|dans|sur|"
+    r"il|gli|di|che|come|sono|os|dos|com|mas|são|foi|foram|"
+    r"het|van|met|voor|door|dat|als|zijn|oraz|ale|że|jak|jest|są|był|przez|dla|"
+    r"veya|ama|ile|için|bir|beide|beiden|beider|alle|allen|todos|todas|toutes|"
+    r"tous|tutti|tutte"
+)
+# A list introducer cannot end a claim. A budget cut can land right after it
+# ("…live production traffic including" + a kept later member), which leaves broken
+# coordination in the title ("…including and the gain reversed"), so the introducer
+# goes with the truncated list instead of staying in the user-facing field.
+_TITLE_DANGLING_INTRODUCER = (
+    r"including|incl\.|such|включая|включаючи|например|наприклад|einschließlich|"
+    r"incluyendo|incluindo|inclusief|włączając"
+)
+_TITLE_DANGLING_TAIL = re.compile(
+    rf"(?i:\s+(?:{_TITLE_FUNCTION_WORDS}|{_TITLE_DANGLING_INTRODUCER}))\s*$"
+    # A single alternative label ("…winner was A", "…вариант А") is content, not
+    # an article. Only the lower-case article/conjunction is a dangling tail.
+    r"|\s+a\s*$|\s+а\s*$"
+)
 
 
-def _head_words(text: str, budget: int) -> str:
-    """The first words of ``text`` that fit ``budget`` characters."""
-    words: list[str] = []
+def _strip_dangling_tail(text: str) -> str:
+    """Drop trailing function words a word-budget cut left behind."""
+    cleaned = text.rstrip(" ,;:")
+    while cleaned:
+        match = _TITLE_DANGLING_TAIL.search(cleaned)
+        if match is None:
+            return cleaned
+        cleaned = cleaned[: match.start()].rstrip(" ,;:")
+    return cleaned
+
+
+# A budget cut can land inside the last coordinated conjunct ("…полное покрытие и
+# меньше"), which reads as an unfinished comparison rather than a shorter claim.
+# The cut conjunct is dropped whole unless it carries the negation. Coordination and
+# negation are language-specific: Spanish "en" ("in") is not the Dutch coordinator
+# "en", and a German "…verbesserte sich nicht" must be kept exactly like a negated
+# English member instead of being cut into a claim that says accuracy improved.
+_TITLE_COORDINATORS: dict[str, tuple[str, ...]] = {
+    "en": ("and", "or", "but", "nor"),
+    "ru": ("и", "а", "или", "но"),
+    "uk": ("і", "й", "та", "або", "але", "чи"),
+    "de": ("und", "oder", "aber", "sondern"),
+    "es": ("y", "o", "pero", "sino"),
+    "fr": ("et", "ou", "mais"),
+    "it": ("e", "o", "ma", "oppure"),
+    "pt": ("e", "ou", "mas"),
+    "nl": ("en", "of", "maar"),
+    "pl": ("i", "oraz", "albo", "lub", "ale"),
+    "tr": ("ve", "veya", "ama", "fakat"),
+}
+# A Latin single letter stays case-sensitive so the English pronoun "I" and an
+# alternative label ("option A") are never read as coordination.
+_TITLE_CASE_SENSITIVE_COORDINATORS = frozenset({"y", "o", "e", "i"})
+# A subordinating conjunction opens an explanatory clause. A coordinator inside it
+# belongs to that clause ("… when the team doubled the window and added unrelated
+# requests"), so it is not a top-level member of the claim and must not displace the
+# result the earlier member states (QUAL-26-01). The first word of the clause is
+# language-specific for the same reason as coordination. Temporal conjunctions state
+# the condition that scopes a reversal ("… the gain reversed after the team doubled
+# the window"), so they belong here too (OBS-28-02).
+_TITLE_SUBORDINATORS: dict[str, tuple[str, ...]] = {
+    "en": (
+        "when",
+        "whenever",
+        "if",
+        "unless",
+        "because",
+        "since",
+        "although",
+        "though",
+        "once",
+        "until",
+        "after",
+        "before",
+        "as",
+    ),
+    "ru": (
+        "когда",
+        "если",
+        "пока",
+        "поскольку",
+        "хотя",
+        "чтобы",
+        "после того как",
+        "до того как",
+    ),
+    "uk": ("коли", "якщо", "поки", "оскільки", "хоча", "щоб", "після того як", "до того як"),
+    "de": ("wenn", "weil", "obwohl", "sobald", "falls", "nachdem", "bevor"),
+    "es": ("cuando", "mientras", "porque", "aunque", "después de que", "antes de que"),
+    "fr": ("quand", "lorsque", "parce", "puisque", "après que", "avant que"),
+    "it": ("quando", "mentre", "perché", "dopo che", "prima che"),
+    "pt": ("quando", "enquanto", "porque", "depois que", "antes que"),
+    "nl": ("toen", "wanneer", "omdat", "terwijl", "nadat", "voordat"),
+    "pl": ("kiedy", "gdy", "ponieważ", "jeśli", "jeżeli", "po tym jak", "zanim"),
+    "tr": ("çünkü", "eğer", "sonra", "önce"),
+}
+# "after", "before" and "as" are also prepositions ("after the migration", "as
+# expected"), and treating a prepositional phrase as a clause would hide a later
+# result. Such a conjunction only counts when a clause follows it: a subject and a
+# finite verb, because "after the migration" has a bare noun where "after the team
+# doubled the window" has subject and verb. The subject need not carry a determiner
+# ("as costs rose", "after batching was doubled"), while a single noun, a
+# determiner-headed participle or a participle with its own noun ("after the
+# migration", "as expected", "after the planned maintenance", "after the first
+# failed attempt") is still a prepositional phrase.
+_TITLE_GUARDED_SUBORDINATORS = frozenset({"after", "before", "as"})
+# Unambiguous finite forms; a regular past tense is matched separately because it
+# is also the shape of an attributive participle ("the planned maintenance") and of
+# a few nouns ("a speed test").
+_TITLE_FINITE_VERB = (
+    r"(?:is|are|was|were|be|been|has|have|had|does|do|did|will|would|can|could|"
+    r"may|might|must|should|grew|rose|fell|won|lost|cut|ran|led|beat|hit|went|"
+    r"came|became|made|took|got|kept|held|shrank|doubled|tripled)"
+)
+# A determiner never stands alone as a subject, so it cannot open the bare-subject
+# branch: "after the planned maintenance" is not "after" + "the" + verb "planned".
+_TITLE_DETERMINER = r"(?:the|a|an|its|their|our|his|her|this|that|these|those)"
+_TITLE_CLAUSE_SUBJECT = rf"(?:{_TITLE_DETERMINER}\s+(?!\w+ed\b)\w+|(?!{_TITLE_DETERMINER}\b)\w+)"
+# "after the first failed attempt" is determiner + ordinal + participle + noun, so
+# a weak past tense only counts when no content word follows it directly ("after
+# the team doubled the batch window" keeps its object, "failed attempt" does not).
+# Both readings err towards a prepositional phrase, which leaves the later result
+# in the title instead of hiding it behind a condition. The cost is a real clause
+# with a bare direct object ("after the team planned maintenance"), documented in
+# D-058.
+_TITLE_WEAK_VERB = rf"\w+ed\b(?!\s+(?!(?:{_TITLE_FUNCTION_WORDS}|{_TITLE_DETERMINER})\b)\w)"
+_TITLE_CLAUSE_SUBJECT_VERB = re.compile(
+    rf"(?i)^\s*{_TITLE_CLAUSE_SUBJECT}\s+(?:{_TITLE_FINITE_VERB}\b|{_TITLE_WEAK_VERB})"
+)
+# A coordinated member that states a reversal negates the headline result the claim
+# opened with, so losing it inverts the claim. A contracted negation ("didn't hold")
+# states the same thing as "did not hold", so both count.
+_TITLE_REVERSAL_CUES = (
+    r"revers\w*|"
+    r"no\s+(?:gain|improvement|effect|change|reduction|difference)|"
+    r"\w+n['’]t|"
+    r"(?:did|does|do|could|would|can|will|should)\s+not|never|not|"
+    r"смени\w*|обратн\w*|не\s+удал\w*|не|ни|без"
+)
+# A limitation or a second result caps or qualifies the claim without inverting it, so
+# it may yield to a reversal but not to neutral detail or to a plain result. The list
+# names the failure and degradation predicates of both supported outcome languages, so
+# a member that states them is a result even without a negation in front of it
+# ("сборка провалилась", "the build degraded"). The break form excludes the compounds
+# that are not failures ("breakthrough", "breakfast", "breakout", "breakpoint"), and
+# "завис" excludes "зависеть" so only the stalled form counts. A Russian worsening
+# ("ухудш*", "деград*") is a limitation like the English degradation it translates: it
+# caps the claim instead of inverting it, so a real reversal still outranks it
+# (COR-43-01).
+_TITLE_LIMITATION_CUES = (
+    r"limit\w*|fail\w*|degrad\w*|worse\w*|break(?!through|fast|out|point)\w*|crash\w*|stall\w*|"
+    r"огранич\w*|провал\w*|ухудш\w*|деград\w*|сломал\w*|рухнул\w*|зависл\w*|завис\b"
+)
+# A measured decline or loss is a result too, even when the verb is an everyday one:
+# "the gain declined after …" must not be displaced by neutral detail, and it must
+# not displace a reversal that scopes the headline ("reduced cost … and the gain
+# reversed"), which is why it is a separate list.
+_TITLE_DECLINE_CUES = (
+    r"declin\w*|drop\w*|fell|fall\w*|slow\w*|decreas\w*|reduc\w*|lower\w*|"
+    r"shr[ae]nk|shrink\w*|lost|lose\w*|"
+    r"снизил\w*|снижа\w*|снижен\w*|упал\w*|упасть|просел\w*|уменьшил\w*|"
+    r"сократил\w*|замедлил\w*|потерял\w*|ухудшил\w*"
+)
+# A member that opens with a possessive refers back to the subject of the member
+# before it. Splicing that flipped member out leaves "its latency improved" without
+# the subject it belongs to, so the dependent member goes with it (QUAL-41-03).
+_TITLE_DEPENDENT_MEMBER = re.compile(
+    r"\s*(?:its|their|his|her|его|её|ее|их|свой|своя|свою|свои|своей|своих)\b",
+    re.IGNORECASE,
+)
+_TITLE_REVERSAL_MEMBER_CUE = re.compile(rf"(?i)\b(?:{_TITLE_REVERSAL_CUES})\b")
+_TITLE_LIMITATION_MEMBER_CUE = re.compile(rf"(?i)\b(?:{_TITLE_LIMITATION_CUES})\b")
+_TITLE_RESULT_MEMBER_CUE = re.compile(
+    rf"(?i)\b(?:{_TITLE_REVERSAL_CUES}|{_TITLE_LIMITATION_CUES}|{_TITLE_DECLINE_CUES})\b"
+)
+# Negation polarity decides what a cue word means. Negating a predicate that already
+# names a negative outcome asserts the positive one ("the build didn't fail", "was
+# not limited"), so the cue word must not mark that member as a result; "didn't hold"
+# and "did not improve" stay negative results. Negating a coverage verb scopes what
+# the study covered ("didn't include mobile users", "didn't cover cold starts"), which
+# caps the claim like a limitation instead of inverting it, so it is folded into the
+# limitation cue. The predicate lists name English and Russian outcomes because both
+# are supported response languages; a negation in any other supported language still
+# reads as the language table defines it, but no predicate of that language is listed
+# yet, so the rule leaves those titles unchanged.
+_EN_NEGATION_PREFIX = r"(?:\b(?:not|never|cannot)\b|\w+n['’]t)"
+_TITLE_NEGATED_OUTCOMES = (
+    r"fail|break|crash|stall|degrad|declin|drop|fall|fell|worse|worsen|lose|lost|limit|"
+    r"shrink|slow|"
+    r"ухудш|деградир|упал|упасть|просел|провал|огранич|сломал|рухнул|зависл"
+)
+# The qualifier construction also reads the noun form of the Russian degradation stem:
+# "не совсем показала деградацию" names the degradation a light verb reports, while
+# the one-word free gap only reads the verb form. Keeping the noun stem out of the
+# free gap leaves "не устранила деградацию" (the degradation persisted) the negative
+# result it states instead of reading it as a restatement.
+_TITLE_QUALIFIED_OUTCOMES = rf"{_TITLE_NEGATED_OUTCOMES}|деград"
+_TITLE_NEGATED_SCOPE_VERBS = r"include|cover|contain|encompass|включ|охват|покры"
+# A negation may be separated from its predicate by one word that leaves the
+# negation intact ("didn't really fail", "did not outright fail", "was not a
+# failure", "сборка не была провалом"), so the prefix still reads the predicate with
+# that polarity. Focus, degree and litotes words are a separate construction and are
+# listed below; they are read first, because they scope the negation instead of
+# leaving it intact (COR-39-01). A longer qualifier sequence is a separate
+# construction too, because a two- or three-word window can hold the whole copular or
+# light-verb phrase in front of the failure ("was not a complete failure", "did not
+# show any degradation", "не показала никаких ухудшений"); widening this free gap to
+# that window read the failure noun as the object of a content verb ("did not resolve
+# the degradation" reports that the degradation persisted) as a restatement and let
+# the member leave the title (COR-43-01).
+_TITLE_NEGATION_GAP = r"(?:\w+\s+)?"
+# A focus word after the negation means the negation scopes *that* word, not the
+# predicate: "not only failed" and "didn't merely decline" still report the failure,
+# "не без ограничений" still reports the limitation, "не сильно упала" still reports
+# the decline (COR-39-01).
+_TITLE_FOCUS_WORDS = (
+    r"only|merely|just|simply|without|"
+    r"только|лишь|раз|без|сильно|слишком|столь"
+)
+# A frequency or degree word qualifies how far the negation reaches, so the member
+# reports the failure without its full extent ("didn't fully fail", "не полностью
+# проваливалась") instead of asserting the positive restatement a plain negated
+# predicate reads ("didn't fail"): the predicate keeps its own limitation cue, the
+# negation and the degree word are read as scope (QUAL-42-01). The word only scopes
+# the negation when a failure or decline predicate follows; before a positive
+# predicate ("didn't fully recover") the negation is the whole claim and stays a
+# reversal.
+_TITLE_DEGREE_WORDS = (
+    r"always|consistently|typically|fully|completely|entirely|outright|necessarily|"
+    r"всегда|полностью|совсем"
+)
+# Two or three words between the negation and the failure predicate are a copular or
+# light-verb phrase that qualifies the same negation ("was not a complete failure",
+# "did not entirely show degradation", "did not show any degradation", "не была
+# полным провалом", "не показала никаких ухудшений"). The phrase may also be the
+# object of a content verb, where the failure noun is what the source measured and
+# the member stays a negative result ("did not resolve the degradation"). A
+# one-word window cannot tell those apart from its shape alone, so the longer
+# sequence is read as the limitation it always states: the member keeps the
+# predicate's own cue, keeps its wording, and still yields to a real reversal
+# (COR-43-01).
+_TITLE_QUALIFIER_GAP = r"(?:\w+\s+){2,3}"
+
+
+@cache
+def _title_negation_words(language: str) -> str:
+    """The negation alternatives of ``language``, without the gap after them.
+
+    The English prefix is always recognised, because a title in another language may
+    quote an English technical phrase ("the build didn't fail"); ``language`` adds its
+    own table. "no" is left out of the English branch: the reversal cue list already
+    reads "no improvement" as a result, and widening the prefix would silently drop
+    that member (COMPAT-33-02).
+    """
+    if language == "en":
+        return _EN_NEGATION_PREFIX
+    return rf"(?:{_EN_NEGATION_PREFIX}|\b(?:{_TITLE_NEGATIONS[language]})\b)"
+
+
+@cache
+def _title_negation_prefix(language: str) -> str:
+    """The negation words that precede a result predicate in ``language``.
+
+    One word may stand between the two, because it can leave the negation intact
+    ("did not outright fail", "was not a failure", "не была провалом") and the member
+    then states a positive restatement instead of the earliest reversal. Narrowing
+    the gap to a fixed adverb list read those forms as a reversal and let them
+    displace the real reversal the source reports (COMPAT-41-02); focus words are
+    still stripped first, so the narrower focus construction keeps its own meaning.
+    A two- or three-word phrase in front of the failure is read by
+    ``_title_qualified_negation`` instead.
+    """
+    return rf"{_title_negation_words(language)}\s+{_TITLE_NEGATION_GAP}"
+
+
+@cache
+def _title_focus_negation(language: str) -> re.Pattern[str]:
+    """A negation that scopes a following focus word instead of the predicate.
+
+    Removing the negation and its focus word leaves the predicate's own cue, so "not
+    only failed" keeps the limitation cue of "fail" and no longer reads as a reversal
+    through the bare negation. Reading the whole phrase as a reversal let a positive
+    restatement displace the reversal that follows, and a title cut inside "not only
+    …" promised a continuation that the trim then dropped (COR-39-01).
+    """
+    return re.compile(
+        rf"{_title_negation_words(language)}\s+(?:{_TITLE_FOCUS_WORDS})\s+", re.IGNORECASE
+    )
+
+
+@cache
+def _title_degree_negation(language: str) -> re.Pattern[str]:
+    """A negation whose extent one or more following degree words limit.
+
+    The lookahead requires a failure or decline predicate, so the match covers
+    "didn't fully fail", "didn't always fully fail" and "не всегда проваливалась":
+    removing the negation and the degree words leaves the predicate's own limitation
+    cue, which is what the member states. A degree word that is itself followed by a
+    copular or light-verb phrase is read by ``_title_qualified_negation``. A positive
+    predicate keeps the negation as its reversal, because "didn't fully recover" would
+    otherwise lose the only cue it has (QUAL-42-01).
+    """
+    return re.compile(
+        rf"{_title_negation_words(language)}\s+(?:(?:{_TITLE_DEGREE_WORDS})\s+)+"
+        rf"(?=(?:{_TITLE_NEGATED_OUTCOMES})\w*)",
+        re.IGNORECASE,
+    )
+
+
+@cache
+def _title_qualified_negation(language: str) -> re.Pattern[str]:
+    """A negation separated from its predicate by a qualifier phrase.
+
+    "was not a complete failure", "did not entirely show degradation", "did not show
+    any degradation", "не была полным провалом" and "не показала никаких ухудшений"
+    all state the failure the negation qualifies, and so does a phrase where the
+    failure noun is the object of a content verb ("did not resolve the degradation"
+    reports that the degradation persisted). The phrase is read as a limitation: the
+    negation and the qualifier words leave the cue text, the predicate keeps its own
+    cue, and the member keeps its wording. Reading the one-word gap as the only
+    qualifier left these members as reversals through their bare negation, so the
+    qualified failure displaced the reversal the source reports (COR-43-01).
+    """
+    return re.compile(
+        rf"{_title_negation_words(language)}\s+{_TITLE_QUALIFIER_GAP}"
+        rf"(?=(?:{_TITLE_QUALIFIED_OUTCOMES})\w*)",
+        re.IGNORECASE,
+    )
+
+
+@cache
+def _title_negated_positive(language: str) -> re.Pattern[str]:
+    return re.compile(
+        rf"{_title_negation_prefix(language)}(?:{_TITLE_NEGATED_OUTCOMES})\w*", re.IGNORECASE
+    )
+
+
+@cache
+def _title_negated_scope(language: str) -> re.Pattern[str]:
+    return re.compile(
+        rf"{_title_negation_prefix(language)}(?:{_TITLE_NEGATED_SCOPE_VERBS})\w*", re.IGNORECASE
+    )
+
+
+def _result_cue_text(text: str, language: str) -> str:
+    """``text`` with negation polarity applied before result-cue matching.
+
+    Every cue lookup goes through this function, because a member reads differently
+    once its negation is classified: reading the bare words made "the build didn't
+    fail" the earliest result and let it displace the later real reversal, so a title
+    asserted that the build survived and omitted the gain that reversed (QUAL-35-02).
+    The negation is read in the response language, so a Russian "сборка не деградировала"
+    is the same positive outcome as "the build didn't fail" instead of the earliest
+    reversal (COR-37-01). "не улучшилась" and "не снизилась" negate a positive
+    measurement, so they stay negative results exactly as "didn't improve" does. A
+    focus construction is read first: "not only failed" and "не без ограничений" lose
+    the negation and the focus word, so the member keeps the failure or the limitation
+    as its own result instead of becoming a reversal through the bare negation. A
+    frequency or degree word scopes the negation the same way when a failure or
+    decline predicate follows, so "didn't fully fail" keeps the failure as a
+    limitation, while "didn't fully recover" keeps the negation as its own reversal.
+    A determiner, auxiliary or light verb between the degree word and the predicate
+    does not change that reading ("was not entirely a failure", "did not entirely
+    show degradation"), and a two- or three-word qualifier phrase in front of the
+    predicate keeps the predicate's cue as a limitation too ("did not show any
+    degradation", "was not a complete failure", "не показала никаких ухудшений"),
+    so the member yields to a real reversal instead of displacing it (COR-43-01).
+    """
+    cue_text = _title_focus_negation(language).sub(" ", text)
+    cue_text = _title_degree_negation(language).sub(" ", cue_text)
+    cue_text = _title_qualified_negation(language).sub(" ", cue_text)
+    cue_text = _title_negated_positive(language).sub(" ", cue_text)
+    return _title_negated_scope(language).sub(" limited", cue_text)
+
+
+_TITLE_NEGATIONS: dict[str, str] = {
+    "en": r"not|never|no|n't",
+    "ru": r"не|ни|нет",
+    "uk": r"не|ні|нема",
+    "de": r"nicht|kein(?:e|en|em|er|es)?|nie",
+    "es": r"no|nunca|ningún|ningun",
+    "fr": r"ne|pas|aucun\w*|jamais",
+    "it": r"non|nessun\w*|mai",
+    "pt": r"não|nao|nenhum\w*|nunca",
+    "nl": r"niet|geen|nooit",
+    "pl": r"nie|żaden|zaden|nigdy",
+    "tr": r"değil|degil|hiç|hic|asla",
+}
+
+
+@cache
+def _title_conjunct(language: str) -> re.Pattern[str]:
+    """Coordination separators of ``language`` for a word-budget cut.
+
+    ``language`` is one of the ``_INCONCLUSIVE_SUFFIX`` keys: the repair never asks
+    for a language it cannot write, so the per-language tables are the contract.
+    """
+    words = _TITLE_COORDINATORS[language]
+    caseless = [word for word in words if word not in _TITLE_CASE_SENSITIVE_COORDINATORS]
+    sensitive = [word for word in words if word in _TITLE_CASE_SENSITIVE_COORDINATORS]
+    alternatives = []
+    if caseless:
+        alternatives.append(rf"(?i:\s+(?:{'|'.join(caseless)})\s+)")
+    if sensitive:
+        alternatives.append(rf"\s+(?:{'|'.join(sensitive)})\s+")
+    return re.compile("|".join(alternatives))
+
+
+@cache
+def _title_negation(language: str) -> re.Pattern[str]:
+    """Negations of ``language``; the member a cut would truncate is never dropped."""
+    return re.compile(rf"(?i)\b(?:{_TITLE_NEGATIONS[language]})\b")
+
+
+@cache
+def _title_subordinator(language: str) -> re.Pattern[str]:
+    """Subordinating conjunctions of ``language`` for the single-claim cut."""
+    return re.compile(rf"(?i)\b(?:{'|'.join(_TITLE_SUBORDINATORS[language])})\b")
+
+
+def _subordinate_clause(claim: str, language: str) -> re.Match[str] | None:
+    """The first subordinating conjunction that actually opens a clause.
+
+    "when"/"когда" always open one; "after"/"before"/"as" are also prepositions, so
+    they count only when a subject and a finite verb follow ("after the team doubled
+    the window" but not "after the migration"): a prepositional phrase is not an
+    explanatory clause and must not hide a later result.
+    """
+    for match in _title_subordinator(language).finditer(claim):
+        if match.group().casefold() not in _TITLE_GUARDED_SUBORDINATORS:
+            return match
+        if _TITLE_CLAUSE_SUBJECT_VERB.match(claim[match.end() :]) is not None:
+            return match
+    return None
+
+
+def _strip_partial_conjunct(text: str, language: str) -> str:
+    """Drop the final coordinated conjunct only when it contains no negation."""
+    for match in reversed(list(_title_conjunct(language).finditer(text))):
+        if _title_negation(language).search(text[match.end() :]):
+            continue
+        return text[: match.start()].rstrip(" ,;:")
+    return text
+
+
+_TITLE_PHRASE_PREPOSITION = re.compile(
+    r"(?i:in|on|at|of|for|with|without|by|from|to|into|over|under|between|among|"
+    r"during|after|before|through|within|across|"
+    r"в|во|на|с|со|при|по|к|ко|из|от|до|под|над|о|об|за|у|про|без|через|между|для|"
+    r"среди|mit|für|von|zu|auf|bei|aus|nach|über|unter|zwischen|con|para|por|en|de|"
+    r"del|sin|sobre|entre|durante|hasta|avec|pour|par|dans|sur|sans|pendant|chez|"
+    r"com|em|sem|met|voor|door|van|op|bij|uit|naar|zonder|na|do|od|dla|przez|bez|"
+    r"için|gibi|kadar)"
+)
+_TITLE_FUNCTION_WORD = re.compile(rf"(?i:(?:{_TITLE_FUNCTION_WORDS}))")
+
+
+def _drop_incomplete_phrase(text: str) -> str:
+    """Drop a one-word prepositional fragment a budget cut left behind.
+
+    "…в тестовой среде с неизменным" is a cut inside "с неизменным профилем" and
+    reads as broken syntax. The phrase is dropped only when it cannot be complete:
+    a single word after the preposition, or nothing but function words.
+    """
+    words = text.split()
+    for index in range(len(words) - 1, 0, -1):
+        if not _TITLE_PHRASE_PREPOSITION.fullmatch(words[index]):
+            continue
+        trailing = words[index + 1 :]
+        if len(trailing) == 1 or all(_TITLE_FUNCTION_WORD.fullmatch(word) for word in trailing):
+            return _strip_dangling_tail(" ".join(words[:index]))
+        return text
+    return text
+
+
+def _head_words(text: str, budget: int, language: str) -> str:
+    """The first words of ``text`` that fit ``budget`` characters.
+
+    A text that fits is returned untouched: the cleanup below only repairs a
+    fragment a cut produced, so a complete final conjunct is never dropped.
+    """
+    words = text.split()
+    kept: list[str] = []
     size = 0
-    for word in text.split():
-        extra = len(word) + (1 if words else 0)
+    for word in words:
+        extra = len(word) + (1 if kept else 0)
         if size + extra > budget:
             break
-        words.append(word)
+        kept.append(word)
         size += extra
-    return " ".join(words).rstrip(" ,;:")
+    if len(kept) == len(words):
+        return " ".join(kept)
+    head = _strip_dangling_tail(" ".join(kept))
+    return _drop_incomplete_phrase(_strip_partial_conjunct(head, language))
 
 
-_TITLE_NEGATION = re.compile(r"(?i)\b(?:not|never|no|n't|не|ни)\b")
+def _compact_subordinate_detail(clause: str, language: str) -> str:
+    """Drop a neutral coordinated member inside the clause's subordinate clause.
+
+    The subordinate clause states the condition that scopes the result, so it stays;
+    a member coordinated inside it ("and added unrelated requests") is detail. A
+    negation inside it is a limitation, never detail, so then the clause stays whole.
+    The function only ever truncates, so its result is a prefix of ``clause``.
+    """
+    subordinate = _subordinate_clause(clause, language)
+    if subordinate is None:
+        return clause
+    explanation = clause[subordinate.start() :]
+    inner = _title_conjunct(language).search(explanation)
+    if inner is None or _title_negation(language).search(explanation):
+        return clause
+    return clause[: subordinate.start() + inner.start()].rstrip(" ,;:")
 
 
-def _trim_title_body(body: str, budget: int) -> str:
+def _coordinated_member(
+    claim: str, cuts: list[re.Match[str]], index: int, end: int | None = None
+) -> str:
+    """The text a coordinator introduces, ending where the next member starts."""
+    member_end = cuts[index + 1].start() if index + 1 < len(cuts) else len(claim)
+    return claim[cuts[index].end() : member_end if end is None else min(member_end, end)]
+
+
+def _dominant_result_member(
+    claim: str, cuts: list[re.Match[str]], language: str, end: int | None = None
+) -> int | None:
+    """The earliest coordinated member whose loss would strengthen the claim.
+
+    A reversal negates the headline result, a limitation caps it; either one outranks
+    a later second result or detail, because the title without it reads as a stronger
+    outcome than the source states. A reversal outranks a limitation, so "the scope
+    was limited … and the gain reversed" keeps the reversal. A plain decline is
+    direction-neutral ("the gain declined" but also "cost declined"), so it only wins
+    over neutral detail, which the trim handles by re-trimming without that detail.
+    ``end`` bounds a member that the subordinate clause follows, so text inside the
+    clause cannot mark the member before it as the result. ``language`` decides which
+    negation words flip a member's polarity before its cue words are read.
+    """
+    for cue in (_TITLE_REVERSAL_MEMBER_CUE, _TITLE_LIMITATION_MEMBER_CUE):
+        for index, cut in enumerate(cuts):
+            # ``end`` bounds the member the condition clause follows; a member that
+            # starts after the clause is outside it and keeps its own tail.
+            bound = end if end is not None and cut.start() < end else None
+            if cue.search(
+                _result_cue_text(_coordinated_member(claim, cuts, index, bound), language)
+            ):
+                return index
+    return None
+
+
+def _polarity_flipped_member(member: str, language: str) -> bool:
+    """Whether negation alone produced this member's cue words.
+
+    "the build didn't fail" and "сборка не деградировала" contain a cue word only
+    because their negation was not applied yet; once the negation is read, the member
+    asserts that an expected failure did not happen. That is not the outcome the
+    source measured, so it is detail: when the same claim keeps a real reversal, the
+    member goes and the title states the result the source reports (COR-37-01).
+    """
+    return (
+        _TITLE_RESULT_MEMBER_CUE.search(member) is not None
+        and _TITLE_RESULT_MEMBER_CUE.search(_result_cue_text(member, language)) is None
+    )
+
+
+def _trim_single_claim(claim: str, budget: int, language: str) -> str:
+    """Keep the result a one-clause claim states inside ``budget``.
+
+    A single clause has no later clause to fall back on, but it can still coordinate
+    its outcome ("… and the gain reversed under peak load"). The member that states
+    the result or the limitation is kept whole while the earlier text keeps its head;
+    cutting a result member instead states a stronger result than the source, because
+    the dropped words are "reversed", "declined" or "nicht".
+    """
+    cuts = list(_title_conjunct(language).finditer(claim))
+    subordinate = _subordinate_clause(claim, language)
+    clause_end = subordinate.start() if subordinate is not None else None
+    if clause_end is not None:
+        # A coordinator inside the subordinate clause belongs to that clause, not to
+        # the claim's top level: "… when the team doubled the window and added
+        # unrelated requests" explains the reversal instead of adding a second
+        # result. Treating it as a member kept "and added …" and dropped the
+        # reversal and its condition.
+        top_level = [cut for cut in cuts if cut.start() < clause_end]
+    else:
+        top_level = cuts
+    # The dominant member is read over every coordinator: after polarity is applied,
+    # the member before the condition clause can state a positive outcome ("the build
+    # didn't fail") while the reversal the source reports sits behind it.
+    dominant = _dominant_result_member(claim, cuts, language, clause_end)
+    if dominant is not None and clause_end is not None and cuts[dominant].start() >= clause_end:
+        # The reversal follows the condition clause, so it is the claim's result and
+        # its own tail stays; the earlier member contributes no result once its
+        # negation is read (COR-37-01).
+        top_level = cuts
+        keep = dominant
+    elif top_level:
+        keep = len(top_level) - 1
+        if dominant is not None and dominant < keep:
+            # Two coordinated members can each state a result. Keeping the later one
+            # head-cut the prefix, so the reversal and its condition disappeared while
+            # the title still claimed a measured gain (COR-33-01); the earlier
+            # reversal or limitation is what the claim's headline depends on.
+            keep = dominant
+    else:
+        # The clause opens the claim, so every coordinator sits after it. The earliest
+        # reversal or limitation is still the result the title must keep; without one,
+        # the latest member that states any result wins over the clause's head cut.
+        if dominant is not None:
+            top_level = cuts[dominant:]
+            keep = 0
+        else:
+            for index in range(len(cuts) - 1, -1, -1):
+                member_end = cuts[index + 1].start() if index + 1 < len(cuts) else len(claim)
+                if _TITLE_RESULT_MEMBER_CUE.search(
+                    _result_cue_text(claim[cuts[index].end() : member_end], language)
+                ):
+                    top_level = cuts[index:]
+                    break
+            else:
+                return _head_words(claim, budget, language)
+            keep = 0
+    last = top_level[keep]
+    member_end = top_level[keep + 1].start() if keep + 1 < len(top_level) else len(claim)
+    compacted = claim
+    if subordinate is not None and subordinate.start() > last.end():
+        # The clause states the condition that scopes the result, so it survives. A
+        # coordinated member of its own ("and added unrelated requests") is neutral
+        # detail and is dropped instead of being promoted to the kept result.
+        compacted = _compact_subordinate_detail(claim, language)
+    tail = claim[last.end() : min(member_end, len(compacted))].rstrip(" ,;:")
+    if all(_TITLE_FUNCTION_WORD.fullmatch(word) for word in tail.split()):
+        # A final member made only of service words is a cut fragment, not a result.
+        return _head_words(claim, budget, language)
+    if (
+        _TITLE_RESULT_MEMBER_CUE.search(_result_cue_text(tail, language)) is None
+        and _TITLE_RESULT_MEMBER_CUE.search(_result_cue_text(claim[: last.start()], language))
+        is not None
+    ):
+        # The final coordinated member adds neutral detail, while the claim before it
+        # states the reversal or the limitation. Keeping the detail cut the reversal
+        # away and credited the subject with work it never did, so the neutral member
+        # is dropped and the remaining claim is trimmed again.
+        return _trim_single_claim(claim[: last.start()].rstrip(" ,;:"), budget, language)
+    final = f"{last.group()}{tail}"
+    prefix = claim[: last.start()].rstrip(" ,;:")
+    # A member whose cue came only from a negated negative predicate states no result
+    # once polarity is read ("the build didn't fail"), so it is detail and goes. It is
+    # spliced out on its own instead of truncating the prefix: the members after it
+    # may state the limitation the source reports, and the word budget drops the
+    # conjunct nearest the result first, which would keep the positive restatement and
+    # lose that limitation (COR-39-03).
+    flipped = [
+        index
+        for index in range(keep)
+        if _polarity_flipped_member(
+            _coordinated_member(claim, top_level, index, clause_end), language
+        )
+    ]
+    # A member that opens with a possessive refers back to the flipped member's
+    # subject ("the build didn't fail and its latency improved"): removing only the
+    # subject leaves the pronoun without an antecedent, so the dependent member goes
+    # with it. The kept result member is never dropped this way.
+    dependent: set[int] = set()
+    for index in flipped:
+        following = index + 1
+        while following < keep and _TITLE_DEPENDENT_MEMBER.match(
+            _coordinated_member(claim, top_level, following, clause_end)
+        ):
+            dependent.add(following)
+            following += 1
+    for index in sorted(set(flipped) | dependent, reverse=True):
+        prefix = (
+            prefix[: top_level[index].start()] + prefix[top_level[index + 1].start() :]
+        ).rstrip(" ,;:")
+    if len(final) >= budget:
+        # The result does not fit even alone. A title without it is weaker, while a
+        # truncated predicate would overstate or invert it.
+        return _head_words(prefix, budget, language)
+    # Drop whole trailing conjuncts of the earlier text first, so the cut lands on a
+    # member boundary instead of inside a prepositional phrase.
+    for cut in reversed(top_level[:keep]):
+        if len(prefix) <= budget - len(final):
+            break
+        prefix = claim[: cut.start()].rstrip(" ,;:")
+    head = _head_words(prefix, budget - len(final), language)
+    return f"{head}{final}" if head else _head_words(claim, budget, language)
+
+
+def _trim_title_body(body: str, budget: int, language: str) -> str:
     """Keep the claim and the evidence that scopes it inside ``budget``."""
     clauses = [
         clause.strip().rstrip(" ,;:")
@@ -100,17 +788,21 @@ def _trim_title_body(body: str, budget: int) -> str:
         if clause.strip(" ,;:")
     ]
     if len(clauses) == 1:
-        # A single long claim has no later clause to preserve. Cutting its tail
-        # keeps the subject, verb, and negation; cutting its head would turn
-        # "Preloading did not improve accuracy" into "improve accuracy".
-        return _head_words(clauses[0], budget) or body[:budget]
+        # A single long claim has no later clause to preserve. Cutting its head
+        # would turn "Preloading did not improve accuracy" into "improve accuracy",
+        # so the claim keeps its head and its final result member.
+        return _trim_single_claim(clauses[0], budget, language) or body[:budget]
     # A negated claim is the one clause whose head must survive even when it does
     # not fit whole: dropping it changes the result to its opposite.
     negative_index = next(
-        (index for index, clause in enumerate(clauses[:-1]) if _TITLE_NEGATION.search(clause)),
+        (
+            index
+            for index, clause in enumerate(clauses[:-1])
+            if _title_negation(language).search(clause)
+        ),
         None,
     )
-    kept = clauses[-1]
+    kept = _strip_dangling_tail(_compact_subordinate_detail(clauses[-1], language))
     for index in range(len(clauses) - 2, -1, -1):
         clause = clauses[index]
         candidate = f"{clause}, {kept}"
@@ -124,7 +816,7 @@ def _trim_title_body(body: str, budget: int) -> str:
             continue
         if spare <= 0:
             break
-        partial = _head_words(clause, spare)
+        partial = _head_words(clause, spare, language)
         if partial:
             kept = f"{partial}, {kept}"
         if index == 0 or index == negative_index:
@@ -132,14 +824,16 @@ def _trim_title_body(body: str, budget: int) -> str:
     if len(kept) > budget:
         # Never tail-cut a claim: the last words may be the predicate of a longer
         # clause, so a head trim keeps at least the subject and its negation.
-        kept = _head_words(kept, budget)
+        kept = _head_words(kept, budget, language) or kept[:budget]
     if not kept:
         # A single unbreakable token still has to fit the schema cap.
         kept = body[:budget]
-    return kept
+    # A clause boundary can still leave "…and"/"…при" at the end of the last kept
+    # clause; the title must read as a claim, not as a cut-off fragment.
+    return _strip_dangling_tail(kept)
 
 
-def _fit_title_with_verdict(title: str, suffix: str) -> str:
+def _fit_title_with_verdict(title: str, suffix: str, language: str) -> str:
     """Keep the mandatory verdict and the condition that scopes it inside the cap.
 
     The verdict is the conclusion the repair exists to preserve, so an over-long
@@ -151,7 +845,7 @@ def _fit_title_with_verdict(title: str, suffix: str) -> str:
     if budget <= 0:
         return suffix.removeprefix("; ").strip()[:_TITLE_LIMIT]
     if len(body) > budget:
-        body = _trim_title_body(body, budget)
+        body = _trim_title_body(body, budget, language)
     if not body:
         return suffix.removeprefix("; ").strip()[:_TITLE_LIMIT]
     return (body + suffix)[:_TITLE_LIMIT]
@@ -172,16 +866,22 @@ def ensure_explicit_inconclusive_title(
     result or a winner. A title that already states the verdict is unchanged.
     Independent sources get no invented shared verdict, and the suffix follows the
     actual response language (an untranslatable language leaves the title alone
-    rather than leaking English into it).
+    rather than leaking English into it). The repair is append-only by design: if the
+    model's title already claims a winner while the evidence is unresolved, the
+    verdict is still appended and the contradiction is treated as a model deviation
+    left visible for manual review, because a deterministic guard that
+    suppresses the verdict whenever the title claims a winner would also let an
+    injected or hallucinated win erase the source's verdict.
     """
     if multi_source or not states_inconclusive_comparison(evidence):
         return result
     if title_states_inconclusive(result.title):
         return result
+    language = inconclusive_title_language(result.title, response_language, evidence)
     suffix = inconclusive_title_suffix(result.title, response_language, evidence)
-    if not suffix:
+    if language is None or not suffix:
         return result
-    title = _fit_title_with_verdict(result.title, suffix)
+    title = _fit_title_with_verdict(result.title, suffix, language)
     return result.model_copy(update={"title": title})
 
 
@@ -391,10 +1091,13 @@ _EVIDENCE_CUE = re.compile(
     r"\d|\b(?:result|finding|found|shown?|measured|increas\w*|decreas\w*|reduc\w*|"
     r"improv\w*|worse|better|no conclusion|inconclusive|unresolved|caveat|however|"
     r"but|only|except|limit\w*|revers\w*|fail\w*|final|answer|conclusion|"
-    r"winner|mixed|undetermined|undecided|no verdict|"
+    r"winner|won|ahead|evenly\s+matched|neither|mixed|undetermined|undecided|"
+    r"no verdict|"
     r"итог\w*|результат\w*|вывод\w*|выясн\w*|показа\w*|сниз\w*|увелич\w*|улучш\w*|"
     r"хуже|лучше|не удалось|однако|только|кроме|огранич\w*|обратн\w*|"
-    r"победител\w*|неопределен\w*|смешанн\w*|противореч\w*)\b",
+    r"побед\w*|переміг\w*|перемог\w*|зрештою|загалом|підсумк\w*|"
+    r"в\s+конце\s+концов|в\s+кінці\s+кінців|"
+    r"неопределен\w*|смешанн\w*|противореч\w*|невизначен\w*|суперечлив\w*|змішан\w*)\b",
     re.IGNORECASE,
 )
 

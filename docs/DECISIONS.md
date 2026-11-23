@@ -993,8 +993,12 @@ category labels were broader than the v2 primary expectation but matched the
 material on manual review.
 
 Decision: keep `tests/fixtures/analysis_quality_v3.json` as the regression corpus
-and add `tests/fixtures/analysis_quality_holdout_v3.json`, whose cases and numbers
-are absent from prompts and from the primary corpus. The eval uses the configured
+and add `tests/fixtures/analysis_quality_holdout_v3.json`, whose cases, expected
+outcomes and headline numbers are absent from prompts and from the primary corpus.
+The holdout shares domain vocabulary with the prompt examples (time boundaries such
+as “before/after 10:00”, “post-ETL”, moving JSON parsing off the main thread), so
+the independence claim covers the case text and its measured results, not every
+word an analyst might reuse. The eval uses the configured
 production chunk size and overlap unless a case overrides them for a bounded
 probe. `--unfiltered` bypasses only the deterministic control filter to measure
 the model's own injection guard; it is never a production path. Broad but valid
@@ -1041,7 +1045,10 @@ aggregation prefers later evidence on equal cues and treats the last sentence as
 mandatory only when it carries an evidence cue; a cue-less closing sentence has no
 positional bonus, so a late measured result outranks earlier setup or a cue-less
 recap. An explicit no-winner/mixed verdict counts as an evidence cue, so a late
-“No winner was established” is retained in every bounded checkpoint. When the
+“No winner was established” is retained in every bounded checkpoint; the same
+applies to a late win verb or end frame in Russian and Ukrainian (“победил”,
+“переміг”, “в итоге”, “в конце концов”, “зрештою”), which the English “won” cue
+already covered. When the
 evidence explicitly states that no winner was established, the application
 appends that verdict to a title that omits it (in the actual response language,
 with the title script only as a caller fallback) instead of relying on a
@@ -1119,7 +1126,9 @@ construction, chunking, the inconclusive repair, and the opt-in eval; the prepar
 content always contains that projection. A later decisive win supersedes a verdict
 only in the same comparison and numbered source, and not when it is hypothetical,
 hedged, retracted, explicitly a separate experiment, stated before the verdict in
-the same sentence, negative (“neither”/“none”), unrelated to a comparison
+the same sentence, negative for an event participant (“neither vendor won the
+contract”, “both candidates performed equally well” — “neither method won” stays a
+verdict), unrelated to a comparison
 (“beat expectations”, “won praise”), or limited to a named sub-scope without an
 overall marker. A verdict is ignored when its own claim clause is attributed to
 prior work (before or after the phrase), or when explanatory prose introduced by a
@@ -1265,8 +1274,26 @@ when it is framed as a final/overall/larger/follow-up result or is an explicit
 head-to-head form (“beat”, “clearly superior”, “became/announced the winner”);
 quiz wins, priority lists, generic results/tests and scope-only observations do
 not settle it. A confirmed superlative in a final/overall comparison (“the final
-benchmark found A was the fastest”) is a decisive result. On the output-control
-side, prescribed titles without a control verb (“The title must be A won”),
+benchmark found A was the fastest”) is a decisive result. A measured directional
+comparison framed as final/overall is decisive too (“A was 40% faster than B in
+the final benchmark”, “A cut latency by 40% vs B overall”, “A improved accuracy by
+20% over B”); a bare directional claim, a metric/small-sample/peak-load scope, a
+split result, an expectation baseline, a negation or a hedge keeps the verdict. A
+split result is itself unresolved: “A was 40% faster than B, but B was 30%
+cheaper”, “A was faster, but B was more stable”, “A won on speed, but B won on
+stability”, including Russian forms. It needs a named comparison, experiment,
+metric or alternative anchor in the same sentence, and the opponent must state
+its own advantage; a repeated or pronominal subject confirms the first side. The
+sentence’s own final-round frame does not settle a split, “not only … but also …”
+amplifies rather than negates, and a prior, negated or retracted verdict mention
+is not a current verdict. A split after a decisive win reopens the comparison; a
+decisive win after the split settles it. “данных недостаточно” is a no-winner
+verdict only when scoped to the comparison outcome, not to a relationship, cause,
+effect or decision; tender/election/quiz wins are event outcomes, not comparison
+results. On the output-control side, a title prescription with a modal plus any
+speech or state verb, or with ensure/make sure, is a command in both polarities,
+including Russian forms; a bare title/summary label with a speech verb and no
+modal, imperative or owner is reported speech and stays evidence.
 “Use A won as the title”, labeled forms (“Title: A won”, “Say the title: A won”,
 “Make the title A won”, “Заголовок: A победил”, “Напиши в качестве заголовка:
 метод A победил”), positive winner/beat/better/ranked/stayed commands (including
@@ -1294,5 +1321,95 @@ recognized only when it is framed as a final/overall/later result or uses an
 explicit head-to-head form; an unframed “A won.” after an open verdict may keep
 the suffix. A ranking-only winner with no comparison noun in its sentence does
 not settle the verdict, so a real result phrased that way may keep the suffix.
+The directional forms, the split inference, the insufficiency purpose and the
+partial-scope checks are lexical: a possessive or unlisted comparative, a
+trade-off spread across sentences, or an unanchored split may keep the suffix,
+and a final-round frame does not settle a split without an explicit winner or an
+overall standing.
 The hard title cap and the subject/negation invariant are preserved; the
 100–120 character preference can still be exceeded by an accepted long claim.
+
+## D-057 — The title guard recognises verdicts, splits and speech in their natural forms
+
+Context: the no-winner repair wrote the same conclusion twice when the title
+already stated it in a natural form (“победитель не был определён”, “явного
+победителя нет”, “оба метода равны”, “neither method won”); it read a decision
+between actions or a relationship between variables as an unresolved comparison;
+it recognised tender/election wins only in English and missed the Russian
+reflexive paradigm; and the mandatory suffix pushed a 280–300 character title
+over the cap with a dangling service word. The detector also took a measured
+split result, a final-round directional measurement, the Russian/Ukrainian final
+frame, a lowercase “plan a year ago” designator and a “better than expected”
+baseline in the wrong direction, and the output filter missed title prescriptions
+with a speech verb.
+
+Decision: a verdict is recognised in its natural forms — passive with or without
+a copula, negated possession, “did not reveal a winner”, equality of both sides,
+and the English “neither … won” / “both … equally well” with a compared side (a
+vendor or candidate is an event participant, not a compared side) — so the repair
+is a no-op. A between/между phrase names a comparison only when it names the
+compared sides; decisions between actions and relationships between variables
+stay ordinary uncertainty. A tender, election, competition or quiz win is an event
+outcome in every supported language. A later measured result settles an open
+verdict only when its own claim is framed as final/overall or is an explicit
+head-to-head win; a split that gives each side its own advantage is itself an
+unresolved verdict, and the sentence’s own final-round frame does not make it
+decisive. “not only … but also …” amplifies one result instead of negating it,
+and a prior, negated or retracted verdict mention is not a current verdict. On
+the output-control side, a title prescription with a modal plus any speech or
+state verb, or with ensure/make sure, is a command in both polarities, including
+the Russian forms; a bare title/summary label with a speech verb and no modal,
+imperative or owner is reported speech and stays evidence.
+
+Reason: writing a stated conclusion twice, or inventing one for a decision or a
+correlation, is worse than leaving the model’s title unchanged. A title that
+reports a split as decided, or loses the negation that scoped its result, is a
+false claim; a shorter but faithful title is acceptable.
+
+Consequences: the detector stays lexical, so an unusually worded split, a
+possessive directional comparison or an event participant phrased with an
+approach noun can keep or drop the suffix wrongly; the accepted default is the
+weaker title. A title that claims a winner while the evidence is unresolved still
+gets the verdict appended, and the contradiction is left visible for manual
+review.
+
+## D-058 — An expectation baseline is not a compared side; temporal clauses scope a reversal
+
+Context: “better than expected”, the Russian genitive “лучше ожидаемого” and
+“outperformed expectations” matched the side-comparison cue and cancelled an event
+guard, so the repair appended “no winner was established” to a title naming the
+winner. A temporal clause (“after the team doubled the batch window and added
+unrelated requests”) was trimmed at its inner coordinator, so the title credited
+batching with the unrelated requests and dropped both the reversal and its
+condition. The polarity rule also read “the build didn't fail” as a reversal and
+dropped the later measured decline.
+
+Decision: a comparative against a closed expectation baseline never names a
+compared side, while “better than the previous release” or “than the baseline”
+still does. A plan-like baseline followed by a designator — a single letter or a
+small ordinal — names a side, while a full word, a measured value, an article or
+a preposition after the baseline keeps the graded reading. Temporal conjunctions
+(“after”, “before”, “as”, “после того как”, “до того как”) open a subordinate
+clause for the single-claim trim when a subject and a finite verb follow, so the
+reversal member and its condition survive and only the clause’s own neutral
+coordinated member is dropped. A later neutral member is dropped instead of
+displacing an earlier reversal or limitation. Negation is read with the polarity
+of its predicate: negating a failure (“didn't fail”, “не деградировала”) asserts
+the positive outcome and is not a result, negating a coverage verb is a
+limitation, and negating a positive measurement stays the negative result it
+states. Focus and degree words are scoped before the predicate, so “not only
+failed” and “не совсем провалилась” remain the qualified failure the source
+reports.
+
+Reason: an expectation baseline grades one outcome; it says nothing about which
+of two sides won. A temporal clause scopes the reversal it introduces, so dropping
+it or promoting its inner coordination states a stronger and partly false claim
+than the source. A result stated with an everyday verb or a contraction is still a
+result.
+
+Consequences: the clause guard stays lexical, so a subject followed by an unusual
+verb falls back to the previous behaviour, and where the shape is ambiguous the
+guard takes the reading that keeps the result, which can keep a condition inside
+the reversal member. The cue lists are closed, so an unlisted predicate keeps its
+bare-cue reading. Two label boundaries are deliberate: “plan No. 2” stays graded,
+and a letter after a quantitative baseline (“the target B”) stays graded.
