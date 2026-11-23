@@ -365,6 +365,7 @@ async def test_carousel_budget_returns_partial_and_manual_retry_resumes(tmp_path
     assert source.instagram_post_progress["budget_exhausted"]
     analyzed_content, profile, _ = provider.calls[0]
     assert analyzed_content.metadata["instagram_post_partial"] is True
+    assert analyzed_content.metadata["instagram_has_video"] is False
     prompt = build_user_message(analyzed_content, profile, [])
     assert "PARTIAL EXTRACTION (Instagram post)" in prompt
     assert "Missing elements are unavailable evidence" in prompt
