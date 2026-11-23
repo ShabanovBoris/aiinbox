@@ -408,10 +408,28 @@ rows and sends no Telegram messages. It is not part of pytest or CI.
 A source that describes an attack keeps its worked example: a paragraph under
 “Example of a prompt injection:”, a blockquote, a table quotation or a labelled
 indented block reaches the model byte-identically, including a chunk whose
-attribution was split at a chunk boundary. The checkpoint stores the projected
-chunk, and its `chunk_sha256` covers those bytes, so a checkpoint produced by an
-older distorted projection is recomputed in place on the next run while unaffected
-chunks are reused.
+attribution was split at a chunk boundary. A paragraph only reported by a
+following attack attribution stays evidence unless it contains a command or sits
+under a quotation label, so a real verdict directly above the report still drives
+the deterministic hint and repair. The signal projection masks exactly the text
+between one matching pair of quotation marks (“…”, ‘…’, «…», '…'), never the words
+around it: whatever the attribution says (“The 2020 report said …”, “According to
+the study's lead author, …”, “Smith told reporters …”, “— сказал Смит.”), the quoted
+words stay out of the hints while a verdict or measurement outside the marks keeps
+driving them. The nearest closing mark decides the pair, so two separate quotes are
+masked separately; an intra-word (“comparison's”) apostrophe is not a mark, and a
+post-word apostrophe (“readers'”) does not open a quotation. Only a mark in an
+opening position opens one — the paragraph start or right after whitespace or
+opening punctuation (`(`, `[`, `{`, `<`, `>`, a dash, a colon, `“`, `‘`, `«`) — so a
+mark glued to a preceding character (“works."”) closes instead, and the prose after
+it stays evidence for the hints. An unpaired mark opens
+nothing and does not end the paragraph scan, so a later balanced pair is still
+masked. A pair is searched inside one paragraph, so a quotation that opens in
+one paragraph and closes in another stays visible to the hints — a documented
+boundary of pairing by marks, not a grammar the filter guesses.
+The checkpoint stores the projected chunk, and its `chunk_sha256`
+covers those bytes, so a checkpoint produced by an older distorted projection is
+recomputed in place on the next run while unaffected chunks are reused.
 
 The fixture path is explicit because the Docker image does not include `tests/`. To
 run it in a container, mount the corpus:

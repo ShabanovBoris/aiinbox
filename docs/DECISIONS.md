@@ -1131,17 +1131,41 @@ results (“a larger trial found A superior”, “the follow-up showed B perfor
 better”) were not treated as decisive. A hedged forecast (“may no longer hold”)
 created a measured-reversal premise, and a hold in a different scope (“at normal
 load”) erased a reversal reported “under peak load”. The 300-character trim cut
-the condition off the end of a title instead of dropping leading clauses.
+the condition off the end of a title instead of dropping leading clauses. A
+paragraph followed by an attack attribution was protected unconditionally, so a
+real verdict directly above the report was blanked from the deterministic
+projection. Narrowing that rule exposed the opposite error: the protected
+paragraph was decided by a grammar of attribution forms, so each round of examples
+moved the boundary — a dated or long subject, a subject-first tail with an
+adverbial, a reporting verb outside the short list, or a clause of the source after
+the attribution flipped a real quotation into a source claim or a source claim into
+a quotation. Enumerating forms cannot satisfy “real quotations stay masked”,
+because that requirement is unbounded.
 
 Decision: two projections share one command grammar. `analysis_text_projection`
 is the model/evidence text used by prompt construction, chunking,
 `summarize_chunk` and the opt-in evaluation; it removes commands outside
 quotation/example spans and keeps a quoted attack example byte-identical. The
-prepared content always contains that projection. `analysis_signal_projection`
-replaces every quotation/example span with spaces (newlines and offsets are
-preserved), then applies the same grammar without exceptions; the prompt
+paragraph before an attack attribution stays an example only when it still
+contains a command or sits under a quotation label; the attribution alone does not
+protect it. `analysis_signal_projection` replaces every quotation and
+quotation/example span with spaces (newlines and offsets are preserved), then
+applies the same grammar without exceptions; the prompt
 no-winner hint, the reversal hint and the inconclusive repair read only that
-projection. A chunk checkpoint is keyed by the SHA-256 of the projected chunk, so
+projection. A quotation is the text between one matching pair of quotation marks
+(`"…"`, `“…”`, `‘…’`, `«…»`, `'…'`) and the marks are the only criterion: the
+words around the quote — an introduction, a speaker tail, an appositive remark,
+the source's own verdict — stay the source's text, so no introduction-or-tail
+grammar is guessed. The nearest closing mark decides the pair, so two separate
+quotes never merge; an intra-word (`comparison's`) apostrophe is not a mark, a
+post-word (`readers'`) apostrophe opens nothing, an opener stands at the paragraph
+start or right after whitespace or opening punctuation (`(`, `[`, `{`, `<`, `>`, a
+dash, a colon, `“`, `‘`, `«`) so a mark glued to a preceding character
+(`works."`) closes instead, an unpaired mark opens nothing and
+the scan continues past it, and a multi-line quotation inside one paragraph is
+masked whole, including its inner lines. The prepared
+content always contains the model projection. A chunk checkpoint is keyed by the
+SHA-256 of the projected chunk, so
 a checkpoint built from a distorted projection is recomputed in place while
 unaffected chunks are reused, and `summarize_chunk` does not filter an
 already-projected chunk twice. A later decisive win supersedes a verdict
@@ -1200,7 +1224,28 @@ no-winner suffix even when a different comparison has a winner — the conservat
 choice. A verdict or reversal stated only inside a blockquote, table or indented
 quotation produces no deterministic title suffix or hint, while the model still
 sees the quotation and may use it; an unquoted verdict keeps the previous
-behavior. A prior-work verdict no longer forces uncertainty, so a source that only
+behavior. An unquoted verdict in the paragraph directly above an attack report
+now keeps its hint and repair, because only the report itself is evidence of an
+example; a paragraph that mixes a verdict with a command is still masked whole. A
+real quotation keeps its protection whatever the attribution around it says, so a
+quoted verdict produces no hint or suffix, while a verdict or measurement outside
+the marks — in the same sentence as an appositive quote, after a speaker tail, in
+a parenthetical remark, or next to a second quote — stays the source's own claim
+and keeps driving the hint and repair. Multi-line paragraphs and inner lines of a
+quotation are masked without their own marks, so a quote that opens and closes
+around several lines hides all of them.
+The marks are also the boundary: the pair is searched inside one paragraph, so a
+quotation opened in one paragraph and closed in another masks nothing and stays
+evidence for the signals; a mark without a partner masks nothing as well, but the
+scan continues past it, so a later balanced pair in the same paragraph is still
+masked; an apostrophe after a plural possessive inside a single-quoted sentence
+(`'The authors'…'`, `‘The authors’…’`) can close that span early for the same
+reason. In those cases a quoted sentence can still fabricate a hint — the
+known direction of this boundary — while the alternative, a grammar of attribution
+forms, is what repeated review rounds showed cannot be closed. The attribution
+paragraph itself is masked in the signal projection as well: it reports the attack
+rather than stating the source's verdict.
+A prior-work verdict no longer forces uncertainty, so a source that only
 reviews prior mixed results without stating its own conclusion may miss the
 suffix; the same applies to a win limited to a named sub-scope or phrased with
 unrecognized words. Scope comparison is lexical: a later hold phrased with

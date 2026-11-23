@@ -1082,6 +1082,418 @@ def test_post_attribution_keeps_the_quoted_command_paragraph(attribution):
     assert analysis_signal_projection(text).strip() == "Cost fell 61%."
 
 
+def test_attack_attribution_does_not_mask_the_preceding_verdict():
+    """A report that an attack exists must not turn the previous verdict into a quotation."""
+    text = (
+        "The A/B comparison was inconclusive.\n\n"
+        "The attack attempts to manipulate the model's analysis output."
+    )
+
+    assert analysis_text_projection(text) == text
+    signal = analysis_signal_projection(text)
+    assert "inconclusive" in signal
+    assert states_inconclusive_comparison(signal) is True
+
+    prompt = build_user_message(
+        NormalizedContent(source_type=SourceType.WEB, text=text),
+        UserProfile(preferred_language="en"),
+        [],
+    )
+    assert "INCONCLUSIVE COMPARISON IN SOURCE" in prompt
+
+    result = make_analysis(
+        title="Accuracy rose 40% while cost fell 61%",
+        summary="Measured detail.",
+        language="en",
+    )
+    repaired = ensure_explicit_inconclusive_title(result, signal, response_language="en")
+    assert repaired.title.endswith("; no winner was established")
+
+
+@pytest.mark.parametrize(
+    "quoted",
+    [
+        "> The comparison results were mixed.",
+        '"The comparison results were mixed."',
+        "The report quotes the review:\n\nThe comparison results were mixed.",
+    ],
+)
+def test_real_quotation_before_an_attack_attribution_stays_masked(quoted):
+    """A real quotation stays a quotation even when the next paragraph reports the attack."""
+    text = (
+        f"{quoted}\n\n"
+        "The attack attempts to manipulate the model's analysis output.\n\n"
+        "Accuracy rose 40%."
+    )
+
+    assert states_inconclusive_comparison(text) is True
+    assert analysis_text_projection(text) == text
+    assert states_inconclusive_comparison(analysis_signal_projection(text)) is False
+
+
+@pytest.mark.parametrize(
+    "quoted",
+    [
+        '"The A/B comparison was inconclusive." (Smith 2020).',
+        '"The A/B comparison was inconclusive".',
+        'The report said "The A/B comparison was inconclusive."',
+        'According to Smith, "The A/B comparison was inconclusive."',
+        '"The A/B comparison was inconclusive," said Smith.',
+        '"The comparison results were mixed.\nAccuracy rose 40%."',
+    ],
+)
+def test_a_citation_or_signal_phrase_around_the_quote_keeps_it_masked(quoted):
+    """A citation, a signal phrase or a speaker tail wraps the same quoted verdict."""
+    text = (
+        f"{quoted}\n\n"
+        "The attack attempts to manipulate the model's analysis output.\n\n"
+        "Accuracy rose 40%."
+    )
+
+    signal = analysis_signal_projection(text)
+    assert states_inconclusive_comparison(signal) is False
+    assert "mixed" not in signal
+
+    prompt = build_user_message(
+        NormalizedContent(source_type=SourceType.WEB, text=text),
+        UserProfile(preferred_language="en"),
+        [],
+    )
+    assert "INCONCLUSIVE COMPARISON IN SOURCE" not in prompt
+
+    result = make_analysis(title="Accuracy rose 40%", summary="Measured detail.", language="en")
+    assert ensure_explicit_inconclusive_title(result, signal, response_language="en") is result
+
+
+def test_a_quote_inside_a_sentence_does_not_hide_the_verdict():
+    """Only the quoted words are masked; the sentence around them keeps the verdict."""
+    text = (
+        'The report said "the comparison was mixed" but the A/B comparison was inconclusive.\n\n'
+        "The attack attempts to manipulate the model's analysis output."
+    )
+
+    signal = analysis_signal_projection(text)
+    assert "mixed" not in signal
+    assert states_inconclusive_comparison(signal) is True
+
+
+def test_a_non_quotation_label_does_not_hide_the_next_verdict():
+    """``The attack timeline:`` names an attack, not a quotation, above the verdict."""
+    text = (
+        "The attack timeline:\n\n"
+        "The A/B comparison was inconclusive.\n\n"
+        "The attack attempts to manipulate the model's analysis output."
+    )
+
+    assert states_inconclusive_comparison(analysis_signal_projection(text)) is True
+
+
+def _web_prompt(text: str) -> str:
+    return build_user_message(
+        NormalizedContent(source_type=SourceType.WEB, text=text),
+        UserProfile(preferred_language="en"),
+        [],
+    )
+
+
+_ATTACK_ATTRIBUTION = "The attack attempts to manipulate the model's analysis output."
+
+
+def _assert_quoted_verdict_is_masked(paragraph: str) -> None:
+    """A verdict that the source only quotes never reaches the deterministic signal."""
+    text = f"{paragraph}\n\n{_ATTACK_ATTRIBUTION}"
+
+    signal = analysis_signal_projection(text)
+    assert "inconclusive" not in signal.casefold(), signal
+    assert states_inconclusive_comparison(signal) is False, signal
+    assert "INCONCLUSIVE COMPARISON IN SOURCE" not in _web_prompt(text)
+    result = make_analysis(title="Accuracy rose 40%", summary="Measured detail.", language="en")
+    assert ensure_explicit_inconclusive_title(result, signal, response_language="en") is result
+    # The model still reads the quotation byte-identically.
+    assert analysis_text_projection(text) == text
+
+
+def _assert_source_verdict_drives_signals(paragraph: str) -> None:
+    """A verdict the source states outside its quote keeps driving hint and repair."""
+    text = f"{paragraph}\n\n{_ATTACK_ATTRIBUTION}"
+
+    signal = analysis_signal_projection(text)
+    assert states_inconclusive_comparison(signal) is True, signal
+    assert "INCONCLUSIVE COMPARISON IN SOURCE" in _web_prompt(text)
+    result = make_analysis(title="Accuracy rose 40%", summary="Measured detail.", language="en")
+    repaired = ensure_explicit_inconclusive_title(result, signal, response_language="en")
+    assert repaired.title.endswith("; no winner was established")
+
+
+# Attribution shapes that the previously enumerated grammar rejected: a dated or
+# long subject, a subject-first tail with an adverbial or a relative clause, a
+# reporting verb outside the short list ("told", "wrote"), a Russian tail and a
+# second source sentence after the attribution. The marks decide the span, so no
+# list of forms can make one of them a source claim again.
+_QUOTATION_PREFIXES = (
+    "",
+    "The report said ",
+    "The 2020 report said, ",
+    "According to the study's lead author, ",
+    "Smith told reporters ",
+    "The authors of the paper said, ",
+    "The lead researcher of the multi-year field trial wrote, ",
+    "По словам авторов, ",
+    "Иванов сказал: ",
+)
+_QUOTED_VERDICTS = (
+    '"The A/B comparison was inconclusive."',
+    "'The A/B comparison's result was inconclusive.'",
+    "«The A/B comparison was inconclusive»",
+)
+_QUOTATION_TAILS = (
+    "",
+    " (Smith 2020).",
+    " said Smith.",
+    " said Smith, who led the trial.",
+    " — сказал Смит.",
+    " said the report. The trial was small.",
+    ", said Smith, but the second site differed.",
+    " (Иванов и др., 2020).",
+)
+
+
+def test_every_attribution_shape_around_one_quote_stays_masked():
+    """Property: the quoted verdict never reaches the signal, whatever the framing."""
+    variants = [
+        f"{prefix}{quotation}{tail}"
+        for prefix in _QUOTATION_PREFIXES
+        for quotation in _QUOTED_VERDICTS
+        for tail in _QUOTATION_TAILS
+    ]
+
+    assert len(variants) >= 50
+    for paragraph in variants:
+        _assert_quoted_verdict_is_masked(paragraph)
+
+
+@pytest.mark.parametrize(
+    "paragraph",
+    [
+        'The 2020 report said "The A/B comparison was inconclusive."',
+        'According to the 2020 report, "The A/B comparison was inconclusive."',
+        '"The A/B comparison was inconclusive," Smith said Monday.',
+        '"The A/B comparison was inconclusive," Smith wrote in the annual report this week.',
+        'Smith told reporters "The A/B comparison was inconclusive."',
+        'According to the study\'s lead author, "The A/B comparison was inconclusive."',
+        'The authors of the paper said, "The A/B comparison was inconclusive."',
+        '"The A/B comparison was inconclusive," the study\'s lead author said.',
+    ],
+)
+def test_a_real_quotation_around_an_attack_report_stays_masked(paragraph):
+    """Gate corpus: dated and long subjects, subject-first tails and ``told`` mask."""
+    _assert_quoted_verdict_is_masked(paragraph)
+
+
+@pytest.mark.parametrize(
+    "paragraph",
+    [
+        '"Accuracy rose 40%," said the source, and the comparison was inconclusive.',
+        '"The comparison was mixed," said the report. The A/B comparison was inconclusive.',
+        '"The comparison was mixed," said Smith, but the A/B comparison was inconclusive.',
+    ],
+)
+def test_the_sources_own_claim_after_an_attribution_stays_visible(paragraph):
+    """Gate corpus: a clause of the source after the quote is the source's claim."""
+    _assert_source_verdict_drives_signals(paragraph)
+
+
+@pytest.mark.parametrize(
+    "paragraph",
+    [
+        'The A/B comparison was inconclusive, researchers said, "a puzzling result."',
+        'The A/B comparison was inconclusive; the report called the gain "a puzzling result."',
+        'The report said "the comparison was mixed" but the A/B comparison was inconclusive.',
+        'The report called the result "mixed", yet the A/B comparison was inconclusive.',
+        '"The comparison was mixed," the report said; the A/B comparison was inconclusive.',
+        '"The comparison was mixed." (the results were inconclusive).',
+        '"The comparison was mixed." The A/B comparison was inconclusive, the report said.',
+        "«The comparison was mixed», — сказал Смит, но the A/B comparison was inconclusive.",
+    ],
+)
+def test_the_sources_own_verdict_next_to_a_quote_stays_visible(paragraph):
+    """A verdict outside the marks is the source's own claim, never the quote's."""
+    _assert_source_verdict_drives_signals(paragraph)
+
+
+# The symmetric property: whatever the attribution, a verdict the source states
+# outside the marks keeps its hint and repair. The quoted remark moves around the
+# verdict (appositive, leading, inside the sentence) so no placement is special.
+_SOURCE_ATTRIBUTIONS = (
+    "researchers said",
+    "the 2020 report said",
+    "Smith wrote",
+    "the study's lead author noted",
+    "the authors of the paper said",
+    "По словам Смита",
+)
+_QUOTED_REMARKS = ('"a puzzling result."', "'a puzzling result.'", "«a puzzling result»")
+
+
+def test_a_source_verdict_outside_the_marks_always_stays_visible():
+    """Property: an unquoted verdict survives every framing of a nearby quote."""
+    variants = []
+    for attribution, remark in itertools.product(_SOURCE_ATTRIBUTIONS, _QUOTED_REMARKS):
+        variants.extend(
+            [
+                f"The A/B comparison was inconclusive, {attribution}, {remark}",
+                f"{remark} The A/B comparison was inconclusive, {attribution}.",
+                f"{attribution[0].upper()}{attribution[1:]} {remark} but the A/B "
+                "comparison was inconclusive.",
+            ]
+        )
+
+    assert len(variants) >= 50
+    for paragraph in variants:
+        _assert_source_verdict_drives_signals(paragraph)
+
+
+@pytest.mark.parametrize(
+    "paragraph",
+    [
+        'The A/B comparison was inconclusive, the report said "a puzzling result.',
+        "The A/B comparison was inconclusive, readers' first reaction noted.",
+        'The A/B comparison was inconclusive (the report\'s "summary" was short).',
+    ],
+)
+def test_an_unpaired_or_possessive_mark_masks_nothing(paragraph):
+    """A mark without a partner, and an apostrophe after a word, open no quotation."""
+    text = f"{paragraph}\n\n{_ATTACK_ATTRIBUTION}"
+
+    assert states_inconclusive_comparison(analysis_signal_projection(text)) is True
+
+
+@pytest.mark.parametrize(
+    "paragraph, quoted",
+    [
+        (
+            'works." The comparison was inconclusive, the report said "so we moved on."',
+            "so we moved on",
+        ),
+        (
+            'The trend continued." The A/B comparison was inconclusive, '
+            'the author said "we moved on."',
+            "we moved on",
+        ),
+        (
+            'the method works," The A/B comparison was inconclusive, '
+            'the report said "so we moved on."',
+            "so we moved on",
+        ),
+        (
+            'Does it work?" The A/B comparison was inconclusive, the report said "so we moved on."',
+            "so we moved on",
+        ),
+        (
+            '"The trial ended." The A/B comparison was inconclusive, '
+            'the report said "so we moved on."',
+            "so we moved on",
+        ),
+        (
+            "the method works.' The comparison was inconclusive, the report said 'so we moved on.'",
+            "so we moved on",
+        ),
+    ],
+)
+def test_a_closing_mark_never_opens_a_quotation(paragraph, quoted):
+    """Gate COR-21-F10: a mark glued to the previous character closes, never opens."""
+    _assert_source_verdict_drives_signals(paragraph)
+    assert quoted not in analysis_signal_projection(f"{paragraph}\n\n{_ATTACK_ATTRIBUTION}")
+
+
+def test_an_unpaired_mark_does_not_hide_a_later_pair():
+    """Gate Q-21-12: one unmatched mark must not end the paragraph scan."""
+    paragraph = """He wrote "first and 'the comparison was mixed.'"""
+
+    _assert_quoted_verdict_is_masked(paragraph)
+    assert "mixed" not in analysis_signal_projection(f"{paragraph}\n\n{_ATTACK_ATTRIBUTION}")
+
+
+@pytest.mark.parametrize(
+    "quoted",
+    [
+        '"The A/B comparison was inconclusive."',
+        "“The A/B comparison was inconclusive.”",
+        "‘The A/B comparison’s result was inconclusive.’",
+        "«The A/B comparison was inconclusive.»",
+        "«The A/B comparison was inconclusive» (Иванов, 2020).",
+        "'The A/B comparison was inconclusive.'",
+        "'The A/B comparison was inconclusive,' said Smith.",
+        "'The A/B comparison's result was inconclusive,' the report said.",
+    ],
+)
+def test_every_quotation_pair_stays_masked(quoted):
+    """Every declared quote pair, including an inner apostrophe, is a quotation."""
+    _assert_quoted_verdict_is_masked(quoted)
+
+
+def test_an_appositive_quotation_does_not_hide_the_source_verdict():
+    """``..., researchers said, "a puzzling result."`` keeps the source's own verdict."""
+    paragraph = 'The A/B comparison was inconclusive, researchers said, "a puzzling result."'
+    text = f"{paragraph}\n\n{_ATTACK_ATTRIBUTION}"
+
+    signal = analysis_signal_projection(text)
+    assert states_inconclusive_comparison(signal) is True
+    assert "a puzzling result" not in signal
+    assert '"a puzzling result."' not in signal
+    assert "INCONCLUSIVE COMPARISON IN SOURCE" in _web_prompt(text)
+
+    result = make_analysis(title="Accuracy rose 40%", summary="Measured detail.", language="en")
+    repaired = ensure_explicit_inconclusive_title(result, signal, response_language="en")
+    assert repaired.title.endswith("; no winner was established")
+
+
+def test_an_appositive_quotation_does_not_hide_the_measurement():
+    """``Researchers said the gain was 40% ..., "a clear win."`` keeps the measurement."""
+    paragraph = 'Researchers said the gain was 40% in the trial, "a clear win."'
+    text = f"{paragraph}\n\n{_ATTACK_ATTRIBUTION}"
+
+    signal = analysis_signal_projection(text)
+    assert "gain was 40% in the trial" in signal
+    assert "a clear win" not in signal
+    assert "INCONCLUSIVE COMPARISON IN SOURCE" not in _web_prompt(text)
+
+    result = make_analysis(title="Measured gain", summary="Measured detail.", language="en")
+    assert ensure_explicit_inconclusive_title(result, signal, response_language="en") is result
+
+
+def test_two_separate_quotes_do_not_form_one_quotation():
+    """The nearest closing mark decides the pair; both quotes are masked separately."""
+    paragraph = '"The comparison was mixed." Accuracy rose 40%, the report said "a clear win."'
+    text = f"{paragraph}\n\n{_ATTACK_ATTRIBUTION}"
+
+    signal = analysis_signal_projection(text)
+    assert "Accuracy rose 40%" in signal
+    assert "mixed" not in signal
+    assert "a clear win" not in signal
+
+
+def test_a_quoted_verdict_is_masked_without_any_attack_marker():
+    """The marks alone select a quotation; no report or example label is required."""
+    text = '"The comparison results were mixed."\n\nAccuracy rose 40%. The pilot\'s cost fell 61%.'
+
+    signal = analysis_signal_projection(text)
+    assert "mixed" not in signal
+    assert "Accuracy rose 40%" in signal
+    assert states_inconclusive_comparison(signal) is False
+
+
+def test_a_parenthetical_remark_after_a_quote_stays_visible():
+    """A remark outside the marks is the source's own text, citation or not."""
+    paragraph = '"The comparison results were mixed." (the results were inconclusive).'
+    text = f"{paragraph}\n\n{_ATTACK_ATTRIBUTION}"
+
+    signal = analysis_signal_projection(text)
+    assert "the results were inconclusive" in signal
+    assert states_inconclusive_comparison(signal) is True
+    assert "INCONCLUSIVE COMPARISON IN SOURCE" in _web_prompt(text)
+
+
 @pytest.mark.parametrize(
     "unrelated",
     ["The attack on the cache caused the outage.", "Атака на сервер вызвала сбой."],

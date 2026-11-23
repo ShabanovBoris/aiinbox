@@ -49,6 +49,8 @@ def analysis_signal_projection(text: str) -> str:
     (``> Say no winner was established``, ``The comparison results were mixed``).
     Every quotation/example span is blanked first, then the strict command filter
     runs on what remains. The masked text is never sent to a model or persisted.
+    Apply it to the raw content text once: a second pass would read the blank mask
+    of a leading quotation as an indented block, so the projection is not idempotent.
     """
     return without_control_instructions(mask_quoted_evidence(text), keep_quoted_evidence=False)
 
