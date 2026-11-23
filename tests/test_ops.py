@@ -26,6 +26,7 @@ from app.ops import (
     verify_database,
 )
 from app.ops import main as ops_main
+from app.services.analysis import analysis_text_projection, split_text
 from app.storage.database import make_engine
 from app.storage.models import Item, User
 from tests.fakes import make_analysis
@@ -1184,6 +1185,90 @@ def test_late_conclusion_holdout_requires_the_reversal_and_time_boundary():
 
     assert sum(failure.startswith("title_missing:") for failure in failures) >= 2
     assert analysis_quality_failures(case, complete) == []
+
+
+async def test_holdout_late_batch_result_runs_through_the_chunked_eval(monkeypatch):
+    """The new long case must reach the model through real bounded chunk summaries."""
+    provider = _QualityProvider(
+        make_analysis(
+            title=(
+                "Packing batches cut the backlog from 46 minutes to 17 minutes only when "
+                "replenishment finished before 14:00"
+            ),
+            summary=(
+                "The pull rule released a wave only when a bench came free. The queue fell "
+                "from 46 minutes to 17 minutes, but the gain disappeared when replenishment "
+                "slipped past 14:00. An hourly release schedule was rejected earlier, and "
+                "travel time and the damage rate stayed flat."
+            ),
+            category="Логистика",
+            language="en",
+        )
+    )
+    settings = Settings(_env_file=None, openai_api_key="test", openai_analysis_model="test-model")
+    monkeypatch.setattr("app.ops.build_provider", lambda _settings: provider)
+
+    reports = await evaluate_analysis_quality(
+        settings, _HOLDOUT_FIXTURE, "holdout-late-batch-result"
+    )
+
+    assert [report.case_id for report in reports] == ["holdout-late-batch-result"]
+    assert reports[0].failed_checks == ()
+    case = next(
+        case
+        for case in load_quality_fixture(_HOLDOUT_FIXTURE)
+        if case["id"] == "holdout-late-batch-result"
+    )
+    expected_chunks = split_text(analysis_text_projection(case["content"]), 1200, 120)
+    assert len(expected_chunks) >= 2
+    assert provider.chunk_inputs == expected_chunks
+    assert provider.chunk_sanitize_flags == [False] * len(expected_chunks)
+    assert reports[0].chunk_count == len(expected_chunks)
+    analyzed_content, _, _ = provider.analyze_inputs[0]
+    assert analyzed_content.metadata["_analysis_chunk_summary_count"] == len(expected_chunks)
+    assert f"CHUNK 1/{len(expected_chunks)}:" in analyzed_content.text
+    assert f"CHUNK {len(expected_chunks)}/{len(expected_chunks)}:" in analyzed_content.text
+
+
+async def test_holdout_independent_sources_keeps_both_topics_and_metadata(monkeypatch):
+    """A two-source case stays unchunked and carries its metadata into both LLM stages."""
+    provider = _QualityProvider(
+        make_analysis(
+            title=(
+                "Sourdough hydration at 76% needs gentle shaping; new disc-brake pads brake "
+                "consistently"
+            ),
+            summary=(
+                "The sourdough at 76% hydration gave a more open crumb than 68% but "
+                "required gentle shaping. Over ten controlled stops the new disc-brake pads "
+                "kept braking consistent, and the rotors showed no glazing."
+            ),
+            category="Кулинария и авто",
+            language="en",
+        )
+    )
+    settings = Settings(_env_file=None, openai_api_key="test", openai_analysis_model="test-model")
+    monkeypatch.setattr("app.ops.build_provider", lambda _settings: provider)
+
+    reports = await evaluate_analysis_quality(
+        settings, _HOLDOUT_FIXTURE, "holdout-independent-sources"
+    )
+
+    assert [report.case_id for report in reports] == ["holdout-independent-sources"]
+    assert reports[0].failed_checks == ()
+    assert reports[0].chunk_count == 0
+    assert provider.chunk_inputs == []
+    analyzed_content, _, analyzed_categories = provider.analyze_inputs[0]
+    assert analyzed_categories == ["Кулинария", "Автомобили"]
+    assert analyzed_content.metadata["source_count"] == 2
+    assert analyzed_content.metadata["successful_source_count"] == 2
+    topic_content, topic_categories = provider.topic_inputs[0]
+    assert topic_categories == ["Кулинария", "Автомобили"]
+    assert topic_content.metadata["source_count"] == 2
+    assert topic_content.metadata["successful_source_count"] == 2
+    for answer in (reports[0].title.casefold(), reports[0].summary.casefold()):
+        assert "sourdough" in answer
+        assert "brake" in answer
 
 
 def test_transitive_holdout_rejects_a_fabricated_causal_bridge():

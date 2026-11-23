@@ -384,7 +384,19 @@ production category comes from the separate classifier; long cases first perform
 real `summarize_chunk` call per chunk and then use the production bounded aggregate.
 Chunk size and overlap come from `CONTENT_CHUNK_MAX_CHARS` /
 `CONTENT_CHUNK_OVERLAP_CHARS` unless the case overrides them for a bounded probe, so
-the eval reproduces production chunking. The filtered path projects the text before
+the eval reproduces production chunking. The holdout corpus pins that boundary
+explicitly: `holdout-late-conclusion` and `holdout-late-batch-result` declare
+`chunk_size_chars=1200` / `chunk_overlap_chars=120`, and the second one keeps its
+answer (`46 minutes` → `17 minutes` under the `14:00` replenishment condition) in the
+last chunk only, so a chunked run must show at least two chunks in the report.
+`holdout-independent-sources` is the two-source case: it stays in one chunk, carries
+`source_count` / `successful_source_count` into both LLM stages, and requires both
+independent topics in the answer without an invented shared cause. Prompt
+independence is enforced by the explicit registry in
+`tests/test_analysis_quality.py`: every holdout figure or phrase must appear in its
+own case and be absent from all three evaluation prompts and from the primary
+corpus. That registry is a lexical proxy, so a case whose answer looks close to a
+prompt example is still a review item. The filtered path projects the text before
 chunking and sends those already-projected chunks verbatim; `--unfiltered` sends
 captured content and its chunks without the deterministic control filter. Both modes
 still compute deterministic hints and repair from the quote-masked signal

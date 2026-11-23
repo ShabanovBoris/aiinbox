@@ -1708,3 +1708,46 @@ Consequences: every Instagram producer and restore path must set the flag; a
 producer that forgets it yields the content-language branch. A post whose caption
 language is unknown keeps the existing content-primary fallback.
 
+## D-064 — The holdout corpus must demonstrate chunking, independent sources and its own markers
+
+Context: the answer-first evaluation could pass while proving little. Nine of
+eleven holdout cases fit in one chunk, the only multi-source case lived in the
+primary deterministic corpus, and the independence check consisted of two
+`assert "…" not in SYSTEM_PROMPT` lines whose strings happened to be absent from
+the prompt. Any prompt edit that reused a holdout answer would keep the suite
+green.
+
+Decision: the holdout corpus carries two chunked cases and one two-source case,
+and `tests/test_analysis_quality.py` owns an explicit per-case registry of
+forbidden markers. `holdout-late-batch-result` declares `chunk_size_chars=1200`,
+`chunk_overlap_chars=120`, and its answer (`46 minutes` → `17 minutes`, only when
+replenishment finishes before `14:00`) appears after production `split_text` has
+placed it in the last chunk alone. `holdout-independent-sources` declares
+`source_count=2`, `successful_source_count=2`, two `distinct_topic_groups`, and
+`outcome_state="none"`. Each of the eleven holdout ids names figures or phrases
+that must be present in its own content and absent from all three evaluation
+prompts (`SYSTEM_PROMPT`, `CHUNK_SUMMARY_SYSTEM_PROMPT`,
+`TOPIC_CLASSIFICATION_SYSTEM_PROMPT`) and from the primary corpus. The legacy
+`71%`/`84%` pair stays attached to v3 `mixed-language-video` and is only checked
+against the prompts. A case's chunk size also bounds the aggregate, so the new
+long case is sized for two chunks: a first live run at three chunks let the
+production aggregate truncate each summary to roughly 385 characters and cut the
+measured result out of the analyzer input, which would have made the oracle
+unsatisfiable for reasons unrelated to model quality. The live oracle for that
+case requires both measurements and the time condition in title and summary;
+chunk assembly is pinned deterministically by the chunk-input and `CHUNK i/N`
+assertions. Requiring a secondary rejected-trial detail in the live summary was
+dropped after it turned out to be model compression rather than a missing fact.
+
+Reason: an evaluation is evidence only if it measures the production paths and
+cannot inherit the prompt's own examples. Chunked cases exercise summarization
+and aggregation; a two-source case exercises the per-source representation check;
+an explicit registry turns a borrowed answer into a named failure.
+
+Consequences: adding a holdout case requires a registry entry; otherwise the id
+sets diverge and the test fails. The registry is a lexical proxy, not a proof
+that every word is unique, so an accidental short-number collision is a review
+item rather than an automatic removal. The primary corpus and the manual-only
+nature of the holdout stay unchanged, and generation quality still requires the
+live `eval-analysis-quality` run.
+

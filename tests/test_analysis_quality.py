@@ -42,6 +42,7 @@ from app.services.analysis import (
     analysis_text_projection,
     bounded_chunk_aggregate,
     ensure_explicit_inconclusive_title,
+    split_text,
 )
 from tests.fakes import make_analysis
 
@@ -4172,36 +4173,99 @@ def test_answer_first_generation_keeps_the_existing_title_and_summary_limits():
         make_analysis(summary="y" * 1201)
 
 
+_ANALYSIS_EVAL_PROMPTS = (
+    SYSTEM_PROMPT,
+    CHUNK_SUMMARY_SYSTEM_PROMPT,
+    TOPIC_CLASSIFICATION_SYSTEM_PROMPT,
+)
+
+# A lexical proxy for corpus independence: each holdout case names the figures and
+# phrases that carry its own answer. No eval prompt and no primary-corpus case may
+# contain them. This is not a claim that every word is unique; it makes a borrowed
+# holdout answer a visible failure instead of a coincidental absence of two strings.
+_HOLDOUT_PROMPT_FORBIDDEN_TERMS: dict[str, tuple[str, ...]] = {
+    "holdout-question-answer": ("72-hour", "18 ms", "300 jobs per minute"),
+    "holdout-negative-goal": ("44%", "account provisioning stayed manual"),
+    "holdout-thesis": ("1,240", "30 minutes", "time-to-first-review predicted merge delay"),
+    "holdout-inconclusive-comparison": ("31%", "12-node", "Only three workloads were tested"),
+    "holdout-late-conclusion": ("4.8 s", "1.9 s", "second writer increased contention"),
+    "holdout-source-title-conflict": ("rose 9%", "38 unused volumes", "storage cost 27%"),
+    "holdout-title-injection": ("52%", "three hours of handoff work", "two-week rotation"),
+    "holdout-supported-request": ("42 minutes", "1,800 support tickets", "three regions"),
+    "holdout-transitive-decision": ("22%", "4 points", "neither caused the other"),
+    "holdout-late-batch-result": (
+        "46 minutes",
+        "17 minutes",
+        "replenishment slipped past 14:00",
+    ),
+    "holdout-independent-sources": ("68%", "76%", "ten controlled stops"),
+}
+
+# The primary corpus legitimately keeps these two numbers inside
+# `mixed-language-video`; they only have to stay out of the prompts.
+_LEGACY_PROMPT_FORBIDDEN_TERMS = ("71%", "84%")
+
+
 def test_holdout_corpus_is_independent_and_uses_production_chunking():
     """Live evidence must not reuse the prompt examples or the primary fixture."""
     holdout = load_quality_fixture(_HOLDOUT_PATH)
     primary = load_quality_fixture(_FIXTURE_PATH)
     primary_contents = {case["content"] for case in primary}
     primary_ids = {case["id"] for case in primary}
+    primary_text = "\n".join(case["content"] for case in primary).casefold()
     holdout_ids = {case["id"] for case in holdout}
+    by_id = {case["id"]: case for case in holdout}
 
     assert holdout_ids.isdisjoint(primary_ids)
-    assert {
-        "holdout-question-answer",
-        "holdout-negative-goal",
-        "holdout-thesis",
-        "holdout-inconclusive-comparison",
-        "holdout-late-conclusion",
-        "holdout-source-title-conflict",
-        "holdout-title-injection",
-        "holdout-supported-request",
-        "holdout-transitive-decision",
-    } <= holdout_ids
+    # Completeness matters: a new holdout case without a registry entry, or a stale
+    # entry, fails here instead of silently weakening the independence check.
+    assert set(_HOLDOUT_PROMPT_FORBIDDEN_TERMS) == holdout_ids
     for case in holdout:
         assert case["content"] not in primary_contents
         assert case["content"] not in SYSTEM_PROMPT
         assert case["content"][:60] not in SYSTEM_PROMPT
 
-    late = next(case for case in holdout if case["id"] == "holdout-late-conclusion")
+    for case_id, terms in _HOLDOUT_PROMPT_FORBIDDEN_TERMS.items():
+        content = by_id[case_id]["content"].casefold()
+        for term in terms:
+            folded = term.casefold()
+            assert folded in content, f"{case_id} no longer contains its marker {term!r}"
+            for prompt in _ANALYSIS_EVAL_PROMPTS:
+                assert folded not in prompt.casefold(), f"{term!r} leaked into an eval prompt"
+            assert folded not in primary_text, f"{case_id} marker {term!r} is in the primary corpus"
+
+    mixed = next(case for case in primary if case["id"] == "mixed-language-video")
+    for term in _LEGACY_PROMPT_FORBIDDEN_TERMS:
+        assert term in mixed["content"]
+        for prompt in _ANALYSIS_EVAL_PROMPTS:
+            assert term.casefold() not in prompt.casefold()
+
+    late = by_id["holdout-late-conclusion"]
     assert late["chunk_overlap_chars"] > 0
     assert len(late["content"]) > late["chunk_size_chars"]
-    assert "71%" not in SYSTEM_PROMPT
-    assert "84%" not in SYSTEM_PROMPT
+
+    # A second chunked case whose answer sits only in the last chunk: the existing
+    # `holdout-late-conclusion` alone could pass while chunking stopped working.
+    batch = by_id["holdout-late-batch-result"]
+    assert batch["chunk_size_chars"] == 1200
+    assert batch["chunk_overlap_chars"] == 120
+    assert len(batch["content"]) > batch["chunk_size_chars"]
+    chunks = split_text(analysis_text_projection(batch["content"]), 1200, 120)
+    assert len(chunks) >= 2
+    earlier = "\n".join(chunks[:-1]).casefold()
+    last = chunks[-1].casefold()
+    for term in ("46 minutes", "17 minutes", "14:00"):
+        assert term in last
+        assert term not in earlier
+
+    sources = by_id["holdout-independent-sources"]
+    expected = sources["expected"]
+    assert sources["metadata"] == {"source_count": 2, "successful_source_count": 2}
+    assert expected["must_represent_each_source"] is True
+    assert len(expected["distinct_topic_groups"]) >= 2
+    # Two unrelated sources have no joint outcome, so no outcome term may be implied.
+    assert expected["outcome_state"] == "none"
+    assert not expected.get("outcome_terms")
 
 
 @pytest.mark.parametrize(
