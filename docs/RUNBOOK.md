@@ -190,6 +190,38 @@ uv run pytest tests/test_e2e_telegram_sqlite.py -k live -s -q
 - Если провайдер не настроен, тест завершается `skip`, а артефакт получает
   `status: not_run` и причину.
 
+## Запуск задач Kent с фиксированным ref
+
+У workflow этого проекта execution target — `none`. Задача, стартованная без
+явного target, фиксирует `none` и работает прямо в главном worktree.
+
+Порядок запуска:
+
+```bash
+kent task start <task> --project <project> --execution-target ref:<sha>
+```
+
+Сначала проверьте и закройте зависимости задачи. `--ignore-dependencies`
+добавляйте только осознанно.
+
+После старта убедитесь, что target применился:
+
+```bash
+kent task show <task>
+```
+
+В выводе должны быть `Execution target: custom_ref`, `Requested revision: <sha>`
+и `Worktree:`. Если указан `none` или worktree отсутствует — не начинайте работу
+в главном дереве.
+
+Команда с незакрытыми зависимостями завершается preflight-предупреждением
+(`has N unsatisfied dependencies`) и target не фиксирует.
+
+`task move` в backlog не разблокирует уже зафиксированный `none`: повторный
+`kent task start --execution-target ref:<sha>` вернёт `execution target is
+already locked`. Задачу, которая уже стартовала с `none`, нужно пересоздать или
+согласовать с оператором.
+
 ## Operational status / health
 
 Локально:
