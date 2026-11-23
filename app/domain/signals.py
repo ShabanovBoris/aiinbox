@@ -659,11 +659,12 @@ _ATTRIBUTIVE_PURPOSE_HEAD = re.compile(
     r"відношень|відносин|відношенн\w*|взаємоді\w*|залежн\w*|кореляц\w*|"
     r"зв'яз\w*|сумісност\w*|інтеграц\w*)"
 )
-# A named side is an alternative noun with a short label ("method A", "вариант 1").
-# The label run covers coordinated names ("methods A and B", "варианты 1/2");
-# "метод лечения" is the topic of the uncertainty, not one of two compared sides.
+# A named side is an alternative noun with a short label ("method A", "approach A",
+# "вариант 1"). The label run covers coordinated names ("methods A and B",
+# "варианты 1/2"); "метод лечения" is the topic of the uncertainty, not one of two
+# compared sides.
 _NAMED_ALTERNATIVE = re.compile(
-    r"(?i)\b(?:methods?|approaches?|models?|options?|variants?|configurations?|"
+    r"(?i)\b(?:methods?|approach(?:es)?|models?|options?|variants?|configurations?|"
     r"baselines?|agents?|prompts?|systems?|tools?|algorithms?|"
     r"метод\w*|подход\w*|вариант\w*|модел\w*|алгоритм\w*|систем\w*|"
     r"инструмент\w*|конфигурац\w*|варіант\w*|підхід\w*)\b"
@@ -673,6 +674,17 @@ _ALTERNATIVE_LABEL_RUN = re.compile(
     r"(?:\s*(?:,|/|&|and|и|та)\s*(?:[a-zа-я]|\d{1,2})(?=\b))*"
 )
 _ALTERNATIVE_LABEL = re.compile(r"\b(?:[a-zа-я]|\d{1,2})\b", re.IGNORECASE)
+# A Cyrillic "А"/"Б" designation is the same side as a Latin "A"/"B", so labels are
+# compared by their designation instead of their script.
+_ALTERNATIVE_LABEL_ALIASES = {"а": "a", "б": "b"}
+# "методы C и D" coordinates its labels, and Cyrillic conjunctions are one-letter words
+# the label pattern would read as a side. A lowercase "и"/"а" is therefore the
+# conjunction, while the uppercase label ("вариант А") keeps its designation.
+_LABEL_CONJUNCTIONS = frozenset({"и", "а"})
+# "The A/B test" names both compared sides without an alternative noun. The
+# designator describes the comparison itself, not a side of a later claim, so it seeds
+# labels only where the verdict names what it compares.
+_AB_LABELS = re.compile(r"(?i)\b(?:a\s*/\s*b|а\s*/\s*б)\b")
 
 
 def _scope_pattern(qualified: str, bare: str) -> str:
@@ -1878,22 +1890,57 @@ def _named_alternative_labels(sentence: str) -> set[str]:
     for noun in _NAMED_ALTERNATIVE.finditer(sentence):
         run = _ALTERNATIVE_LABEL_RUN.match(sentence[noun.end() :])
         if run is not None:
-            labels.update(token.casefold() for token in _ALTERNATIVE_LABEL.findall(run.group()))
+            for token in _ALTERNATIVE_LABEL.findall(run.group()):
+                if token in _LABEL_CONJUNCTIONS:
+                    continue
+                label = token.casefold()
+                labels.add(_ALTERNATIVE_LABEL_ALIASES.get(label, label))
     return labels
 
 
-# The purpose's claim clause ends at a sentence break, a colon, a spaced dash, a
-# comma with a coordinator, or a coordinator that introduces a new subject
-# ("…cause and the team asked which one is better"). A coordinated noun phrase
-# ("between option A and option B") has no subject and stays inside the purpose.
-_COMPARISON_PURPOSE_BOUNDARY = re.compile(
+def _comparison_alternative_labels(scope: str) -> set[str]:
+    """Sides the scope compares: a named alternative or an "A/B" designator.
+
+    Only the verdict's own clause describes what was compared, so the designator is
+    read here and never from a claim: "The full rollout showed the A/B pipeline cut
+    latency" reports a result about the pipeline, not a side of the earlier test.
+    """
+    labels = _named_alternative_labels(scope)
+    if _AB_LABELS.search(scope):
+        labels |= {"a", "b"}
+    return labels
+
+
+# A verdict's own clause ends at a sentence break, a colon, a spaced dash, a comma
+# with a coordinator or a subordinating attachment, or a coordinator that introduces a
+# new subject ("…cause and the team asked which one is better"). A coordinated noun
+# phrase ("between option A and option B") has no subject and stays inside the clause,
+# so the participants and measured areas a verdict names are read from the whole
+# clause and not only from the prefix before its verdict phrase.
+_COMPARISON_CLAUSE_BOUNDARY = re.compile(
     r"(?i)[.;!?\n]|:\s|\s[—–-]\s"
-    r"|,\s*(?:and|but|or|while|whereas|yet|however|then|so|и|но|а|однако|затем|поэтому)\b"
+    r"|,\s*(?:and|but|or|while|whereas|yet|however|then|so|though|although|which|with|"
+    r"и|но|а|однако|затем|поэтому|хотя|при\s+этом)\b"
     r"|\b(?:and|but|or|yet|so)\s+(?:the|a|an|this|that|these|those|there|we|they|it|"
     r"he|she|i|you|our|their|its|his|her)\b"
     r"|\b(?:и|но|а|однако|затем|поэтому)\s+(?:команда|исследовател\w*|автор\w*|"
     r"они|она|он|оно|это|эти|мы|вы|пользовател\w*|заказчик\w*)\b"
 )
+# A subordinating clause fronted before the verdict frames it but does not scope it:
+# "While method C beat method D, the A/B test was inconclusive" compares C and D, and
+# the verdict that follows speaks about the A/B test alone.
+_FRONTED_SUBORDINATE_MARKER = (
+    r"(?:although|though|while|whereas|even\s+though|despite|"
+    r"хотя|несмотря\s+на\s+то\s+что|хоча|незважаючи\s+на\s+те\s+що)\b"
+)
+_FRONTED_VERDICT_SUBORDINATE = re.compile(
+    rf"(?i)^\s*{_FRONTED_SUBORDINATE_MARKER}[^,;:]{{0,160}},\s*"
+)
+# The same marker without the comma. With a comma the subordinate frames a verdict in
+# the main clause; without one the verdict stands inside the subordinate, and the comma
+# after the verdict closes it ("Although the A/B test was inconclusive on accuracy,
+# method A cut latency by 30% in the full rollout").
+_FRONTED_VERDICT_HEAD = re.compile(rf"(?i)^\s*{_FRONTED_SUBORDINATE_MARKER}")
 
 
 def _insufficiency_purpose(text: str, verdict: re.Match[str], sentence_end: int) -> str:
@@ -1906,7 +1953,7 @@ def _insufficiency_purpose(text: str, verdict: re.Match[str], sentence_end: int)
     # A coordinated clause after the purpose is a separate claim: "to determine the
     # cause, and the team asked whether …" must not lend its comparison to the
     # purpose. A comma inside the purpose phrase ("a clear, single winner") stays.
-    return _COMPARISON_PURPOSE_BOUNDARY.split(purpose, maxsplit=1)[0].strip()
+    return _COMPARISON_CLAUSE_BOUNDARY.split(purpose, maxsplit=1)[0].strip()
 
 
 def _purpose_selects_a_comparison_outcome(purpose: str) -> bool:
@@ -1940,7 +1987,7 @@ def _insufficiency_names_a_comparison(
     year", a metric inside "the cause of the improvement in accuracy" — states
     ordinary uncertainty about a fact, not a no-winner verdict. When the phrase has
     no purpose complement ("…; данных недостаточно."), the verdict stands only when
-    the same sentence names two concrete alternatives.
+    the same sentence names two concrete alternatives, including an "A/B" designator.
     """
     if sentence_index is None:
         return False
@@ -1948,7 +1995,75 @@ def _insufficiency_names_a_comparison(
     if purpose:
         return _purpose_selects_a_comparison_outcome(purpose)
     start, end = spans[sentence_index]
-    return len(_named_alternative_labels(text[start:end])) >= 2
+    return len(_comparison_alternative_labels(text[start:end])) >= 2
+
+
+def _comparison_clause_end(text: str, start: int, limit: int) -> int:
+    """Where the clause that starts at ``start`` ends, within ``limit``."""
+    boundary = _COMPARISON_CLAUSE_BOUNDARY.search(text, start, limit)
+    return boundary.start() if boundary is not None else limit
+
+
+def _verdict_comparison_scope(
+    text: str,
+    spans: list[tuple[int, int]],
+    sentence_index: int | None,
+    verdict: re.Match[str],
+) -> tuple[set[str], set[str], int]:
+    """The sides and measured areas the verdict's own clause names, and its end.
+
+    The verdict names the compared sides and measured areas in its own clause: "The
+    A/B test was inconclusive on accuracy", "The results were inconclusive for method
+    A and method B in week one". That clause is the last clause before the verdict
+    phrase — an earlier clause of the same sentence compares something else ("Method C
+    beat method D, but the A/B test was inconclusive") — plus the complement after the
+    verdict phrase, which a sentence break, a spaced dash, a semicolon or a new-claim
+    coordinator ends. Only this clause says what the verdict compared, so a claim that
+    follows ("the full rollout showed …") adds neither participants nor measured areas.
+
+    The returned offset is where that clause ends, so the claim reads from there and
+    not from the verdict phrase: otherwise the complement itself (" on accuracy", " for
+    method A and method B") would lend the claim the areas or sides it names. That
+    covers a claim joined by a semicolon or a dash, and a fronted subordinate verdict
+    whose main clause reports the later result ("Although … inconclusive on accuracy,
+    method A cut latency by 30% in the full rollout").
+
+    A clause that names no side falls back to the sides named elsewhere in the same
+    sentence ("Method A beat method B, and the comparison was inconclusive"): the
+    verdict is about the comparison the sentence introduced. Measured areas have no
+    such fallback, because a verdict that names none does not restrict the claim. Both
+    reads stay inside a bounded window, so a verdict-heavy unpunctuated text costs the
+    same per verdict instead of rescanning the sentence.
+    """
+    if sentence_index is None:
+        # The verdict phrase sits on a line that _SENTENCE does not read as a sentence
+        # (a line break ends a sentence only at a terminal mark here), so there is no
+        # clause around it: the verdict's own phrase is the clause, and the claim reads
+        # from its end.
+        clause = verdict.group()
+        sentence = ""
+        clause_end = verdict.end()
+        claim_start = clause_end
+    else:
+        start, end = spans[sentence_index]
+        sentence = text[max(start, verdict.start() - _CLAUSE_WINDOW) : verdict.start()]
+        stripped = _FRONTED_VERDICT_SUBORDINATE.sub("", sentence)
+        limit = min(end, verdict.end() + _CLAUSE_WINDOW)
+        if stripped == sentence and _FRONTED_VERDICT_HEAD.match(sentence):
+            # The verdict stands inside a fronted subordinate: the subordinate is its
+            # clause, and the comma that closes it starts the main clause, which is
+            # where the claim begins.
+            comma = text.find(",", verdict.end(), limit)
+            clause_end = comma if comma >= 0 else limit
+            claim_start = clause_end + 1 if comma >= 0 else clause_end
+            head = sentence
+        else:
+            head = _COMPARISON_CLAUSE_BOUNDARY.split(stripped)[-1]
+            clause_end = _comparison_clause_end(text, verdict.end(), limit)
+            claim_start = clause_end
+        clause = f"{head}{verdict.group()}{text[verdict.end() : clause_end]}"
+    labels = _comparison_alternative_labels(clause) or _comparison_alternative_labels(sentence)
+    return labels, _metric_families(clause), claim_start
 
 
 def _explicit_verdict(
@@ -1958,11 +2073,15 @@ def _explicit_verdict(
 ) -> bool | None:
     """Whether an explicit no-winner verdict stands.
 
-    ``True`` when one survives, ``False`` when a later decisive win supersedes a
-    verdict the evidence actually stands behind, and ``None`` when no current
-    verdict stands: only background, negated, retracted, or unrelated mentions. The
-    distinction matters because ``False`` settles the comparison, while a mention
-    that never states this source's verdict must still let the split inference run.
+    ``True`` when one survives, ``False`` when a later decisive win or a later measured
+    result of the same comparison supersedes a verdict the evidence actually stands
+    behind, and ``None`` when no current verdict stands: only background, negated,
+    retracted, or unrelated mentions. The distinction matters because ``False`` settles
+    the comparison, while a mention that never states this source's verdict must still
+    let the split inference run. A measured change counts only when it is framed as a
+    later phase of this comparison and names one of its sides, and, when the verdict
+    names measured areas, measures one of them; a metric improvement elsewhere leaves
+    the verdict standing.
     """
     starts = [start for start, _ in spans]
     wins_by_sentence: list[list[tuple[re.Match[str], int]]] | None = None
@@ -1974,21 +2093,23 @@ def _explicit_verdict(
         # The negation may be part of the matched phrase ("were not inconclusive").
         if _NEGATED_INCONCLUSIVE.search(_clause_before(text, match.start()) + match.group()):
             continue
-        # A title or evidence that states a measured change after the verdict is a
-        # stronger claim: the source measured a result where the earlier comparison
-        # was open. The verdict cannot override it, whatever its scope.
-        # The claim that follows the verdict may report a plain result the source
-        # measured; a result scoped to another experiment or compared with a named
-        # side ("A cut latency by 40% compared with the previous version") leaves the
-        # verdict standing.
-        if _measured_change_in_tail(text, match):
+        # A measured change after the verdict reports a result the source observed. It
+        # settles the open comparison only as a later phase of that comparison with one
+        # of its sides named; a plain metric improvement, another experiment, another
+        # side ("A cut latency by 40% compared with the previous version") or another
+        # measured area ("inconclusive on accuracy" and then latency) leaves the
+        # verdict standing. The verdict's own clause says what was compared.
+        sentence_index = _sentence_at(spans, starts, match.start())
+        comparison_labels, comparison_metrics, claim_start = _verdict_comparison_scope(
+            text, spans, sentence_index, match
+        )
+        if _measured_change_in_tail(text, comparison_labels, comparison_metrics, claim_start):
             superseded = True
             continue
         # "В тендере победителя нет" and "no winner was announced in the election"
         # name an event, not a method comparison.
         if _event_scoped_verdict(text, spans, starts, match):
             continue
-        sentence_index = _sentence_at(spans, starts, match.start())
         # "There is not enough evidence to determine the cause" is uncertainty about a
         # fact; the phrase is a comparison verdict only when the missing data is
         # scoped to a comparison outcome ("pick a winner").
@@ -2037,12 +2158,16 @@ def states_inconclusive_comparison(text: str) -> bool:
     comparison and source: a hypothetical ("whether A outperformed B"), a hedged
     possibility, a retracted win, a split win in another scope, or a win in a
     separate experiment must not turn an open comparison into a settled one. A
-    verdict that only reports prior work or explains a phenomenon is background,
-    not this source's conclusion. An explicitly retracted inconclusive conclusion
-    is also not a verdict the source still stands behind. A comparison that reports
-    an advantage on each side without naming a winner is unresolved even when the
-    word "inconclusive" never appears, and a trade-off stated after a decisive win
-    reopens the comparison that the earlier result appeared to settle.
+    later measured result supersedes it only when it names a side of that comparison,
+    reports a later phase, and, when the verdict named measured areas, measures one of
+    them; a metric improvement of an unrelated change ("after migrating the logging
+    pipeline, the team cut API latency by 30%") leaves the comparison open. A verdict
+    that only reports prior work or explains a phenomenon is background, not this
+    source's conclusion. An explicitly retracted inconclusive conclusion is also not a
+    verdict the source still stands behind. A comparison that reports an advantage on
+    each side without naming a winner is unresolved even when the word "inconclusive"
+    never appears, and a trade-off stated after a decisive win reopens the comparison
+    that the earlier result appeared to settle.
     """
     folded = _fold(text)
     spans = _sentence_spans(folded)
@@ -2255,14 +2380,33 @@ _CHANGE_HEAD = re.compile(
 )
 # The quantity a comparison reports: a latency, accuracy or cost per request. A
 # cheaper licence or a vendor price is not it, and a Russian "время ответа" names
-# the same quantity as "latency".
-_METRIC = re.compile(
-    r"(?i)\b(?:latency|p\d{2}|throughput|accuracy|precision|recall|f1|speed|"
-    r"errors?|failures?|retries?|timeouts?|memory|cpu|tokens?|runtime|quality|"
-    r"задержк\w*|пропускн\w*|точност\w*|ошиб\w*|помил\w*|памят\w*|"
-    r"стоимост\w*|вартост\w*|токен\w*|врем\w*|"
-    r"(?:час\w*)\s+(?:ответа|отклика|видповід\w*))\b"
-)
+# the same quantity as "latency". Metrics are grouped by the quantity they measure,
+# because a later result on another quantity answers a different question: a verdict
+# "inconclusive on accuracy" is not settled by a latency improvement.
+_METRIC_FAMILIES = {
+    "latency": re.compile(
+        # A bare "время" is a temporal word ("во время теста"), not a measured quantity;
+        # only "время ответа" or "час відповіді" names the same thing as latency.
+        r"(?i)\b(?:latency|p\d{2}|speed|runtime|задержк\w*|"
+        r"(?:врем\w*|час\w*)\s+(?:ответа|отклика|обработки|выполнени\w*|видповід\w*))\b"
+    ),
+    "throughput": re.compile(r"(?i)\b(?:throughput|пропускн\w*)\b"),
+    "accuracy": re.compile(r"(?i)\b(?:accuracy|precision|recall|f1|точност\w*)\b"),
+    "reliability": re.compile(r"(?i)\b(?:errors?|failures?|retries?|timeouts?|ошиб\w*|помил\w*)\b"),
+    "resources": re.compile(r"(?i)\b(?:memory|cpu|памят\w*)\b"),
+    "tokens": re.compile(r"(?i)\b(?:tokens?|токен\w*)\b"),
+    "cost": re.compile(r"(?i)\b(?:стоимост\w*|вартост\w*)\b"),
+    "quality": re.compile(r"(?i)\bquality\b"),
+}
+
+
+def _metric_families(text: str) -> set[str]:
+    """Measured quantities a text names, one family per quantity."""
+    return {
+        family for family, pattern in _METRIC_FAMILIES.items() if pattern.search(text) is not None
+    }
+
+
 _UNCOMPARED_PRICE = re.compile(
     r"(?i)\b(?:licen[cs]es?|subscriptions?|vendors?|suppliers?|лицензи\w*|"
     r"подписк\w*|підписк\w*|вендор\w*|поставщик\w*|постачальник\w*)\b"
@@ -2286,32 +2430,87 @@ _NEGATED_BEFORE_HEAD = re.compile(
     r"(?i)(?:\b(?:not|never|no|none|neither|nor|не|ни|никто|ничего|жодн\w*)\b|n't)"
     r"(?!\s*(?:only|just|merely)\b)[^.;!?]{0,40}$"
 )
+# The shared _LATER_RESULT_FRAME covers final/overall/follow-up results. A measured
+# result also reports the full rollout or a later round of the same experiment; those
+# phrases are not a frame for a decisive win (a win "in the second round" is partial),
+# so keep them measured-only.
+_MEASURED_LATER_PHASE = re.compile(
+    r"(?i)\b(?:full|final|overall)\s+(?:\w+\s+){0,2}?rollouts?\b"
+    r"|\b(?:в|во|у|на|после|після)\s+"
+    r"(?:втор\w*|друг\w*|следующ\w*|наступн\w*)\s+"
+    r"(?:\w+\s+){0,2}?(?:раунд\w*|этап\w*|прогон\w*|замер\w*|тест\w*|"
+    r"испытан\w*|эксперимент\w*|дослід\w*|випробуван\w*)"
+    # "В полном прогоне" and "итоговый тест" name the later phase without an ordinal.
+    r"|\b(?:в|во|після|после)\s+(?:полн\w*|итогов\w*|підсумков\w*)"
+    r"(?:\s+\w+){0,2}?\s+(?:прогон\w*|тест\w*|замер\w*|раунд\w*|эксперимент\w*|"
+    r"испытан\w*|дослід\w*|випробуван\w*)"
+    # "Второй раунд показал" puts the phase in the subject, not after a preposition.
+    r"|\b(?:втор\w*|друг\w*|следующ\w*|наступн\w*)\s+"
+    r"(?:раунд\w*|этап\w*|прогон\w*|замер\w*)\s+(?:показа\w*|продемонстрир\w*|"
+    r"підтвердив\w*)"
+)
 
 
-def _measured_change_in_tail(text: str, verdict: re.Match[str]) -> bool:
-    """Whether the claim after the verdict measures a change of a compared quantity.
+def _measured_change_settles_comparison(
+    claim: str, comparison_labels: set[str], comparison_metrics: set[str]
+) -> bool:
+    """Whether a measured claim is a later result of the verdict's comparison.
 
-    The claim is the first piece between the verdict and its clause end, or the
-    claim after that boundary when the boundary closes the verdict's own clause
-    ("week one. The full rollout…" leaves the period inside the verdict sentence).
+    A metric improvement on its own does not answer an open comparison: the claim
+    must name a compared side and be framed as a later phase. When the verdict names
+    sides, the claim's side must be one of them; a result about another method leaves
+    the verdict standing. When the verdict names measured areas ("inconclusive on
+    accuracy"), the claim must measure at least one of them: a latency improvement
+    answers a different question.
     """
-    for boundary in CLAIM_CLAUSE_BREAK.finditer(
-        text, verdict.end(), verdict.end() + _CLAUSE_WINDOW
-    ):
-        claim = text[verdict.end() : boundary.start()]
-        if claim.strip() and _measured_change(claim):
+    claim_labels = _named_alternative_labels(claim)
+    if not claim_labels:
+        return False
+    if comparison_labels and not (comparison_labels & claim_labels):
+        return False
+    claim_metrics = _metric_families(claim)
+    if comparison_metrics and not (comparison_metrics & claim_metrics):
+        return False
+    return (
+        _LATER_RESULT_FRAME.search(claim) is not None
+        or _MEASURED_LATER_PHASE.search(claim) is not None
+    )
+
+
+def _measured_change_in_tail(
+    text: str, comparison_labels: set[str], comparison_metrics: set[str], claim_start: int
+) -> bool:
+    """Whether a claim after the verdict measures a later result of its comparison.
+
+    ``comparison_labels`` and ``comparison_metrics`` come from the verdict's own
+    clause: they fix the sides and measured areas. The claims start where that clause
+    ends, so the complement of the verdict (" on accuracy", " for method A and method
+    B") is not part of the first claim, and the rest of the verdict's own sentence is
+    ("…inconclusive, though the full rollout showed method A cut latency by 30%").
+    A measured claim settles the verdict only when
+    ``_measured_change_settles_comparison`` binds it to that comparison; a result about
+    another change, side or quantity leaves it standing.
+    """
+    window = text[claim_start : claim_start + _CLAUSE_WINDOW]
+    for start, end in _sentence_spans(window):
+        claim = window[start:end]
+        if not claim.strip() or not _measured_change(claim):
+            continue
+        if _measured_change_settles_comparison(claim, comparison_labels, comparison_metrics):
             return True
     return False
 
 
 def _measured_change(claim: str) -> bool:
-    """Whether one claim measures a change of the quantity the comparison reports.
+    """Whether one claim measures a change of a quantity a comparison can report.
 
     A hedge, a hypothesis, a negation or a future frame describes an intention, not
     a measurement, and a claim scoped to another experiment or measured against a
     named side ("A cut latency by 40% compared with the previous version") keeps the
-    verdict standing. Each pattern reads only this claim, so the per-verdict cost
-    stays linear in the document.
+    verdict standing. This function reads only the claim's shape; whether the measured
+    result belongs to the open comparison is decided by
+    ``_measured_change_settles_comparison``. Each pattern reads only this claim, so the
+    per-verdict cost stays linear in the document.
     """
     head = _CHANGE_HEAD.search(claim)
     if head is None:
@@ -2324,6 +2523,6 @@ def _measured_change(claim: str) -> bool:
         return False
     if _FUTURE_CHANGE.search(claim) is not None:
         return False
-    if _AMOUNT.search(claim, head.end()) is None or _METRIC.search(claim) is None:
+    if _AMOUNT.search(claim, head.end()) is None or not _metric_families(claim):
         return False
     return _UNCOMPARED_PRICE.search(claim) is None

@@ -2311,6 +2311,27 @@ def test_explicit_insufficiency_after_a_named_trade_off_keeps_the_no_winner_hint
     assert repaired.title == f"{title}{suffix}"
 
 
+def test_ab_designator_scopes_an_insufficiency_verdict():
+    """An "A/B" designator names the two sides an insufficiency verdict needs.
+
+    "Сравнение A/B: данных недостаточно." has no purpose complement, so the
+    insufficiency path needs two concrete alternatives in the same sentence; the
+    designator is part of the verdict and provides them. The claim path still reads
+    only a spelled-out alternative noun, so this seeding cannot lend a side to a later
+    measured claim.
+    """
+    text = "Сравнение A/B: данных недостаточно."
+    content = NormalizedContent(source_type=SourceType.WEB, text=text, language="ru")
+    prompt = build_user_message(content, UserProfile(preferred_language="ru"), [])
+    result = make_analysis(title="Метод A быстрее", language="ru")
+
+    repaired = ensure_explicit_inconclusive_title(result, text, response_language="ru")
+
+    assert states_inconclusive_comparison(text) is True
+    assert "INCONCLUSIVE COMPARISON IN SOURCE" in prompt
+    assert repaired.title == "Метод A быстрее; победитель не определён"
+
+
 @pytest.mark.parametrize(
     "text",
     [
@@ -7996,16 +8017,67 @@ def test_content_verb_before_the_failure_noun_keeps_the_negative_result(
             "Метод A снизил задержку на 30%",
             "ru",
         ),
+        # A verdict that names no side still settles when the later phase names one.
+        (
+            "The comparison was inconclusive. The full rollout showed method A cut latency by 30%.",
+            "Method A cut latency by 30%",
+            "en",
+        ),
+        (
+            "The comparison was inconclusive. The final benchmark showed method A cut "
+            "latency by 30%.",
+            "Method A cut latency by 30%",
+            "en",
+        ),
+        # The verdict measured accuracy, so a latency result answers another question.
+        (
+            "The A/B test was inconclusive on accuracy. The full rollout showed method A "
+            "raised accuracy by 30%.",
+            "Method A raised accuracy by 30%",
+            "en",
+        ),
+        (
+            "Сравнение A/B было неопределённым по точности. В полном прогоне метод A повысил "
+            "точность на 30%.",
+            "Метод A повысил точность на 30%",
+            "ru",
+        ),
+        (
+            "Сравнение A/B было неопределённым. Второй раунд показал, что метод A снизил "
+            "задержку на 30%.",
+            "Метод A снизил задержку на 30%",
+            "ru",
+        ),
+        # The comparison named both sides after its verdict phrase; method A is one of
+        # them, so its later result settles the comparison.
+        (
+            "The results were inconclusive for method A and method B in week one. The full "
+            "rollout showed method A cut latency by 30%.",
+            "Method A cut latency by 30%",
+            "en",
+        ),
+        # A Cyrillic "Б" is the same side as the Latin "B" of the "А/Б" designator.
+        (
+            "Сравнение А/Б было неопределённым. Во втором раунде вариант Б снизил задержку на 30%.",
+            "Вариант Б снизил задержку на 30%",
+            "ru",
+        ),
+        (
+            "The pilot was inconclusive. The full rollout showed approach A cut latency by 30%.",
+            "Approach A cut latency by 30%",
+            "en",
+        ),
     ],
 )
 def test_measured_result_after_an_early_verdict_keeps_the_title(text, title, language):
-    """A verdict scoped to an early phase must not override a later measured result.
+    """A later phase of the same comparison settles an early verdict and keeps the title.
 
     "The A/B test was inconclusive in week one" is a verdict about the pilot, and the
-    full rollout that followed measured a concrete change: the title reports the
-    source's final answer, so the repair must not append "no winner". The rule is one
-    invariant — an open verdict never overrides a stronger later claim — and a
-    measured change is that claim once it belongs to a later phase of the document.
+    full rollout that followed measured a concrete result on one of its sides: the title
+    reports the source's final answer, so the repair must not append "no winner". The
+    invariant is narrower than "a later measured change wins": the claim must name a
+    compared side, measure one of the verdict's measured areas when the verdict names
+    them, and be framed as a later phase of that comparison.
     """
     content = NormalizedContent(source_type=SourceType.WEB, text=text, language=language)
     prompt = build_user_message(content, UserProfile(preferred_language=language), [])
@@ -8043,11 +8115,421 @@ def test_measured_result_after_an_early_verdict_keeps_the_title(text, title, lan
         # comparison: prices and costs move in every document.
         "The comparison was inconclusive. Costs increased by 30%.",
         "The comparison was inconclusive. The team cut costs by 30%.",
+        "The comparison was inconclusive. A cheaper licence cut costs by 30%.",
+        # A measured change of another change leaves the comparison open: the
+        # improvement does not establish which side won.
+        "The A/B test was inconclusive. After migrating the logging pipeline, the team "
+        "cut API latency by 30%.",
+        "Сравнение A/B было неопределённым. После миграции пайплайна логирования команда "
+        "снизила задержку API на 30%.",
+        # A side without a later-phase frame is a plain result about that side, not the
+        # comparison's outcome.
+        "The A/B test was inconclusive. Method A cut latency by 30%.",
+        "The comparison was inconclusive. Method A cut latency by 30%.",
+        # A later phase that measures another side or names no side does not settle the
+        # comparison it followed.
+        "The A/B test was inconclusive in week one. The full rollout showed method C cut "
+        "latency by 30%.",
+        "The A/B test was inconclusive in week one. The full rollout cut latency by 30%.",
+        "The comparison was inconclusive. The full rollout cut latency by 30%.",
+        # An "A/B" designator belongs to the verdict, so it cannot lend a side to the
+        # claim that mentions the A/B pipeline.
+        "The comparison was inconclusive. The full rollout showed the A/B pipeline cut "
+        "latency by 30%.",
+        "The A/B experiment was inconclusive. The final results showed the A/B test cut "
+        "latency by 30%.",
+        # The verdict measured accuracy; a latency result answers a different question.
+        "The A/B test was inconclusive on accuracy. The full rollout showed method A cut "
+        "latency by 30%.",
+        "Сравнение A/B было неопределённым по точности. В полном прогоне метод A снизил "
+        "задержку на 30%.",
+        # The sides named after the verdict phrase are the comparison's; method C is not
+        # one of them.
+        "The results were inconclusive for method A and method B in week one. The full "
+        "rollout showed method C cut latency by 30%.",
     ],
 )
 def test_measured_change_does_not_override_an_unsuperseded_verdict(text):
-    """Only a real measured result supersedes; intent, negation and other scopes do not."""
+    """Only a measured result bound to the comparison supersedes; shape alone does not.
+
+    The claim must name a side of the comparison, measure an area the verdict measured
+    when it named one, and carry its own later-phase frame. The "A/B" designator and
+    the sides named in the verdict clause belong to the verdict, not to the claim.
+    """
     assert states_inconclusive_comparison(text) is True
+
+
+@pytest.mark.parametrize(
+    ("text", "title", "language", "suffix"),
+    [
+        (
+            "The A/B test was inconclusive. After migrating the logging pipeline, the "
+            "team cut API latency by 30%.",
+            "The team cut API latency by 30%",
+            "en",
+            "; no winner was established",
+        ),
+        (
+            "Сравнение A/B было неопределённым. После миграции пайплайна логирования "
+            "команда снизила задержку API на 30%.",
+            "Команда снизила задержку API на 30%",
+            "ru",
+            "; победитель не определён",
+        ),
+        (
+            "The comparison was inconclusive. The full rollout showed the A/B pipeline cut "
+            "latency by 30%.",
+            "The A/B pipeline cut latency by 30%",
+            "en",
+            "; no winner was established",
+        ),
+        (
+            "The A/B test was inconclusive on accuracy. The full rollout showed method A "
+            "cut latency by 30%.",
+            "Method A cut latency by 30%",
+            "en",
+            "; no winner was established",
+        ),
+        (
+            "Сравнение A/B было неопределённым по точности. В полном прогоне метод A снизил "
+            "задержку на 30%.",
+            "Метод A снизил задержку на 30%",
+            "ru",
+            "; победитель не определён",
+        ),
+    ],
+)
+def test_unrelated_measured_change_keeps_the_no_winner_verdict(text, title, language, suffix):
+    """A result not bound to the comparison must not erase the no-winner verdict.
+
+    The improvement is real and survives the repair as the title's detail, but it did
+    not answer the A/B comparison: it belongs to another change, names the A/B pipeline
+    instead of a side, or measures an area the verdict did not measure. The repair
+    appends the verdict instead of leaving a title that reports an unearned outcome.
+    """
+    content = NormalizedContent(source_type=SourceType.WEB, text=text, language=language)
+    prompt = build_user_message(content, UserProfile(preferred_language=language), [])
+    result = make_analysis(title=title, language=language)
+
+    repaired = ensure_explicit_inconclusive_title(result, text, response_language=language)
+
+    assert "INCONCLUSIVE COMPARISON IN SOURCE" in prompt
+    assert repaired is not result
+    assert repaired.title == f"{title}{suffix}"
+
+
+# --- Round 29: the verdict's clause, not the sentence, scopes its comparison ---
+
+
+@pytest.mark.parametrize(
+    ("text", "title", "language", "suffix"),
+    [
+        # An earlier clause of the same sentence compares C and D; the verdict that
+        # follows speaks about the A/B test, and method C is not one of its sides.
+        (
+            "Method C beat method D, but the A/B test was inconclusive. The full rollout "
+            "showed method C cut latency by 30%.",
+            "Method C cut latency by 30%",
+            "en",
+            "; no winner was established",
+        ),
+        (
+            "Method C beat method D; the A/B test was inconclusive. The full rollout showed "
+            "method C cut latency by 30%.",
+            "Method C cut latency by 30%",
+            "en",
+            "; no winner was established",
+        ),
+        (
+            "While method C beat method D, the A/B test was inconclusive. The full rollout "
+            "showed method C cut latency by 30%.",
+            "Method C cut latency by 30%",
+            "en",
+            "; no winner was established",
+        ),
+        (
+            "Although method C beat method D, the A/B test was inconclusive. The full rollout "
+            "showed method C cut latency by 30%.",
+            "Method C cut latency by 30%",
+            "en",
+            "; no winner was established",
+        ),
+        # The verdict clause names no side, so the sides the sentence introduced scope
+        # it: method C is not one of them.
+        (
+            "Method A beat method B, and the comparison was inconclusive. The full rollout "
+            "showed method C cut latency by 30%.",
+            "Method C cut latency by 30%",
+            "en",
+            "; no winner was established",
+        ),
+        # Latency in the earlier clause is not an area the verdict measured; the
+        # verdict measured accuracy.
+        (
+            "Latency was high last week, but the A/B test was inconclusive on accuracy. The "
+            "full rollout showed method A cut latency by 30%.",
+            "Method A cut latency by 30%",
+            "en",
+            "; no winner was established",
+        ),
+        (
+            "Команда отметила, что метод C ускорил сборку, но сравнение A/B было "
+            "неопределённым. В полном прогоне метод C снизил задержку на 30%.",
+            "Метод C снизил задержку на 30%",
+            "ru",
+            "; победитель не определён",
+        ),
+    ],
+)
+def test_only_the_verdict_clause_scopes_what_was_compared(text, title, language, suffix):
+    """An earlier clause of the verdict's sentence does not lend it sides or areas.
+
+    "Method C beat method D, but the A/B test was inconclusive" compares two things: the
+    first clause settles a different comparison, and only the clause the verdict stands
+    in says what this verdict compared. Reading the whole sentence prefix there would
+    make method C a side of the A/B test and let its later measured result erase the
+    verdict. A verdict clause that names no side still reads them from the sentence,
+    because that is the comparison the sentence introduced.
+    """
+    content = NormalizedContent(source_type=SourceType.WEB, text=text, language=language)
+    prompt = build_user_message(content, UserProfile(preferred_language=language), [])
+    result = make_analysis(title=title, language=language)
+
+    repaired = ensure_explicit_inconclusive_title(result, text, response_language=language)
+
+    assert states_inconclusive_comparison(text) is True
+    assert "INCONCLUSIVE COMPARISON IN SOURCE" in prompt
+    assert repaired is not result
+    assert repaired.title == f"{title}{suffix}"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # The claim names method A, a side of the A/B test the verdict is about.
+        "Method C beat method D, but the A/B test was inconclusive. The full rollout showed "
+        "method A cut latency by 30%.",
+        "While method C beat method D, the A/B test was inconclusive. The full rollout showed "
+        "method A cut latency by 30%.",
+        # The verdict clause named no side, so the sides the sentence introduced scope it.
+        "Method A beat method B, and the comparison was inconclusive. The full rollout showed "
+        "method A cut latency by 30%.",
+        # A result joined to the verdict clause still reports the comparison's later phase.
+        "The A/B test was inconclusive, though the full rollout showed method A cut latency "
+        "by 30%.",
+        "The A/B test was inconclusive, with method A cutting latency by 30% in the full rollout.",
+        "The A/B test was inconclusive, which showed method A cut latency by 30% in the full "
+        "rollout.",
+        "Сравнение A/B было неопределённым, хотя в полном прогоне метод A снизил задержку на 30%.",
+        # The verdict sits in a fronted subordinate clause; the main clause reports the
+        # later result of one side.
+        "Although the A/B test was inconclusive, method A cut latency by 30% in the full rollout.",
+        # "во время теста" is a time frame, not a measured area, so it does not restrict
+        # the claim to latency.
+        "Во время теста сравнение было неопределённым. В полном прогоне метод A увеличил "
+        "пропускную способность на 30%.",
+        # The same clause reading in Russian: the earlier clause names method C, the
+        # verdict speaks about the A/B comparison.
+        "Команда отметила, что метод C ускорил сборку, но сравнение A/B было "
+        "неопределённым. В полном прогоне метод A снизил задержку на 30%.",
+    ],
+)
+def test_a_later_result_of_a_named_side_still_settles_the_verdict(text):
+    """The clause reading narrows the scope; it does not stop a real later result.
+
+    A measured result on a side of the comparison, framed as its later phase, settles
+    the verdict whether it arrives in a new sentence, after a coordinator, or in the
+    main clause of a sentence whose subordinate clause holds the verdict.
+    """
+    assert states_inconclusive_comparison(text) is False
+
+
+@pytest.mark.parametrize(
+    ("text", "title", "language", "suffix"),
+    [
+        # A semicolon joins the claim to the verdict clause. The complement the clause
+        # already named ("on accuracy") must not become an area of the claim, or a
+        # latency win elsewhere would erase a no-winner verdict about accuracy.
+        (
+            "The A/B test was inconclusive on accuracy; the full rollout showed method A "
+            "cut latency by 30%.",
+            "Method A cut latency by 30%",
+            "en",
+            "; no winner was established",
+        ),
+        (
+            "The comparison was inconclusive for method A and method B; the full rollout "
+            "showed method C cut latency by 30%.",
+            "Method C cut latency by 30%",
+            "en",
+            "; no winner was established",
+        ),
+        (
+            "The comparison was inconclusive for method A and method B; the full rollout "
+            "showed the cache cut latency by 30%.",
+            "The cache cut latency by 30%",
+            "en",
+            "; no winner was established",
+        ),
+        # A spaced dash and a coordinated clause join the claim the same way.
+        (
+            "The A/B test was inconclusive on accuracy — the full rollout showed method A "
+            "cut latency by 30%.",
+            "Method A cut latency by 30%",
+            "en",
+            "; no winner was established",
+        ),
+        (
+            "The comparison was inconclusive for method A and method B, but the full rollout "
+            "showed method C cut latency by 30%.",
+            "Method C cut latency by 30%",
+            "en",
+            "; no winner was established",
+        ),
+        (
+            "The A/B test was inconclusive on accuracy, and the full rollout showed method A "
+            "cut latency by 30%.",
+            "Method A cut latency by 30%",
+            "en",
+            "; no winner was established",
+        ),
+        (
+            "Сравнение A/B было неопределённым по точности; в полном прогоне метод A снизил "
+            "задержку на 30%.",
+            "Метод A снизил задержку на 30%",
+            "ru",
+            "; победитель не определён",
+        ),
+        # The verdict sits in a fronted subordinate; the comma that closes it starts the
+        # main clause, so the main clause is the claim, not a continuation of the clause.
+        (
+            "Although the A/B test was inconclusive on accuracy, method A cut latency by 30% "
+            "in the full rollout.",
+            "Method A cut latency by 30%",
+            "en",
+            "; no winner was established",
+        ),
+    ],
+)
+def test_a_claim_joined_to_the_verdict_clause_reads_from_the_clause_end(
+    text, title, language, suffix
+):
+    """The claim starts where the verdict's clause ends, whatever punctuation joins it.
+
+    Reading the claim from the verdict phrase let the clause's own complement (" on
+    accuracy", " for method A and method B") lend the claim its area or sides: a
+    semicolon, a spaced dash or a coordinated clause then made a latency win elsewhere
+    erase a no-winner verdict about accuracy. The complement scopes the verdict; the
+    claim that follows joins it only through its own measurement.
+    """
+    content = NormalizedContent(source_type=SourceType.WEB, text=text, language=language)
+    prompt = build_user_message(content, UserProfile(preferred_language=language), [])
+    result = make_analysis(title=title, language=language)
+
+    repaired = ensure_explicit_inconclusive_title(result, text, response_language=language)
+
+    assert states_inconclusive_comparison(text) is True
+    assert "INCONCLUSIVE COMPARISON IN SOURCE" in prompt
+    assert repaired is not result
+    assert repaired.title == f"{title}{suffix}"
+
+
+def test_a_claim_joined_to_the_verdict_clause_still_settles_a_matching_measurement():
+    """Ending the clause at its complement bounds the claim; it does not mute it.
+
+    A semicolon-joined result that measures the same area the verdict named still
+    reports the comparison's later phase, so the verdict is settled.
+    """
+    assert (
+        states_inconclusive_comparison(
+            "The A/B test was inconclusive on accuracy; the full rollout showed method A "
+            "raised accuracy by 30%."
+        )
+        is False
+    )
+
+
+@pytest.mark.parametrize(
+    ("text", "suffix"),
+    [
+        # A pasted message, a PDF page or a web paragraph wraps the verdict phrase onto
+        # a line without a terminal mark, so no sentence holds it. The verdict's own
+        # phrase is then its clause, and the claim reads from its end.
+        (
+            "The vendor comparison\n"
+            "The team evaluated both caching layers and the results were\n"
+            "inconclusive because the variance was high.",
+            "; no winner was established",
+        ),
+        # A measurement of another quantity in a later sentence leaves the verdict
+        # standing, exactly as it does when the verdict sits inside a sentence.
+        (
+            "The vendor comparison\n"
+            "The team evaluated both caching layers and the results were\n"
+            "inconclusive because the variance was high. Costs increased by 30%.",
+            "; no winner was established",
+        ),
+        (
+            "Weekly report\n"
+            "The pilot ran for two weeks and the memo says no winner was established\n"
+            "for the two methods.",
+            "; no winner was established",
+        ),
+    ],
+)
+def test_a_verdict_on_a_wrapped_line_reads_its_claim_from_the_verdict_phrase(text, suffix):
+    """A verdict phrase outside any recognised sentence still yields a verdict.
+
+    Lines end a sentence here only at a terminal mark, so a verdict wrapped onto its
+    own line has no clause and no sentence around it. Reading the claim from the
+    verdict phrase keeps the public detectors total on multiline evidence and gives the
+    prompt flag and the repair suffix the same behavior as the single-line case.
+    """
+    content = NormalizedContent(source_type=SourceType.WEB, text=text, language="en")
+    prompt = build_user_message(content, UserProfile(preferred_language="en"), [])
+    result = make_analysis(title="Method A cut latency by 30%", language="en")
+
+    repaired = ensure_explicit_inconclusive_title(result, text, response_language="en")
+
+    assert states_inconclusive_comparison(text) is True
+    assert title_states_inconclusive(text) is True
+    assert "INCONCLUSIVE COMPARISON IN SOURCE" in prompt
+    assert repaired is not result
+    assert repaired.title == f"Method A cut latency by 30%{suffix}"
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # The first verdict compares C and D; the later phase reports A and B, which is
+        # another pair, so the verdict stands.
+        (
+            "Сравнение методов C и D не выявило победителя. В полном прогоне методы A и B "
+            "снизили задержку на 30%.",
+            True,
+        ),
+        # The same pair measured in its later phase settles the verdict.
+        (
+            "Сравнение методов C и D не выявило победителя. В полном прогоне методы C и D "
+            "снизили задержку на 30%.",
+            False,
+        ),
+        (
+            "Сравнение методов C и D не выявило победителя. В полном прогоне метод C снизил "
+            "задержку на 30%.",
+            False,
+        ),
+    ],
+)
+def test_a_cyrillic_conjunction_is_not_a_compared_side(text, expected):
+    """The "и" that joins two labels is a conjunction, not a third side.
+
+    "методы C и D" is a label run with a one-letter conjunction inside it. Reading "и"
+    as a side would make every Russian label run share a side, so a later result about
+    A and B would settle a verdict about C and D. An uppercase "А" stays a label
+    ("вариант А" is side A).
+    """
+    assert states_inconclusive_comparison(text) is expected
 
 
 @pytest.mark.parametrize(

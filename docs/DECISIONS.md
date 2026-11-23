@@ -1751,3 +1751,76 @@ item rather than an automatic removal. The primary corpus and the manual-only
 nature of the holdout stay unchanged, and generation quality still requires the
 live `eval-analysis-quality` run.
 
+## D-065 — A measured result must be bound to the comparison it settles
+
+Context: any measured change after an inconclusive verdict set `superseded = True`,
+so "The A/B test was inconclusive. After migrating the logging pipeline, the team
+cut API latency by 30%." lost the no-winner verdict even though the improvement
+belongs to another change and establishes no winner. D-057 already required a
+final/overall frame for a later measured result; the code did not check it. Reading
+the whole sentence before the verdict phrase then lent the verdict the sides and
+areas of an earlier clause: "Method C beat method D, but the A/B test was
+inconclusive. The full rollout showed method C cut latency by 30%." was settled by
+method C, a side of the other comparison.
+
+Decision: a measured claim settles an earlier verdict only when it passes the
+existing shape guards, names a compared side, is framed as a later phase of that
+comparison (`_LATER_RESULT_FRAME` or the measured-only `_MEASURED_LATER_PHASE`), and
+matches what the verdict's own clause compared:
+
+- the clause is the last clause before the verdict phrase — a fronted subordinate
+  ("While/Although/Хоча …") is stripped, and a comma with a coordinator or a
+  subordinating attachment (", and/but/though/which/with/хотя/при этом"), a sentence
+  break, a semicolon, a colon or a spaced dash ends it — plus the complement after the
+  verdict phrase ("…inconclusive on accuracy", "…for method A and method B in week
+  one");
+- the claim's sides must include one of the clause's sides. A clause that names no
+  side falls back to the sides named elsewhere in the same sentence ("Method A beat
+  method B, and the comparison was inconclusive"), because the verdict is about the
+  comparison that sentence introduced; the fallback never adds measured areas;
+- when the clause names measured areas, the claim must measure at least one of the
+  same areas (`_METRIC_FAMILIES`); areas are read from the clause only, and a verdict
+  that names none is not restricted, because most verdicts name none and their later
+  phases do settle them;
+- the claims are what follows the verdict's clause, not the verdict phrase: the
+  complement belongs to the verdict ("…inconclusive on accuracy; the full rollout
+  showed method A cut latency by 30%" keeps the verdict, because latency is not the
+  named area). A result joined to the clause still counts (", though the full rollout
+  showed method A cut latency by 30%"). When the verdict stands inside a fronted
+  subordinate, the subordinate is its clause and the main clause after the closing
+  comma is the claim: "Although the A/B test was inconclusive on accuracy, method A
+  cut latency by 30% in the full rollout" keeps the verdict, while the same sentence
+  without the named area lets the measured win settle it. When the verdict phrase sits
+  on no recognised sentence (a line break wraps it without a terminal mark, as pasted
+  Telegram text, a PDF-page join or a web paragraph does), the verdict's own phrase is
+  its clause and the claim reads from its end — the detectors stay total on such
+  evidence instead of raising.
+
+An `A/B`/`А/Б` designator names both sides, but only inside the verdict's clause: a
+claim reads sides from a spelled-out alternative noun ("method A", "approach A",
+"вариант Б"), so a later result about the A/B pipeline or test does not become a
+side of the earlier comparison. Cyrillic А/Б labels compare as the Latin A/B
+designation, and the designator also scopes the insufficiency path ("Сравнение A/B:
+данных недостаточно." is a verdict; pinned by a test). A lowercase Cyrillic "и"/"а"
+inside a label run is the conjunction that joins labels ("методы C и D"), not a third
+side, so two Russian label runs do not share a side through it; an uppercase "А" keeps
+its designation ("вариант А" is side A). A Russian latency area is "задержка" or
+"время ответа", not a bare "время": "во время теста" is a time frame.
+
+Reason: a metric improvement on its own does not answer an open comparison. A
+result about another change, another side, another measured area, or a plain result
+without a later-phase frame leaves the comparison unresolved; a weaker title is
+preferable to an unearned winner.
+
+Consequences: binding is lexical — a side or area named by a pronoun, a synonym or
+an unlisted metric is not matched and the verdict remains. `_MEASURED_LATER_PHASE`
+covers "full/final/overall rollout", a Russian or Ukrainian later round with its
+preposition, "в полном/итоговом прогоне" and "второй раунд показал", not every
+paraphrase. The clause complement and the sentence-prefix fallback both read inside
+`_CLAUSE_WINDOW` (400 characters), so a side named earlier in a very long
+unpunctuated sentence does not scope the verdict. A claim is read as a whole
+sentence, so a hedge in another clause of the claim's sentence ("…cut latency by
+30%, but the team may repeat the test") rejects a real measurement; narrowing the
+claim to its own clause is AIINBOX-20, not this rule.
+The measured-only frame does not affect decisive-win partiality ("won in the second
+round" stays partial).
