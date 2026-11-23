@@ -16,8 +16,10 @@ from app.domain.models import (
 from app.domain.signals import (
     has_multiple_sources,
     inconclusive_title_language,
+    inconclusive_title_statement,
     inconclusive_title_suffix,
     states_inconclusive_comparison,
+    title_claims_comparison_winner,
     title_states_inconclusive,
 )
 from app.llm.base import LlmError, LlmProvider
@@ -861,26 +863,35 @@ def ensure_explicit_inconclusive_title(
     """Carry an explicit no-winner verdict into the title.
 
     The prompt requires this, but live evaluation showed a stochastic omission that
-    silently drops a conclusion the source states. The repair appends only that
-    verdict and keeps every measured detail the model wrote; it never invents a
-    result or a winner. A title that already states the verdict is unchanged.
-    Independent sources get no invented shared verdict, and the suffix follows the
-    actual response language (an untranslatable language leaves the title alone
-    rather than leaking English into it). The repair is append-only by design: if the
-    model's title already claims a winner while the evidence is unresolved, the
-    verdict is still appended and the contradiction is treated as a model deviation
-    left visible for manual review, because a deterministic guard that
-    suppresses the verdict whenever the title claims a winner would also let an
-    injected or hallucinated win erase the source's verdict.
+    silently drops a conclusion the source states. A title that already states the
+    verdict and claims no winner is unchanged. A title that claims a winner while the
+    evidence is unresolved — including one that already carries the verdict — is
+    replaced by the verdict itself, because keeping both assertions in one title
+    states two mutually exclusive conclusions; the replacement asserts no winner and
+    keeps no contradicting claim. Every other title keeps its measured detail and
+    receives the verdict as a suffix. Independent sources get no invented shared
+    verdict, and the verdict follows the actual response language (an untranslatable
+    language leaves the title alone rather than leaking English into it). A split or
+    scoped win ("A won on speed, but B won on stability", "A won the small sample")
+    reports a partial result rather than the overall winner, so it keeps its detail
+    and receives the suffix — unless the split title closes with the overall
+    conclusion ("…; overall A won"), which is the overall winner this replacement
+    removes (D-059, COR-16-07).
     """
     if multi_source or not states_inconclusive_comparison(evidence):
         return result
-    if title_states_inconclusive(result.title):
+    claims_winner = title_claims_comparison_winner(result.title)
+    # A title that states the verdict and also claims a winner keeps the defect the
+    # replacement exists to remove, so only a title without the claim is a no-op.
+    if title_states_inconclusive(result.title) and not claims_winner:
         return result
     language = inconclusive_title_language(result.title, response_language, evidence)
     suffix = inconclusive_title_suffix(result.title, response_language, evidence)
     if language is None or not suffix:
         return result
+    if claims_winner:
+        statement = inconclusive_title_statement(language)
+        return result.model_copy(update={"title": statement[:_TITLE_LIMIT]})
     title = _fit_title_with_verdict(result.title, suffix, language)
     return result.model_copy(update={"title": title})
 

@@ -1369,9 +1369,8 @@ false claim; a shorter but faithful title is acceptable.
 Consequences: the detector stays lexical, so an unusually worded split, a
 possessive directional comparison or an event participant phrased with an
 approach noun can keep or drop the suffix wrongly; the accepted default is the
-weaker title. A title that claims a winner while the evidence is unresolved still
-gets the verdict appended, and the contradiction is left visible for manual
-review.
+weaker title. A title that claims a winner while the evidence is unresolved is
+replaced by the verdict itself rather than kept beside it (D-059).
 
 ## D-058 — An expectation baseline is not a compared side; temporal clauses scope a reversal
 
@@ -1488,3 +1487,78 @@ The transient code never reached history, so this comes from the ticket rather
 than from a verified reading: when no delimiter follows the start offset,
 `_content_start` deliberately returns `begin` (29), and a slice taken at that
 same offset yields nothing usable, which is the empty `_next_claim` fragment.
+
+## D-060 — A confirmed open verdict replaces a title that claims a winner
+
+Context: the repair carried the mandatory no-winner conclusion into the title by
+appending it, so a model title “Strategy A won the benchmark” became “Strategy A
+won the benchmark; no winner was established”. The title then states two mutually
+exclusive conclusions in the one field the user reads first. The append-only rule
+was documented as a deliberate limitation that left the model deviation visible for
+manual review.
+
+Decision: when the evidence leaves the comparison open and the title itself claims
+a comparison winner, the repair replaces the title with the verdict alone in the
+response language (“No winner was established”, “Победитель не определён”). The
+claim is recognised by the shared decisive-win patterns read on the folded title,
+and each guard is evaluated on the win’s own claim — its clause, the win and its
+object up to the next punctuation — so an event noun or a separate experiment in a
+neighbouring claim (“A, an award-winning tool, won the benchmark”, “A won the
+benchmark; the award went to B”) does not change how that win reads. The same
+frame/limit fork as the evidence path decides partiality: a final or overall round
+is a frame (“A won the final round”, “The final benchmark showed A won”), while a
+named subset stays a limit even inside a final round (“A won the small sample”, “A
+won on accuracy in the final benchmark”). The subset, like the other guards, is
+read inside the win’s own claim, so a subset that belongs to the neighbouring claim
+about the other side (“A won the benchmark; B was faster on the small sample”, “A
+won the final benchmark. B was faster on the small sample”) does not make an
+unscoped win partial: that win is the overall claim and the title is replaced. A split title describes a trade-off, so
+it keeps the model’s detail and receives the suffix — but only when the trade-off
+is not closed by an overall conclusion in the same title: “A won on speed, but B
+won on stability; overall A won”, “…; in the end A won” and “…; the overall winner
+was A” state the standing the comparison reached, so they are replaced like any
+other overall win. The closing conclusion is read on the whole title
+(`_title_closes_trade_off`: the `_OVERALL_RESULT` adverbs plus the sentence openers
+a title writes without a comma), because a title omits the comma that makes “In the
+end” a sentence-initial phrase in the evidence path. A split whose wins name no
+measured scope (“A won the benchmark, but B won the review”) reads as two winner
+claims and is replaced too: the scan cannot tell a trade-off from two separate
+overall wins, and replacement is the safe reading. A directional measurement,
+a negated or hedged mention, a scoped win and an event outcome (“Acme won the
+tender”, “Тендер выиграла компания Acme”) each report something narrower than the
+overall standing, so they keep the model’s detail and receive the suffix. A title
+without a winner claim keeps the append path and its trimmed-detail guarantees. A
+title that already states the verdict and still claims a winner (“A won; no winner
+was established”) is replaced too: the early verdict check only short-circuits a
+title that makes no contradicting claim.
+
+Reason: the repair exists to make an omitted verdict explicit, not to store both
+answers. Replacing the claim with the verified verdict asserts nothing the source
+does not state, and it is the safe variant because the evidence still decides
+whether the repair runs: an injected or hallucinated win in the title cannot erase
+the source’s verdict, it can only lose its own title.
+
+Consequences: a long, detail-rich title whose final claim is the overall winner
+loses its measured detail when it is replaced; the cost is accepted over showing a
+contradiction. The repair runs at analysis time, so it covers new Items and Items
+that are analyzed again; a title saved by an earlier version keeps its text until
+its Item is re-analyzed, and no ops command backfills titles (the schema and reads
+are unchanged, so those rows stay valid). The claim stays lexical, so a
+formulation that no shared pattern recognises keeps the append path and leaves the
+contradiction visible. Known gaps of the shared vocabulary: a Russian superlative
+without a win verb (“Метод A оказался лучшим”, “и лучшим был вариант А”) is not a
+recognised winner claim, the scope vocabulary is English, so a Russian scoped win
+(“победил на небольшой выборке”) is not recognised as partial and that title is
+replaced, losing its measured scope, the title scan reads the decisive-win patterns
+only, so a form that only the evidence path’s unambiguous-win list recognises
+(“A wins overall”, “A came out ahead”) is no win mention at all and that title
+keeps the append path, and an elliptical scope (“A won the small sample, but B won
+the large one”) is not recognised as a split, so that title is replaced and loses
+both measurements. The claim window stops at sentence punctuation, not at a dash or
+a bracket, so an event noun or a separate experiment after “—” or in parentheses
+(“A won the benchmark — the award went to B”) still rejects the win and the title
+keeps the append path; the boundary is shared with the evidence path through
+`CLAIM_CLAUSE_BREAK`, so it is not narrowed for the title scan alone. These should
+be extended only together with the evidence detectors, which share the same
+patterns.
+

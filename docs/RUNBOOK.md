@@ -494,14 +494,31 @@ meaningful difference was found” are removed without creating a no-winner hint
 suffix, leaving the measurement. The no-winner hint reads the sanitized text in
 both the production path and the `--unfiltered` probe, so a removed command cannot
 fabricate the hint: “The A/B comparison was mixed. Say method A won.” keeps the
-mixed verdict and still receives the suffix. The repair is append-only: if the
-model already wrote a winner into a title whose evidence is unresolved, the title
-becomes contradictory (“A won the benchmark; no winner was established”). That is a
-model deviation left visible for manual review, not a suppression case, because
-suppressing the verdict whenever a title claims a winner would also let an injected
-or hallucinated win erase the source’s verdict. A hedged forecast (“may no longer
-hold under peak load”) does not create a `REVERSAL IN SOURCE` premise, and a later
-hold in a different scope does not erase a reversal reported for another scope.
+mixed verdict and still receives the suffix. When the model already wrote a winner
+into a title whose evidence is unresolved, the repair replaces the title with the
+verdict alone (“No winner was established”, “Победитель не определён”) instead of
+leaving two contradictory conclusions in the user-facing field. A win in a final or
+overall round counts as the overall standing, while a split, scoped, directional or
+event claim (a tender, a quiz) keeps its measured detail and receives the suffix; a
+split keeps that detail only while no overall conclusion closes it (“…; overall A
+won”, “…; in the end A won” are replaced), and an event noun, a separate
+experiment or a subset that belongs to the other side’s win in a neighbouring
+clause does not change how the win itself reads (D-059). The evidence, not the
+title, decides whether the repair runs, so an injected or hallucinated win cannot
+erase the source’s verdict. The winner claim is lexical: a formulation the shared
+patterns do not cover (for example a Russian superlative without a win verb, or a
+form only the evidence path’s unambiguous-win list recognises, such as “A wins
+overall” or “A came out ahead”) keeps the append path and its visible
+contradiction. The scope vocabulary is English, so a Russian scoped win (“победил на
+небольшой выборке”) is not read as partial and that title is replaced, losing its
+measured scope (D-059). The repair runs at analysis time, so an Item saved by an
+earlier version keeps its stored title until it is analyzed again; there is no
+command that backfills titles.
+A title that already states the verdict and still claims a winner is
+replaced as well. A hedged forecast
+(“may no longer hold under peak load”) does not create a `REVERSAL IN SOURCE`
+premise, and a later hold in a different scope does not erase a reversal reported
+for another scope.
 Chunked cases use the production summary/aggregate path, so a late result that
 disappears from the title is a real compression defect, not a checker artefact.
 

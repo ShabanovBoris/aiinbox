@@ -17,6 +17,7 @@ from app.domain.models import (
 from app.domain.signals import (
     _names_compared_sides,
     states_inconclusive_comparison,
+    title_claims_comparison_winner,
     title_states_inconclusive,
 )
 from app.llm.openai import (
@@ -1646,7 +1647,12 @@ def test_split_comparison_without_an_overall_winner_keeps_the_no_winner_hint(tex
             "Method A is faster",
             "; no winner was established",
         ),
-        ("A won on speed, but B won on stability.", "en", "A won", "; no winner was established"),
+        (
+            "A won on speed, but B won on stability.",
+            "en",
+            "A won on speed",
+            "; no winner was established",
+        ),
         (
             "A beat B on speed, but B beat A on stability.",
             "en",
@@ -3735,13 +3741,13 @@ _EN_LABEL_TITLE = (
     "The evaluation covered retrieval quality, latency, memory use and cost across many workloads "
     "and every supported configuration in the controlled pilot, the larger follow-up production "
     "review with real traffic and the final acceptance run under peak load at scale, "
-    "and the overall winner was "
+    "and the small sample was won by "
 )
 _RU_LABEL_TITLE = (
     "Предзагрузка всех skills обещала полное покрытие и меньше промахов поиска, однако "
     "контролируемая оценка показала, что загрузка всех навыков не улучшила точность агента "
     "в финальном бенчмарке, а загрузка по требованию сохранила высокую точность в продакшене, "
-    "и лучшим был вариант "
+    "а быстрее оказался вариант "
 )
 
 
@@ -3754,7 +3760,11 @@ def test_overflowing_title_keeps_the_alternative_label(title, language, suffix):
     """A single-letter alternative ("was A", "вариант А") is content, not an article.
 
     The dangling-tail cleanup must drop the lower-case English article but keep the
-    label that names the side (GATE-R25-03), and the repair stays idempotent.
+    label that names the side (GATE-R25-03), and the repair stays idempotent. The
+    English title ends with a scoped win ("the small sample was won by A") and the
+    Russian one with a measurement ("а быстрее оказался вариант А"); both report a
+    partial result, so they keep their measured detail and receive the suffix,
+    while a title claiming the overall winner is replaced by the verdict (D-059).
     """
     assert 270 <= len(title) <= 300
     result = make_analysis(title=title, summary="Измеренная деталь.", language=language)
@@ -4018,7 +4028,7 @@ _EN_SINGLE_CLAIM_LABEL = (
     "The evaluation covered retrieval quality latency memory use and cost across many "
     "workloads and every supported configuration in the controlled pilot and the larger "
     "follow-up production review with real traffic and the final acceptance run under peak "
-    "load at scale and the overall winner was A"
+    "load at scale and the small sample was won by A"
 )
 
 
@@ -4027,7 +4037,9 @@ def test_single_clause_overflow_keeps_the_final_label_and_follow_up():
 
     Without a comma the whole title is a single claim, so the final coordinated member
     holds the label that names the alternative and the follow-up evidence that scopes
-    the comparison; neither may be dropped while budget stays free.
+    the comparison; neither may be dropped while budget stays free. The final claim
+    is a scoped win, so the repair appends the verdict instead of replacing the title
+    (D-059).
     """
     assert 274 <= len(_EN_SINGLE_CLAIM_LABEL) <= 300
     result = make_analysis(title=_EN_SINGLE_CLAIM_LABEL, summary="Measured detail.", language="en")
@@ -7077,3 +7089,298 @@ def test_award_verdict_is_not_a_comparison(text, title, language):
     assert states_inconclusive_comparison(text) is False
     assert repaired is result
     assert repaired.title == title
+
+
+# --- Round 28: a title that contradicts the verified no-winner verdict ---
+
+
+@pytest.mark.parametrize(
+    ("title", "language", "evidence", "claim", "verdict"),
+    [
+        (
+            "Strategy A won the benchmark",
+            "en",
+            "The comparison established no winner.",
+            "won",
+            "no winner",
+        ),
+        (
+            "The evaluation covered latency, memory use and cost across many workloads, "
+            "and the overall winner was A",
+            "en",
+            "The comparison established no winner.",
+            "won",
+            "no winner",
+        ),
+        # A final round is the frame that settled the comparison, not a subset of it,
+        # so the win is the overall standing (GATE-16-01).
+        (
+            "A won the final round",
+            "en",
+            "The comparison established no winner.",
+            "won",
+            "no winner",
+        ),
+        (
+            "A won the final benchmark",
+            "en",
+            "The comparison established no winner.",
+            "won",
+            "no winner",
+        ),
+        (
+            "The final benchmark showed A won",
+            "en",
+            "The comparison established no winner.",
+            "won",
+            "no winner",
+        ),
+        (
+            "A beat B in the final benchmark",
+            "en",
+            "The comparison established no winner.",
+            "beat",
+            "no winner",
+        ),
+        # An event noun or a separate experiment beside the win belongs to another
+        # claim and must not turn the win into an event outcome (GATE-16-02).
+        (
+            "A, an award-winning tool, won the benchmark",
+            "en",
+            "The comparison established no winner.",
+            "award",
+            "no winner",
+        ),
+        (
+            "A won the benchmark, an award-winning tool",
+            "en",
+            "The comparison established no winner.",
+            "award",
+            "no winner",
+        ),
+        (
+            "A won the benchmark; the award went to B",
+            "en",
+            "The comparison established no winner.",
+            "award",
+            "no winner",
+        ),
+        (
+            "A won the benchmark; B was faster in a separate trial",
+            "en",
+            "The comparison established no winner.",
+            "separate",
+            "no winner",
+        ),
+        # A title that already carries the verdict and still claims a winner keeps
+        # the defect the replacement exists to remove (GATE-16-03).
+        (
+            "A won; no winner was established",
+            "en",
+            "The comparison established no winner.",
+            "won",
+            "no winner",
+        ),
+        (
+            "Метод A победил",
+            "ru",
+            _UNRESOLVED_EVIDENCE,
+            "победил",
+            "победитель не определён",
+        ),
+    ],
+)
+def test_conflicting_winner_title_is_replaced_by_the_verified_verdict(
+    title, language, evidence, claim, verdict
+):
+    """A title must not keep a winner that the source's verdict denies (D-059).
+
+    The reproduction appended the verdict to "Strategy A won the benchmark" and left
+    two mutually exclusive conclusions in one user-facing field. The replacement
+    states the verified no-winner conclusion in the response language, so the title
+    contains no claim the same title contradicts; every other field is unchanged and
+    a repeated repair is a no-op.
+    """
+    result = make_analysis(title=title, summary="Measured detail.", language=language)
+
+    repaired = ensure_explicit_inconclusive_title(result, evidence, response_language=language)
+
+    assert states_inconclusive_comparison(evidence) is True
+    assert title_states_inconclusive(repaired.title) is True
+    assert claim not in repaired.title.casefold()
+    assert verdict in repaired.title.casefold()
+    assert len(repaired.title) <= 300
+    assert repaired.model_dump(exclude={"title"}) == result.model_dump(exclude={"title"})
+    assert (
+        ensure_explicit_inconclusive_title(repaired, evidence, response_language=language)
+        is repaired
+    )
+
+
+@pytest.mark.parametrize(
+    ("title", "language"),
+    [
+        # A split gives each side its own advantage, so neither claim is the verdict;
+        # only the win that closes the trade-off with an overall result is one
+        # (COR-16-07).
+        (
+            "A won on speed, but B won on stability; overall A won",
+            "en",
+        ),
+        (
+            "A won on speed, but B won on stability; in the end A won",
+            "en",
+        ),
+        (
+            "A was faster but B was cheaper; overall A won",
+            "en",
+        ),
+        (
+            "A won on speed, but B won on stability; the overall winner was A",
+            "en",
+        ),
+        (
+            "A beat B on speed, but B beat A on stability; overall A won",
+            "en",
+        ),
+        # The same conclusion with a sentence break instead of a semicolon was already
+        # recognised; the scan must not depend on the separator.
+        (
+            "A won on speed, but B won on stability. Overall, A won",
+            "en",
+        ),
+        (
+            "Вариант A быстрее, но вариант B стабильнее; в итоге победил вариант A",
+            "ru",
+        ),
+    ],
+)
+def test_split_title_with_an_overall_conclusion_is_replaced(title, language):
+    """A trade-off that ends with the overall winner keeps no contradicting claim.
+
+    A global split check returned "not a winner claim" for any trade-off, so a title
+    that also stated the result left "overall A won" beside "no winner was
+    established" (COR-16-07). Only the closing overall conclusion decides, so the
+    title is replaced and a repeated repair is a no-op.
+    """
+    evidence = _UNRESOLVED_EVIDENCE if language == "ru" else "The comparison established no winner."
+    verdict = "победитель не определён" if language == "ru" else "no winner"
+    result = make_analysis(title=title, summary="Measured detail.", language=language)
+
+    repaired = ensure_explicit_inconclusive_title(result, evidence, response_language=language)
+
+    assert title_claims_comparison_winner(title) is True
+    assert verdict in repaired.title.casefold()
+    assert "won" not in repaired.title.casefold()
+    assert "победил" not in repaired.title.casefold()
+    assert len(repaired.title) <= 300
+    assert repaired.model_dump(exclude={"title"}) == result.model_dump(exclude={"title"})
+    assert (
+        ensure_explicit_inconclusive_title(repaired, evidence, response_language=language)
+        is repaired
+    )
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        # A subset in the neighbouring claim belongs to the other side's win, so the
+        # unscoped win stays the overall claim (GATE-16-06).
+        "A won the benchmark; B was faster on the small sample",
+        "A won the benchmark, but B won on the small sample",
+        "A won the benchmark; B won the large sample",
+        "A won the benchmark; B was faster at peak load",
+        "A won the benchmark. B was faster on the small sample",
+        # A final round is a frame; the subset beside it still describes the other side.
+        "A won the final benchmark; B was faster on the small sample",
+        "The final benchmark showed A won; B was faster on the small sample",
+    ],
+)
+def test_unscoped_win_beside_a_scoped_win_in_another_claim_is_replaced(title):
+    """A subset read from the neighbouring claim must not keep the win's detail.
+
+    The title scan read the partial scope from 80 characters after the win, across a
+    semicolon, comma or full stop, so a subset that belonged to the other side's win
+    made the unscoped "A won the benchmark" look partial and the repair appended the
+    verdict beside it: "…; no winner was established" (GATE-16-06). The claim window
+    ends at the next punctuation, so the win is read as the overall claim and the
+    title is replaced; a repeated repair is a no-op.
+    """
+    evidence = "The comparison established no winner."
+    result = make_analysis(title=title, summary="Measured detail.", language="en")
+
+    repaired = ensure_explicit_inconclusive_title(result, evidence, response_language="en")
+
+    assert title_claims_comparison_winner(title) is True
+    assert repaired.title == "No winner was established"
+    assert "won" not in repaired.title.casefold()
+    assert len(repaired.title) <= 300
+    assert repaired.model_dump(exclude={"title"}) == result.model_dump(exclude={"title"})
+    assert (
+        ensure_explicit_inconclusive_title(repaired, evidence, response_language="en") is repaired
+    )
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        # A measurement against a named side reports one side's edge, not the verdict.
+        "A was 40% faster than B",
+        # A split gives each side its own advantage, so neither claim is the verdict.
+        "A won on speed, but B won on stability",
+        "A was faster but B was cheaper",
+        "A beat B on speed, but B beat A on stability",
+        # An overall word in a neighbouring claim ("overall costs rose") does not
+        # close the trade-off, so the detail still stays.
+        "A won on speed, but B won on stability; overall costs rose",
+        "The results were close. A won on speed and B won on stability",
+        "Method A was faster on small samples, while method B was more stable on complex cases",
+        # A win in a named sub-scope leaves the overall standing open, even inside a
+        # final round: the round is a frame, the subset is still a limit.
+        "A won the small sample",
+        "A won on accuracy in the final benchmark",
+        # A tender, a quiz or an award is an event outcome, not a compared side.
+        "Acme won the tender",
+        "Тендер выиграла компания Acme",
+        "Acme won the office quiz",
+    ],
+)
+def test_partial_measured_or_event_title_keeps_its_detail_and_receives_the_verdict(title):
+    """Only a claim of the overall winner is replaced; partial results stay (D-059).
+
+    A directional measurement, a split result, a scoped win and an event outcome
+    each name something narrower than the comparison's overall standing, so the
+    repair keeps the model's detail and appends the verified verdict.
+    """
+    language = "ru" if title.startswith("Тендер") else "en"
+    evidence = _UNRESOLVED_EVIDENCE if language == "ru" else "The comparison established no winner."
+    result = make_analysis(title=title, summary="Measured detail.", language=language)
+
+    repaired = ensure_explicit_inconclusive_title(result, evidence, response_language=language)
+
+    suffix = "; победитель не определён" if language == "ru" else "; no winner was established"
+    assert repaired.title == f"{title}{suffix}"
+    assert len(repaired.title) <= 300
+
+
+@pytest.mark.parametrize(
+    "language", ["en", "ru", "uk", "de", "es", "fr", "it", "pt", "nl", "pl", "tr"]
+)
+def test_conflicting_title_is_replaced_in_the_response_language(language):
+    """The replacement follows every supported response language, never English.
+
+    The same table that wrote the appended suffix writes the standalone verdict, so
+    a German, Spanish or Turkish Item does not receive an English title, and the
+    replaced title is recognised as a verdict by the next repair.
+    """
+    result = make_analysis(title="A won the benchmark", language=language)
+
+    repaired = ensure_explicit_inconclusive_title(
+        result, _UNRESOLVED_EVIDENCE, response_language=language
+    )
+
+    assert title_states_inconclusive(repaired.title) is True
+    assert "won" not in repaired.title.casefold()
+    if language != "en":
+        assert "no winner" not in repaired.title.casefold()
+    assert len(repaired.title) <= 300
