@@ -15,6 +15,8 @@ from yt_dlp.networking import Request, Response
 from app.bot.formatting import format_item_failure, format_ready_item
 from app.bot.keyboards import item_keyboard
 from app.domain.enums import ContentKind, ProcessingStatus, SourceType
+from app.domain.language import response_language_for
+from app.domain.models import DEFAULT_PROFILE
 from app.errors import AppError
 from app.extractors import instagram_post_media as media
 from app.extractors import instagram_post_metadata as metadata
@@ -24,6 +26,7 @@ from app.llm.base import TranscriptionSegmentCheckpoint
 from app.llm.openai import build_user_message
 from app.services.actions import apply_item_action
 from app.services.delivery import enqueue_item_video_delivery
+from app.services.instagram_posts import _project_post
 from app.services.url_parsing import instagram_post_shortcode
 from app.storage.models import Content, Item, ItemSource
 from app.workers.processing import requeue_stale
@@ -353,6 +356,105 @@ def _buttons(item, source):
     return [button for row in item_keyboard(item, [source]).inline_keyboard for button in row]
 
 
+def _post_progress(*kinds, processed):
+    """Mirror the durable progress shape: declared elements survive failed downloads."""
+    return {
+        "total": len(kinds),
+        "processed": processed,
+        "title": "Fixture title",
+        "author": "Fixture author",
+        "parts": [
+            {"key": f"{position}:{position}:{kind}", "position": position, "kind": kind}
+            for position, kind in enumerate(kinds, 1)
+        ],
+    }
+
+
+def _post_evidence(*items):
+    return {
+        (f"{position}:{position}:{kind}", content_kind): f"Evidence for element {position}"
+        for position, kind, content_kind in items
+    }
+
+
+@pytest.mark.parametrize(
+    ("kinds", "evidence", "processed", "expected_metadata", "expected_language"),
+    [
+        pytest.param(
+            ("photo", "video"),
+            _post_evidence((1, "photo", ContentKind.VISUAL_NOTES)),
+            1,
+            {
+                "instagram_has_video": False,
+                "instagram_post_partial": True,
+                "instagram_post_visual": True,
+                "visual_only": True,
+                "caption_only": False,
+            },
+            "en",
+            id="unavailable-video",
+        ),
+        pytest.param(
+            ("photo", "video"),
+            _post_evidence(
+                (1, "photo", ContentKind.VISUAL_NOTES),
+                (2, "video", ContentKind.TRANSCRIPT),
+            ),
+            2,
+            {
+                "instagram_has_video": True,
+                "instagram_post_partial": False,
+                "instagram_post_visual": False,
+                "visual_only": False,
+                "caption_only": False,
+            },
+            "ru",
+            id="transcript-video",
+        ),
+        pytest.param(
+            ("video",),
+            _post_evidence((1, "video", ContentKind.VISUAL_NOTES)),
+            1,
+            {
+                "instagram_has_video": True,
+                "instagram_post_partial": False,
+                "instagram_post_visual": True,
+                "visual_only": True,
+                "caption_only": False,
+            },
+            "ru",
+            id="visual-video",
+        ),
+        pytest.param(
+            ("photo",),
+            {},
+            1,
+            {
+                "instagram_has_video": False,
+                "instagram_post_partial": False,
+                "instagram_post_visual": False,
+                "visual_only": False,
+                "caption_only": True,
+            },
+            "en",
+            id="caption-only",
+        ),
+    ],
+)
+def test_declared_but_unavailable_video_keeps_photo_post_language(
+    kinds, evidence, processed, expected_metadata, expected_language
+):
+    """Only extracted video evidence makes an Instagram post a video source."""
+    source = ItemSource(source_type=SourceType.INSTAGRAM, source_url=POST)
+    content = _project_post(source, _post_progress(*kinds, processed=processed), evidence, CAPTION)
+    assert content is not None
+    content.language = "en"
+
+    for key, expected in expected_metadata.items():
+        assert content.metadata[key] is expected, key
+    assert response_language_for(content, DEFAULT_PROFILE) == expected_language
+
+
 async def test_carousel_budget_returns_partial_and_manual_retry_resumes(tmp_path, session_factory):
     item = await ingest_reel(session_factory, text=POST)
     extractor = FixturePosts(tmp_path, ["photo", "photo"])
@@ -393,6 +495,9 @@ async def test_carousel_retry_recovers_only_missing_element_and_keeps_open_link(
     partial, source, _ = await _state(session_factory, item.id)
     assert source.source_type is SourceType.INSTAGRAM
     assert partial.analysis_completeness == "PARTIAL"
+    # The failed video element must not turn the partially extracted photo post
+    # into a video source while only photo evidence exists.
+    assert provider.calls[0][0].metadata["instagram_has_video"] is False
     assert "1 из 3" in format_ready_item(partial, [source])
     assert any(
         button.text == "↗ Открыть в Instagram" and button.url == POST
@@ -419,6 +524,7 @@ async def test_carousel_retry_recovers_only_missing_element_and_keeps_open_link(
     assert not list(extractor.temp_dir.iterdir())
     assert sum(row.kind is ContentKind.DESCRIPTION for row in rows) == 1
     analyzed = provider.calls[-1][0]
+    assert analyzed.metadata["instagram_has_video"] is True
     assert analyzed.text.index("Элемент 1") < analyzed.text.index("Элемент 2")
     assert "Элемент 3" not in analyzed.text
     assert analyzed.source_context == CAPTION

@@ -61,7 +61,7 @@ def _project_post(
     caption: str,
 ) -> NormalizedContent | None:
     sections = []
-    has_transcript = has_visual = missing_video_visual = False
+    has_transcript = has_visual = has_video = missing_video_visual = False
     for part in progress["parts"]:
         transcript = evidence.get((part["key"], ContentKind.TRANSCRIPT))
         visual = evidence.get((part["key"], ContentKind.VISUAL_NOTES))
@@ -69,6 +69,9 @@ def _project_post(
             continue
         has_transcript |= bool(transcript)
         has_visual |= bool(visual)
+        # Declared carousel elements may never be extracted (budget exhausted,
+        # unavailable media); only extracted evidence makes the post a video source.
+        has_video |= part["kind"] == "video"
         missing_video_visual |= part["kind"] == "video" and not visual
         lines = [f"Элемент {part['position']} — {'фото' if part['kind'] == 'photo' else 'видео'}"]
         if transcript:
@@ -95,7 +98,7 @@ def _project_post(
             "instagram_post_visual": has_visual and not missing_video_visual,
             # A photo/carousel post follows the content language; only an
             # extracted video element switches it to the profile language.
-            "instagram_has_video": any(part["kind"] == "video" for part in progress["parts"]),
+            "instagram_has_video": has_video,
         },
     )
 
