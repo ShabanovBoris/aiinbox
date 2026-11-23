@@ -379,7 +379,8 @@ def _parse_ask_result(raw: str) -> AskInboxResult:
 # "обратил внимание" and "обратная связь" are not evidence of a reversed outcome.
 _RESULT_NOUN = (
     r"(?:gain|benefit|improvement|advantage|effect|accuracy|success|performance|"
-    r"reliability|result|выигрыш|прирост|улучшени\w*|эффект\w*|точность|результат\w*)"
+    r"reliability|latency|throughput|result|"
+    r"выигрыш|прирост|улучшени\w*|эффект\w*|точность|задержк\w*|пропускн\w*|результат\w*)"
 )
 _RESULT_REVERSAL_VERB = (
     r"(?:revers(?:ed|es|ing|al)|disappear(?:ed|s|ing)|dissolv(?:ed|es|ing)|"
@@ -478,10 +479,11 @@ _HEDGED_REVERSAL = re.compile(
 )
 # A later explicit resolution ("later runs showed the gain held") means the
 # earlier reversal is not the source's final outcome and must not drive the title.
+# The verb is a named group because the hold's own measured result is the subject
+# in front of it, not every result noun the match happens to span.
 _RESOLVED_HOLD = re.compile(
-    r"(?i)\b(?:the\s+)?(?:gain|benefit|improvement|advantage|effect|result|it|this|"
-    r"выигрыш|прирост|эффект|улучшение|результат)\b[^.;]{0,60}?\b"
-    r"(?:held|holds|"
+    rf"(?i)\b(?:{_RESULT_NOUN}|it|this)\b[^.;]{{0,60}}?\b"
+    r"(?P<hold_verb>held|holds|"
     # "remained" alone also describes an unknown outcome ("remained unclear why"),
     # which is not a hold.
     r"(?:stayed|stays|remained|remains)\s+(?:stable|intact|unchanged|positive|strong|"
@@ -491,6 +493,8 @@ _RESOLVED_HOLD = re.compile(
     r"устоял\w*|сохранил\w*ся|восстановил\w*ся|"
     r"остал\w*ся\s+(?:стабильн|неизменн|положительн)\w*)\b"
 )
+# "It held" and "this held" refer back to the measured result the reversal named.
+_HOLD_COREFERENCE = re.compile(r"(?i)^(?:it|this)\b")
 _UNRESOLVED_HOLD_AFTER = re.compile(
     r"(?i)\b(?:remains?|is|was|were|stays?)\s+"
     r"(?:unknown|unclear|uncertain|unresolved|undetermined)\b"
@@ -525,7 +529,7 @@ _CONDITION_NOUN = (
     r"setting|scenario|window|period|hour|minute|second|day|week|month|year|"
     r"percent|volume|traffic|concurrency|temperature|stress|peak|many|few|"
     r"long|short|large|small|high|low|heavy|light|real|full|strict|tight|"
-    r"reason|cause|explanation|"
+    r"gpu|cpu|reason|cause|explanation|"
     r"задач|контекст|нагрузк|модел|вход|последовательност|запрос|данн|размер|"
     r"масштаб|продакшн|пользовател|батч|бюджет|порог|услови|случа|настройк|"
     r"сценари|окн|период|час|минут|секунд|дн|недел|месяц|год|процент|объем|"
@@ -620,11 +624,27 @@ def _scope_clause(sentence: str, start: int, end: int) -> str:
     return sentence[left:right]
 
 
-def _scope_state(sentence: str) -> tuple[bool, bool]:
-    """Return ``(states_condition, states_unknown_cause)`` for one sentence."""
-    unknown = bool(_UNKNOWN_SCOPE.search(sentence))
-    for conjunction in _CONDITION_CONJUNCTION.finditer(sentence):
-        rest = sentence[conjunction.end() :]
+def _scope_key(clause: str, start: int, end: int) -> str:
+    """Normalize the scope phrase a cue introduces into a comparable key."""
+    following = _SCOPE_CLAUSE_BREAK.search(clause, end)
+    phrase = clause[start : following.start() if following else len(clause)]
+    words = re.sub(r"[,;:!?—–-]", " ", phrase).casefold().split()
+    return " ".join(words[:6])
+
+
+def _scope_details(clause: str) -> tuple[set[str], bool]:
+    """Return ``(scope_keys, states_unknown_cause)`` for one clause.
+
+    One pass is the single definition of a condition: a clause states one when a
+    cue introduces a recognizable scope phrase, and those same phrases decide
+    whether a later hold happens under the same condition. Every branch keeps the
+    rejections that stop a discourse phrase ("as a result", "with no obvious
+    cause", "for reasons they did not identify") from becoming a condition.
+    """
+    keys: set[str] = set()
+    unknown = bool(_UNKNOWN_SCOPE.search(clause))
+    for conjunction in _CONDITION_CONJUNCTION.finditer(clause):
+        rest = clause[conjunction.end() :]
         if not _CONDITION_CONTENT.search(rest):
             continue
         if _UNKNOWN_CAUSE_AFTER.match(rest):
@@ -635,62 +655,155 @@ def _scope_state(sentence: str) -> tuple[bool, bool]:
             continue
         if _NON_CONDITION_AFTER.match(rest):
             continue
-        return True, unknown
-    for restrictive in _RESTRICTIVE_CUE.finditer(sentence):
-        rest = sentence[restrictive.end() :]
+        keys.add(_scope_key(clause, conjunction.start(), conjunction.end()))
+    for restrictive in _RESTRICTIVE_CUE.finditer(clause):
+        rest = clause[restrictive.end() :]
         stripped = rest.lstrip()
         if _NON_CONDITION_AFTER.match(rest) or _UNKNOWN_CAUSE_AFTER.match(rest):
             continue
+        accepted = False
         conjunction = _CONDITION_CONJUNCTION.match(stripped)
         if conjunction and _CONDITION_CONTENT.search(stripped[conjunction.end() :]):
-            if not (
+            accepted = not (
                 conjunction.group(0).casefold() == "once"
                 and _ONCE_MORE.match(stripped[conjunction.end() :])
-            ):
-                return True, unknown
-        if _CONDITION_PHRASE.match(rest):
-            return True, unknown
-        preposition = _CONDITION_PREPOSITION.match(stripped)
-        if preposition:
-            after = stripped[preposition.end() :]
-            if (
-                _CONDITION_CONTENT.search(after)
-                and not _NON_CONDITION_AFTER.match(after)
-                and not _UNKNOWN_CAUSE_AFTER.match(after)
-                and _CONDITION_PHRASE.match(after)
-            ):
-                return True, unknown
-    for preposition in _CONDITION_PREPOSITION.finditer(sentence):
-        rest = sentence[preposition.end() :]
+            )
+        if not accepted and _CONDITION_PHRASE.match(rest):
+            accepted = True
+        if not accepted:
+            preposition = _CONDITION_PREPOSITION.match(stripped)
+            if preposition:
+                after = stripped[preposition.end() :]
+                accepted = bool(
+                    _CONDITION_CONTENT.search(after)
+                    and not _NON_CONDITION_AFTER.match(after)
+                    and not _UNKNOWN_CAUSE_AFTER.match(after)
+                    and _CONDITION_PHRASE.match(after)
+                )
+        if accepted:
+            keys.add(_scope_key(clause, restrictive.start(), restrictive.end()))
+    for preposition in _CONDITION_PREPOSITION.finditer(clause):
+        rest = clause[preposition.end() :]
         if _UNKNOWN_CAUSE_AFTER.match(rest):
             unknown = True
             continue
         if _NON_CONDITION_AFTER.match(rest):
             continue
         if _CONDITION_PHRASE.match(rest):
-            return True, unknown
-    return False, unknown
+            keys.add(_scope_key(clause, preposition.start(), preposition.end()))
+    keys.discard("")
+    return keys, unknown
 
 
-# Scope phrases only compare a reversal with a later hold: "under peak load" and
-# "at normal load" are different boundaries, so the hold does not erase the
-# constraint the reversal established. Generic "in/в" phrases do not scope a result.
-_SCOPE_KEY_CUE = re.compile(
-    r"(?i)\b(?:under|at|on|for|with|during|when|if|while|among|across|over|"
-    r"after|before|once|unless|only|except|"
-    r"при|под|на|для|без|среди|когда|если|после|до|пока|только|кроме)\b"
+# A measured result is the noun phrase a claim's verb governs, not every
+# measurement word in the clause. A specific measure ("latency", "accuracy")
+# identifies it; the generic wrapper it may hang from ("gain", "improvement",
+# "performance") does not, unless both sides use that same wrapper.
+_SPECIFIC_RESULT_NOUN_RE = re.compile(
+    r"(?i)^(?:accuracy|latency|throughput|reliability|"
+    r"точн\w*|задержк\w*|пропускн\w*)$"
 )
+_METRIC_QUALIFIER_AFTER = re.compile(r"(?i)^\s*(?:in|of|for|on|to)\s+(\w+)")
+# The subject of a claim sits between its verb and the previous claim boundary.
+# Conjunctions and conditions open a new claim, so "the gain reversed while
+# accuracy held" measures gain in the reversal and accuracy in the hold.
+_CLAIM_BREAK = re.compile(
+    r"(?i)[.;!?,]|\b(?:but|however|although|though|whereas|yet|and|or|"
+    r"while|when|whenever|if|after|before|during|once|unless|because|since|"
+    r"но|однако|а|и|когда|если|после|до|пока|потому|так)\b"
+)
+# A coordinator between bare noun phrases joins one coordinated subject ("the
+# measured gain and accuracy reversed"), so every member is measured. The same
+# coordinator after a predicate opens a new claim ("the gain reversed and accuracy
+# held") and stays a boundary. A comma enumerates the same way ("the gain,
+# accuracy, and reliability held"), while a comma after a predicate stays that
+# boundary.
+_COORDINATION_BREAK = re.compile(r"(?i)^(?:and|or|и|а)$")
+_COMMA = ","
 
 
-def _scope_keys(sentence: str) -> set[str]:
-    """Return short scope phrases such as ``under peak load`` for comparison."""
+def _metric_keys(text: str) -> set[str]:
+    """Return the measured results a text names, in comparable form.
+
+    A result noun qualified by a specific measure ("latency improvement", "gain
+    in accuracy") is keyed by that measure, so "gain in latency" and "gain in
+    throughput" stay different results. An unqualified result noun is keyed by
+    itself ("gain"), so it still matches the same unqualified wrapper elsewhere.
+    """
     keys: set[str] = set()
-    normalized = re.sub(r"[,;:!?—-]", " ", sentence)
-    for cue in _SCOPE_KEY_CUE.finditer(normalized):
-        phrase = " ".join(normalized[cue.start() :].split()[:4]).casefold().strip(" .")
-        if phrase:
-            keys.add(phrase)
+    for match in _RESULT_NOUN_RE.finditer(text):
+        specific: set[str] = set()
+        preceding = re.search(r"([\w-]+)\s*$", text[: match.start()])
+        if preceding and _SPECIFIC_RESULT_NOUN_RE.match(preceding.group(1)):
+            specific.add(preceding.group(1).casefold())
+        following = _METRIC_QUALIFIER_AFTER.match(text[match.end() :])
+        if following and _SPECIFIC_RESULT_NOUN_RE.match(following.group(1)):
+            specific.add(following.group(1).casefold())
+        keys.update(specific or {match.group(0).casefold()})
     return keys
+
+
+def _names_bare_result_noun(text: str) -> bool:
+    """Whether a claim fragment ends on a measured-result noun, not on a predicate."""
+    words = re.findall(r"[\w-]+", text)
+    return bool(
+        words
+        and (_RESULT_NOUN_RE.fullmatch(words[-1]) or _SPECIFIC_RESULT_NOUN_RE.fullmatch(words[-1]))
+    )
+
+
+def _claim_metrics(text: str, verb_index: int) -> set[str]:
+    """Return the measured results the claim ending at ``verb_index`` is about.
+
+    Only the subject in front of the verb counts, so a hold about another metric
+    inside the same sentence ("the gain reversed while accuracy held") is not read
+    as part of the reversal. A subject coordinated out of bare noun phrases ("the
+    measured gain and accuracy reversed") names every member, and so does a comma
+    enumeration ("the gain, accuracy, and reliability held"), while a coordinator
+    or a comma after a predicate ("the gain reversed and accuracy held") stays a
+    claim boundary. When that subject names nothing at all (coreference, or a
+    predicate split by a coordinator), the nearest earlier clause that names a
+    measured result is consulted; an unrelated clause further back is not, because
+    it measures something else.
+    """
+    prefix = text[:verb_index]
+    parts: list[str] = []
+    separators: list[str] = []
+    previous = 0
+    for match in _CLAIM_BREAK.finditer(prefix):
+        parts.append(prefix[previous : match.start()])
+        separators.append(match.group(0))
+        previous = match.end()
+    parts.append(prefix[previous:])
+    first = len(parts) - 1
+    while first > 0:
+        separator = separators[first - 1]
+        member = first - 1
+        if _COORDINATION_BREAK.match(separator):
+            # The "member" between a comma and its coordinator is the enumeration's
+            # own punctuation ("the gain, accuracy, and reliability"), not an elided
+            # result; the member before that comma still decides. A comma anywhere
+            # else in front of an empty member ends the subject.
+            junction_punctuation = (
+                not parts[member].strip() and member > 0 and separators[member - 1] == _COMMA
+            )
+            if junction_punctuation:
+                member -= 1
+        elif separator != _COMMA:
+            break
+        if not _names_bare_result_noun(parts[member]):
+            break
+        first = member
+    # Members are rejoined on a comma so that one member cannot read the previous
+    # one as its qualifier ("accuracy, latency" names two results, not "accuracy").
+    keys = _metric_keys(", ".join(part.strip() for part in parts[first:]))
+    if keys:
+        return keys
+    for part in reversed(parts[:first]):
+        keys = _metric_keys(part)
+        if keys:
+            return keys
+    return set()
 
 
 def _shares_scope(left: set[str], right: set[str]) -> bool:
@@ -700,6 +813,18 @@ def _shares_scope(left: set[str], right: set[str]) -> bool:
         for one in left
         for other in right
     )
+
+
+def _same_condition(left: set[str], right: set[str]) -> bool:
+    """Whether a hold and a reversal were measured under the same condition.
+
+    Both unnamed scopes agree. One named condition and one unnamed scope never
+    agree: an unscoped hold does not erase a scoped reversal and the reverse
+    one-sided reading is not evidence that the conditions match.
+    """
+    if not left and not right:
+        return True
+    return bool(left) and bool(right) and _shares_scope(left, right)
 
 
 def _reversal_signal(text: str) -> _ReversalScope | None:
@@ -712,11 +837,13 @@ def _reversal_signal(text: str) -> _ReversalScope | None:
     of a reversal, and "reversed course" is a change of plans. Every mention in
     the evidence is checked; a condition is found in the reversal verb's own clause
     or in the immediately following coreferential sentence. A later explicit
-    "the gain held" supersedes an earlier reversal only in the same named scope.
+    "the gain held" supersedes an earlier reversal only when it names the same
+    measured result under the same condition.
     """
     sentences = re.split(r"(?<=[.!?])\s+|\n+", text)
     found_at: tuple[int, int] | None = None
     found_scopes: set[str] = set()
+    found_metrics: set[str] = set()
     unknown_scope = False
     condition_scope = False
     for index, sentence in enumerate(sentences):
@@ -756,40 +883,61 @@ def _reversal_signal(text: str) -> _ReversalScope | None:
             # The last report is the source's latest position; a hold that follows
             # it decides whether the reversal still stands.
             found_at = (index, end)
-            condition, unknown = _scope_state(_scope_clause(sentence, start, end))
-            condition_scope = condition_scope or condition
+            reversal_clause = _scope_clause(sentence, start, end)
+            scopes, unknown = _scope_details(reversal_clause)
+            found_scopes = scopes
+            found_metrics = _claim_metrics(sentence, start)
+            condition_scope = condition_scope or bool(scopes)
             unknown_scope = unknown_scope or unknown
-            found_scopes = _scope_keys(sentence)
             continuation = sentences[index + 1] if index + 1 < len(sentences) else ""
-            if continuation and _RESULT_COREFERENCE.match(continuation):
-                condition, unknown = _scope_state(continuation)
-                condition_scope = condition_scope or condition
+            if (
+                continuation
+                and _RESULT_COREFERENCE.match(continuation)
+                and not _RESOLVED_HOLD.search(continuation)
+            ):
+                # A coreferential continuation may state the reversal's own
+                # condition ("It did not hold under peak load"). A positive hold is
+                # judged by its own clause in _holds_after; its condition is not
+                # the condition the reversal was measured in.
+                scopes, unknown = _scope_details(continuation)
+                condition_scope = condition_scope or bool(scopes)
                 unknown_scope = unknown_scope or unknown
-                found_scopes |= _scope_keys(continuation)
+                found_scopes |= scopes
     if found_at is None:
         return None
-    if _holds_after(sentences, *found_at, found_scopes):
-        # The source's final outcome is that the result held in the same scope; an
-        # earlier reversal is superseded and must not become a title premise.
+    if _holds_after(sentences, *found_at, found_scopes, found_metrics):
+        # The source's final outcome is that the same result held in the same
+        # condition; an earlier reversal is superseded and must not become a
+        # title premise.
         return None
     if condition_scope:
         return _ReversalScope.CONDITION
     return _ReversalScope.UNKNOWN if unknown_scope else _ReversalScope.UNCONDITIONED
 
 
-def _holds_after(sentences: list[str], index: int, end: int, reversal_scopes: set[str]) -> bool:
+def _holds_after(
+    sentences: list[str],
+    index: int,
+    end: int,
+    reversal_scopes: set[str],
+    reversal_metrics: set[str],
+) -> bool:
     """Whether a later sentence resolves an earlier reversal into a held result.
 
-    A hold inside a question or hedge ("whether the result held … remains unknown")
-    is not a resolution, a hold explicitly followed by an unknown outcome is still
-    open, and a hold in a different named scope ("at normal load") does not erase a
-    reversal reported for another scope ("under peak load").
+    Each hold match is judged on its own clause: it must name the same measured
+    result and the same condition. A coreferential "it/this" inherits the
+    reversal's metric only when the hold itself names none; a metric named in the
+    hold's own subject wins. A hold inside a question or hedge ("whether the result
+    held … remains unknown") is not a resolution, a hold explicitly followed by an
+    unknown outcome is still open, and a hold in a different condition ("at normal
+    load") or about another metric does not erase the reversal. A coordinated
+    reversal names several results at once, so the hold must cover all of them
+    ("the gain and accuracy reversed … the accuracy held" leaves gain reversed).
+    When the reversal clause names no measured result, metric identity is unknown
+    and cannot by itself reject a hold.
     """
     candidates = [sentences[index][end:], *sentences[index + 1 :]]
     for candidate in candidates:
-        hold_scopes = _scope_keys(candidate)
-        if reversal_scopes and hold_scopes and not _shares_scope(reversal_scopes, hold_scopes):
-            continue
         for match in _RESOLVED_HOLD.finditer(candidate):
             clause = _clause_before(candidate, match.start())
             if (
@@ -799,6 +947,14 @@ def _holds_after(sentences: list[str], index: int, end: int, reversal_scopes: se
             ):
                 continue
             if _UNRESOLVED_HOLD_AFTER.search(candidate[match.end() :]):
+                continue
+            hold_metrics = _claim_metrics(candidate, match.start("hold_verb"))
+            if not hold_metrics and _HOLD_COREFERENCE.match(match.group(0)):
+                hold_metrics = reversal_metrics
+            if reversal_metrics and hold_metrics and not reversal_metrics <= hold_metrics:
+                continue
+            hold_scopes, _ = _scope_details(_scope_clause(candidate, match.start(), match.end()))
+            if not _same_condition(reversal_scopes, hold_scopes):
                 continue
             return True
     return False

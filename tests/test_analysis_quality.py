@@ -3060,6 +3060,360 @@ def test_hold_in_another_scope_does_not_erase_the_condition():
     assert "the title must include that condition" in prompt
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        "The measured gain reversed in large batches. The measured gain held in small batches.",
+        "The measured gain reversed in large batches. The measured gain held overall.",
+        "The measured improvement reversed in large batches. "
+        "The measured improvement held in small batches.",
+        "The measured latency reversed on GPU. The measured latency held on CPU.",
+        "The measured latency reversed on GPU. The measured throughput held on CPU.",
+        "The measured gain reversed under peak load. The measured gain held under light load.",
+    ],
+)
+def test_late_hold_cancels_a_reversal_only_under_the_same_metric_and_condition(text):
+    """A hold in another condition, or about another metric, leaves the reversal standing.
+
+    The ticket's third reproduction line was elided prose ("... held ..."), so it is
+    covered here by the same claim with a concrete measured result.
+    """
+    prompt = build_user_message(
+        NormalizedContent(source_type=SourceType.WEB, text=text, language="en"),
+        UserProfile(preferred_language="en"),
+        [],
+    )
+
+    assert _reversal_signal(text) is _ReversalScope.CONDITION
+    assert "REVERSAL IN SOURCE" in prompt
+    assert "the title must include that condition" in prompt
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "The measured gain reversed in large batches. The measured gain held in small batches.",
+        "The measured gain reversed because the cache was cold. "
+        "The measured gain held because the cache was warm.",
+        "The measured gain reversed since the cache was cold. "
+        "The measured gain held since the cache was warm.",
+        "The measured latency reversed on GPU. The measured latency held on CPU.",
+        "The measured gain reversed under peak load. The measured gain held under light load.",
+    ],
+)
+def test_hold_in_a_different_condition_keeps_the_reversal(text):
+    """Conditions that a hold names must match the reversal's own condition."""
+    assert _reversal_signal(text) is _ReversalScope.CONDITION
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "The measured gain reversed in large batches. The measured gain held overall.",
+        "The measured gain reversed in large batches. The measured gain held.",
+        "The measured gain reversed in large batches. "
+        "The measured gain held, and latency dropped in small batches.",
+    ],
+)
+def test_generic_hold_does_not_cancel_a_scoped_reversal(text):
+    """An unscoped hold says nothing about the condition the reversal was measured in."""
+    assert _reversal_signal(text) is _ReversalScope.CONDITION
+
+
+def test_hold_about_another_metric_does_not_cancel_a_same_scope_reversal():
+    """Metric identity is checked on its own, not only through the shared scope."""
+    text = "The measured latency reversed on GPU. The measured throughput held on GPU."
+
+    assert _reversal_signal(text) is _ReversalScope.CONDITION
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "The measured latency reversed on GPU. The measured latency held on GPU.",
+        "The measured latency reversed on GPU. Later runs showed it held on GPU.",
+    ],
+)
+def test_hold_under_the_same_metric_and_condition_cancels_the_reversal(text):
+    """A coreferential hold inherits the reversal's metric before conditions compare."""
+    assert _reversal_signal(text) is None
+
+
+def test_named_hold_of_another_metric_does_not_inherit_the_reversal_metric():
+    """A named metric in the hold clause wins over coreference to the reversal."""
+    text = "The measured gain reversed on GPU. The measured latency held on GPU."
+
+    assert _reversal_signal(text) is _ReversalScope.CONDITION
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "The latency improvement reversed on GPU. The throughput improvement held on GPU.",
+        "The accuracy gain reversed under peak load. The performance gain held under peak load.",
+        "The gain in latency reversed under peak load. "
+        "The gain in throughput held under peak load.",
+    ],
+)
+def test_generic_result_wrapper_does_not_identify_a_different_measure(text):
+    """A shared “gain”/“improvement” wrapper is not the same measured result."""
+    prompt = build_user_message(
+        NormalizedContent(source_type=SourceType.WEB, text=text, language="en"),
+        UserProfile(preferred_language="en"),
+        [],
+    )
+
+    assert _reversal_signal(text) is _ReversalScope.CONDITION
+    assert "REVERSAL IN SOURCE" in prompt
+    assert "the title must include that condition" in prompt
+
+
+def test_same_measure_under_a_generic_wrapper_still_cancels_the_reversal():
+    """The specific measure decides identity; the same one still matches."""
+    text = (
+        "The measured latency improvement reversed on GPU. "
+        "The measured latency improvement held on GPU."
+    )
+
+    assert _reversal_signal(text) is None
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "The measured gain reversed while accuracy held.",
+        "The accuracy reversed under peak load while latency held.",
+    ],
+)
+def test_same_sentence_hold_about_another_metric_keeps_the_reversal(text):
+    """A hold about another metric inside the same sentence is not the reversal's result."""
+    prompt = build_user_message(
+        NormalizedContent(source_type=SourceType.WEB, text=text, language="en"),
+        UserProfile(preferred_language="en"),
+        [],
+    )
+
+    assert _reversal_signal(text) is _ReversalScope.CONDITION
+    assert "REVERSAL IN SOURCE" in prompt
+
+
+def test_same_sentence_hold_about_the_same_metric_still_cancels_the_reversal():
+    """The control: the same result held under the same condition supersedes it."""
+    text = (
+        "The measured gain reversed under peak load while the measured gain held under peak load."
+    )
+
+    assert _reversal_signal(text) is None
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "The measured gain improved but reversed under peak load. It held under peak load.",
+        "The measured gain improved, but under peak load it reversed. It held under peak load.",
+        "It reversed under peak load, and the gain held under peak load.",
+    ],
+)
+def test_coreferential_hold_inherits_when_the_reversal_clause_names_no_metric(text):
+    """An unnamed reversal result leaves metric identity open instead of rejecting the hold."""
+    assert _reversal_signal(text) is None
+
+
+def test_coreferential_hold_in_another_condition_keeps_the_unnamed_reversal():
+    """The control: an unknown metric does not make every later hold a resolution."""
+    text = "The measured gain improved but reversed under peak load. It held under light load."
+
+    assert _reversal_signal(text) is _ReversalScope.CONDITION
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "The measured gain reversed on GPU. This latency held on GPU.",
+        "The measured gain reversed on GPU. It was the latency that held on GPU.",
+        "The measured gain reversed under peak load. "
+        "The gain fell, but the throughput held under peak load.",
+    ],
+)
+def test_hold_naming_another_metric_in_its_own_span_keeps_the_reversal(text):
+    """Inheritance applies only when the hold's own subject names no measured result."""
+    prompt = build_user_message(
+        NormalizedContent(source_type=SourceType.WEB, text=text, language="en"),
+        UserProfile(preferred_language="en"),
+        [],
+    )
+
+    assert _reversal_signal(text) is _ReversalScope.CONDITION
+    assert "REVERSAL IN SOURCE" in prompt
+    assert "the title must include that condition" in prompt
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "The measured gain reversed under peak load. The gain and accuracy held under peak load.",
+        "The accuracy reversed under peak load. The accuracy and gain held under peak load.",
+        "The measured latency reversed on GPU. The measured latency and accuracy held on GPU.",
+    ],
+)
+def test_a_hold_covering_every_coordinated_member_cancels_the_reversal(text):
+    """A coordinated subject measures both members, so a hold of all of them resolves it."""
+    assert _reversal_signal(text) is None
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "The measured gain and accuracy reversed under peak load. "
+        "The accuracy held under peak load.",
+        "The measured gain and latency reversed on GPU. The latency held on GPU.",
+        "The measured accuracy and latency reversed under peak load. "
+        "The accuracy held under peak load.",
+    ],
+)
+def test_a_hold_of_one_coordinated_member_leaves_the_other_reversal_standing(text):
+    """A hold that covers only one member still leaves the other result reversed."""
+    prompt = build_user_message(
+        NormalizedContent(source_type=SourceType.WEB, text=text, language="en"),
+        UserProfile(preferred_language="en"),
+        [],
+    )
+
+    assert _reversal_signal(text) is _ReversalScope.CONDITION
+    assert "REVERSAL IN SOURCE" in prompt
+    assert "the title must include that condition" in prompt
+
+
+def test_a_coordinator_after_a_predicate_stays_a_claim_boundary():
+    """The control: "reversed … and throughput held" reports two separate claims."""
+    text = "The measured latency reversed on GPU and throughput held on CPU."
+
+    assert _reversal_signal(text) is _ReversalScope.CONDITION
+
+
+def test_two_specific_measures_in_one_coordinated_subject_stay_two_results():
+    """The control: rejoining members must not read one measure as the other's qualifier."""
+    text = (
+        "The measured accuracy and latency reversed under peak load. "
+        "The latency and accuracy held under peak load."
+    )
+
+    assert _reversal_signal(text) is None
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "The measured gain reversed under peak load. "
+        "The gain, accuracy, and reliability held under peak load.",
+        "The measured gain reversed under peak load. "
+        "The gain, accuracy and reliability held under peak load.",
+        "The measured gain reversed under peak load. The gain, accuracy held under peak load.",
+        "The measured gain and accuracy reversed under peak load. "
+        "The gain, accuracy held under peak load.",
+    ],
+)
+def test_a_comma_enumerated_hold_of_every_member_cancels_the_reversal(text):
+    """A comma enumeration joins one subject, so a hold of all its members resolves it."""
+    prompt = build_user_message(
+        NormalizedContent(source_type=SourceType.WEB, text=text, language="en"),
+        UserProfile(preferred_language="en"),
+        [],
+    )
+
+    assert _reversal_signal(text) is None
+    assert "REVERSAL IN SOURCE" not in prompt
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "The measured gain reversed under peak load. "
+        "The gain, accuracy, and reliability held under light load.",
+        "The measured gain reversed under peak load. "
+        "The gain, accuracy and reliability held under light load.",
+        "The measured gain reversed under peak load. The gain, accuracy held under light load.",
+        "The measured gain reversed, accuracy held under peak load.",
+        "The measured gain, accuracy reversed under peak load. The accuracy held under peak load.",
+        "The measured gain reversed under peak load. "
+        "The accuracy, throughput, and reliability held under peak load.",
+    ],
+)
+def test_a_comma_enumeration_that_misses_a_member_or_the_condition_keeps_the_reversal(text):
+    """A comma enumeration measures every member; the hold must cover all of them."""
+    prompt = build_user_message(
+        NormalizedContent(source_type=SourceType.WEB, text=text, language="en"),
+        UserProfile(preferred_language="en"),
+        [],
+    )
+
+    assert _reversal_signal(text) is _ReversalScope.CONDITION
+    assert "REVERSAL IN SOURCE" in prompt
+    assert "the title must include that condition" in prompt
+
+
+def test_an_elided_member_between_a_comma_and_its_coordinator_ends_the_subject():
+    """The control: “the gain fell, and the throughput held” measures only throughput."""
+    text = (
+        "The measured gain reversed under peak load. "
+        "The gain fell, and the throughput held under peak load."
+    )
+
+    assert _reversal_signal(text) is _ReversalScope.CONDITION
+
+
+def test_a_continuation_hold_is_read_against_its_nearest_antecedent():
+    """“The latency dropped and then it held” is about latency, not the reversed accuracy."""
+    text = (
+        "The accuracy reversed under peak load. "
+        "The latency dropped and then it held under peak load."
+    )
+
+    assert _reversal_signal(text) is _ReversalScope.CONDITION
+
+
+def test_the_same_continuation_about_the_reversed_result_still_cancels():
+    """The control: the same sentence with accuracy as its nearest antecedent resolves it."""
+    text = (
+        "The accuracy reversed under peak load. "
+        "The accuracy dropped and then it held under peak load."
+    )
+
+    assert _reversal_signal(text) is None
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "The measured accuracy dropped, but the measured latency improved and then reversed "
+        "under peak load. The measured accuracy held under peak load.",
+        "The measured accuracy reversed under peak load. The measured accuracy dropped, but "
+        "the measured latency improved and then held under peak load.",
+    ],
+)
+def test_a_predicate_split_by_a_coordinator_does_not_borrow_a_previous_metric(text):
+    """Only the nearest clause that names a measured result may lend the claim its subject."""
+    prompt = build_user_message(
+        NormalizedContent(source_type=SourceType.WEB, text=text, language="en"),
+        UserProfile(preferred_language="en"),
+        [],
+    )
+
+    assert _reversal_signal(text) is _ReversalScope.CONDITION
+    assert "REVERSAL IN SOURCE" in prompt
+    assert "the title must include that condition" in prompt
+
+
+def test_a_split_predicate_still_cancels_when_the_hold_names_the_reversal_metric():
+    """The control: the same metric in the hold still supersedes the reversal."""
+    text = (
+        "The measured accuracy dropped, but the measured latency improved and then reversed "
+        "under peak load. The measured latency held under peak load."
+    )
+
+    assert _reversal_signal(text) is None
+
+
 def test_no_longer_held_is_a_condition_scoped_reversal():
     """Past-tense “no longer held” is the failure the source measured."""
     assert _reversal_signal("The gain no longer held under peak load.") is _ReversalScope.CONDITION

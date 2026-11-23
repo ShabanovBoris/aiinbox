@@ -504,9 +504,35 @@ reversed», «no measured gain reversed», «не обратился» подс�
 no longer hold under peak load» и «the gain would no longer hold without the cache»
 не включают `REVERSAL IN SOURCE` и не заставляют title утверждать подтверждённый
 разворот или отсутствие условия. Позднее «the gain held» отменяет разворот только
-в той же области: «The gain reversed under peak load. At normal load, the gain
-held.» остаётся CONDITION, а «Later runs showed the gain held under peak load»
-снимает разворот.
+при совпадении и измеряемого показателя, и условия: «The gain reversed under peak
+load. At normal load, the gain held.» остаётся CONDITION, «Later runs showed the
+gain held under peak load» снимает разворот, а «The measured latency reversed on
+GPU. The measured throughput held on GPU.» и «The measured gain reversed in large
+batches. The measured gain held in small batches.» разворот сохраняют. Условия
+совпадают, когда оба не названы или называют общую фразу области; названное
+условие и его отсутствие не совпадают, поэтому hold без области не отменяет
+условный разворот. Показатель разворота — та измеряемая величина, которой
+управляет его глагол: подлежащее перед глаголом, включая координатное подлежащее
+из голых имён и запятое перечисление («the gain and accuracy reversed» и «the
+gain, accuracy, and reliability held» называют все величины; член между запятой и
+союзом — это пунктуация самого перечисления, а не пропущенный показатель), а при
+пустом подлежащем — ближайшая предшествующая клауза, называющая показатель, а не
+вся предыдущая часть предложения. Координатор или запятая после сказуемого
+остаётся границей claim («the gain reversed and accuracy held», «the gain
+reversed, accuracy held» — две клаузы), а hold отменяет разворот только когда
+покрывает все названные показатели: «the gain and accuracy reversed … the
+accuracy held» и «the gain, accuracy reversed … the accuracy held» оставляют gain
+развёрнутым, а «the gain reversed … the gain, accuracy, and reliability held»
+снимают разворот. Конкретная величина («latency», «throughput», «accuracy»,
+«reliability») задаёт тождество показателя даже внутри общей обёртки («latency
+improvement», «gain in accuracy»), а общая обёртка («gain», «improvement»,
+«performance») совпадает только с той же обёрткой: «gain in latency» и «gain in
+throughput» — разные показатели, а «the latency improvement reversed … the
+improvement held» разворот сохраняет. Пустой показатель разворота означает
+неизвестное тождество и сам по себе hold не отменяет; два разных названных
+показателя — отменяют. Hold «it/this» наследует показатель разворота только
+тогда, когда в его собственном подлежащем показатель не назван; названный в hold
+другой показатель не наследует.
 «The reversal was avoided» и «reversed course» не являются сообщением о
 развороте результата. Слова «reverse proxy», «reversible», «обратная связь»
 также не создают выдуманную предпосылку. Разворот не извлекается из возврата
