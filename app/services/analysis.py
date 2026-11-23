@@ -16,12 +16,14 @@ from app.domain.models import (
 from app.domain.signals import (
     has_multiple_sources,
     inconclusive_title_language,
+    inconclusive_title_statement,
     inconclusive_title_suffix,
     states_inconclusive_comparison,
+    title_claims_comparison_winner,
     title_states_inconclusive,
 )
 from app.llm.base import LlmError, LlmProvider
-from app.llm.untrusted import without_control_instructions
+from app.llm.untrusted import mask_quoted_evidence, without_control_instructions
 from app.storage.models import Content, Item
 
 # Increment when chunk-summary semantics change so durable evidence is not silently
@@ -30,14 +32,25 @@ CHUNK_SUMMARY_GENERATOR_VERSION = 5
 
 
 def analysis_text_projection(text: str) -> str:
-    """The single sanitized evidence text shared by analysis and evaluation.
+    """The model/evidence text shared by analysis and evaluation.
 
-    Prompt construction, chunking, and the deterministic inconclusive-title repair
-    must all see the same text; otherwise a command removed from the model input
-    can still change the generated title, and the evaluation would not reproduce
-    production behavior.
+    Prompt construction, chunking and the opt-in evaluation must all see the same
+    text, so a command removed from one path cannot survive through another. Quoted
+    material and worked attack examples stay byte-identical: the source is
+    describing an attack, and the model is told to treat all of it as data.
     """
     return without_control_instructions(text)
+
+
+def analysis_signal_projection(text: str) -> str:
+    """The deterministic signal text: quoted evidence cannot drive a hint or repair.
+
+    A quoted sentence is not the source's own claim, even when it is not a command
+    (``> Say no winner was established``, ``The comparison results were mixed``).
+    Every quotation/example span is blanked first, then the strict command filter
+    runs on what remains. The masked text is never sent to a model or persisted.
+    """
+    return without_control_instructions(mask_quoted_evidence(text), keep_quoted_evidence=False)
 
 
 def split_text(text: str, chunk_size_chars: int, overlap_chars: int = 0) -> list[str]:
@@ -148,10 +161,10 @@ _TITLE_CASE_SENSITIVE_COORDINATORS = frozenset({"y", "o", "e", "i"})
 # A subordinating conjunction opens an explanatory clause. A coordinator inside it
 # belongs to that clause ("… when the team doubled the window and added unrelated
 # requests"), so it is not a top-level member of the claim and must not displace the
-# result the earlier member states (QUAL-26-01). The first word of the clause is
+# result the earlier member states. The first word of the clause is
 # language-specific for the same reason as coordination. Temporal conjunctions state
 # the condition that scopes a reversal ("… the gain reversed after the team doubled
-# the window"), so they belong here too (OBS-28-02).
+# the window"), so they belong here too.
 _TITLE_SUBORDINATORS: dict[str, tuple[str, ...]] = {
     "en": (
         "when",
@@ -239,8 +252,7 @@ _TITLE_REVERSAL_CUES = (
 # that are not failures ("breakthrough", "breakfast", "breakout", "breakpoint"), and
 # "завис" excludes "зависеть" so only the stalled form counts. A Russian worsening
 # ("ухудш*", "деград*") is a limitation like the English degradation it translates: it
-# caps the claim instead of inverting it, so a real reversal still outranks it
-# (COR-43-01).
+# caps the claim instead of inverting it, so a real reversal still outranks it.
 _TITLE_LIMITATION_CUES = (
     r"limit\w*|fail\w*|degrad\w*|worse\w*|break(?!through|fast|out|point)\w*|crash\w*|stall\w*|"
     r"огранич\w*|провал\w*|ухудш\w*|деград\w*|сломал\w*|рухнул\w*|зависл\w*|завис\b"
@@ -257,7 +269,7 @@ _TITLE_DECLINE_CUES = (
 )
 # A member that opens with a possessive refers back to the subject of the member
 # before it. Splicing that flipped member out leaves "its latency improved" without
-# the subject it belongs to, so the dependent member goes with it (QUAL-41-03).
+# the subject it belongs to, so the dependent member goes with it.
 _TITLE_DEPENDENT_MEMBER = re.compile(
     r"\s*(?:its|their|his|her|его|её|ее|их|свой|своя|свою|свои|своей|своих)\b",
     re.IGNORECASE,
@@ -295,18 +307,18 @@ _TITLE_NEGATED_SCOPE_VERBS = r"include|cover|contain|encompass|включ|охв
 # failure", "сборка не была провалом"), so the prefix still reads the predicate with
 # that polarity. Focus, degree and litotes words are a separate construction and are
 # listed below; they are read first, because they scope the negation instead of
-# leaving it intact (COR-39-01). A longer qualifier sequence is a separate
+# leaving it intact. A longer qualifier sequence is a separate
 # construction too, because a two- or three-word window can hold the whole copular or
 # light-verb phrase in front of the failure ("was not a complete failure", "did not
 # show any degradation", "не показала никаких ухудшений"); widening this free gap to
 # that window read the failure noun as the object of a content verb ("did not resolve
 # the degradation" reports that the degradation persisted) as a restatement and let
-# the member leave the title (COR-43-01).
+# the member leave the title.
 _TITLE_NEGATION_GAP = r"(?:\w+\s+)?"
 # A focus word after the negation means the negation scopes *that* word, not the
 # predicate: "not only failed" and "didn't merely decline" still report the failure,
 # "не без ограничений" still reports the limitation, "не сильно упала" still reports
-# the decline (COR-39-01).
+# the decline.
 _TITLE_FOCUS_WORDS = (
     r"only|merely|just|simply|without|"
     r"только|лишь|раз|без|сильно|слишком|столь"
@@ -315,7 +327,7 @@ _TITLE_FOCUS_WORDS = (
 # reports the failure without its full extent ("didn't fully fail", "не полностью
 # проваливалась") instead of asserting the positive restatement a plain negated
 # predicate reads ("didn't fail"): the predicate keeps its own limitation cue, the
-# negation and the degree word are read as scope (QUAL-42-01). The word only scopes
+# negation and the degree word are read as scope. The word only scopes
 # the negation when a failure or decline predicate follows; before a positive
 # predicate ("didn't fully recover") the negation is the whole claim and stays a
 # reversal.
@@ -331,8 +343,7 @@ _TITLE_DEGREE_WORDS = (
 # the member stays a negative result ("did not resolve the degradation"). A
 # one-word window cannot tell those apart from its shape alone, so the longer
 # sequence is read as the limitation it always states: the member keeps the
-# predicate's own cue, keeps its wording, and still yields to a real reversal
-# (COR-43-01).
+# predicate's own cue, keeps its wording, and still yields to a real reversal.
 _TITLE_QUALIFIER_GAP = r"(?:\w+\s+){2,3}"
 
 
@@ -344,7 +355,7 @@ def _title_negation_words(language: str) -> str:
     quote an English technical phrase ("the build didn't fail"); ``language`` adds its
     own table. "no" is left out of the English branch: the reversal cue list already
     reads "no improvement" as a result, and widening the prefix would silently drop
-    that member (COMPAT-33-02).
+    that member.
     """
     if language == "en":
         return _EN_NEGATION_PREFIX
@@ -359,7 +370,7 @@ def _title_negation_prefix(language: str) -> str:
     ("did not outright fail", "was not a failure", "не была провалом") and the member
     then states a positive restatement instead of the earliest reversal. Narrowing
     the gap to a fixed adverb list read those forms as a reversal and let them
-    displace the real reversal the source reports (COMPAT-41-02); focus words are
+    displace the real reversal the source reports; focus words are
     still stripped first, so the narrower focus construction keeps its own meaning.
     A two- or three-word phrase in front of the failure is read by
     ``_title_qualified_negation`` instead.
@@ -375,7 +386,7 @@ def _title_focus_negation(language: str) -> re.Pattern[str]:
     only failed" keeps the limitation cue of "fail" and no longer reads as a reversal
     through the bare negation. Reading the whole phrase as a reversal let a positive
     restatement displace the reversal that follows, and a title cut inside "not only
-    …" promised a continuation that the trim then dropped (COR-39-01).
+    …" promised a continuation that the trim then dropped.
     """
     return re.compile(
         rf"{_title_negation_words(language)}\s+(?:{_TITLE_FOCUS_WORDS})\s+", re.IGNORECASE
@@ -392,7 +403,7 @@ def _title_degree_negation(language: str) -> re.Pattern[str]:
     cue, which is what the member states. A degree word that is itself followed by a
     copular or light-verb phrase is read by ``_title_qualified_negation``. A positive
     predicate keeps the negation as its reversal, because "didn't fully recover" would
-    otherwise lose the only cue it has (QUAL-42-01).
+    otherwise lose the only cue it has.
     """
     return re.compile(
         rf"{_title_negation_words(language)}\s+(?:(?:{_TITLE_DEGREE_WORDS})\s+)+"
@@ -413,7 +424,7 @@ def _title_qualified_negation(language: str) -> re.Pattern[str]:
     negation and the qualifier words leave the cue text, the predicate keeps its own
     cue, and the member keeps its wording. Reading the one-word gap as the only
     qualifier left these members as reversals through their bare negation, so the
-    qualified failure displaced the reversal the source reports (COR-43-01).
+    qualified failure displaced the reversal the source reports.
     """
     return re.compile(
         rf"{_title_negation_words(language)}\s+{_TITLE_QUALIFIER_GAP}"
@@ -442,10 +453,10 @@ def _result_cue_text(text: str, language: str) -> str:
     Every cue lookup goes through this function, because a member reads differently
     once its negation is classified: reading the bare words made "the build didn't
     fail" the earliest result and let it displace the later real reversal, so a title
-    asserted that the build survived and omitted the gain that reversed (QUAL-35-02).
+    asserted that the build survived and omitted the gain that reversed.
     The negation is read in the response language, so a Russian "сборка не деградировала"
     is the same positive outcome as "the build didn't fail" instead of the earliest
-    reversal (COR-37-01). "не улучшилась" and "не снизилась" negate a positive
+    reversal. "не улучшилась" and "не снизилась" negate a positive
     measurement, so they stay negative results exactly as "didn't improve" does. A
     focus construction is read first: "not only failed" and "не без ограничений" lose
     the negation and the focus word, so the member keeps the failure or the limitation
@@ -458,7 +469,7 @@ def _result_cue_text(text: str, language: str) -> str:
     show degradation"), and a two- or three-word qualifier phrase in front of the
     predicate keeps the predicate's cue as a limitation too ("did not show any
     degradation", "was not a complete failure", "не показала никаких ухудшений"),
-    so the member yields to a real reversal instead of displacing it (COR-43-01).
+    so the member yields to a real reversal instead of displacing it.
     """
     cue_text = _title_focus_negation(language).sub(" ", text)
     cue_text = _title_degree_negation(language).sub(" ", cue_text)
@@ -648,7 +659,7 @@ def _polarity_flipped_member(member: str, language: str) -> bool:
     because their negation was not applied yet; once the negation is read, the member
     asserts that an expected failure did not happen. That is not the outcome the
     source measured, so it is detail: when the same claim keeps a real reversal, the
-    member goes and the title states the result the source reports (COR-37-01).
+    member goes and the title states the result the source reports.
     """
     return (
         _TITLE_RESULT_MEMBER_CUE.search(member) is not None
@@ -684,7 +695,7 @@ def _trim_single_claim(claim: str, budget: int, language: str) -> str:
     if dominant is not None and clause_end is not None and cuts[dominant].start() >= clause_end:
         # The reversal follows the condition clause, so it is the claim's result and
         # its own tail stays; the earlier member contributes no result once its
-        # negation is read (COR-37-01).
+        # negation is read.
         top_level = cuts
         keep = dominant
     elif top_level:
@@ -692,7 +703,7 @@ def _trim_single_claim(claim: str, budget: int, language: str) -> str:
         if dominant is not None and dominant < keep:
             # Two coordinated members can each state a result. Keeping the later one
             # head-cut the prefix, so the reversal and its condition disappeared while
-            # the title still claimed a measured gain (COR-33-01); the earlier
+            # the title still claimed a measured gain; the earlier
             # reversal or limitation is what the claim's headline depends on.
             keep = dominant
     else:
@@ -742,7 +753,7 @@ def _trim_single_claim(claim: str, budget: int, language: str) -> str:
     # spliced out on its own instead of truncating the prefix: the members after it
     # may state the limitation the source reports, and the word budget drops the
     # conjunct nearest the result first, which would keep the positive restatement and
-    # lose that limitation (COR-39-03).
+    # lose that limitation.
     flipped = [
         index
         for index in range(keep)
@@ -861,26 +872,35 @@ def ensure_explicit_inconclusive_title(
     """Carry an explicit no-winner verdict into the title.
 
     The prompt requires this, but live evaluation showed a stochastic omission that
-    silently drops a conclusion the source states. The repair appends only that
-    verdict and keeps every measured detail the model wrote; it never invents a
-    result or a winner. A title that already states the verdict is unchanged.
-    Independent sources get no invented shared verdict, and the suffix follows the
-    actual response language (an untranslatable language leaves the title alone
-    rather than leaking English into it). The repair is append-only by design: if the
-    model's title already claims a winner while the evidence is unresolved, the
-    verdict is still appended and the contradiction is treated as a model deviation
-    left visible for manual review, because a deterministic guard that
-    suppresses the verdict whenever the title claims a winner would also let an
-    injected or hallucinated win erase the source's verdict.
+    silently drops a conclusion the source states. A title that already states the
+    verdict and claims no winner is unchanged. A title that claims a winner while the
+    evidence is unresolved — including one that already carries the verdict — is
+    replaced by the verdict itself, because keeping both assertions in one title
+    states two mutually exclusive conclusions; the replacement asserts no winner and
+    keeps no contradicting claim. Every other title keeps its measured detail and
+    receives the verdict as a suffix. Independent sources get no invented shared
+    verdict, and the verdict follows the actual response language (an untranslatable
+    language leaves the title alone rather than leaking English into it). A split or
+    scoped win ("A won on speed, but B won on stability", "A won the small sample")
+    reports a partial result rather than the overall winner, so it keeps its detail
+    and receives the suffix — unless the split title closes with the overall
+    conclusion ("…; overall A won"), which is the overall winner this replacement
+    removes (D-059, COR-16-07).
     """
     if multi_source or not states_inconclusive_comparison(evidence):
         return result
-    if title_states_inconclusive(result.title):
+    claims_winner = title_claims_comparison_winner(result.title)
+    # A title that states the verdict and also claims a winner keeps the defect the
+    # replacement exists to remove, so only a title without the claim is a no-op.
+    if title_states_inconclusive(result.title) and not claims_winner:
         return result
     language = inconclusive_title_language(result.title, response_language, evidence)
     suffix = inconclusive_title_suffix(result.title, response_language, evidence)
     if language is None or not suffix:
         return result
+    if claims_winner:
+        statement = inconclusive_title_statement(language)
+        return result.model_copy(update={"title": statement[:_TITLE_LIMIT]})
     title = _fit_title_with_verdict(result.title, suffix, language)
     return result.model_copy(update={"title": title})
 
@@ -917,7 +937,7 @@ class Analyzer:
         result = await self.provider.analyze(content, profile, categories)
         return ensure_explicit_inconclusive_title(
             result,
-            content.text,
+            analysis_signal_projection(content.text),
             response_language=response_language_for(content, profile),
             multi_source=has_multiple_sources(content.metadata),
         )
@@ -932,10 +952,12 @@ class Analyzer:
         # Strip output-control commands before chunking: a checkpoint generated
         # from an injected chunk would otherwise preserve the distortion, and a
         # final aggregate filter cannot recover evidence that was never summarized.
+        # Quoted examples survive here; only the deterministic signal projection
+        # ignores them.
         prepared_text = analysis_text_projection(content.text)
-        # The model, deterministic repair, chunking, and the opt-in evaluation all
-        # read this one sanitized projection. Returning the raw short text here let
-        # a removed command still drive the repair decision.
+        # The model, chunking and the opt-in evaluation read this sanitized
+        # projection. Returning the raw short text here let a removed command still
+        # drive the repair decision, which now reads ``analysis_signal_projection``.
         content = content.model_copy(update={"text": prepared_text})
         if len(prepared_text) > self.chunk_size_chars:
             if item_id is None:
@@ -1040,7 +1062,12 @@ class Analyzer:
                 None,
             )
             if row is None:
-                summary = (await self.provider.summarize_chunk(chunk)).strip()
+                # Chunks already went through ``analysis_text_projection``; a second
+                # filter here could delete a quotation whose attribution was split
+                # across the boundary, so the application boundary owns projection.
+                summary = (
+                    await self.provider.summarize_chunk(chunk, sanitize_untrusted=False)
+                ).strip()
                 if not summary:
                     raise LlmError("INVALID_LLM_OUTPUT", "empty chunk summary")
                 summary = summary[: self.chunk_size_chars]

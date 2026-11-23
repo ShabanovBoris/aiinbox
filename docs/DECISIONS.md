@@ -908,7 +908,17 @@ removed without leaving the politeness word behind. All other instructional
 prose and all whitespace, indentation and code blocks are preserved. The same
 helper filters captured text before chunking, each chunk before
 `summarize_chunk`, source metadata, user notes, visual notes, and
-`UserProfile.free_text`. Stored Content remains unchanged.
+`UserProfile.free_text`. Stored Content remains unchanged. A quotation is
+evidence, not a command: a command inside a Markdown blockquote, a table
+example/quotation, an indented block labelled as a quotation/attack, or a paragraph
+introduced or attributed as a prompt-injection/attack example stays in the model
+text byte-identically. This is a deliberate, narrow security trade-off: a source
+that writes “Example of a prompt injection:” above the payload, or wraps it in a
+blockquote/table, keeps that text visible to the model. Generic `Example:` headers
+and fenced code get no exception, commands inside a fence are still removed, the
+prompt guard and the absence of tools remain the defense, and every protected span
+is blanked from deterministic signals (D-054), so the excerpt cannot drive a title
+or a hint.
 
 Reason: prompt instructions alone are not a reliable security boundary for a small
 model, but deleting evidence is a correctness failure of its own. A bare “set the
@@ -967,8 +977,10 @@ claim that no cause was given. Condition scope is the reversal's own clause, so
 other clause's condition. A question or hedge (“researched whether the gain
 reversed”, “might show that the gain reversed”, «возможно») is not a measured
 reversal; “no longer held” is recognized; and a later explicit “the gain held”
-supersedes an earlier reversal as the source's final outcome. “Reversed the
-earlier conclusion/finding” is an action on a claim, not a result reversal.
+supersedes an earlier reversal only when it names the same measured result under
+the same condition (both unnamed scopes agree, one named and one unnamed never
+do). “Reversed the earlier conclusion/finding” is an action on a claim, not a
+result reversal.
 
 Reason: a deterministic hint must not manufacture a premise or a condition the
 source does not state, and it must not turn an unknown cause into an absence of
@@ -1121,9 +1133,18 @@ created a measured-reversal premise, and a hold in a different scope (“at norm
 load”) erased a reversal reported “under peak load”. The 300-character trim cut
 the condition off the end of a title instead of dropping leading clauses.
 
-Decision: `analysis_text_projection` is the single sanitized text used by prompt
-construction, chunking, the inconclusive repair, and the opt-in eval; the prepared
-content always contains that projection. A later decisive win supersedes a verdict
+Decision: two projections share one command grammar. `analysis_text_projection`
+is the model/evidence text used by prompt construction, chunking,
+`summarize_chunk` and the opt-in evaluation; it removes commands outside
+quotation/example spans and keeps a quoted attack example byte-identical. The
+prepared content always contains that projection. `analysis_signal_projection`
+replaces every quotation/example span with spaces (newlines and offsets are
+preserved), then applies the same grammar without exceptions; the prompt
+no-winner hint, the reversal hint and the inconclusive repair read only that
+projection. A chunk checkpoint is keyed by the SHA-256 of the projected chunk, so
+a checkpoint built from a distorted projection is recomputed in place while
+unaffected chunks are reused, and `summarize_chunk` does not filter an
+already-projected chunk twice. A later decisive win supersedes a verdict
 only in the same comparison and numbered source, and not when it is hypothetical,
 hedged, retracted, explicitly a separate experiment, stated before the verdict in
 the same sentence, negative for an event participant (“neither vendor won the
@@ -1140,10 +1161,11 @@ matched”) count as uncertainty, and later confirmed results
 suppress the suffix. The cheap control-filter gate additionally accepts standalone
 bare verdict imperatives (`say/state/claim` + verdict noun). A hedged forecast is
 never a measured reversal, even when the verb names the failure, and a later hold
-cancels a reversal only when it shares a named scope phrase. Plural forms, passive
-“could not be determined”, retraction of the verdict, and bare
-“won/favored/beat/superior” forms are handled explicitly, while “never announced”
-stays an absence. The prompt hint, repair, and oracle share one claim
+cancels a reversal only when it names the same measured result under the same
+condition (see D-059). Plural forms, passive “could not be determined”, retraction
+of the verdict, and bare “won/favored/beat/superior” forms are handled explicitly,
+while “never announced” stays an absence. The prompt hint, repair, and oracle share
+one claim
 boundary (`CLAIM_CLAUSE_BREAK`), so commas, colons, coordinators, and contrast
 words split negation and subject consistently. “Multi-source” means more than one
 successfully extracted evidence block; one surviving source still gets the hint
@@ -1165,15 +1187,20 @@ positive result expectation. Polarity binding inherits a subject across a
 coordinated clause that starts with a verb, but not across a clause with its own
 subject.
 
-Reason: the model, repair, and eval must read identical evidence; otherwise a
-security filter silently changes product semantics and the eval cannot detect it.
-Uncertainty is only dropped when the same comparison is actually resolved, and
+Reason: the model, repair, and eval must read the same evidence contract; otherwise
+a security filter silently changes product semantics and the eval cannot detect it.
+Deterministic hints additionally need a quote-aware view, because a quoted sentence
+is not the source's own claim in either direction. Uncertainty is only dropped when
+the same comparison is actually resolved, and
 deterministic hints must not invent a direction the source does not state. Binding
 filter cost prevents a hostile document from blocking the event loop.
 
 Consequences: an unresolved or separately resolved comparison may keep the
 no-winner suffix even when a different comparison has a winner — the conservative
-choice. A prior-work verdict no longer forces uncertainty, so a source that only
+choice. A verdict or reversal stated only inside a blockquote, table or indented
+quotation produces no deterministic title suffix or hint, while the model still
+sees the quotation and may use it; an unquoted verdict keeps the previous
+behavior. A prior-work verdict no longer forces uncertainty, so a source that only
 reviews prior mixed results without stating its own conclusion may miss the
 suffix; the same applies to a win limited to a named sub-scope or phrased with
 unrecognized words. Scope comparison is lexical: a later hold phrased with
@@ -1209,7 +1236,10 @@ question consumed the budget.
 
 Decision: an ambiguity mention counts only when its sentence names a comparison
 (“which approach is better”, “whether A outperformed B”, a comparison/verdict
-noun); unrelated open questions and collocations stay evidence. A win is partial
+noun); unrelated open questions and collocations stay evidence. The uncertainty
+and reversal detectors read the quote-masked signal projection, so a quoted “no
+winner”/“mixed”/reversal is the quoted speaker's claim, not the source's verdict.
+A win is partial
 when it is scoped to a metric/round/workload or paired with a loss unless the
 sentence carries an overall marker (“final round”, “on all metrics”); lock-step
 wins with “and” count as a split. Generic better/showed/no-difference forms are
@@ -1369,9 +1399,8 @@ false claim; a shorter but faithful title is acceptable.
 Consequences: the detector stays lexical, so an unusually worded split, a
 possessive directional comparison or an event participant phrased with an
 approach noun can keep or drop the suffix wrongly; the accepted default is the
-weaker title. A title that claims a winner while the evidence is unresolved still
-gets the verdict appended, and the contradiction is left visible for manual
-review.
+weaker title. A title that claims a winner while the evidence is unresolved is
+replaced by the verdict itself rather than kept beside it (D-059).
 
 ## D-058 — An expectation baseline is not a compared side; temporal clauses scope a reversal
 
@@ -1413,3 +1442,312 @@ guard takes the reading that keeps the result, which can keep a condition inside
 the reversal member. The cue lists are closed, so an unlisted predicate keeps its
 bare-cue reading. Two label boundaries are deliberate: “plan No. 2” stays graded,
 and a letter after a quantitative baseline (“the target B”) stays graded.
+
+## D-059 — A return inside `for … in range` is not a compile hazard on CPython 3.12
+
+Context: a review turn reported that a title-trimming helper returned its start
+offset instead of the index of the next delimiter, and that a following fragment
+came out empty. Its `dis` output appeared to show the `return` branch reaching a
+`JUMP_BACKWARD` with a negative offset, so the interpreter was suspected of
+skipping the return inside `if` inside `for … in range`. The transient helper is
+not in the repository; `app/domain/signals.py` has no `for … in range` loop whose
+body returns — its only `range` occurrences are list comprehensions (lines 1681
+and 2033 in this tree), which cannot carry a `return` — but the same loop shape
+survives in `app/services/analysis.py`.
+
+Decision: treat an in-loop `return` in `for … in range` as ordinary, correct code
+on CPython 3.12.13 and do not rewrite it on the suspicion of a miscompile. A
+return branch ends in a return instruction: `RETURN_VALUE` for a computed value
+and `RETURN_CONST` when the branch returns a literal such as `None` or `""`, so a
+`return None` guard legitimately shows `RETURN_CONST` and not `RETURN_VALUE`. The
+`JUMP_BACKWARD` printed next to the return is the loop back-edge, emitted
+immediately before the return block, and is never part of the return path. Accept
+a claim that the interpreter skipped a return only with a minimal fragment and
+its `dis` output from the exact interpreter and version in use.
+
+```python
+def content_start(text, begin):
+    for index in range(begin, len(text)):
+        if text[index] == ".":
+            return index + 1
+    return begin
+```
+
+`content_start("abc.def", 0) == 4` and `content_start("abcdef", 0) == 0` on
+CPython 3.12.13. The compact disassembly puts the back-edge before the return:
+
+```text
+ 44 FOR_ITER                17 (to 82)
+ 50 LOAD_FAST                0 (text)
+ 58 LOAD_CONST               1 ('.')
+ 60 COMPARE_OP              40 (==)
+ 64 POP_JUMP_IF_TRUE         1 (to 68)
+ 66 JUMP_BACKWARD           12 (to 44)
+ 68 LOAD_FAST                2 (index)
+ 72 BINARY_OP                0 (+)
+ 80 RETURN_VALUE
+ 82 END_FOR
+ 84 LOAD_FAST                1 (begin)
+ 86 RETURN_VALUE
+```
+
+The production `_answer_sentence_index` has the same layout. In
+`app/services/analysis.py` as of HEAD `466573e` the disassembly shows offset 226
+`POP_JUMP_IF_TRUE` jumping to 230, offset 228 `JUMP_BACKWARD` to 174, offsets
+230–236 loading `index` and returning it, and the fallback at 240 as
+`RETURN_CONST` for `None`. Byte offsets shift with any edit to the function; the
+durable shape is the loop back-edge printed immediately before the return block.
+Every code object compiled from `app/` and `tests/` was scanned on the project
+interpreter, and no `JUMP_BACKWARD` targets an offset after itself.
+
+Reason: the reported symptom did not reproduce on the minimal fragment or on the
+production helper, and a backward jump cannot transfer control into the return
+block that follows it. The visible back-edge sits between the predicate test and
+the return, which is exactly what reads as “the return jumped backwards” when the
+disassembly is scanned line by line.
+
+Consequences: the in-loop-return helpers in `app/services/analysis.py` stay
+unchanged, and `tests/test_analysis_quality.py` pins both the in-loop return and
+the post-loop fallback of `_answer_sentence_index`. When this shape appears to
+misbehave, the cause is in the data or the caller — a cue regex, a start offset,
+a wrong sentence list — not in the compiler.
+
+Reconstruction of the original symptom: the helper's own fallback explains it.
+The transient code never reached history, so this comes from the ticket rather
+than from a verified reading: when no delimiter follows the start offset,
+`_content_start` deliberately returns `begin` (29), and a slice taken at that
+same offset yields nothing usable, which is the empty `_next_claim` fragment.
+
+## D-060 — A confirmed open verdict replaces a title that claims a winner
+
+Context: the repair carried the mandatory no-winner conclusion into the title by
+appending it, so a model title “Strategy A won the benchmark” became “Strategy A
+won the benchmark; no winner was established”. The title then states two mutually
+exclusive conclusions in the one field the user reads first. The append-only rule
+was documented as a deliberate limitation that left the model deviation visible for
+manual review.
+
+Decision: when the evidence leaves the comparison open and the title itself claims
+a comparison winner, the repair replaces the title with the verdict alone in the
+response language (“No winner was established”, “Победитель не определён”). The
+claim is recognised by the shared decisive-win patterns read on the folded title,
+and each guard is evaluated on the win’s own claim — its clause, the win and its
+object up to the next punctuation — so an event noun or a separate experiment in a
+neighbouring claim (“A, an award-winning tool, won the benchmark”, “A won the
+benchmark; the award went to B”) does not change how that win reads. The same
+frame/limit fork as the evidence path decides partiality: a final or overall round
+is a frame (“A won the final round”, “The final benchmark showed A won”), while a
+named subset stays a limit even inside a final round (“A won the small sample”, “A
+won on accuracy in the final benchmark”). The subset, like the other guards, is
+read inside the win’s own claim, so a subset that belongs to the neighbouring claim
+about the other side (“A won the benchmark; B was faster on the small sample”, “A
+won the final benchmark. B was faster on the small sample”) does not make an
+unscoped win partial: that win is the overall claim and the title is replaced. A split title describes a trade-off, so
+it keeps the model’s detail and receives the suffix — but only when the trade-off
+is not closed by an overall conclusion in the same title: “A won on speed, but B
+won on stability; overall A won”, “…; in the end A won” and “…; the overall winner
+was A” state the standing the comparison reached, so they are replaced like any
+other overall win. The closing conclusion is read on the whole title
+(`_title_closes_trade_off`: the `_OVERALL_RESULT` adverbs plus the sentence openers
+a title writes without a comma), because a title omits the comma that makes “In the
+end” a sentence-initial phrase in the evidence path. A split whose wins name no
+measured scope (“A won the benchmark, but B won the review”) reads as two winner
+claims and is replaced too: the scan cannot tell a trade-off from two separate
+overall wins, and replacement is the safe reading. A directional measurement,
+a negated or hedged mention, a scoped win and an event outcome (“Acme won the
+tender”, “Тендер выиграла компания Acme”) each report something narrower than the
+overall standing, so they keep the model’s detail and receive the suffix. A title
+without a winner claim keeps the append path and its trimmed-detail guarantees. A
+title that already states the verdict and still claims a winner (“A won; no winner
+was established”) is replaced too: the early verdict check only short-circuits a
+title that makes no contradicting claim.
+
+Reason: the repair exists to make an omitted verdict explicit, not to store both
+answers. Replacing the claim with the verified verdict asserts nothing the source
+does not state, and it is the safe variant because the evidence still decides
+whether the repair runs: an injected or hallucinated win in the title cannot erase
+the source’s verdict, it can only lose its own title.
+
+Consequences: a long, detail-rich title whose final claim is the overall winner
+loses its measured detail when it is replaced; the cost is accepted over showing a
+contradiction. The repair runs at analysis time, so it covers new Items and Items
+that are analyzed again; a title saved by an earlier version keeps its text until
+its Item is re-analyzed, and no ops command backfills titles (the schema and reads
+are unchanged, so those rows stay valid). The claim stays lexical, so a
+formulation that no shared pattern recognises keeps the append path and leaves the
+contradiction visible. Known gaps of the shared vocabulary: a Russian superlative
+without a win verb (“Метод A оказался лучшим”, “и лучшим был вариант А”) is not a
+recognised winner claim, the scope vocabulary is English, so a Russian scoped win
+(“победил на небольшой выборке”) is not recognised as partial and that title is
+replaced, losing its measured scope, the title scan reads the decisive-win patterns
+only, so a form that only the evidence path’s unambiguous-win list recognises
+(“A wins overall”, “A came out ahead”) is no win mention at all and that title
+keeps the append path, and an elliptical scope (“A won the small sample, but B won
+the large one”) is not recognised as a split, so that title is replaced and loses
+both measurements. The claim window stops at sentence punctuation, not at a dash or
+a bracket, so an event noun or a separate experiment after “—” or in parentheses
+(“A won the benchmark — the award went to B”) still rejects the win and the title
+keeps the append path; the boundary is shared with the evidence path through
+`CLAIM_CLAUSE_BREAK`, so it is not narrowed for the title scan alone. These should
+be extended only together with the evidence detectors, which share the same
+patterns.
+
+## D-061 — Internal review labels are not a contract; invariants and behavior tests are
+
+Context: the Answer-First signal, title-repair, and prompt work (D-054…D-058) left
+short in-code labels such as `COR-43-01`, `QUAL-42-01`, and `COMPAT-38-03` in
+comments and test docstrings. They were review-thread coordinates from the work
+that produced the fix, not identifiers defined in any repository document. Durable
+review evidence already lives in GitHub PRs and commits, so the labels duplicated
+history without giving a reader a rule to look up.
+
+Decision: remove the labels from `app/` and `tests/` without replacing them with a
+new registry. Each rule they annotated keeps its rationale as prose and its
+positive/negative control as a behavior test; the invariant name in the surrounding
+comment is the durable reference. Documented lexical limitations stay in
+D-058 and PRODUCT_SPEC §31.
+
+Reason: a label with no registry is an unverifiable claim. A reader cannot tell
+which behavior it pins, and deleting the test it accompanied would not be noticed.
+A named invariant plus a behavior test fails when the rule is removed, which is the
+only property worth preserving from the label.
+
+Consequences: review comments should point at the behavior test or the invariant
+name rather than mint new `PREFIX-NN-NN` coordinates. Historical PR discussion
+still mentions old labels; that is history, not repository state.
+
+## D-062 — A hold cancels a reversal only for the same measured result and condition
+
+Context: a conditional reversal (“The measured gain reversed in large batches.”)
+was found while the phrases used to compare it with a later hold came from a
+second, narrower cue list that did not know “in”, “because”, or “since”. The
+reversal's scope key set therefore stayed empty, and an unrelated later hold (“The
+measured gain held in small batches.”, “… held overall.”) erased the reversal, so
+the condition-aware `REVERSAL IN SOURCE` guard never reached the prompt. The same
+check compared the whole candidate sentence instead of the hold's own clause,
+treated one empty scope set as a wildcard, and never compared the measured result,
+so “latency reversed on GPU … throughput held on CPU” and “gain reversed on GPU …
+latency held on GPU” also cancelled the reversal. Latency/throughput were missing
+from the measured-result vocabulary and GPU/CPU from the condition vocabulary, so
+those reversals were not detected as conditional at all.
+
+Decision: one private extractor (`_scope_details`) returns both the scope keys and
+the unknown-cause flag for a clause. A clause states a condition exactly when that
+single pass accepts a cue phrase, and the accepted phrase — normalized, at most six
+words, stopped at the clause break — is the key compared with a later hold. The
+hold check walks each `_RESOLVED_HOLD` match, reads its own clause, and cancels the
+reversal only when the measured results are the same and the conditions match: two
+unnamed scopes agree, two named scopes must share a phrase, and a one-sided pair
+never agrees. The measured result of a claim is the noun phrase its verb governs
+(`_claim_metrics`): the subject between the verb and the previous claim boundary. A
+coordinator or an enumerating comma between bare noun phrases joins one coordinated
+subject, so “the gain and accuracy reversed” and “the gain, accuracy, and reliability
+held” measure every member, while a coordinator or a comma after a predicate (“the
+gain reversed and accuracy held”, “the gain reversed, accuracy held”) stays a claim
+boundary. In an enumeration the member between a comma and its coordinator is the
+list's own punctuation rather than an elided result, so the member before that comma
+still decides; any other empty member ends the subject. When the subject names
+nothing at all (coreference, or a predicate split by a coordinator), only the
+nearest earlier clause that names a measured result lends its result; an unrelated
+clause further back does not, because it measures something else. A hold must cover
+every measured result the reversal names: “the gain and accuracy reversed … the
+accuracy held” and “the gain, accuracy reversed … the accuracy held” still leave the
+gain reversed. A specific measure (“latency”, “throughput”, “accuracy”,
+“reliability”) identifies the result, whether it qualifies a generic wrapper
+(“latency improvement”, “gain in accuracy”) or stands alone; a generic wrapper
+(“gain”, “improvement”, “performance”) identifies it only when the other side uses
+that same wrapper, so a bare wrapper hold after a qualified reversal (“the latency
+improvement reversed … the improvement held”) keeps the reversal. An empty result
+set means the identity is unknown and never rejects a hold by itself; two named,
+different results do. A coreferential “it/this” hold inherits the reversal's
+measured result only when the hold's own subject names none. A positive hold in a
+coreferential continuation is not also read as the reversal's condition, and a
+clause's own condition is still its own (`CLAIM_CLAUSE_BREAK` boundaries are not
+reused here because a comma can precede a restrictive scope).
+
+Reason: the condition and the measured result are independent qualifiers of the
+same finding. Treating either as a wildcard turns a scoped finding into a general
+one, which is the false claim the title guard exists to prevent. A wrapper noun
+names the shape of a result, not which quantity was measured, so it cannot make
+“latency improvement” and “throughput improvement” the same result.
+
+Consequences: scope and metric matching stay lexical and closed-vocabulary. A
+rephrased condition (“in large batching runs” vs “in large batches”) or an unlisted
+measure keeps the reversal, the accepted weaker-instruction default. Comma-spliced
+claims can still merge scopes, because a key stops at coordinators and sentence
+punctuation, not at a bare comma; a “while”-joined hold inside the reversal's own
+sentence can likewise contribute its condition to the reversal's scope. An
+unlisted measure inside a generic phrase (“the efficiency gain”) is read as the
+wrapper, so a hold about another unlisted measure under the same wrapper can still
+cancel the reversal. Coordination is read from position, not from syntax: a
+coordinator or an enumerating comma joins a subject only when the phrase before it
+ends on a bare result noun, so a coordinated subject with a modifier after the
+coordinator or an elided member after a bare comma can still be read by the wrong
+side, and a clause that ends on a result noun after a comma (“the team measured the
+gain, latency held”) enrolls a result its verb does not govern. A comma after a
+predicate stays a claim boundary, so “the gain reversed, accuracy held” is still two
+claims. When the subject of a claim names no result, only the nearest earlier clause
+that names one lends it, so an unrelated claim further back no longer leaks into it.
+
+## D-063 — Instagram response language follows extracted media, not the source type
+
+Context: `includes_video_source` classified every `SourceType.INSTAGRAM` Item as
+video, so a photo or text post answered in the profile language instead of the
+language of its own caption. Instagram covers Reels, photo carousels and text
+posts under one source type, so the type cannot decide the language contract.
+
+Decision: extraction records `metadata["instagram_has_video"]` — `True` for a
+Reel and for a post with at least one extracted video element, `False` otherwise —
+and `includes_video_source` treats a missing flag on Instagram as "no video".
+Composite Items aggregate the fact with `any(...)` across extracted sources.
+
+Reason: only the extractor knows which media it actually produced. Guessing from
+the URL or defaulting to video would repeat the original bug for photo posts.
+
+Consequences: every Instagram producer and restore path must set the flag; a
+producer that forgets it yields the content-language branch. A post whose caption
+language is unknown keeps the existing content-primary fallback.
+
+## D-064 — The holdout corpus must demonstrate chunking, independent sources and its own markers
+
+Context: the answer-first evaluation could pass while proving little. Nine of
+eleven holdout cases fit in one chunk, the only multi-source case lived in the
+primary deterministic corpus, and the independence check consisted of two
+`assert "…" not in SYSTEM_PROMPT` lines whose strings happened to be absent from
+the prompt. Any prompt edit that reused a holdout answer would keep the suite
+green.
+
+Decision: the holdout corpus carries two chunked cases and one two-source case,
+and `tests/test_analysis_quality.py` owns an explicit per-case registry of
+forbidden markers. `holdout-late-batch-result` declares `chunk_size_chars=1200`,
+`chunk_overlap_chars=120`, and its answer (`46 minutes` → `17 minutes`, only when
+replenishment finishes before `14:00`) appears after production `split_text` has
+placed it in the last chunk alone. `holdout-independent-sources` declares
+`source_count=2`, `successful_source_count=2`, two `distinct_topic_groups`, and
+`outcome_state="none"`. Each of the eleven holdout ids names figures or phrases
+that must be present in its own content and absent from all three evaluation
+prompts (`SYSTEM_PROMPT`, `CHUNK_SUMMARY_SYSTEM_PROMPT`,
+`TOPIC_CLASSIFICATION_SYSTEM_PROMPT`) and from the primary corpus. The legacy
+`71%`/`84%` pair stays attached to v3 `mixed-language-video` and is only checked
+against the prompts. A case's chunk size also bounds the aggregate, so the new
+long case is sized for two chunks: a first live run at three chunks let the
+production aggregate truncate each summary to roughly 385 characters and cut the
+measured result out of the analyzer input, which would have made the oracle
+unsatisfiable for reasons unrelated to model quality. The live oracle for that
+case requires both measurements and the time condition in title and summary;
+chunk assembly is pinned deterministically by the chunk-input and `CHUNK i/N`
+assertions. Requiring a secondary rejected-trial detail in the live summary was
+dropped after it turned out to be model compression rather than a missing fact.
+
+Reason: an evaluation is evidence only if it measures the production paths and
+cannot inherit the prompt's own examples. Chunked cases exercise summarization
+and aggregation; a two-source case exercises the per-source representation check;
+an explicit registry turns a borrowed answer into a named failure.
+
+Consequences: adding a holdout case requires a registry entry; otherwise the id
+sets diverge and the test fails. The registry is a lexical proxy, not a proof
+that every word is unique, so an accidental short-number collision is a review
+item rather than an automatic removal. The primary corpus and the manual-only
+nature of the holdout stay unchanged, and generation quality still requires the
+live `eval-analysis-quality` run.
+

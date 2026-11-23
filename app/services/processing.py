@@ -33,6 +33,11 @@ log = logging.getLogger(__name__)
 _VISUAL_ONLY_VIDEO_CONTEXT = "Транскрипт видео недоступен; анализ основан на визуальных кадрах."
 
 
+def _restored_instagram_video_fact(source_type: SourceType) -> dict[str, bool]:
+    """A restored Instagram source without a post shortcode is a Reel, hence video."""
+    return {"instagram_has_video": True} if source_type is SourceType.INSTAGRAM else {}
+
+
 class ProcessingPipeline:
     """Один канонический пайплайн: extract → analyze → topic → prioritize → persist.
 
@@ -986,6 +991,11 @@ class ProcessingPipeline:
                 "instagram_post_partial": any(
                     content.metadata.get("instagram_post_partial") for content in extracted
                 ),
+                # The language contract must see video anywhere in a composite
+                # Item, not only when the single Instagram source is a Reel.
+                "instagram_has_video": any(
+                    content.metadata.get("instagram_has_video") is True for content in extracted
+                ),
                 "visual_source_count_with_notes": sum(
                     bool(
                         content.metadata.get("visual_notes")
@@ -1259,6 +1269,7 @@ class ProcessingPipeline:
                             if description_row
                             else None,
                             "visual_notes": visual_notes,
+                            **_restored_instagram_video_fact(source.source_type),
                         },
                     )
             if source.source_type is SourceType.INSTAGRAM and (source.metadata_json or {}).get(
@@ -1288,6 +1299,7 @@ class ProcessingPipeline:
                             "username": description_meta.get("username"),
                             "description_excerpt": description_row.text,
                             "caption_only": True,
+                            **_restored_instagram_video_fact(source.source_type),
                         },
                     )
             return None
@@ -1343,6 +1355,7 @@ class ProcessingPipeline:
                 "creator": meta.get("author") or description_meta.get("creator"),
                 "username": meta.get("username") or description_meta.get("username"),
                 "via_stt": meta.get("via_stt"),
+                "instagram_has_video": True,
             }
         if source.source_type in (SourceType.YOUTUBE, SourceType.VIDEO, SourceType.INSTAGRAM):
             visual_row = await session.scalar(
@@ -1410,6 +1423,9 @@ class ProcessingPipeline:
                 # ключ добавляется только при наличии записи — эквивалентность
                 # initial/resumed content (первый прогон не имеет ключа)
                 content.metadata["visual_notes"] = visual_row.text
+        elif item.source_type is SourceType.INSTAGRAM:
+            # Legacy Items predate Instagram posts, so their stored content is a Reel.
+            content.metadata = {"instagram_has_video": True}
         return content
 
     @staticmethod

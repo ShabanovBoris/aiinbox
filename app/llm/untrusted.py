@@ -4,6 +4,21 @@ The model prompt explains that captured content is evidence, never instructions.
 This module removes only commands that unambiguously target the analysis output:
 task overrides, analysis-only fields, explicitly owned output fields, response
 language directives, and instructions to describe the source a prescribed way.
+
+Two projections share that command grammar:
+
+* the model/evidence projection (:func:`without_control_instructions`) keeps a
+  command that lives inside a quotation: a Markdown blockquote, a table example,
+  an indented block labelled as a quotation/attack, or a paragraph explicitly
+  introduced or attributed as a prompt-injection/attack example. A source that
+  teaches or reports an attack is evidence, so its example reaches the model
+  byte-identically. Fenced code and generic ``Example:`` headers get no such
+  exception.
+* the deterministic signal projection (``analysis_signal_projection`` in
+  ``app.services``) blanks every quotation span entirely before applying the same
+  grammar with no exceptions. A quoted sentence must not fabricate a no-winner or
+  reversal hint even when it is not a command (``> Say no winner…``,
+  ``The comparison results were mixed``).
 Ordinary instructional prose (``set the request timeout``, ``set the title to a
 descriptive name in your document editor``, ``answer in English for the first
 exercise``) is evidence and must survive verbatim.
@@ -41,6 +56,7 @@ other unowned requests.
 """
 
 import re
+from dataclasses import dataclass
 
 # Fields that exist only in the analysis contract. An imperative assignment to
 # one of them is an output command even without an explicit "response" owner.
@@ -210,7 +226,7 @@ _TITLE_PRESCRIPTION = (
     # A bare label needs a modal ("the title must say …") to be a command. Any
     # speech or state verb is accepted here: a closed verb list let "must convey /
     # express / make clear no winner was established" through as evidence while it
-    # prescribes the output (SEC-26-01). The value must still be a verdict, so
+    # prescribes the output. The value must still be a verdict, so
     # "the title must explain why the methods differ" and "the title must be
     # descriptive" stay ordinary instructional prose.
     rf"|{_TITLE_LABEL}\b\s*(?:{_TITLE_MODAL})\s+(?:that\s+)?"
@@ -295,11 +311,6 @@ _COMMAND_CORE = (
     rf"(?:{_VERDICT_VALUE})"
     rf"{_CLAUSE}"
     r"[\"'“”«»]?"
-    # A title prescription without a control verb is still an output command:
-    # "The title must be A won", "The title should read A outperformed B". The
-    # value must be a verdict, so "the title must be descriptive" stays ordinary
-    # instructional prose.
-    rf"|{_TITLE_PRESCRIPTION}"
     # "Use A won as the title" has no owned field, so the owner alternative above
     # does not cover it. A scope ("as the title in the manifest") keeps it evidence.
     r"|(?:use|write|output|return|repeat|say)\b"
@@ -499,29 +510,279 @@ _BARE_VERDICT_HINT = re.compile(
 # command separated by a coordinator is removed in the same pass.
 _MAX_FILTER_PASSES = 6
 
+# A line that introduces a worked attack example names the attack explicitly:
+# "Example of a prompt injection:", "Prompt injection example:", "Пример
+# инъекции:", "Пример атаки:". A generic "Example:" header is deliberately not
+# enough, because it also appears above ordinary code that must stay filtered.
+# A paragraph that reports the attack right after the quoted text is the same
+# worked example, so the quoted instruction stays evidence.
+_ATTRIBUTION = re.compile(
+    r"(?i)(?:^|(?<=[.!?]\s))(?:"
+    r"(?:the|this|эта|этот|это|данная|данный)\s+"
+    r"(?:(?:prompt|промпт\w*)\s+)?(?:injection|attack|инъекц\w*|атак\w*)"
+    r"|(?:атака|инъекция|промпт[\s-]инъекция)"
+    r")\b"
+    r"[^\n]{0,80}?\b(?:attempt\w*|tries|tried|try|designed|designs|aims?|"
+    r"seeks?|instruct\w*|tells?|told|asks?|asked|intend\w*|manipulat\w*|"
+    r"пыта\w*|манипул\w*|просит|просят|заставля\w*|инструкц\w*|направлен\w*)"
+)
+# An indented block is a quotation only when its introduction names the attack or
+# the quotation. Plain indented code keeps the pre-existing filtering behaviour.
+_QUOTATION_LABEL = re.compile(
+    r"(?i)prompt[\s-]*injection|injection|attack|jailbreak|quot(?:e|ed|ation)|"
+    r"инъекц\w*|атак\w*|цитат\w*"
+)
+_TABLE_SEPARATOR_CELL = re.compile(r":?-{3,}:?")
+
+# Most captured material has no quotation structure at all. A cheap gate skips the
+# line scan for it, so the added evidence preservation cannot slow down a large
+# ordinary document that merely contains an injection command.
+_QUOTATION_MARKERS = (
+    "inject",
+    "attack",
+    "example",
+    "jailbreak",
+    "quot",
+    "инъекц",
+    "атак",
+    "пример",
+    "цитат",
+)
+
+
+def _may_contain_quotation(text: str) -> bool:
+    if ">" in text or "|" in text or "\t" in text or "    " in text:
+        return True
+    folded = text.casefold()
+    return any(marker in folded for marker in _QUOTATION_MARKERS)
+
+
+@dataclass(frozen=True)
+class _EvidenceSpan:
+    """One span of quoted or example text inside captured material."""
+
+    start: int
+    end: int
+    # Explicit attack examples, blockquotes and tables keep their commands in the
+    # model text. Plain indentation is a quotation only for deterministic signals.
+    keeps_commands: bool
+
+
+def _content_lines(text: str) -> list[tuple[int, int, str]]:
+    """Return ``(start, end, content)`` for each line, newline excluded."""
+    lines = []
+    offset = 0
+    for raw in text.splitlines(keepends=True):
+        content = raw.rstrip("\r\n")
+        lines.append((offset, offset + len(content), content))
+        offset += len(raw)
+    return lines
+
+
+def _is_example_intro(content: str) -> bool:
+    stripped = content.strip()
+    if not stripped.endswith(":"):
+        return False
+    folded = stripped.casefold()
+    return (
+        "prompt injection" in folded
+        or "prompt-injection" in folded
+        or "инъекц" in folded
+        or "jailbreak" in folded
+        or (
+            any(term in folded for term in ("attack", "атак"))
+            and any(term in folded for term in ("example", "пример"))
+        )
+    )
+
+
+def _is_blockquote_line(content: str) -> bool:
+    stripped = content.lstrip(" ")
+    return stripped.startswith(">") and len(content) - len(stripped) <= 3
+
+
+def _is_indented_line(content: str) -> bool:
+    return content.startswith("    ") or content.startswith("\t")
+
+
+def _is_table_separator(content: str) -> bool:
+    stripped = content.strip()
+    if "|" not in stripped:
+        return False
+    cells = stripped.strip("|").split("|")
+    return len(cells) >= 2 and all(_TABLE_SEPARATOR_CELL.fullmatch(cell.strip()) for cell in cells)
+
+
+def _paragraph_ranges(
+    lines: list[tuple[int, int, str]],
+) -> list[tuple[int, int, int, int]]:
+    """Group non-blank lines into ``(start, end, first_index, last_index)`` blocks."""
+    paragraphs = []
+    index = 0
+    while index < len(lines):
+        if not lines[index][2].strip():
+            index += 1
+            continue
+        first = index
+        while index < len(lines) and lines[index][2].strip():
+            index += 1
+        paragraphs.append((lines[first][0], lines[index - 1][1], first, index - 1))
+    return paragraphs
+
+
+def _previous_nonblank_line(lines: list[tuple[int, int, str]], index: int) -> str | None:
+    for candidate in range(index - 1, -1, -1):
+        if lines[candidate][2].strip():
+            return lines[candidate][2]
+    return None
+
+
+def _scan_evidence_spans(text: str) -> tuple[_EvidenceSpan, ...]:
+    """Locate quotation and worked-example spans once for both projections."""
+    if not _may_contain_quotation(text):
+        return ()
+    lines = _content_lines(text)
+    paragraphs = _paragraph_ranges(lines)
+    spans: list[_EvidenceSpan] = []
+
+    index = 0
+    while index < len(lines):
+        if not _is_blockquote_line(lines[index][2]):
+            index += 1
+            continue
+        first = index
+        while index + 1 < len(lines) and _is_blockquote_line(lines[index + 1][2]):
+            index += 1
+        spans.append(_EvidenceSpan(lines[first][0], lines[index][1], True))
+        index += 1
+
+    for _, _, first, last in paragraphs:
+        index = first
+        while index <= last:
+            if "|" not in lines[index][2]:
+                index += 1
+                continue
+            run_first = index
+            while index <= last and "|" in lines[index][2]:
+                index += 1
+            run_last = index - 1
+            if run_last > run_first and any(
+                _is_table_separator(lines[row][2]) for row in range(run_first, run_last + 1)
+            ):
+                spans.append(_EvidenceSpan(lines[run_first][0], lines[run_last][1], True))
+
+    index = 0
+    while index < len(lines):
+        if not _is_indented_line(lines[index][2]):
+            index += 1
+            continue
+        first = index
+        while index + 1 < len(lines) and _is_indented_line(lines[index + 1][2]):
+            index += 1
+        label = _previous_nonblank_line(lines, first)
+        spans.append(
+            _EvidenceSpan(
+                lines[first][0],
+                lines[index][1],
+                label is not None and _QUOTATION_LABEL.search(label) is not None,
+            )
+        )
+        index += 1
+
+    for start, end, content in lines:
+        if not _is_example_intro(content):
+            continue
+        cover_end = end
+        for _, paragraph_end, _, _ in paragraphs:
+            if paragraph_end > end:
+                cover_end = paragraph_end
+                break
+        spans.append(_EvidenceSpan(start, cover_end, True))
+
+    for position, (paragraph_start, paragraph_end, _, _) in enumerate(paragraphs):
+        if _ATTRIBUTION.search(text[paragraph_start:paragraph_end]) is None:
+            continue
+        spans.append(_EvidenceSpan(paragraph_start, paragraph_end, True))
+        if position:
+            previous_start, previous_end, _, _ = paragraphs[position - 1]
+            spans.append(_EvidenceSpan(previous_start, previous_end, True))
+
+    return tuple(spans)
+
+
+def _model_spans(text: str) -> tuple[tuple[int, int], ...]:
+    """Spans the model projection keeps byte-identically, commands included."""
+    return tuple(
+        (span.start, span.end) for span in _scan_evidence_spans(text) if span.keeps_commands
+    )
+
+
+def mask_quoted_evidence(text: str) -> str:
+    """Blank every quotation/example span, preserving line structure and length.
+
+    Deterministic detectors must not read quoted speech as the source's own claim.
+    Replacing characters with spaces keeps sentence boundaries and offsets stable,
+    so neighbouring evidence cannot be glued together by the removal.
+    """
+    spans = _scan_evidence_spans(text)
+    if not spans:
+        return text
+    characters = list(text)
+    for span in spans:
+        for offset in range(span.start, span.end):
+            if characters[offset] not in "\r\n":
+                characters[offset] = " "
+    return "".join(characters)
+
+
+def _sub_outside_evidence(pattern: re.Pattern[str], text: str) -> str:
+    """Remove command matches unless they overlap quoted evidence."""
+    spans = _model_spans(text)
+    if not spans:
+        return pattern.sub("", text)
+
+    def remove(match: re.Match[str]) -> str:
+        start, end = match.span()
+        if any(span_start < end and start < span_end for span_start, span_end in spans):
+            return match.group(0)
+        return ""
+
+    return pattern.sub(remove, text)
+
 
 def _remove_control_once(text: str) -> str:
-    cleaned = _TASK_OVERRIDE_PREFIX.sub("", text)
-    cleaned = _CONTROL_INSTRUCTION.sub("", cleaned)
+    cleaned = _sub_outside_evidence(_TASK_OVERRIDE_PREFIX, text)
+    cleaned = _sub_outside_evidence(_CONTROL_INSTRUCTION, cleaned)
     # The directive pass runs last so a line uncovered by a removed command is
     # handled in the same call; the prompt treats every removal as a fixed point.
+    return _sub_outside_evidence(_LANGUAGE_DIRECTIVE_LINE, cleaned)
+
+
+def _remove_control_once_anywhere(text: str) -> str:
+    """Strict pass with no quotation exception; used on already-masked signals."""
+    cleaned = _TASK_OVERRIDE_PREFIX.sub("", text)
+    cleaned = _CONTROL_INSTRUCTION.sub("", cleaned)
     return _LANGUAGE_DIRECTIVE_LINE.sub("", cleaned)
 
 
-def without_control_instructions(text: str) -> str:
+def without_control_instructions(text: str, *, keep_quoted_evidence: bool = True) -> str:
     """Remove explicit output-control commands while preserving all other bytes.
 
     Indentation, code blocks, and measurements outside a removed command stay
     unchanged; only command clauses and the directive clause of a language line
-    vanish. The filter reaches a fixed point for ordinary stacked directives; the
-    rescans are bounded so an adversarial nested input cannot block the event loop.
+    vanish. With ``keep_quoted_evidence`` a command quoted inside a blockquote,
+    table, labelled indentation block, or explicit attack example survives, because
+    the source is describing the attack rather than issuing it. The filter reaches a
+    fixed point for ordinary stacked directives; the rescans are bounded so an
+    adversarial nested input cannot block the event loop.
     """
     folded = text.casefold()
     if not any(hint in folded for hint in _CONTROL_HINT) and not _BARE_VERDICT_HINT.search(folded):
         return text
+    remove = _remove_control_once if keep_quoted_evidence else _remove_control_once_anywhere
     cleaned = text
     for _ in range(_MAX_FILTER_PASSES):
-        updated = _remove_control_once(cleaned)
+        updated = remove(cleaned)
         if updated == cleaned:
             break
         cleaned = updated

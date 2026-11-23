@@ -692,6 +692,193 @@
           "triggered the restoration"
         ]
       }
+    },
+    {
+      "id": "holdout-late-batch-result",
+      "source_type": "WEB",
+      "source_title": "Should packing work be released in small batches?",
+      "source_language": "en",
+      "response_language": "en",
+      "content": "A regional fulfillment center reviewed how packing work reached the floor over one quarter. Orders arrived all day, but volume peaked between eleven in the morning and two in the afternoon. The operations team wanted to know whether releasing work in smaller waves would shorten the time an order waited before a packer picked it up.\n\nThe review covered the same warehouse, the same staffing pattern, and the same carrier cut-off times. Planners logged the queue at the start of every hour, and they recorded packing travel time and damage rates alongside it so that a shorter queue could not be mistaken for faster hands.\n\nEarly results looked unpromising. Before any change the queue at the morning peak ran at forty-six minutes. An hourly release schedule, which the team expected to smooth the flow, was rejected: packers finished each small wave faster than the next wave could be staged, so the queue grew instead of shrinking.\n\nTravel time per order and the damage rate stayed flat through those weeks, which meant the team could not credit the release pattern with any gain yet. The planners then switched to a pull rule: a wave went out only when a bench came free.\n\nWork reached the floor in smaller units, and packers stopped waiting for a full wave before starting. Small batches cut the queue from 46 minutes to 17 minutes, but the improvement depended on replenishment timing. When replenishment slipped past 14:00, the gain disappeared and the backlog stayed at 46 minutes.\n\nThe effect therefore holds only while restocking finishes before the afternoon peak. The team kept the pull rule for the morning window and left the rest of the day on the older schedule.",
+      "chunk_size_chars": 1200,
+      "chunk_overlap_chars": 120,
+      "profile": {
+        "profession": "Operations analyst",
+        "preferred_language": "en"
+      },
+      "existing_categories": [
+        "Логистика",
+        "Операции"
+      ],
+      "expected": {
+        "category": "Логистика",
+        "category_aliases": [
+          "warehouse operations",
+          "fulfillment",
+          "operations",
+          "logistics",
+          "warehouse",
+          "операции"
+        ],
+        "outcome_state": "mixed",
+        "outcome_terms": [
+          "46 minutes",
+          "17 minutes",
+          "replenishment",
+          "14:00",
+          "2 pm",
+          "slipped past",
+          "only when",
+          "gain disappeared"
+        ],
+        "title_evidence_groups": [
+          [
+            "packing batch",
+            "small batch",
+            "small wave",
+            "pull rule",
+            "batching"
+          ],
+          [
+            "46 minutes",
+            "17 minutes",
+            "46 min",
+            "17 min"
+          ],
+          [
+            "14:00",
+            "2 pm",
+            "2pm",
+            "two in the afternoon",
+            "replenishment"
+          ],
+          [
+            "only when",
+            "only while",
+            "only if",
+            "as long as",
+            "disappeared",
+            "did not hold",
+            "depends on",
+            "contingent",
+            "conditional",
+            "unless",
+            "slipped",
+            "revert",
+            "revers"
+          ]
+        ],
+        "title_forbidden_terms": [
+          "always eliminates",
+          "always shortens the backlog",
+          "regardless of replenishment",
+          "hourly release cut the queue",
+          "reduced the backlog permanently"
+        ],
+        "summary_evidence_groups": [
+          [
+            "14:00",
+            "2 pm",
+            "2pm",
+            "two in the afternoon"
+          ],
+          [
+            "46 minutes"
+          ],
+          [
+            "17 minutes"
+          ]
+        ],
+        "summary_adds_evidence": true,
+        "summary_forbidden_terms": [
+          "replenishment does not matter",
+          "regardless of replenishment",
+          "hourly release cut the queue"
+        ]
+      }
+    },
+    {
+      "id": "holdout-independent-sources",
+      "source_type": "TEXT",
+      "source_title": null,
+      "source_language": "en",
+      "response_language": "en",
+      "content": "SOURCE 1 [WEB]: A baking test compared sourdough hydration at 68% and 76%. The wetter dough gave a more open crumb, but it needed gentle shaping to keep the loaf from spreading.\n\nSOURCE 2 [WEB]: A brake review tested new disc-brake pads over ten controlled stops. Braking stayed consistent from the first stop to the last, and the rotors showed no glazing.",
+      "metadata": {
+        "source_count": 2,
+        "successful_source_count": 2
+      },
+      "profile": {
+        "preferred_language": "en"
+      },
+      "existing_categories": [
+        "Кулинария",
+        "Автомобили"
+      ],
+      "expected": {
+        "outcome_state": "none",
+        "must_represent_each_source": true,
+        "title_evidence_groups": [
+          [
+            "sourdough",
+            "hydration"
+          ],
+          [
+            "disc-brake",
+            "disc brake",
+            "brake pad"
+          ]
+        ],
+        "title_forbidden_terms": [
+          "unified",
+          "same problem",
+          "both solve",
+          "shared cause"
+        ],
+        "summary_evidence_groups": [
+          [
+            "68%",
+            "76%"
+          ],
+          [
+            "open crumb",
+            "crumb"
+          ],
+          [
+            "gentle shaping",
+            "gentle handling",
+            "careful handling",
+            "shaping"
+          ],
+          [
+            "ten controlled stops",
+            "controlled stops",
+            "ten stops"
+          ],
+          [
+            "rotor",
+            "glazing"
+          ]
+        ],
+        "summary_adds_evidence": true,
+        "answer_forbidden_terms": [
+          "unified",
+          "same problem",
+          "both solve",
+          "shared cause"
+        ],
+        "distinct_topic_groups": [
+          [
+            "sourdough",
+            "hydration"
+          ],
+          [
+            "disc-brake",
+            "brake pads",
+            "braking"
+          ]
+        ]
+      }
     }
   ]
 }

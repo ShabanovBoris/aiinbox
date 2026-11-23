@@ -361,10 +361,36 @@ was found» удаляются и не создают ложный no-winner hin
 «Result rose 40%» остаётся evidence. Русские формы включают «скажи/напиши:
 победителя нет / победитель не определён / результаты смешанные» и позитивные
 «метод A победил / оказался лучше».
-Тот же очищенный projection, который видит
-модель, используется для chunking, deterministic title repair и opt-in
-evaluation; удалённая команда не может изменить title через repair, а hint о
-no-winner строится по очищенному тексту, а не по исходной injection. System
+У фильтрации два разных контракта. Model projection (`analysis_text_projection`)
+сохраняет protected quotation/example spans: Markdown blockquote (включая quoted
+blank lines), непрерывный table example/quotation, indented block с явной меткой
+quotation/attack, а также абзац под явным line-anchored заголовком об атаке
+(«Example of a prompt injection:», «Prompt injection example:», «Пример
+инъекции:», «Пример атаки:») или непосредственно перед post-attribution («The
+attack attempts…», «This prompt injection instructs…», «Атака пытается…»). Внутри
+таких spans команды остаются в тексте: источник описывает или цитирует атаку, а
+system prompt обязывает модель анализировать всё это как данные. Generic
+«Example:» и fenced code block исключением не являются: команды внутри fence
+удаляются так же, как standalone команда вне цитаты, а fence, отступы и
+окружающие факты сохраняются. Обычный indented code без метки quotation/attack
+тоже не получает нового исключения.
+Signal projection (`analysis_signal_projection`) маскирует каждый
+quotation/example span пробелами (переводы строк и длина сохраняются), затем
+применяет ту же строгую грамматику команд. Для signals indented block (≥4
+пробелов или tab) считается структурной цитатой, даже без метки, поэтому его
+содержимое не участвует в deterministic сигналах. Поэтому цитата не создаёт
+deterministic no-winner hint, title suffix или reversal hint, даже когда это
+обычное утверждение («The comparison results were mixed»), а не команда; при
+этом модель видит цитату целиком и учитывает её сама. `analysis_text_projection`
+используется для prompt, chunking и opt-in evaluation, а deterministic repair и
+hint читают signal projection: удалённая команда не может изменить title через
+repair, а quoted verdict не может фабриковать суффикс. Практическое следствие:
+настоящий verdict или reversal, встречающийся только внутри
+blockquote/indented/table цитаты, не даёт deterministic hint или суффикса.
+Chunk checkpoints хранят projected bytes и `chunk_sha256` именно projected
+chunk, поэтому checkpoint, построенный по искажённому тексту, не
+переиспользуется, а незатронутые chunks переиспользуются без повторной оплаты;
+хранимый Content при этом не меняется. System
 prompt запрещает выполнять оставшиеся
 инструкции; значение, запрошенное контентом, может появиться в ответе только если
 независимое evidence поддерживает его само по себе.
@@ -504,9 +530,35 @@ reversed», «no measured gain reversed», «не обратился» подс�
 no longer hold under peak load» и «the gain would no longer hold without the cache»
 не включают `REVERSAL IN SOURCE` и не заставляют title утверждать подтверждённый
 разворот или отсутствие условия. Позднее «the gain held» отменяет разворот только
-в той же области: «The gain reversed under peak load. At normal load, the gain
-held.» остаётся CONDITION, а «Later runs showed the gain held under peak load»
-снимает разворот.
+при совпадении и измеряемого показателя, и условия: «The gain reversed under peak
+load. At normal load, the gain held.» остаётся CONDITION, «Later runs showed the
+gain held under peak load» снимает разворот, а «The measured latency reversed on
+GPU. The measured throughput held on GPU.» и «The measured gain reversed in large
+batches. The measured gain held in small batches.» разворот сохраняют. Условия
+совпадают, когда оба не названы или называют общую фразу области; названное
+условие и его отсутствие не совпадают, поэтому hold без области не отменяет
+условный разворот. Показатель разворота — та измеряемая величина, которой
+управляет его глагол: подлежащее перед глаголом, включая координатное подлежащее
+из голых имён и запятое перечисление («the gain and accuracy reversed» и «the
+gain, accuracy, and reliability held» называют все величины; член между запятой и
+союзом — это пунктуация самого перечисления, а не пропущенный показатель), а при
+пустом подлежащем — ближайшая предшествующая клауза, называющая показатель, а не
+вся предыдущая часть предложения. Координатор или запятая после сказуемого
+остаётся границей claim («the gain reversed and accuracy held», «the gain
+reversed, accuracy held» — две клаузы), а hold отменяет разворот только когда
+покрывает все названные показатели: «the gain and accuracy reversed … the
+accuracy held» и «the gain, accuracy reversed … the accuracy held» оставляют gain
+развёрнутым, а «the gain reversed … the gain, accuracy, and reliability held»
+снимают разворот. Конкретная величина («latency», «throughput», «accuracy»,
+«reliability») задаёт тождество показателя даже внутри общей обёртки («latency
+improvement», «gain in accuracy»), а общая обёртка («gain», «improvement»,
+«performance») совпадает только с той же обёрткой: «gain in latency» и «gain in
+throughput» — разные показатели, а «the latency improvement reversed … the
+improvement held» разворот сохраняет. Пустой показатель разворота означает
+неизвестное тождество и сам по себе hold не отменяет; два разных названных
+показателя — отменяют. Hold «it/this» наследует показатель разворота только
+тогда, когда в его собственном подлежащем показатель не назван; названный в hold
+другой показатель не наследует.
 «The reversal was avoided» и «reversed course» не являются сообщением о
 развороте результата. Слова «reverse proxy», «reversible», «обратная связь»
 также не создают выдуманную предпосылку. Разворот не извлекается из возврата
@@ -535,7 +587,34 @@ held remains unknown after the measured gain reversed»), разворот не 
 сообщает, что победитель не определён, приложение детерминированно добавляет
 этот вывод в title, когда
 модель его пропустила: измеренные детали сохраняются, выдуманный победитель не
-появляется, а title, уже содержащий вывод, не меняется. Выводом считаются и
+появляется, а title, уже содержащий вывод и не утверждающий победителя, не
+меняется. Если сам title утверждает
+победителя, а источник оставляет сравнение открытым, приложение заменяет такой
+title проверенным выводом («No winner was established», «Победитель не
+определён») вместо добавления суффикса: взаимоисключающие утверждения в одном
+поле не сохраняются, а вывод берётся из доказательства, поэтому навязанный
+победитель в title не может отменить вердикт источника. Так же заменяется title,
+который уже содержит вывод и при этом утверждает победителя. Победа в финальном
+или итоговом раунде считается итоговым результатом сравнения и приводит к
+замене; частичный результат — измерение, split, победа в подмножестве («A won the
+small sample», «A won on accuracy in the final benchmark»), событие вроде тендера
+или квиза — сохраняет деталь и получает суффикс. Подмножество читается в claim
+самой победы, поэтому подмножество в соседней клаузе о другой стороне («A won the
+benchmark; B was faster on the small sample») не делает несопоставленную победу
+частичной: такой title заменяется. Split сохраняет деталь, только
+когда trade-off не закрыт итоговым выводом в том же title: «A won on speed, but B
+won on stability; overall A won» и «…; in the end A won» считаются итогом и
+заменяются, потому что утверждают победителя наравне с однозначной победой; split,
+победы которого не называют измеренную область («A won the benchmark, but B won the
+review»), тоже читается как утверждение победителя и заменяется.
+Утверждение победителя распознаётся общими лексическими паттернами: форма, которую
+они не покрывают (например, русский суперлатив без глагола победы), сохраняет
+прежний append и видимое противоречие. Лексика области действия (scope) английская,
+поэтому русская победа в подмножестве («победил на небольшой выборке») читается
+как итоговая и заменяется. Repair выполняется при анализе, поэтому относится к
+новым и повторно анализируемым Item; сохранённый прежней версией title не
+переписывается.
+Выводом считаются и
 естественные формы того же утверждения: пассив с глаголом-связкой и без него
 («победитель не был определён», «победитель не выявлен», «победитель сравнения
 так и не был определён»), отрицательное наличие («явного победителя нет»),
@@ -960,10 +1039,13 @@ extraction отсутствующий контент не додумываетс
 `priority_reason` остаётся внутренним объяснением факторов и может учитывать
 профиль.
 
-Для Item с Telegram VIDEO/YouTube title, summary, next action и reason создаются на
-языке из профиля, даже если transcript на другом языке; поле `language` сохраняет
-язык исходного материала. Для остальных источников title, summary, next action и
-reason создаются на языке самого контента. В user message всегда присутствует
+Для Item с Telegram VIDEO/YouTube, а также с Instagram-контентом, содержащим видео
+(Reels и посты с видео-элементами), title, summary, next action и reason создаются
+на языке из профиля, даже если transcript на другом языке; поле `language`
+сохраняет язык исходного материала. Для остальных источников, включая
+Instagram-посты из фото и текста, title, summary, next action и reason создаются
+на языке самого контента: видеосодержимое определяется по фактически извлечённым
+медиа-элементам, а не по типу источника. В user message всегда присутствует
 ровно одна строка `RESPONSE LANGUAGE`; `preferred_language` не дублируется внутри
 profile JSON и не может переопределить языковой контракт. Если extraction дал
 язык исходника, он передаётся отдельной строкой `SOURCE LANGUAGE` и определяет
@@ -1027,7 +1109,9 @@ injected command не попадает в checkpoint; старые версии 
 Профиль может содержать profession, domains, weighted goals, interests,
 constraints, free text и `preferred_language` в формате BCP-47. По умолчанию
 используется `ru`; `/profile_update` меняет язык, например, на `en`. Параметр
-управляет ответом для видео-Items; язык исходного transcript его не переключает.
+управляет ответом для источников с видео: Telegram VIDEO, YouTube, Instagram Reels
+и посты с видео-элементами; язык исходного transcript его не переключает.
+Instagram-посты из фото и текста следуют языку контента.
 
 ## 36. /profile
 

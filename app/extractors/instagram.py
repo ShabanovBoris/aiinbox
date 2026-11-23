@@ -772,5 +772,8 @@ class InstagramExtractor:
                 "creator": creator,
                 "username": username,
                 "description_excerpt": description or None,
+                # A Reel is always video; language contract reads this fact
+                # instead of the shared INSTAGRAM source type.
+                "instagram_has_video": True,
             },
         )

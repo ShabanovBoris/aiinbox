@@ -1,7 +1,9 @@
+import pytest
 from sqlalchemy import select
 
 from app.domain.enums import ProcessingStatus, SourceType
-from app.domain.models import NormalizedContent
+from app.domain.language import response_language_for
+from app.domain.models import DEFAULT_PROFILE, NormalizedContent
 from app.domain.priority import PriorityEngine
 from app.errors import AppError
 from app.extractors.audio import AudioExtractor
@@ -221,6 +223,59 @@ async def test_permanent_partial_source_failure_is_not_retryable(session_factory
         source = await session.scalar(select(ItemSource).where(ItemSource.item_id == item.id))
         assert source.extraction_status == "FAILED"
         assert source.failure_is_permanent is True
+
+
+@pytest.mark.parametrize(
+    ("has_video", "expected_language"),
+    # A composite Item carries no single content language, so a photo-only mix
+    # keeps the existing content-primary fallback instead of the profile.
+    [(True, "ru"), (False, None)],
+)
+def test_mixed_item_answers_in_profile_language_only_when_a_source_has_video(
+    has_video, expected_language
+):
+    """A composite Item with an Instagram video answers in the profile language."""
+    item = Item(
+        id=9,
+        user_id=1,
+        processing_status=ProcessingStatus.QUEUED,
+        source_type=SourceType.TEXT,
+        processing_stage="EXTRACTING",
+        user_note="",
+    )
+    sources = [
+        ItemSource(
+            item_id=9,
+            source_index=0,
+            source_type=SourceType.INSTAGRAM,
+            source_url="https://www.instagram.com/reel/ABC123/",
+        ),
+        ItemSource(
+            item_id=9,
+            source_index=1,
+            source_type=SourceType.WEB,
+            source_url="https://example.com/article",
+        ),
+    ]
+
+    content = ProcessingPipeline._compose_item_content(
+        item,
+        None,
+        sources,
+        [
+            NormalizedContent(
+                source_type=SourceType.INSTAGRAM,
+                text="Reel transcript",
+                language="en",
+                metadata={"instagram_has_video": has_video},
+            ),
+            NormalizedContent(source_type=SourceType.WEB, text="An English article", language="en"),
+        ],
+        [],
+    )
+
+    assert content.metadata["instagram_has_video"] is has_video
+    assert response_language_for(content, DEFAULT_PROFILE) == expected_language
 
 
 def test_completeness_uses_child_source_types_for_mixed_item():
