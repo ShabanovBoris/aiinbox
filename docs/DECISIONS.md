@@ -1794,7 +1794,15 @@ matches what the verdict's own clause compared:
   on no recognised sentence (a line break wraps it without a terminal mark, as pasted
   Telegram text, a PDF-page join or a web paragraph does), the verdict's own phrase is
   its clause and the claim reads from its end — the detectors stay total on such
-  evidence instead of raising.
+  evidence instead of raising;
+- a claim is read as a whole sentence and then as each of its clauses that starts a
+  new subject (a punctuation break with a coordinator, or a coordinator followed by a
+  pronoun or a determiner), including the final fragment of a sentence without
+  terminal punctuation. A coordinated object list ("cut latency, cost, and error rate
+  by 30%") and a parenthetical aside ("did not, however, cut", "could, in theory,
+  cut") start no new subject, so the change verb, its metrics and their amount stay
+  one claim. A comma with "however" is therefore not a claim boundary: the aside
+  keeps the modality on its own verb, which is the narrower error.
 
 An `A/B`/`А/Б` designator names both sides, but only inside the verdict's clause: a
 claim reads sides from a spelled-out alternative noun ("method A", "approach A",
@@ -1818,9 +1826,14 @@ covers "full/final/overall rollout", a Russian or Ukrainian later round with its
 preposition, "в полном/итоговом прогоне" and "второй раунд показал", not every
 paraphrase. The clause complement and the sentence-prefix fallback both read inside
 `_CLAUSE_WINDOW` (400 characters), so a side named earlier in a very long
-unpunctuated sentence does not scope the verdict. A claim is read as a whole
-sentence, so a hedge in another clause of the claim's sentence ("…cut latency by
-30%, but the team may repeat the test") rejects a real measurement; narrowing the
-claim to its own clause is AIINBOX-20, not this rule.
+unpunctuated sentence does not scope the verdict. A claim is read as a whole sentence
+first and then as each clause that starts its own subject, so a hedge or a negation
+in another sentence or clause ("The team might rerun the pilot, and the full rollout
+showed…", "…cut latency by 30%, but the team may repeat the test") does not reject a
+real measurement, while the same hedge inside the measuring clause ("might cut",
+"did not, however, cut") still does. The whole-sentence pass stays because a
+coordinated object list has no subject after its comma: read as clauses alone, the
+verb and the amounts of "cut latency, cost, and error rate by 30%" would be split
+apart.
 The measured-only frame does not affect decisive-win partiality ("won in the second
 round" stays partial).

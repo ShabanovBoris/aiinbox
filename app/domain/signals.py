@@ -2477,6 +2477,48 @@ def _measured_change_settles_comparison(
     )
 
 
+# A measured claim is one predicate: the verb of change with the quantity and the
+# amount it moves. A coordinated object list ("cut latency, cost, and error rate by
+# 30%") and a parenthetical aside ("did not, however, cut", "could, in theory, cut")
+# have no subject of their own, so they stay inside that claim. A clause that starts a
+# new subject — after a punctuation break with a coordinator, or a coordinator followed
+# by a pronoun or a determiner — is a separate claim, because its hedge or negation
+# speaks about its own result ("The team might rerun the pilot, and the full rollout
+# showed method A cut latency by 30%").
+_MEASURED_CLAIM_BREAK = re.compile(
+    r"(?i)[;!?\n]|:\s|\s[—–]\s"
+    r"|,\s*(?:and|but|or|yet|so|while|whereas|though|although|"
+    r"и|но|а|однако|затем|поэтому|хотя)\b"
+    r"|\b(?:and|but|or|yet|so)\s+(?:the|a|an|this|that|these|those|there|we|they|it|"
+    r"he|she|i|you|our|their|its|his|her)\b"
+)
+
+
+def _measured_claims(sentence: str) -> list[str]:
+    """The claims of one sentence that can measure a result: the sentence and its clauses.
+
+    The whole sentence is the claim that measures a coordinated object list, whose
+    comma has no subject after it. Each clause that starts its own subject is read on
+    its own as well, so a hedge or a negation in one clause cannot reject a measurement
+    that another clause states, and a measurement in one clause is not rejected by a
+    hedge about something else ("…cut latency by 30%, but the team may repeat the test").
+    """
+    claims = [sentence]
+    boundaries = list(_MEASURED_CLAIM_BREAK.finditer(sentence))
+    if not boundaries:
+        return claims
+    start = 0
+    for boundary in boundaries:
+        clause = sentence[start : boundary.start()]
+        start = boundary.end()
+        if clause.strip():
+            claims.append(clause)
+    tail = sentence[start:]
+    if tail.strip():
+        claims.append(tail)
+    return claims
+
+
 def _measured_change_in_tail(
     text: str, comparison_labels: set[str], comparison_metrics: set[str], claim_start: int
 ) -> bool:
@@ -2489,15 +2531,18 @@ def _measured_change_in_tail(
     ("…inconclusive, though the full rollout showed method A cut latency by 30%").
     A measured claim settles the verdict only when
     ``_measured_change_settles_comparison`` binds it to that comparison; a result about
-    another change, side or quantity leaves it standing.
+    another change, side or quantity leaves it standing. Every claim is read on its own
+    — a sentence, each clause of it that starts its own subject, and the trailing
+    fragment of a sentence without terminal punctuation — so hedges and negations in
+    other sentences and clauses cannot reject a measurement.
     """
     window = text[claim_start : claim_start + _CLAUSE_WINDOW]
     for start, end in _sentence_spans(window):
-        claim = window[start:end]
-        if not claim.strip() or not _measured_change(claim):
-            continue
-        if _measured_change_settles_comparison(claim, comparison_labels, comparison_metrics):
-            return True
+        for claim in _measured_claims(window[start:end]):
+            if not _measured_change(claim):
+                continue
+            if _measured_change_settles_comparison(claim, comparison_labels, comparison_metrics):
+                return True
     return False
 
 

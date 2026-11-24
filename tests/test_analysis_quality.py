@@ -8005,6 +8005,77 @@ def test_content_verb_before_the_failure_noun_keeps_the_negative_result(
             "Method A cut latency by 30% in production",
             "en",
         ),
+        # The last sentence often arrives without terminal punctuation; it is still a
+        # claim, so the sentence classifies alike with and without the final period.
+        (
+            "The pilot was inconclusive. The full rollout showed method A cut latency by 30%",
+            "Method A cut latency by 30% in production",
+            "en",
+        ),
+        (
+            "The pilot was inconclusive. The full rollout showed method A cut latency by 30%.",
+            "Method A cut latency by 30% in production",
+            "en",
+        ),
+        # A hedge in an earlier sentence describes another plan, not this measurement.
+        (
+            "The pilot was inconclusive. The team might repeat the experiment. "
+            "The full rollout showed method A cut latency by 30%.",
+            "Method A cut latency by 30% in production",
+            "en",
+        ),
+        # A hedge in another clause of the same sentence speaks about that clause too,
+        # so the measurement beside it still settles the comparison.
+        (
+            "The comparison was inconclusive. The full rollout showed method A cut latency "
+            "by 30%, but the team may repeat the test.",
+            "Method A cut latency by 30%",
+            "en",
+        ),
+        (
+            "The comparison was inconclusive. The team might rerun the pilot, and the full "
+            "rollout showed method A cut latency by 30%.",
+            "Method A cut latency by 30%",
+            "en",
+        ),
+        # A coordinated object list keeps the change verb, its metrics and their amount
+        # in one claim; the conjunction inside the list is not a claim boundary.
+        (
+            "The comparison was inconclusive. The full rollout showed method A cut latency "
+            "and cost by 30%.",
+            "Method A cut latency and cost by 30%",
+            "en",
+        ),
+        (
+            "The comparison was inconclusive. The full rollout showed method A cut latency "
+            "and cost by 30%",
+            "Method A cut latency and cost by 30%",
+            "en",
+        ),
+        (
+            "The comparison was inconclusive. The full rollout showed method A improved "
+            "latency and accuracy by 25%.",
+            "Method A improved latency and accuracy by 25%",
+            "en",
+        ),
+        (
+            "The comparison was inconclusive. The full rollout showed method A cut latency, "
+            "cost, and error rate by 30%.",
+            "Method A cut latency, cost and error rate by 30%",
+            "en",
+        ),
+        (
+            "Сравнение методов не выявило победителя в первом раунде. Во втором раунде метод A "
+            "снизил задержку и стоимость на 30%.",
+            "Метод A снизил задержку и стоимость на 30%",
+            "ru",
+        ),
+        (
+            "Сравнение методов не выявило победителя в первом раунде. Во втором раунде метод A "
+            "снизил задержку и стоимость на 30%",
+            "Метод A снизил задержку и стоимость на 30%",
+            "ru",
+        ),
         (
             "Сравнение методов не выявило победителя в первом раунде. Во втором раунде метод A "
             "снизил задержку на 30%.",
@@ -8078,6 +8149,10 @@ def test_measured_result_after_an_early_verdict_keeps_the_title(text, title, lan
     invariant is narrower than "a later measured change wins": the claim must name a
     compared side, measure one of the verdict's measured areas when the verdict names
     them, and be framed as a later phase of that comparison.
+
+    Each claim is read on its own, so the same sentence classifies alike with and
+    without a final period, a hedge in another sentence or clause cannot reject the
+    measurement, and a coordinated object list stays one predicate.
     """
     content = NormalizedContent(source_type=SourceType.WEB, text=text, language=language)
     prompt = build_user_message(content, UserProfile(preferred_language=language), [])
@@ -8098,7 +8173,23 @@ def test_measured_result_after_an_early_verdict_keeps_the_title(text, title, lan
         # measurement the source observed.
         "The pilot was inconclusive. The full rollout will cut latency by 30%.",
         "The pilot was inconclusive. The full rollout may cut latency by 30%.",
+        "The pilot was inconclusive. The full rollout might cut latency by 30%.",
         "The pilot was inconclusive. The full rollout did not cut latency by 30%.",
+        "The pilot was inconclusive. The full rollout may cut latency by 30%",
+        "The pilot was inconclusive. The full rollout might cut latency by 30%",
+        "The pilot was inconclusive. The full rollout did not cut latency by 30%",
+        # An aside does not separate the modality or the negation from the verb it
+        # modifies, so the claim still describes an intent or a failure.
+        "The comparison was inconclusive. Method A did not, however, cut latency by 30%.",
+        "The pilot was inconclusive. The full rollout could, in theory, cut latency by 30%.",
+        "The pilot was inconclusive. The full rollout might, according to the plan, show "
+        "method A cut latency by 30%.",
+        "The pilot was inconclusive. The full rollout might, however, cut latency by 30%.",
+        # A hedge inside the measuring clause keeps the verdict even when the sentence
+        # holds another clause: the measurement is hedged, not observed.
+        "The pilot was inconclusive. The full rollout might cut latency and cost by 30%, "
+        "and the team may repeat the test.",
+        "The pilot was inconclusive. Method A might cut latency and cost by 30%.",
         "First round was inconclusive. Whether method A cut latency by 30% remains open.",
         "Сравнение было неопределённым. Команда планирует снизить задержку на 30%.",
         # A measured change before the verdict is the claim the verdict answers, so it
@@ -8154,7 +8245,9 @@ def test_measured_change_does_not_override_an_unsuperseded_verdict(text):
 
     The claim must name a side of the comparison, measure an area the verdict measured
     when it named one, and carry its own later-phase frame. The "A/B" designator and
-    the sides named in the verdict clause belong to the verdict, not to the claim.
+    the sides named in the verdict clause belong to the verdict, not to the claim. A
+    hedge, a forecast or a negation rejects a claim even when an aside separates it
+    from the verb ("did not, however, cut"), because that clause is the measuring one.
     """
     assert states_inconclusive_comparison(text) is True
 
