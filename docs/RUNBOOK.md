@@ -163,6 +163,33 @@ uv run pytest
 GitHub Actions job `quality` выполняет тот же gate и является required status
 check для protected `main`.
 
+## Opt-in Telegram → SQLite → delivery E2E
+
+Сквозной путь `Telegram update → SQLite (Alembic-схема) → обработка → Item READY →
+ITEM_READY delivery → сообщение в транспорте` проверяет
+`tests/test_e2e_telegram_sqlite.py`. Обычный `pytest` прогоняет три детерминированных
+сценария (Instagram фото-пост, Reel, inconclusive verdict) с fake-провайдером и
+проверяет изоляцию временной БД.
+
+Live-прогон с реальным LLM включается явно и требует путь для артефакта вне репозитория:
+
+```bash
+AIINBOX_LIVE_E2E=1 \
+AIINBOX_E2E_ARTIFACT=/tmp/aiinbox-e2e.json \
+uv run pytest tests/test_e2e_telegram_sqlite.py -k live -s -q
+```
+
+- `AIINBOX_E2E_ARTIFACT` обязателен; путь внутри репозитория отклоняется. JSON пишется
+  при любом исходе: `passed`, `failed` или `not_run`.
+- Тест мигрирует отдельную временную SQLite через `alembic upgrade head` с явным
+  `sqlalchemy.url`, поэтому `DATABASE_URL` из `.env` и production-БД не затрагиваются.
+- LLM-ключи читаются из `.env`; `.env` не коммитится, артефакт не коммитится.
+- Транспорт — `FakeBot`: реальная отправка в Telegram не выполняется, карточка сохраняется
+  в артефакте как payload. Instagram извлекается fixture-адаптером, vision-вызов
+  детерминирован; живая сеть Instagram и Telegram этим прогоном не проверяются.
+- Если провайдер не настроен, тест завершается `skip`, а артефакт получает
+  `status: not_run` и причину.
+
 ## Operational status / health
 
 Локально:
