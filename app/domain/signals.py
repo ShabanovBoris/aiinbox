@@ -1,8 +1,4 @@
-"""Deterministic evidence signals shared by prompt construction and result checks.
-
-These helpers only recognise what the captured evidence explicitly states. They
-never decide the answer, invent a conclusion, or rewrite measured content.
-"""
+"""Deterministic evidence signals shared by prompt construction and result checks."""
 
 import re
 import sys
@@ -11,16 +7,16 @@ from collections.abc import Mapping
 
 _FOLD = str.maketrans({"ё": "е", "Ё": "Е"})
 _VERDICT_ACTIONS = r"pick|choose|select|declare|establish|determine|produce|identify|name"
-# A Russian or Ukrainian genitive after "победитель/переможець" names the event the
-# person won ("победителя тендера"), not a compared side.
+# A Russian or Ukrainian genitive after "победитель/переможець" names the event the person won
+# ("победителя тендера"), not a compared side.
 _NON_OUTCOME_WIN_OBJECTS_CYRILLIC = (
     r"тендер\w*|выбор(?:ы|ов|ам|ами|ах)|конкурс\w*|закуп\w*|аукцион\w*|"
     r"викторин\w*|преми\w*|лотере\w*|грант(?:а|ов|ам|ами|ах)|"
     r"вибор(?:и|ів|ам|ами|ах)|закупівл\w*|аукціон\w*|вікторин\w*|премі\w*|"
     r"лотере\w*|грант(?:а|ів|ам|ами|ах)"
 )
-# An election, tender, auction or quiz has participants and one winner; a method
-# comparison has sides. An event-framed "no winner" reports the event's outcome.
+# An election, tender, auction or quiz has participants and one winner; a method comparison has
+# sides.
 _NON_OUTCOME_EVENTS = (
     r"elections?|tenders?|auctions?|contests?|competitions?|quiz(?:zes)?|raffles?|"
     r"lotter(?:y|ies)|awards?|medals?|troph(?:y|ies)|scholarships?|grants?|races?|"
@@ -28,12 +24,12 @@ _NON_OUTCOME_EVENTS = (
     rf"{_NON_OUTCOME_WIN_OBJECTS_CYRILLIC}"
 )
 _EVENT_NOUN = rf"(?:{_NON_OUTCOME_EVENTS})\b"
-# A hyphenated compound ("an award-winning tool") describes the subject; it does not
-# name an event whose outcome the win reports.
+# A hyphenated compound ("an award-winning tool") describes the subject; it does not name an event
+# whose outcome the win reports.
 _EVENT_NOUN_ANY_CASE = re.compile(rf"(?i){_EVENT_NOUN}(?![\w-])")
 _WIN_NOUN = r"(?:no\s+winner|winners?|побед\w*|перемож\w*)"
-# The event frames the phrase from either side: "no winner … in the election",
-# "в рамках тендера победителя нет", "the election winner", "победителя тендера".
+# The event frames the phrase from either side: "no winner … in the election", "в рамках тендера
+# победителя нет", "the election winner", "победителя тендера".
 _EVENT_SCOPE_PREPOSITION = (
     r"(?:in|at|of|for|during|after|before|from|into|within|"
     r"в|во|на|среди|серед|после|після|в\s+рамках|у\s+рамках|в\s+ходе|у\s+ході|"
@@ -45,10 +41,8 @@ _EVENT_VERDICT_FRAME = re.compile(
     rf"(?:the\s+)?(?:\w+\s+){{0,2}}?{_EVENT_NOUN}"
     rf"|\b{_EVENT_NOUN}(?:\s+\S+){{0,4}}?\s+\b{_WIN_NOUN}\b"
 )
-# "won praise", "won the contract", "won the office quiz" and "outperformed
-# expectations" report attention, business or a forecast beat, not which alternative
-# measured better. The event nouns are shared with the no-winner frame above, so a
-# tender or quiz cannot read as an event in one path and a compared side in the other.
+# "won praise", "won the contract", "won the office quiz" and "outperformed expectations" report
+# attention, business or a forecast beat, not which alternative measured better.
 _NON_OUTCOME_WIN_EXTRAS = (
     r"praise|prizes?|prize\s+money|recognition|attention|acclaim|support|approval|"
     r"backing|funding|contracts?|deals?|traction|users?|customers?|market\s+share|"
@@ -56,8 +50,8 @@ _NON_OUTCOME_WIN_EXTRAS = (
 )
 _NON_OUTCOME_WIN_OBJECTS = rf"(?:{_NON_OUTCOME_WIN_EXTRAS}|{_NON_OUTCOME_EVENTS})"
 _NON_OUTCOME_WIN = rf"(?!\s+(?:the\s+|a\s+|an\s+)?(?:[\w-]+\s+)?(?:{_NON_OUTCOME_WIN_OBJECTS})\b)"
-# A between/между phrase compares sides only when it names them; a decision between
-# actions and a relationship are not comparisons of alternatives.
+# A between/между phrase compares sides only when it names them; a decision between actions and a
+# relationship are not comparisons of alternatives.
 _COMPARISON_SIDES = (
     r"(?:approach(?:es)?|methods?|models?|options?|variants?|configurations?|"
     r"baselines?|agents?|prompts?|systems?|tools?|algorithms?|techniques?|"
@@ -68,15 +62,11 @@ _COMPARISON_SIDES = (
     r"інструмент\w*|конфігурац\w*|технік\w*|стратег\w*|реалізац\w*|"
     r"архітектур\w*)"
 )
-# A sentence that names a compared side is a comparison verdict even when it also
-# mentions an event ("neither method won the tender").
+# A sentence that names a compared side is a comparison verdict even when it also mentions an event
+# ("neither method won the tender").
 _COMPARISON_SIDE_NAMES = re.compile(rf"(?i)\b(?:{_COMPARISON_SIDES})\b")
-# A side noun alone is not evidence of a comparison ("the tender for the new
-# monitoring system"): its own clause must compare sides, or a comparison frame must
-# introduce it. "better than expected" grades one outcome against a closed baseline
-# and says nothing about which side won ("better than the previous release" still
-# counts). The baseline may carry a comma or an article, and the Russian genitive or
-# "outperformed expectations" is the same graded reading.
+# A side noun alone is not evidence of a comparison ("the tender for the new monitoring system"):
+# its own clause must compare sides, or a comparison frame must introduce it.
 _RU_EXPECTATION_BASELINE = (
     r"(?:ожидаем\w*|ожидани\w*|прогноз(?:а|у|ов)?|прогнозируем\w*|"
     r"прогнозировавш\w*)"
@@ -87,14 +77,8 @@ _EN_EXPECTATION_BASELINE = (
     r"targets?|markets?|peers?|industry)|benchmarks?\s+of)"
 )
 _EN_ALTERNATIVE_BASELINE = r"(?:the\s+)?plans?"
-# A designator names a side: a single letter ("plan B", "плана Б"), a small ordinal
-# ("plan 2") or "#2". Case separates a label from prose only in mixed-case writing
-# (lowercase homographs: the English article and one-letter Cyrillic prepositions and
-# conjunctions); in case-normalized text the service words read as prose and any
-# other letter stays a label. A measured value (unit, percent, decimal, grouped
-# thousands, range, four-digit year) is a quantity, not an ordinal. "No. 2" is left
-# out because the abbreviation also ends a sentence (documented boundary); a full word
-# after the baseline stays prose.
+# A designator names a side: a single letter ("plan B", "плана Б"), a small ordinal ("plan 2") or
+# "#2".
 _LABEL_SERVICE_WORDS = frozenset({"a", "в", "и", "а", "я", "с", "к", "у", "о", "і", "й"})
 _LABEL_QUANTITY = (
     r"(?:%|percent\w*|percentage|процент\w*|п\.\s?п\.|ms|msec|мс|secs?|seconds?|"
@@ -102,24 +86,20 @@ _LABEL_QUANTITY = (
     r"мес\w*|years?|год\w*|лет|gb|mb|tb|кб|мб|гб|тб|points?|пункт\w*|times|раз)"
 )
 _LABEL_QUANTITY_WORD = re.compile(rf"(?i)\s*{_LABEL_QUANTITY}(?![\w-])")
-# Unicode hyphens, the minus sign and the soft hyphen all write a range, so any of
-# them between two numbers makes the token a measured span instead of a label.
+# Unicode hyphens, the minus sign and the soft hyphen all write a range, so any of them between two
+# numbers makes the token a measured span instead of a label.
 _LABEL_DASHES = "-\u2010\u2011\u2012\u2013\u2014\u2015\u2212\u00ad"
 _LABEL_SEPARATOR = re.compile(r"\s*-?\s*")
 _LABEL_EXPLICIT_NUMBER = re.compile(r"[#№]\s?\d{1,3}(?![\w-])")
 _LABEL_NUMBER = re.compile(r"\d{1,3}(?![\w-])")
 _LABEL_LETTER = re.compile(r"[^\W\d_](?![\w-])")
-# A value that continues past the integer: a decimal part, a digit-grouped thousands
-# separator, a further number, or a range with a dash, a slash, "to" or "through".
+# A value that continues past the integer: a decimal part, a digit-grouped thousands separator, a
+# further number, or a range with a dash, a slash, "to" or "through".
 _LABEL_VALUE_SHAPE = re.compile(
     rf"(?:[.,]\d|\s*\d|\s*(?:[{_LABEL_DASHES}/]|to\b|through\b)\s*\d)", re.IGNORECASE
 )
-# A baseline may also follow the comparative with a conjunction, in the singular or
-# the plural/noun form ("better than expected", "better than expectations",
-# "лучше, чем ожидания"). The noun lists below are shared with the no-conjunction
-# branch so the two spellings cannot drift apart. A plan-like baseline is captured,
-# because only it can name an alternative; its designator is read from the text after
-# the match, where the baseline's own case is known.
+# A baseline may also follow the comparative with a conjunction, in the singular or the plural/noun
+# form ("better than expected", "better than expectations", "лучше, чем ожидания").
 _EXPECTATION_BASELINE = re.compile(
     r"(?i)(?:"
     r"(?:,?(?:\s+|\s*-\s*)than(?:\s+|\s*-\s*)|,?\s+(?:чем|ніж)\s+|,?\s+)"
@@ -133,8 +113,8 @@ _EXPECTATION_BASELINE = re.compile(
     rf"|,?\s+{_EN_EXPECTATION_BASELINE}\b)"
 )
 _COMPARATIVE_SIDE_CUE = r"(?:better|worse|faster|slower|лучше|хуже|быстрее|медленнее)"
-# "outperformed expectations" grades an outcome exactly as "better than expected"
-# does, so it belongs to the graded cues whose complement is checked for a baseline.
+# "outperformed expectations" grades an outcome exactly as "better than expected" does, so it
+# belongs to the graded cues whose complement is checked for a baseline.
 _GRADED_SIDE_CUE = rf"(?:{_COMPARATIVE_SIDE_CUE}|outperform\w*)"
 _SIDE_CUE_AFTER = re.compile(
     r"(?i)^[^.;:]{0,48}?\b(?:differ\w*|equally|superior|inferior|"
@@ -145,9 +125,7 @@ _SIDE_CUE_BEFORE = re.compile(
     r"(?i)\b(?:compar\w*|versus|vs\.?|between|сравн\w*|между|порівнян\w*)\b"
     r"[^.;:]{0,40}$"
 )
-# An explicit inconclusive verdict in either word order. A bare "inconclusive"
-# counts only as a label/standalone verdict, so explanatory prose such as "the
-# article explains why comparisons can be inconclusive" does not claim a result.
+# An explicit inconclusive verdict in either word order.
 _INCONCLUSIVE_OUTCOME = re.compile(
     r"(?i)(?:"
     rf"\b(?:did|do|does|could|can|was|were|unable|failed)\s+(?:not\s+|to\s+)"
@@ -188,9 +166,7 @@ _INCONCLUSIVE_OUTCOME = re.compile(
     r"\b(?:remains?|was|is)\s+(?:an?\s+)?(?:open|unsettled|undecided|unresolved)"
     r"(?![\w-]|\s+(?:source|sources|ended|ending|access|data|standards?|format|"
     r"letter)\b)\b"
-    # A named comparison that stays open is an explicit no-winner statement. A
-    # bare "question remained unresolved" is unrelated uncertainty unless the
-    # sentence actually names the thing being compared.
+    # A named comparison that stays open is an explicit no-winner statement.
     r"|\b(?:comparison|verdict)\b[^.;]{0,30}?"
     r"\b(?:remained?|remains?|stayed?|stays?|was|is|were|are)\s+(?:an?\s+)?"
     r"(?:open|unresolved|unsettled|undecided)(?![\w-]|\s+(?:source|sources|ended|"
@@ -215,10 +191,8 @@ _INCONCLUSIVE_OUTCOME = re.compile(
     r"(?:was|is|were|are|proved|emerged)\s+"
     r"(?:clearly\s+|significantly\s+|measurably\s+|consistently\s+)?"
     r"(?:better|superior|ahead)\b"
-    # "Neither method won" and "Both methods performed equally well" state the
-    # same no-winner verdict without the word "winner". The subject must be a
-    # compared side: an election, tender or quiz has participants, and "neither
-    # vendor won the contract" names an event, not a comparison result.
+    # "Neither method won" and "Both methods performed equally well" state the same no-winner
+    # verdict without the word "winner".
     r"|\bneither\s+(?:of\s+)?(?:the\s+)?(?:two\s+)?"
     rf"(?:{_COMPARISON_SIDES}|them)\b(?:\s+\w+){{0,2}}?\s+(?:won|wins)\b"
     rf"{_NON_OUTCOME_WIN}"
@@ -227,15 +201,13 @@ _INCONCLUSIVE_OUTCOME = re.compile(
     r"(?:performed|fared|did|scored|came\s+out)\s+(?:about\s+|approximately\s+|"
     r"roughly\s+|nearly\s+|almost\s+|essentially\s+)?equally\s+"
     r"(?:well|good|strong|fast|accurate|reliable)\b"
-    # An open "which is better" question is a comparison verdict; "unclear which
-    # GPU the pilot used" is unrelated uncertainty.
+    # An open "which is better" question is a comparison verdict; "unclear which GPU the pilot used"
+    # is unrelated uncertainty.
     r"|\bunclear\s+(?:which|who|whose)\b[^.;]{0,80}?"
     r"\b(?:better|worse|superior|inferior|faster|slower|wins?|won|winner|"
     r"outperform\w*|best)\b"
     r"|\bevenly\s+matched\b|\btoo\s+close\s+to\s+call\b"
-    # Russian forms after ё folding. The passive admits an auxiliary ("не был
-    # определён") and a named comparison between the noun and the negation
-    # ("победитель сравнения так и не был определён").
+    # Russian forms after ё folding.
     r"|\bпобедител\w*\b"
     rf"(?![^.;]{{0,30}}?\b(?:{_NON_OUTCOME_WIN_OBJECTS_CYRILLIC})\b)"
     r"[^.;]{0,30}?\b(?:так\s+и\s+)?не\s+"
@@ -252,14 +224,14 @@ _INCONCLUSIVE_OUTCOME = re.compile(
     r"(?:явного\s+|единого\s+|общего\s+)?(?:победител\w*|"
     r"лучш\w+\s+(?:подход|метод|вариант|модел\w*|инструмент|алгоритм|"
     r"систем\w*|конфигураци)\w*)\b"
-    # The reflexive paradigm needs every gender/number form: "оказались
-    # смешанными", "оказалось неопределённым", "оказались противоречивыми".
+    # The reflexive paradigm needs every gender/number form: "оказались смешанными", "оказалось
+    # неопределённым", "оказались противоречивыми".
     r"|\b(?:результат\w*|вывод\w*|сравнени\w*|итог\w*)\b[^.;]{0,40}?"
     r"\b(?:оказал(?:ся|ась|ось|ись)|остал(?:ся|ась|ось|ись)|стал(?:а|о|и)?|"
     r"был\w*|были)?\s*(?:смешанн\w*|неопределенн\w*|противоречив\w*)\b"
     r"|\b(?:смешанн\w*|неопределенн\w*|противоречив\w*)\s+результат\w*\b"
-    # A bare predicate needs a comparison subject ("the forecast was uncertain"
-    # is unrelated uncertainty, not a verdict about two alternatives).
+    # A bare predicate needs a comparison subject ("the forecast was uncertain" is unrelated
+    # uncertainty, not a verdict about two alternatives).
     r"|\b(?:результат\w*|вывод\w*|итог\w*|исход\w*|сравнени\w*|выбор\w*)\b"
     r"[^.;]{0,40}?\b(?:остает\w*ся|остает\w*|остал\w*|был\w*|были|являет\w*ся)\s+"
     r"неопределенн\w*\b"
@@ -267,8 +239,8 @@ _INCONCLUSIVE_OUTCOME = re.compile(
     r"|\bвопрос\w*\s+(?:остал\w*ся|остает\w*ся|остается|был\w*|являет\w*ся)\s+"
     r"(?:открыт\w*|нерешенн\w*|неразрешенн\w*)"
     r"|\b(?:неясно|непонятно),?\s+(?:какой|какая|какое|кто|что)\b"
-    # Two sides with equal results are a no-winner statement even without the
-    # word "winner": "Оба подхода показали примерно равные результаты".
+    # Two sides with equal results are a no-winner statement even without the word "winner": "Оба
+    # подхода показали примерно равные результаты".
     r"|\b(?:оба|обе)\b[^.;]{0,40}?(?:\b(?:показал\w*|оказал\w*|были|был\w*|"
     r"получил\w*|имел\w*)\s*)?"
     r"(?:примерно\s+|практически\s+|почти\s+)?равн\w*(?:\s+результат\w*)?\b"
@@ -296,9 +268,7 @@ _INCONCLUSIVE_OUTCOME = re.compile(
     r"(?:визнач|обра|встанов|назва)\w*\b"
     r")"
 )
-# The deterministic repair must write the verdict in the actual response
-# language. A missing translation is better than an English suffix inside a
-# German, Spanish, or Japanese title.
+# The deterministic repair must write the verdict in the actual response language.
 _INCONCLUSIVE_SUFFIX = {
     "en": "; no winner was established",
     "ru": "; победитель не определён",
@@ -312,17 +282,16 @@ _INCONCLUSIVE_SUFFIX = {
     "pl": "; nie wyłoniono zwycięzcy",
     "tr": "; kazanan belirlenmedi",
 }
-# One claim boundary is shared by the no-winner detector, the reversal classifier,
-# and the evaluation oracle. A sentence pronoun ("it", "this result") may carry the
-# previous claim, but a coordinator starts a new claim with its own subject.
+# One claim boundary is shared by the no-winner detector, the reversal classifier, and the
+# evaluation oracle.
 CLAIM_CLAUSE_BREAK = re.compile(
     r"(?i)[.;:,!?]|\b(?:but|however|although|though|whereas|yet|and|or|while|"
     r"но|однако|а|и|или)\b"
 )
 
 
-# A claim clause is a sentence fragment, so the scan is bounded: a verdict-heavy
-# document must stay linear instead of rescanning everything before each match.
+# A claim clause is a sentence fragment, so the scan is bounded: a verdict-heavy document must stay
+# linear instead of rescanning everything before each match.
 _CLAUSE_WINDOW = 400
 
 
@@ -338,9 +307,8 @@ _UKRAINIAN = re.compile(
     r"(?i)[ІіЇїЄєҐґ]|\b(?:перемож\w*|визнач\w*|невизнач\w*|порівнян\w*|"
     r"жодн\w*|суперечлив\w*|змішан\w*)\b"
 )
-# When no profile/content language is supplied, the deterministic suffix must not
-# assume that every Latin-script title is English. These markers only select a
-# translation; they never rewrite the title itself.
+# When no profile/content language is supplied, the deterministic suffix must not assume that every
+# Latin-script title is English.
 _GERMAN = re.compile(
     r"(?i)\b(?:der|die|das|und|kein\w*|wurde|wurden|waren|war|ist|sind|"
     r"ergebnis\w*|sieger\w*|gewinner\w*|gemischt|vergleich\w*|ermittelt|"
@@ -358,34 +326,26 @@ _ENGLISH = re.compile(
     r"(?i)\b(?:the|and|but|was|were|are|is|no|not|winner|results?|comparison|"
     r"mixed|inconclusive|established|determined)\b"
 )
-# A verdict may itself be negated ("were not inconclusive", "did not remain
-# mixed") or superseded by a later decisive win. "Neither method won", "None of
-# the runs won" and "Ни один подход не победил" negate the win they contain.
-# A numeric token counts as one word, so "was not 40% faster than B" is negated.
-# "not only faster than B but also more accurate" amplifies the same result, so a
-# negator followed immediately by "only"/"just"/"merely" does not negate anything.
+# A verdict may itself be negated ("were not inconclusive", "did not remain mixed") or superseded by
+# a later decisive win.
 _NEGATED_VERDICT = re.compile(
     r"(?i)(?:\b(?:not|never|no|no\s+longer|none|neither|nor|nobody|nothing|"
     r"не|ни|никто|ничего|жодн\w*)\b|n't)(?!\s*(?:only|just|merely)\b)"
     r"\s*(?:(?:\w+\S*)\s+){0,4}$"
 )
-# "The results were not inconclusive" negates the adjective inside the matched
-# phrase, so a prefix-only check would still report a verdict the source rejects.
+# "The results were not inconclusive" negates the adjective inside the matched phrase, so a prefix-
+# only check would still report a verdict the source rejects.
 _NEGATED_INCONCLUSIVE = re.compile(
     r"(?i)\b(?:not|never|no\s+longer)\s+(?!only\b)(?:\w+\s+){0,3}"
     r"(?:inconclusive|mixed|undecided|unresolved|unsettled|open)\b"
     r"|n't\s+(?:\w+\s+){0,3}(?:inconclusive|mixed|undecided|unresolved)\b"
     r"|\bне\s+(?:\w+\s+){0,3}"
     r"(?:неопределенн|смешанн|противоречив|нерешенн|неразрешенн)\w*\b"
-    # "Оба метода не показали равных результатов" states a difference, not an
-    # equality verdict.
+    # "Оба метода не показали равных результатов" states a difference, not an equality verdict.
     r"|\bне\s+(?:\w+\s+){0,3}равн\w*\s+результат\w*\b"
 )
-# A directional measurement compares with an alternative, not with an expectation
-# ("faster than expected"), a time period ("over the last quarter"), or the article
-# left over when the optional "the" before the target is skipped ("than the
-# previous version"). The leading guard rejects an article plus such a word, while
-# a bare target keeps matching ("faster than A").
+# A directional measurement compares with an alternative, not with an expectation ("faster than
+# expected"), a time period ("over the last quarter"), or a leftover article.
 _ARTICLE = r"(?:the|a|an)"
 _NON_ALTERNATIVE_TARGETS = (
     r"expected|anticipated|predicted|forecast|usual|before|previously|ever|"
@@ -403,8 +363,8 @@ _NON_OUTCOME_OUTPERFORM = (
 )
 _DECISIVE_WIN = re.compile(
     r"(?i)(?:"
-    # A bare "won" is the ordinary way a final round settles a comparison, but
-    # "won praise", "won an award" and "won the contract" are not outcomes.
+    # A bare "won" is the ordinary way a final round settles a comparison, but "won praise", "won an
+    # award" and "won the contract" are not outcomes.
     r"(?<!['’])\bwon\b(?!['’]t)"
     rf"{_NON_OUTCOME_WIN}"
     rf"|\b(?:clearly|decisively|overall|comfortably|consistently)\s+won\b"
@@ -446,8 +406,8 @@ _DECISIVE_WIN = re.compile(
     r"evaluation|analysis)\b[^.;]{0,50}?"
     r"\b(?:found|showed|confirmed|demonstrated|revealed)\b[^.;]{0,40}?"
     r"\b(?:superior|better|best|first|ahead|higher)\b"
-    # "found a better way to run the test" is a recommendation, not a comparison
-    # result; the better/superior claim needs a comparison predicate.
+    # "found a better way to run the test" is a recommendation, not a comparison result; the
+    # better/superior claim needs a comparison predicate.
     r"|\b(?:found|showed|confirmed|demonstrated|revealed)\s+(?:that\s+)?"
     r"(?:\w+\s+){1,4}?\b(?:was|were|performed|fared|ranked|scored|did)\s+"
     r"(?:clearly\s+|significantly\s+)?(?:superior|better|best)\b"
@@ -462,9 +422,8 @@ _DECISIVE_WIN = re.compile(
     r"|\bplaced\s+(?:\w+\s+){0,3}?first\b"
     r"|\bcame\s+(?:in\s+)?first\b|\bfinished\s+(?:in\s+)?first\b"
     r"|\bput\s+(?:\w+\s+){0,3}?ahead\b"
-    # A confirmed superlative ("the final benchmark found A was the fastest") is
-    # a final standing, not merely an adjective. The frame requirement below keeps
-    # "the fastest way to…" from becoming a comparison result.
+    # A confirmed superlative ("the final benchmark found A was the fastest") is a final standing,
+    # not merely an adjective.
     r"|\b(?:found|showed|confirmed|demonstrated|revealed)\b[^.;]{0,40}?"
     r"\b(?:was|were|is|are)\s+(?:the\s+)?"
     r"(?:fastest|slowest|best|most\s+(?:accurate|efficient|reliable|effective|"
@@ -476,11 +435,8 @@ _DECISIVE_WIN = re.compile(
     r"|\bwas\s+(?:clearly\s+|significantly\s+|consistently\s+)?better\s+than\b"
     r"(?!\s+(?:expected|anticipated|predicted|forecast|usual|before|previously|"
     r"ever|planned|budgeted)\b)"
-    # A measured directional comparison ("A was 40% faster than B", "A used 40%
-    # less memory than B", "A cut latency by 40% vs B") reports a result the same
-    # way "won" does. The frame requirement below keeps a bare observation beside
-    # an open verdict from settling it, and "faster than expected" is not a
-    # head-to-head result.
+    # A measured directional comparison ("A was 40% faster than B", "A used 40% less memory than B",
+    # "A cut latency by 40% vs B") reports a result the same way "won" does.
     r"|(?P<directional>"
     r"\b(?:was|were|is|are|ran|runs?|perform(?:ed|s)?|scored|finished|delivered|"
     r"achieved)\b(?:\s+(?:about|roughly|nearly|almost|over|only))?"
@@ -519,19 +475,15 @@ _SCOPE_OBJECTS = (
     r"(?:samples?|cases?|tasks?|workloads?|inputs?|queries|datasets?|benchmarks?|"
     r"rounds?|runs?|tests?|trials?|setups?|scenarios?|conditions?)"
 )
-_SCOPE_QUALIFIERS = (
-    r"(?:small|large|larger|bigger|complex|simple|short|long|easy|hard|specific|"
-    r"particular|narrow|single|subset|one|first|second|initial|early|later|final)"
-)
-# The same scope without a preposition ("won the small sample") does not take the
-# round qualifier: "later rounds clearly favoured A" names the round that settled
-# the comparison, not a subset of it.
+# The same scope without a preposition ("won the small sample") does not take the round qualifier:
+# "later rounds clearly favoured A" names the round that settled the comparison, not a subset of it.
 _BARE_SCOPE_QUALIFIERS = (
     r"(?:small|large|larger|bigger|complex|simple|short|long|easy|hard|specific|"
     r"particular|narrow|single|subset|one|first|second|initial|early|final)"
 )
-# A "final/later round" names the round that produced the result, so it is a frame
-# rather than a limit; these qualifiers name a genuine subset of the comparison.
+_SCOPE_QUALIFIERS = rf"(?:{_BARE_SCOPE_QUALIFIERS}|later)"
+# A "final/later round" names the round that produced the result, so it is a frame rather than a
+# limit; these qualifiers name a genuine subset of the comparison.
 _LIMITING_QUALIFIERS = (
     r"(?:small|complex|simple|short|long|easy|hard|specific|particular|narrow|"
     r"single|subset|one|first|second|initial|early)"
@@ -550,10 +502,8 @@ _SCOPE_LOSSES = (
     r"\b(?:lost|loses|lagged|trailed|fell\s+behind|was\s+slower|did\s+worse|"
     r"performed\s+worse|underperformed)\b"
 )
-# "There is not enough evidence to determine the cause" states ordinary uncertainty
-# about a fact; the same words are a comparison verdict only when the purpose of the
-# missing data is the outcome of a comparison. The purpose, not a comparison noun in
-# a neighbouring clause, decides it.
+# "Not enough evidence to determine the cause" states ordinary uncertainty; it is a comparison
+# verdict only when the missing data scopes the outcome of the comparison.
 _INSUFFICIENCY_VERDICT = re.compile(
     r"(?i)(?:"
     r"\b(?:too\s+(?:few|small|limited|little)|not\s+enough)\b[^.;]{0,60}?"
@@ -564,10 +514,8 @@ _INSUFFICIENCY_VERDICT = re.compile(
     r"(?:данных|доказательств|сведений|даних|доказів)\b"
     r")"
 )
-# The complement scopes the missing data: "to determine <the cause>" and
-# "чтобы определить <причину>" both name what the uncertainty is about. The English
-# mention form already consumes its verb, the Russian one does not, so the leading
-# separator, "to/чтобы/щоб" and an optional purpose verb are stripped from the tail.
+# The complement scopes the missing data: "to determine <the cause>" and "чтобы определить
+# <причину>" both name what the uncertainty is about.
 _INSUFFICIENCY_PURPOSE_PREFIX = re.compile(
     r"(?i)^[\s,;:—–-]*(?:(?:to|чтобы|щоб)\s+)?"
     r"(?:(?:pick|choose|decide|determine|declare|select|tell|know|say|understand|"
@@ -579,10 +527,8 @@ _COMPARISON_SIDE_START = (
     rf"двох|двома|обох|обома|цих|цими)\s+)*{_COMPARISON_SIDES}\b"
     rf"(?:\s+(?:[A-Za-zА-Яа-я]|\d{{1,2}})\b)?"
 )
-# Only a purpose that selects the comparison outcome — a winner, the better side,
-# "which one" — turns insufficiency into a no-winner verdict. "Determine the cause",
-# "whether to migrate", "the impact on cost" and "their safety" stay ordinary
-# uncertainty about a fact even when a comparison word appears in the sentence.
+# Only a purpose that selects the comparison outcome — a winner, the better side, "which one" —
+# turns insufficiency into a no-winner verdict.
 _INSUFFICIENCY_COMPARISON_OUTCOME = re.compile(
     r"(?i)(?:"
     r"\b(?:a|the|one)\s+(?:clear\s+|single\s+|overall\s+|definitive\s+|true\s+)?winner\b"
@@ -606,11 +552,8 @@ _INSUFFICIENCY_COMPARISON_OUTCOME = re.compile(
     rf"|\bdistinguish\s+between\s+{_COMPARISON_SIDE_START}"
     r"|\bthe\s+two\s+(?:methods|approaches|models|options|variants|systems|tools|"
     r"algorithms|agents|prompts)\s+apart\b"
-    # An unresolved choice between two sides is the comparison outcome even when
-    # the source never says "winner": "choose between the two methods". Only a
-    # comparison side makes the choice a comparison: a decision between actions
-    # ("between migrating and staying") and a relationship ("between price and
-    # demand") stay ordinary uncertainty about a fact.
+    # An unresolved choice between two sides is the comparison outcome even when the source never
+    # says "winner": "choose between the two methods".
     rf"|\bbetween\s+{_COMPARISON_SIDE_START}"
     rf"|\bмежду\s+{_COMPARISON_SIDE_START}"
     rf"|\bміж\s+{_COMPARISON_SIDE_START}"
@@ -629,25 +572,20 @@ _INSUFFICIENCY_COMPARISON_OUTCOME = re.compile(
     r"(?:метод|подход|вариант|модель|инструмент|алгоритм|систем|конфигураци)\w*"
     r")"
 )
-# A comparison noun inside a possessive or a non-outcome "of" phrase describes an
-# attribute of an outcome the source already established ("the winner's margin",
-# "the winner of the tender"), so it does not make the missing data a no-winner
-# verdict about the comparison itself. Russian and Ukrainian put the non-outcome
-# object in the genitive right after the noun ("победителя тендера").
+# A comparison noun inside a possessive or non-outcome "of" phrase describes an attribute of an
+# established outcome, so it is not the verdict itself.
 _ATTRIBUTIVE_OUTCOME_TAIL = re.compile(
     rf"(?i)\s*(?:['’]s\b"
     rf"|\bof\s+(?:the\s+|a\s+|an\s+)?(?:[\w-]+\s+)?(?:{_NON_OUTCOME_WIN_OBJECTS})\b"
     rf"|(?:{_NON_OUTCOME_WIN_OBJECTS_CYRILLIC})\b)"
 )
-# A causal, explanatory or measurement head scopes the uncertainty to an attribute
-# of a known outcome ("why the winning approach worked", "the cause of the winning
-# approach's advantage", "почему лучший подход работает в продакшене"); it is not
-# a purpose that selects the comparison outcome.
+# A causal, explanatory or measurement head scopes the uncertainty to an attribute of a known
+# outcome, so the purpose is not the comparison.
 _ATTRIBUTIVE_PURPOSE_HEAD = re.compile(
     r"(?i)\b(?:cause|reason|explanation|margin|advantage|impact|effect|extent|"
     r"degree|size|source|mechanism|driver|factor)s?\b"
-    # A relationship, dependency or compatibility between two systems is a fact
-    # about how they relate, not which one wins.
+    # A relationship, dependency or compatibility between two systems is a fact about how they
+    # relate, not which one wins.
     r"|\b(?:relationships?|relations?|interactions?|dependenc(?:y|ies)|"
     r"correlations?|connections?|compatibility|associations?|linkages?|links?)\b"
     r"|\bwhy\b|\bhow\b(?!\s+(?:much|many|far|well))"
@@ -659,11 +597,9 @@ _ATTRIBUTIVE_PURPOSE_HEAD = re.compile(
     r"відношень|відносин|відношенн\w*|взаємоді\w*|залежн\w*|кореляц\w*|"
     r"зв'яз\w*|сумісност\w*|інтеграц\w*)"
 )
-# A named side is an alternative noun with a short label ("method A", "вариант 1").
-# The label run covers coordinated names ("methods A and B", "варианты 1/2");
-# "метод лечения" is the topic of the uncertainty, not one of two compared sides.
+# A named side is an alternative noun with a short label ("method A", "approach A", "вариант 1").
 _NAMED_ALTERNATIVE = re.compile(
-    r"(?i)\b(?:methods?|approaches?|models?|options?|variants?|configurations?|"
+    r"(?i)\b(?:methods?|approach(?:es)?|models?|options?|variants?|configurations?|"
     r"baselines?|agents?|prompts?|systems?|tools?|algorithms?|"
     r"метод\w*|подход\w*|вариант\w*|модел\w*|алгоритм\w*|систем\w*|"
     r"инструмент\w*|конфигурац\w*|варіант\w*|підхід\w*)\b"
@@ -673,6 +609,14 @@ _ALTERNATIVE_LABEL_RUN = re.compile(
     r"(?:\s*(?:,|/|&|and|и|та)\s*(?:[a-zа-я]|\d{1,2})(?=\b))*"
 )
 _ALTERNATIVE_LABEL = re.compile(r"\b(?:[a-zа-я]|\d{1,2})\b", re.IGNORECASE)
+# A Cyrillic "А"/"Б" designation is the same side as a Latin "A"/"B", so labels are compared by
+# their designation instead of their script.
+_ALTERNATIVE_LABEL_ALIASES = {"а": "a", "б": "b"}
+# "методы C и D" coordinates its labels, and Cyrillic conjunctions are one-letter words the label
+# pattern would read as a side.
+_LABEL_CONJUNCTIONS = frozenset({"и", "а"})
+# "The A/B test" names both compared sides without an alternative noun.
+_AB_LABELS = re.compile(r"(?i)\b(?:a\s*/\s*b|а\s*/\s*б)\b")
 
 
 def _scope_pattern(qualified: str, bare: str) -> str:
@@ -680,8 +624,8 @@ def _scope_pattern(qualified: str, bare: str) -> str:
     return (
         r"(?i)\b(?:on|in|for|under|with|at)\s+(?:the\s+|a\s+|an\s+)?"
         rf"{qualified}\s+{_SCOPE_OBJECTS}\b"
-        # A win on one measured dimension is partial when the verdict is still open
-        # ("A won on speed, B won on stability"); an overall marker overrides it.
+        # A win on one measured dimension is partial when the verdict is still open ("A won on
+        # speed, B won on stability"); an overall marker overrides it.
         f"|{_SCOPE_METRICS}|{_SCOPE_CONDITIONS}"
         r"|\bfor\s+(?:small|large|complex|simple|short|long|easy|hard)\s+"
         r"(?:inputs?|tasks?|queries|cases?|samples?)\b"
@@ -692,33 +636,35 @@ def _scope_pattern(qualified: str, bare: str) -> str:
     )
 
 
-# A win in a named sub-scope ("on small samples", "under peak load") is partial
-# and does not settle the whole comparison unless the sentence also speaks overall.
-# A mention of a loss beside the win ("A won but B lagged on writes") is also a
-# partial signal, but not a limit the final round cannot override.
+# A win in a named sub-scope ("on small samples", "under peak load") is partial and does not settle
+# the whole comparison unless the sentence also speaks overall.
 _PARTIAL_WIN_SCOPE = re.compile(
     f"{_scope_pattern(_SCOPE_QUALIFIERS, _BARE_SCOPE_QUALIFIERS)}|{_SCOPE_LOSSES}"
 )
-# A result framed by its final round still does not turn a subset of the comparison
-# ("on the small sample", "on accuracy", "under peak load") into the overall
-# standing.
+# A result framed by its final round still does not turn a subset of the comparison ("on the small
+# sample", "on accuracy", "under peak load") into the overall standing.
 _LIMITING_WIN_SCOPE = re.compile(_scope_pattern(_LIMITING_QUALIFIERS, _LIMITING_QUALIFIERS))
-# A ranking verb is only a comparison result when its sentence names a comparison
-# or experiment. "Costs ranked first among user concerns" is not a winner.
-_COMPARISON_CONTEXT = re.compile(
-    r"(?i)\b(?:comparisons?|compared|versus|vs\.?|benchmarks?|trials?|studies|study|"
+# A ranking verb is only a comparison result when its sentence names a comparison or experiment.
+# A comparison or experiment frame. Generic plurals ("samples", "results") are not enough: a subset
+# win must belong to a stated comparison to leave it open.
+_COMPARISON_EVENT_NOUNS = (
+    r"comparisons?|compared|versus|vs\.?|benchmarks?|trials?|studies|study|"
     r"experiments?|tests?|evaluations?|analys[ie]s|rounds?|runs?|replications?|"
-    r"follow-ups?|methods?|approaches?|models?|systems?|tools?|strategies|"
+    r"follow-ups?"
+)
+# The comparison frame and the ranking-verb context share one experiment vocabulary.
+_COMPARISON_CONTEXT = re.compile(
+    rf"(?i)\b(?:{_COMPARISON_EVENT_NOUNS}|methods?|approaches?|models?|systems?|tools?|"
+    r"strategies|"
     r"strategy|algorithms?|techniques?|baselines?|variants?|options?|"
     r"configurations?|agents?|prompts?|samples?|datasets?|workloads?|"
     r"results?|findings?|outcomes?|verdicts?|metrics?)\b"
 )
-# These predicates can describe a race, a quiz, a priority list, or a ranking of
-# concerns. They need the comparison context above before they settle a verdict.
+# These predicates can describe a race, a quiz, a priority list, or a ranking of concerns.
 _AMBIGUOUS_WIN = re.compile(r"(?i)^(?:rank|ranked|ranks|placed|came|finished|put)\b")
 _OVERALL_MARKER = re.compile(
-    # "The overall comparison was inconclusive" names the comparison itself, not an
-    # overall result, so the noun after the qualifier decides whether it frames one.
+    # "The overall comparison was inconclusive" names the comparison itself, not an overall result,
+    # so the noun after the qualifier decides whether it frames one.
     r"(?i)\b(?:overall|final|aggregate|decisive|conclusive)\s+"
     r"(?:results?|outcome|winner|verdict|conclusions?|score|picture|pattern|"
     r"round|analysis|comparison\s+results?|trials?|runs?|tests?|experiments?|"
@@ -727,12 +673,8 @@ _OVERALL_MARKER = re.compile(
     r"\bon\s+average\b|\bacross\s+the\s+board\b|"
     r"\b(?:on|across)\s+(?:all|every)\s+(?:metrics?|tasks?|workloads?|benchmarks?|cases?)\b"
 )
-# A standalone sentence-initial discourse marker frames the sentence as the end
-# result: "Overall, A won", "In the end, A won", "В итоге победил метод A". The
-# marker must end its own phrase, so "Overall costs rose" stays a cost statement
-# and "In the end, A won on the small sample" stays partial (its own claim has no
-# overall frame). Without this frame a bare final win was not tied to the earlier
-# open comparison, and the repair appended a false no-winner verdict.
+# A standalone sentence-initial discourse marker frames the sentence as the end result: "Overall, A
+# won", "In the end, A won", "В итоге победил метод A".
 _SENTENCE_RESULT_FRAME = re.compile(
     r"(?i)^\s*(?:(?:and|but|so|then)\s+)?(?:"
     r"(?:overall|in\s+the\s+end|in\s+the\s+final\s+analysis|ultimately|all\s+in\s+all|"
@@ -740,10 +682,8 @@ _SENTENCE_RESULT_FRAME = re.compile(
     r"|(?:в\s+итоге|в\s+конце\s+концов|в\s+целом|в\s+конечном\s+счете|"
     r"у\s+підсумку|зрештою|загалом|кінець\s+кінцем|в\s+результаті)\b)"
 )
-# A later win settles an earlier open verdict only when it is framed as a result
-# of that comparison: a final/overall/larger/follow-up experiment. "Costs ranked
-# first among user concerns", "our team won the office quiz" and "the tool was
-# better at scale" are unrelated or scoped wins, not a resolution.
+# A later win settles an earlier open verdict only when it is framed as a result of that comparison:
+# a final/overall/larger/follow-up experiment.
 _LATER_RESULT_FRAME = re.compile(
     r"(?i)\b(?:overall|final|aggregate|decisive|conclusive)\s+"
     r"(?:\w+\s+){0,2}?(?:results?|outcome|winner|verdict|conclusions?|score|"
@@ -764,8 +704,8 @@ _LATER_RESULT_FRAME = re.compile(
     r"дослід\w*|випробуван\w*|порівнян\w*)"
     r"|\b(?:по\s+итогам|за\s+підсумками)\b"
 )
-# Some win forms are an explicit head-to-head verdict, not a bare "won" that a
-# quiz or a priority list can also produce.
+# Some win forms are an explicit head-to-head verdict, not a bare "won" that a quiz or a priority
+# list can also produce.
 _UNAMBIGUOUS_WIN = re.compile(
     r"(?i)\b(?:clearly|decisively|comfortably|consistently)\s+"
     r"(?:(?:superior|better|favou?red)\b"
@@ -781,24 +721,21 @@ _UNAMBIGUOUS_WIN = re.compile(
     r"|\bcomparison\b[^.;]{0,30}?\b(?:was\s+)?resolved\s+in\s+favou?r\s+of\b"
     r"|\bwas\s+(?:clearly\s+|significantly\s+|consistently\s+)?superior\b"
     r"|\b(?:won|wins|better|superior|best|first|ahead)\s+(?:overall|on\s+average)\b"
-    # "Метод A явно победил" is an explicit head-to-head verdict, not a bare win
-    # that a tender or a quiz can also produce.
+    # "Метод A явно победил" is an explicit head-to-head verdict, not a bare win that a tender or a
+    # quiz can also produce.
     r"|\b(?:явно|однозначно|уверенно|очевидно)\s+"
     r"(?:победил\w*|переміг\w*|виграв\w*)\b"
 )
-# A directional comparison that is itself framed as the overall standing settles
-# the comparison ("A was faster than B overall", "A cut latency by 40% vs B
-# overall"). Only a directional match may take this shortcut: a quiz or a priority
-# list must still need an explicit winner declaration or result frame.
+# A directional comparison that is itself framed as the overall standing settles the comparison ("A
+# was faster than B overall", "A cut latency by 40% vs B overall").
 _OVERALL_RESULT = re.compile(
     r"(?i)\b(?:overall|on\s+average|in\s+general|across\s+the\s+board|in\s+aggregate)\b"
 )
 _CONTRAST_COORDINATOR = re.compile(
     r"(?i)\b(?:but|while|whereas|yet|although|though|and|однако|но|а|и|і)\b"
 )
-# An advantage in a second dimension may be a quality, a resource, or a plain
-# comparative adjective ("cheaper", "smaller"); "not only more accurate but also
-# more stable" repeats the target's edge, so one match is enough.
+# An advantage in a second dimension may be a quality, a resource or a plain comparative; "not only
+# more accurate but also more stable" repeats the same target.
 _SPLIT_EDGE = (
     r"more\s+(?:accurate|precise|efficient|reliable|effective|stable|scalable|"
     r"secure|robust|consistent|responsive|memory|cpu|time|energy|cost|latency|"
@@ -808,10 +745,8 @@ _SPLIT_EDGE = (
     r"recall|throughput|score|stability|quality)|better|superior|faster|cheaper|"
     r"smaller|lighter|quicker|simpler|cleaner|shorter|leaner|tighter|safer|easier"
 )
-# A contrast that hands the comparison target its own advantage ("A was 40% faster
-# than B, but B was more accurate") reports a split result, not a winner. The
-# opponent capture is compared with the match's comparison target, so a caveat
-# that still favours the winner ("but A was also more accurate") does not cancel it.
+# A contrast that hands the comparison target its own advantage ("A was 40% faster than B, but B was
+# more accurate") reports a split result, not a winner.
 _SPLIT_OPPONENT_CLAIM = re.compile(
     r"(?i)\b(?:but|however|while|whereas|yet|although|though|однако|но|а)\b\s+"
     r"(?:the\s+|a\s+|an\s+)?(?P<opponent>(?:[\w-]+\s+)?[\w-]+)"
@@ -820,13 +755,13 @@ _SPLIT_OPPONENT_CLAIM = re.compile(
     r"delivered|achieved|produced?|produces|generated?|generates|showed|shows|"
     rf"reported?|recorded?|ran|did)\b[^.;]{{0,15}}?(?:{_SPLIT_EDGE})\b"
 )
-# "and" may join two embedded questions under one verb, and it may join a
-# measurement with its qualifier, so only a strong contrast starts a new claim.
+# "and" may join two embedded questions under one verb, and it may join a measurement with its
+# qualifier, so only a strong contrast starts a new claim.
 _STRONG_CONTRAST = re.compile(
     r"(?i)\b(?:but|however|while|whereas|yet|although|though|однако|но|а)\b"
 )
-# A decisive win in another experiment or source does not resolve the comparison
-# that the inconclusive verdict was about.
+# A decisive win in another experiment or source does not resolve the comparison that the
+# inconclusive verdict was about.
 _SEPARATE_COMPARISON = re.compile(
     r"(?i)\b(?:separate|different|another|independent|unrelated|distinct)\s+"
     r"(?:experiments?|studies|study|trials?|benchmarks?|comparisons?|tests?|"
@@ -836,60 +771,56 @@ _SEPARATE_COMPARISON = re.compile(
 )
 _SOURCE_MARKER = re.compile(r"(?im)^\s*(?:source|источник)\s*(\d+)\s*[:.]")
 # A verdict attributed to prior work is background, not this source's conclusion.
-# It must not append uncertainty to a title that reports the current result.
+_PRIOR_WORK_NOUNS = (
+    r"(?:studies|study|research|work|results|findings|experiments|trials|"
+    r"benchmarks|comparisons|analyses|reports|authors|teams|rounds|runs)"
+)
 _PRIOR_WORK = re.compile(
     r"(?i)\b(?:prior|earlier|previous|past|existing|previously\s+published)\s+"
-    r"(?:studies|study|research|work|results|findings|experiments|trials|"
-    r"benchmarks|comparisons|analyses|reports|authors|teams|rounds|runs)\b"
+    rf"{_PRIOR_WORK_NOUNS}\b"
     r"|\b(?:researchers|others|authors)\s+(?:previously|earlier|had\s+previously)\b"
     r"|\b(?:более\s+ранн\w*|предыдущ\w*|прежн\w*|прошл\w*|ранн\w*|попередн\w*|"
     r"раніше)\s+(?:исследован\w*|работ\w*|эксперимент\w*|испытан\w*|обзор\w*|"
     r"досліджень|робіт|експеримент\w*|даних)\b"
 )
-# "Mixed results from earlier studies are reviewed" attributes the verdict to
-# prior work that follows the phrase; the current source reports no result of its own.
+# "Mixed results from earlier studies are reviewed" attributes the verdict to prior work that
+# follows the phrase; the current source reports no result of its own.
 _PRIOR_WORK_AFTER = re.compile(
     r"(?i)^[^.;]{0,40}?(?:"
     r"\b(?:from|in|by|of|across)\s+(?:\w+\s+){0,3}?"
     r"(?:prior|earlier|previous|past|existing)\s+"
-    r"(?:studies|study|research|work|results|findings|experiments|trials|"
-    r"benchmarks|comparisons|analyses|reports|authors|teams|rounds|runs)\b"
+    rf"{_PRIOR_WORK_NOUNS}\b"
     r"|\b(?:более\s+ранн\w*|предыдущ\w*|прежн\w*|прошл\w*|попередн\w*|раніше)\s+"
     r"(?:исследован\w*|работ\w*|эксперимент\w*|испытан\w*|обзор\w*|досліджень|робіт)"
     r")"
 )
-# Explanatory prose about a phenomenon ("the article explains why mixed results
-# are common") describes the topic; it is not this material's own verdict.
-_META_WHY_BEFORE = re.compile(
-    r"(?i)\b(?:explain\w*|discuss\w*|describ\w*|review\w*|examin\w*|analyz\w*|"
+# Explanatory prose about a phenomenon ("the article explains why mixed results are common")
+# describes the topic; it is not this material's own verdict.
+_META_VERBS = (
+    r"(?:explain\w*|discuss\w*|describ\w*|review\w*|examin\w*|analyz\w*|"
     r"объясня\w*|описыва\w*|рассматрива\w*|обсужда\w*|разбира\w*|поясню\w*|"
-    r"розповіда\w*|опису\w*|поясню\w*|"
-    r"explica\w*|describ\w*|analiz\w*|discut\w*)\b[^.;]{0,50}?"
+    r"розповіда\w*|опису\w*|explica\w*|describ\w*|analiz\w*|discut\w*)"
+)
+_META_WHY_BEFORE = re.compile(
+    rf"(?i)\b{_META_VERBS}\b[^.;]{{0,50}}?"
     r"\b(?:why|how|почему|зачем|как|чому|як|что|por\s+qu[eé])\b"
 )
-# "The article explains how comparisons work and why mixed results are common"
-# coordinates two embedded questions under one explanatory verb. The second
-# segment starts with a question word, so the meta verb still governs it; a plain
-# "and" joining a main claim ("explains caching and mixed results were found")
-# does not.
+# "The article explains how comparisons work and why mixed results are common" coordinates two
+# embedded questions under one explanatory verb.
 _META_COORDINATED = re.compile(
     r"(?i)\b(?:and|и)\s+(?:why|how|whether|почему|зачем|как|чому|як)\b"
     r"(?:(?!\b(?:and|but|however|но|и|а)\b)[^.;])*$"
 )
-_META_VERB = re.compile(
-    r"(?i)\b(?:explain\w*|discuss\w*|describ\w*|review\w*|examin\w*|analyz\w*|"
-    r"объясня\w*|описыва\w*|рассматрива\w*|обсужда\w*|разбира\w*|поясню\w*|"
-    r"розповіда\w*|опису\w*|explica\w*|describ\w*|analiz\w*|discut\w*)\b"
-)
+_META_VERB = re.compile(rf"(?i)\b{_META_VERBS}\b")
 _HYPOTHETICAL_WIN = re.compile(r"(?i)\b(?:whether|if|если|ли)\b")
 _HEDGED_WIN = re.compile(
     r"(?i)\b(?:might|may|could|would|possibly|perhaps|potentially|likely|expected|"
     r"anticipated|projected|forecast|"
     r"предположительно|возможно|вероятно)\b"
 )
+_RETRACT_VERBS = r"retract(?:ed|s)?|withdr(?:ew|awn|aws)|correct(?:ed|s)?|revok(?:ed|es)?"
 _RETRACTED_CLAIM = re.compile(
-    r"(?i)\b(?:retract(?:ed|s)?|withdr(?:ew|awn|aws)|correct(?:ed|s)?|"
-    r"revok(?:ed|es)?|overturn(?:ed|s)?)\b[^.;]{0,60}?"
+    rf"(?i)\b(?:{_RETRACT_VERBS}|overturn(?:ed|s)?)\b[^.;]{{0,60}}?"
     r"\b(?:that|this|the|its|their|earlier)?\s*"
     r"(?:win|winner|result|finding|conclusion|verdict|claim)\b"
     r"|\b(?:that|this|the)\s+(?:win|result|finding|conclusion|verdict|claim)\b"
@@ -897,8 +828,7 @@ _RETRACTED_CLAIM = re.compile(
     r"(?:\w+\s+){0,2}?(?:retracted|withdrawn|corrected|revoked|overturned)\b"
 )
 _RETRACTED_VERDICT = re.compile(
-    r"(?i)\b(?:retract(?:ed|s)?|withdr(?:ew|awn|aws)|correct(?:ed|s)?|"
-    r"revok(?:ed|es)?)\b[^.;]{0,60}?"
+    rf"(?i)\b(?:{_RETRACT_VERBS})\b[^.;]{{0,60}}?"
     r"\b(?:inconclusive|undetermined|mixed|no[- ]winner|uncertain\w*|"
     r"неопределенн\w*|смешанн\w*)\b"
     r"|\b(?:retract(?:ed|s)?|withdr(?:ew|awn|aws))\b[^.;]{0,40}?"
@@ -907,24 +837,18 @@ _RETRACTED_VERDICT = re.compile(
     r"\b(?:was|were|is|are|has\s+been|had\s+been)\s+"
     r"(?:retracted|withdrawn|corrected|revoked)\b"
 )
-# A period between digits is a decimal point ("20.5 percent", "2.5 ms"), not a
-# sentence end, so a measured value stays inside one sentence and the label rule sees
-# the whole number instead of a truncated "plan 20." ordinal.
+# A period between digits is a decimal point, so a measured value stays inside one sentence and the
+# label rule sees the whole number.
 _SENTENCE = re.compile(r"(?:(?:[^.!?\n])|(?:(?<=\d)\.(?=\d)))+(?:[.!?]+|$)")
+# A hard line wrap is whitespace, not a sentence break: pasted Telegram text, a PDF-page join and a
+# web paragraph wrap a sentence without a terminal mark. Only a terminal mark or an LF/CRLF
+# paragraph break ends the sentence around a verdict.
+_SENTENCE_BREAK = re.compile(r"[.!?]+(?!\d)|\n[ \t\r]*\n")
+_LINE_BREAK = re.compile(r"\n")
 
 
 def _fold(text: str) -> str:
-    """Normalize ё for matching only; the original case is kept; nothing is rewritten.
-
-    Every pattern except the label rule matches case-insensitively, so lowercasing the
-    evidence would not find a word any better — but it would erase the one place where
-    case carries meaning. A single letter after a lowercase plan-like baseline labels
-    an alternative when it is uppercase ("plan A", "плана В по задержке") and is the
-    English article or a Russian conjunction/preposition when it is lowercase ("plan a
-    year ago", "плана и по цене"), so casefold made ordinary prose read as a plan label;
-    in case-normalized evidence the baseline's own case is the context,
-    so "PLAN A YEAR AGO" reads the letter as prose.
-    """
+    """Normalize ё for matching only; the original case is kept; nothing is rewritten."""
     return text.translate(_FOLD)
 
 
@@ -944,17 +868,8 @@ def _label_number_is_a_label(sentence: str, end: int) -> bool:
 
 
 def _label_token_at(sentence: str, position: int, *, mixed_case: bool) -> bool:
-    """Whether a designator starts at ``position``.
-
-    A small ordinal or an explicit ``#2``/``№2`` label names an alternative wherever
-    it stands; a measured value does not. A one-letter label names an alternative
-    unless the letter is also an article, preposition, conjunction or particle and
-    the writing is case-normalized: ``mixed_case`` is true only when the baseline
-    before the letter is written lowercase, which is the one context where an
-    uppercase letter labels a side ("plan A") and its lowercase homograph is prose
-    ("plan a year ago"). Reading the letter's case alone made "PLAN A YEAR AGO" and
-    "Plan A Year Ago" name a side and put a no-winner suffix on a title that states
-    the winner.
+    """Whether a designator starts at ``position``. A small ordinal or an explicit ``#2``/``№2``
+    label names an alternative wherever it stands; a measured value does not.
     """
     if _LABEL_EXPLICIT_NUMBER.match(sentence, position) is not None:
         return True
@@ -971,14 +886,7 @@ def _label_token_at(sentence: str, position: int, *, mixed_case: bool) -> bool:
 
 
 def _designator_names_a_side(sentence: str, baseline: re.Match[str]) -> bool:
-    """Whether a plan-like baseline in ``sentence`` carries a designator.
-
-    Only a plan-like baseline can name an alternative; every other baseline stays a
-    graded reference whatever follows it ("the estimate 20 ms", "the projection 40"
-    measure one outcome, not two sides). The label is read from the text after the
-    match rather than by a lookahead inside the pattern, because the reading needs
-    the case of the baseline word itself.
-    """
+    """Whether a plan-like baseline in ``sentence`` carries a designator."""
     alternative = baseline.group("alternative")
     if alternative is None:
         return False
@@ -988,14 +896,7 @@ def _designator_names_a_side(sentence: str, baseline: re.Match[str]) -> bool:
 
 
 def _side_cue_after(sentence: str, start: int, end: int) -> bool:
-    """Whether the clause compares sides; a graded expectation is not a side.
-
-    The expectation baseline is read from the comparative's position in the whole
-    sentence because the clause break sits between them in "…was better, than
-    expected" and "…лучше, чем ожидалось". A comparative that grades an expectation
-    says nothing about which side won, so a further cue in the same clause still
-    counts; a plan-like baseline that carries a designator names a side instead.
-    """
+    """Whether the clause compares sides; a graded expectation is not a side."""
     while start < end:
         window = sentence[start:end]
         match = _SIDE_CUE_AFTER.search(window)
@@ -1011,14 +912,7 @@ def _side_cue_after(sentence: str, start: int, end: int) -> bool:
 
 
 def _names_compared_sides(sentence: str) -> bool:
-    """Whether the sentence compares named sides, not just mentions a side noun.
-
-    "No winner was announced in the tender for the new monitoring system" names the
-    event's object; the later "Acme won the tender" still settles the event, so the
-    no-winner phrase must not become a comparison verdict. A
-    sentence that actually compares sides ("the two systems differed", "comparison
-    of the two methods") is a comparison verdict even when it also names an event.
-    """
+    """Whether the sentence compares named sides, not just mentions a side noun."""
     for side in _COMPARISON_SIDE_NAMES.finditer(sentence):
         clause_start = 0
         for boundary in CLAIM_CLAUSE_BREAK.finditer(sentence[: side.start()]):
@@ -1038,13 +932,7 @@ def _event_scoped_verdict(
     starts: list[int],
     match: re.Match[str],
 ) -> bool:
-    """Whether a no-winner phrase reports an event outcome, not a comparison.
-
-    "No winner was announced in the election" and "в рамках тендера победителя
-    нет" name an event, not compared sides. Treating them as a comparison verdict
-    appended "no winner was established" to a title that the same source contradicts
-    ("Smith won the election").
-    """
+    """Whether a no-winner phrase reports an event outcome, not a comparison."""
     sentence_index = _sentence_at(spans, starts, match.start())
     if sentence_index is None:
         return False
@@ -1070,6 +958,18 @@ def _sentence_at(spans: list[tuple[int, int]], starts: list[int], index: int) ->
     return None
 
 
+def _sentence_bounds_around(text: str, verdict: re.Match[str]) -> tuple[int, int]:
+    """The sentence around ``verdict``, bounded by ``_CLAUSE_WINDOW`` on each side."""
+    window_start = max(0, verdict.start() - _CLAUSE_WINDOW)
+    boundaries = list(_SENTENCE_BREAK.finditer(text, window_start, verdict.start()))
+    start = boundaries[-1].end() if boundaries else window_start
+    gap = text[start : verdict.start()]
+    start += len(gap) - len(gap.lstrip())
+    limit = min(len(text), verdict.end() + _CLAUSE_WINDOW)
+    after = _SENTENCE_BREAK.search(text, verdict.end(), limit)
+    return start, after.end() if after is not None else limit
+
+
 def _source_markers(text: str) -> list[tuple[int, int]]:
     """Numbered source-block starts, built once per detection call."""
     return [(match.start(), int(match.group(1))) for match in _SOURCE_MARKER.finditer(text)]
@@ -1081,8 +981,8 @@ def _source_at(markers: list[tuple[int, int]], index: int) -> int:
     return markers[position - 1][1] if position else 0
 
 
-# Every decisive form contains one of these literals, so a sentence without them
-# skips the large alternation entirely (the pre-check reads the sentence case-folded).
+# Every decisive form contains one of these literals, so a sentence without them skips the large
+# alternation entirely (the pre-check reads the sentence case-folded).
 _DECISIVE_HINTS = (
     "won",
     "winner",
@@ -1127,13 +1027,7 @@ _DECISIVE_HINTS = (
 
 
 def _claim_window(sentence: str, clause: str, match: re.Match[str]) -> str:
-    """The single claim a win belongs to: its prefix clause, the win, its own tail.
-
-    An "overall" in a neighbouring clause ("…, and overall costs rose") or a
-    sentence-leading discourse marker ("Overall, the final benchmark found A won on
-    the small sample") frames that other clause, not this win, so only the clause
-    that contains the win can make it an overall result.
-    """
+    """The single claim a win belongs to: its prefix clause, the win, its own tail."""
     tail = re.split(r"[,;:.!?]", sentence[match.end() :], maxsplit=1)[0]
     return f"{clause} {match.group()} {tail}"
 
@@ -1144,34 +1038,39 @@ def _win_mention_rejected(
     match: re.Match[str],
     separate_scope: str | None = None,
 ) -> bool:
-    """Shared rejection filters for a decisive-win mention.
-
-    Used both for a usable result and for a subset win that leaves the comparison
-    open, so a negated, hedged, hypothetical, ambiguous, or separate-experiment claim
-    can never be read as either. The separate-experiment filter reads the whole
-    sentence, because that is the claim the evidence path evaluates; a caller that
-    has already isolated the win's own claim passes it as ``separate_scope`` so an
-    unrelated claim beside it cannot reject the win.
-    """
+    """Shared rejection filters for a decisive-win mention."""
     directional = match.group("directional") is not None
-    # "ranked first", "finished first" and "put A ahead" also describe quizzes,
-    # races and priority lists; only a comparison context makes them a result.
+    # "ranked first", "finished first" and "put A ahead" also describe quizzes, races and priority
+    # lists; only a comparison context makes them a result.
     if _AMBIGUOUS_WIN.search(match.group()) and not _COMPARISON_CONTEXT.search(sentence):
         return True
-    # A negation can sit inside the matched comparison ("found that no method
-    # was better"), so the check covers the match itself, not just its prefix.
+    # A negation can sit inside the matched comparison ("found that no method was better"), so the
+    # check covers the match itself, not just its prefix.
     if _negated_at(sentence, match.start()):
         return True
     if _NEGATED_VERDICT.search(f"{clause} {match.group()} "):
         return True
     if _HYPOTHETICAL_WIN.search(clause) or _HEDGED_WIN.search(clause):
         return True
-    # A hedge inside the measurement ("was likely 40% faster than B") makes it a
-    # forecast, not a result; the clause check above cannot see this position.
+    # A hedge inside the measurement ("was likely 40% faster than B") makes it a forecast, not a
+    # result; the clause check above cannot see this position.
     if directional and _HEDGED_WIN.search(match.group()):
         return True
     scope = sentence if separate_scope is None else separate_scope
     return _SEPARATE_COMPARISON.search(scope) is not None
+
+
+def _overall_win(*, scope: str, claim: str, marker_text: str) -> bool:
+    """Whether a win scoped to a subset also names the overall comparison outcome.
+
+    A limiting scope ("won the small sample") needs the overall result inside the
+    claim itself; any other partial scope accepts a sentence-level overall marker.
+    """
+    if not _PARTIAL_WIN_SCOPE.search(scope):
+        return True
+    if _LIMITING_WIN_SCOPE.search(scope):
+        return _OVERALL_RESULT.search(claim) is not None
+    return _OVERALL_MARKER.search(marker_text) is not None
 
 
 def _usable_wins_in_sentence(
@@ -1180,11 +1079,7 @@ def _usable_wins_in_sentence(
     sentence_index: int,
     markers: list[tuple[int, int]],
 ) -> list[tuple[re.Match[str], int]]:
-    """Decisive win mentions in one sentence, each with its numbered source.
-
-    The cheap literal pre-check reads the sentence case-folded, because ``text`` keeps
-    the source case for the label rule.
-    """
+    """Decisive win mentions in one sentence, each with its numbered source."""
     sentence_start, sentence_end = spans[sentence_index]
     sentence = text[sentence_start:sentence_end]
     if not any(hint in sentence.casefold() for hint in _DECISIVE_HINTS):
@@ -1196,36 +1091,21 @@ def _usable_wins_in_sentence(
         directional = match.group("directional") is not None
         if _win_mention_rejected(sentence, clause, match):
             continue
-        # A win that only holds for a named sub-scope is a partial result, not a
-        # resolution of the whole comparison, unless the sentence speaks overall.
-        # The scope may follow the win ("won on accuracy") or precede it. A final
-        # round may frame a neutral scope, but it cannot turn a real subset ("on the
-        # small sample", "on accuracy") into the overall standing.
+        # A win that only holds for a named sub-scope is a partial result, not a resolution of the
+        # whole comparison, unless the sentence speaks overall.
         scope = f"{clause} {sentence[match.end() : match.end() + 80]}"
-        if _PARTIAL_WIN_SCOPE.search(scope):
-            if _LIMITING_WIN_SCOPE.search(scope):
-                # An overall frame must belong to this claim. "The final benchmark
-                # found A won on the small sample, and overall costs rose" says
-                # nothing overall about the comparison.
-                overall = _OVERALL_RESULT.search(_claim_window(sentence, clause, match))
-            else:
-                overall = _OVERALL_MARKER.search(sentence)
-            if not overall:
-                continue
-        # Tie the win to the comparison it claims to settle. A later result must be
-        # framed as final/overall/larger/follow-up, or be an explicit winner
-        # declaration; otherwise a quiz, a priority list, or a scoped observation
-        # would silently cancel the source's open verdict. A directional
-        # measurement may also be framed by its own trailing "overall".
+        if not _overall_win(
+            scope=scope, claim=_claim_window(sentence, clause, match), marker_text=sentence
+        ):
+            continue
+        # Tie the win to the comparison it claims to settle.
         win_scope = f"{clause} {match.group()} {sentence[match.end() : match.end() + 80]}"
-        # "In the final test, method A won" and "The final result: method A won"
-        # put the result frame in the sentence prefix, before the win's own clause.
-        # A semicolon or a contrast starts another claim, and the last contrast
-        # segment keeps that claim's frame from settling this win.
+        # "In the final test, method A won" and "The final result: method A won" put the result
+        # frame in the sentence prefix, before the win's own clause.
         prefix_clause = re.split(r"[;!?]", sentence[:local_start])[-1]
         prefix_scope = _STRONG_CONTRAST.split(prefix_clause)[-1][-80:]
-        # "… faster than B overall" frames the measurement itself; "… faster than
-        # B, and overall costs rose" does not, so the adverb must follow directly.
+        # "… faster than B overall" frames the measurement itself; "… faster than B, and overall
+        # costs rose" does not, so the adverb must follow directly.
         tail_clause = re.split(r"[,;:]", sentence[match.end() : match.end() + 32], maxsplit=1)[0]
         trailing_overall = directional and _OVERALL_RESULT.search(tail_clause) is not None
         if not (
@@ -1236,16 +1116,16 @@ def _usable_wins_in_sentence(
             or trailing_overall
         ):
             continue
-        # A contrast that gives the comparison target its own advantage reports a
-        # split result ("…faster than B, but B was more accurate"), not a winner.
+        # A contrast that gives the comparison target its own advantage reports a split result
+        # ("…faster than B, but B was more accurate"), not a winner.
         if (
             directional
             and not _OVERALL_RESULT.search(_claim_window(sentence, clause, match))
             and _split_opponent_claim(sentence, match)
         ):
             continue
-        # A retraction after this win cancels it; a retraction before it targets an
-        # earlier claim and does not.
+        # A retraction after this win cancels it; a retraction before it targets an earlier claim
+        # and does not.
         tail = sentence[match.end() :]
         if sentence_index + 1 < len(spans):
             next_start, next_end = spans[sentence_index + 1]
@@ -1265,12 +1145,7 @@ _TARGET_TAIL_STOPWORDS = frozenset(
 
 
 def _directional_target(text: str, match: re.Match[str]) -> frozenset[str]:
-    """Tokens naming the alternative a directional comparison measures against.
-
-    The match captures the head of a short name ("than model B" stops at "model"),
-    so an immediately following identifier token belongs to the same alternative; a
-    preposition or coordinator ends it.
-    """
+    """Tokens naming the alternative a directional comparison measures against."""
     phrase = re.split(
         r"(?i)\b(?:than|vs\.?|versus|over|against|compared\s+(?:with|to))\b",
         match.group("directional"),
@@ -1283,14 +1158,7 @@ def _directional_target(text: str, match: re.Match[str]) -> frozenset[str]:
 
 
 def _split_opponent_claim(sentence: str, match: re.Match[str]) -> bool:
-    """Whether the clause after a directional result hands the target its own edge.
-
-    "A was 40% faster than B, but B was more accurate" and "…, but B cut latency by
-    30% over A" report advantages on both sides, so the measurement alone does not
-    settle the comparison. Only a claim about the comparison target counts; a
-    caveat that still favours the winner ("…, but A was also more accurate") does
-    not cancel the result, and neither does a negated or hedged caveat.
-    """
+    """Whether the clause after a directional result hands the target its own edge."""
     target = _directional_target(sentence, match)
     tail = sentence[match.end() :]
     for claim in _SPLIT_OPPONENT_CLAIM.finditer(tail):
@@ -1320,21 +1188,18 @@ def _split_directional_claim(sentence: str) -> bool:
         if match.group("directional") is None:
             continue
         clause = _clause_before(sentence, match.start())
-        # A split only qualifies an already measured result, so it uses narrower
-        # rejection than a usable win: a hedge anywhere in the sentence discards the
-        # measurement, while a comparison from a separate experiment does not make
-        # this sentence's own trade-off go away.
+        # A split only qualifies an already measured result, so its rejection is narrower than a
+        # usable win: a hedge anywhere in the sentence discards the measurement.
         if _negated_at(sentence, match.start()) or _HEDGED_WIN.search(sentence):
             continue
-        # The negation may sit inside the matched comparison ("was not faster than
-        # B"), which the prefix-only check cannot see.
+        # The negation may sit inside the matched comparison ("was not faster than B"), which the
+        # prefix-only check cannot see.
         if _NEGATED_VERDICT.search(f"{clause} {match.group()} "):
             continue
         if _HYPOTHETICAL_WIN.search(clause):
             continue
-        # A measurement framed as the overall standing settles the comparison even
-        # when the other side has its own advantage ("A was 40% faster than B
-        # overall, but B was more stable").
+        # A measurement framed as the overall standing settles the comparison even when the other
+        # side has its own advantage ("A was 40% faster than B overall, but B was more stable").
         if _OVERALL_RESULT.search(_claim_window(sentence, clause, match)):
             continue
         if _split_opponent_claim(sentence, match):
@@ -1342,10 +1207,8 @@ def _split_directional_claim(sentence: str) -> bool:
     return False
 
 
-# A split does not need the "than" target of a directional measurement: "A was
-# faster, but B was more stable" names an advantage on each side just as clearly.
-# Comparative adjectives that carry an advantage on their own, without "than" and
-# without a copula ("Вариант A быстрее", "B was safer").
+# A split does not need the "than" target of a directional measurement: "A was faster, but B was
+# more stable" names an advantage on each side just as clearly.
 _ADVANTAGE_COMPARATIVES = (
     r"faster|cheaper|quicker|safer|simpler|lighter|smaller|cleaner|shorter|leaner|"
     r"tighter|easier|быстрее|дешевле|точнее|стабильнее|надежнее|эффективнее|"
@@ -1355,11 +1218,7 @@ _ADVANTAGE_COMPARATIVES = (
 _DISADVANTAGE_COMPARATIVES = (
     r"slower|dearer|bigger|heavier|harder|costlier|медленнее|дороже|повільніше"
 )
-# A non-directional edge needs an advantage on each side. "Slower" and "дороже" are
-# comparative adjectives that only compare when a "than" target is present, so they
-# count as edges too; disadvantage-only adjectives (heavier, bigger, harder) name a
-# drawback, and "The build is heavier, but the second model is more stable" is one
-# side's win rather than a split.
+# A non-directional edge needs an advantage on each side.
 _COMPARATIVE_EDGE = rf"(?:{_ADVANTAGE_COMPARATIVES}|slower|дороже|медленнее|повільніше)"
 _NON_DIRECTIONAL_EDGE = re.compile(
     r"(?i)(?:"
@@ -1382,10 +1241,8 @@ _NON_DIRECTIONAL_EDGE = re.compile(
     r"задержк\w*|стоимост\w*|потребление\w*)"
     r")"
 )
-# A non-directional trade-off needs an anchor that names a comparison: comparison
-# or experiment wording, a metric scope, or alternative names ("A", "method B",
-# "the first", "the other"). Without one, "the UI is faster, but the API is more
-# stable" is a release note about two components, not two sides of one comparison.
+# A non-directional trade-off needs an anchor that names a comparison: comparison or experiment
+# wording, a metric scope, or alternative names ("A", "method B", "the first", "the other").
 _SPLIT_CLAIM_PREDICATE = (
     r"(?:was|were|is|are|had|has|won|wins|beat|beats|outperformed|outperforms|"
     r"used|requires?|took|takes|cut|reduced|delivered|delivers|achieved|"
@@ -1395,9 +1252,8 @@ _SPLIT_CLAIM_PREDICATE = (
     r"обогнал\w*|оказал\w*ся|выиграл\w*|справил\w*ся|був|була|були|має|мають|"
     rf"{_COMPARATIVE_EDGE})"
 )
-# The anchor may name the alternatives rather than the experiment: "Метод A
-# быстрее, но метод B стабильнее" is a comparison even without the word
-# "сравнение".
+# The anchor may name the alternatives rather than the experiment: "Метод A быстрее, но метод B
+# стабильнее" is a comparison even without the word "сравнение".
 _CYRILLIC_ALTERNATIVE = re.compile(
     r"(?i)\b(?:вариант\w*|метод\w*|подход\w*|модел\w*|алгоритм\w*|систем\w*|"
     r"инструмент\w*|конфигурац\w*|варіант\w*|підхід\w*|модел\w*|систем\w*|"
@@ -1407,9 +1263,8 @@ _ALTERNATIVE_SUBJECT = re.compile(
     r"(?i)^(?:the\s+)?(?:first|second|other|former|latter|one|another|third)\b"
     r"|^(?:\w+\s+)?[a-d]$"
 )
-# A trade-off may also be coordinated with "and" or a semicolon ("A was faster
-# and B was cheaper"), unlike a meta question. The anchor check still decides
-# whether the two clauses describe alternatives.
+# A trade-off may also be coordinated with "and" or a semicolon ("A was faster and B was cheaper"),
+# unlike a meta question.
 _TRADE_OFF_BREAK = re.compile(
     r"(?i)[;]|\b(?:but|however|while|whereas|yet|although|though|and|и|но|однако|"
     r"а|і|але)\b"
@@ -1444,8 +1299,8 @@ _PRONOUN_SUBJECT = frozenset(
         "ці",
     }
 )
-# Words that qualify the claim but do not name the side it is about ("A was also
-# more stable" is still about A).
+# Words that qualify the claim but do not name the side it is about ("A was also more stable" is
+# still about A).
 _SUBJECT_FILLER = frozenset(
     {
         "the",
@@ -1477,9 +1332,7 @@ _LOWER_IS_BETTER = (
     r"(?:latency|cost|memory|runtime|price|energy|errors?|failures?|retries?|"
     r"requests?|tokens?|bugs?|incidents?)"
 )
-# A claim states an advantage for its subject or the opposite. "A was faster and B
-# was slower" reports the same finding twice, so the second clause does not give B
-# its own edge.
+# A claim states an advantage for its subject or the opposite.
 _ADVANTAGE_EDGE = re.compile(
     rf"(?i)^(?:higher|more|better|greater)\s+{_HIGHER_IS_BETTER}$"
     rf"|^(?:lower|less|fewer)\s+{_LOWER_IS_BETTER}$"
@@ -1513,8 +1366,7 @@ def _subject_phrase(clause: str) -> str | None:
     if match is None:
         return None
     phrase = clause[: match.start()].strip(" ,;:")
-    # A leading definite article is not part of the name. A one-letter "A" is an
-    # alternative name, so it is never stripped as an article.
+    # A leading definite article is not part of the name.
     phrase = re.sub(r"(?i)^(?:the|an)\s+", "", phrase)
     if not phrase or len(phrase.split()) > 3:
         return None
@@ -1531,21 +1383,11 @@ def _subject_key(phrase: str | None) -> frozenset[str] | None:
 
 
 def _split_non_directional_claim(sentence: str) -> bool:
-    """Whether one sentence reports an advantage on each side without a target.
-
-    "A was faster, but B was more stable", "A won on speed, but B won on stability"
-    and "A had higher accuracy, but B had better recall" name no overall winner even
-    though neither side has a "than" measurement. A pronoun continuation ("…, but it
-    was also cheaper") or a repeated subject ("…, but A was also more stable") is the
-    same side's caveat, not the opponent's edge, and a clause that states the other
-    side's disadvantage ("…, but B was slower") confirms the first side instead of
-    splitting the result.
-    """
+    """Whether one sentence reports an advantage on each side without a target."""
     if _TRADE_OFF_BREAK.search(sentence) is None:
         return False
-    # A directionally measured comparison is decided by the target-aware logic: an
-    # "also" caveat about the same side ("A was faster than B, but A was also more
-    # accurate") is a confirmation, not the opponent's edge.
+    # A directionally measured comparison is decided by the target-aware logic: an "also" caveat
+    # about the same side does not make it a split.
     if any(match.group("directional") is not None for match in _DECISIVE_WIN.finditer(sentence)):
         return False
     claims: list[tuple[str | None, list[str], str]] = []
@@ -1561,9 +1403,8 @@ def _split_non_directional_claim(sentence: str) -> bool:
         return False
     first_subject, first_edges, first_clause = claims[0]
     second_subject, second_edges, second_clause = claims[1]
-    # "A was faster overall, but B was more stable" and "…, but B was more stable
-    # overall" frame one of the measured claims itself, so the comparison is decided
-    # by that claim rather than left open.
+    # "A was faster overall, but B was more stable" frames one measured claim itself, so that claim
+    # decides the comparison rather than splitting it.
     if _OVERALL_RESULT.search(first_clause) or _OVERALL_RESULT.search(second_clause):
         return False
     second_key = _subject_key(second_subject)
@@ -1571,8 +1412,8 @@ def _split_non_directional_claim(sentence: str) -> bool:
         return False
     if _subject_key(first_subject) == second_key:
         return False
-    # Only the opponent's own advantage splits the result: when its clause only
-    # restates the first side's advantage ("B was slower"), nothing is split.
+    # Only the opponent's own advantage splits the result: when its clause only restates the first
+    # side's advantage ("B was slower"), nothing is split.
     if not any(_edge_polarity(edge) >= 0 for edge in second_edges):
         return False
     if all(_edge_polarity(edge) < 0 for edge in first_edges) and any(
@@ -1592,27 +1433,11 @@ def _split_claim(sentence: str) -> bool:
     return _split_directional_claim(sentence) or _split_non_directional_claim(sentence)
 
 
-# A comparison or experiment frame. Generic plurals ("samples", "results") are not
-# enough: a subset win must belong to a stated comparison to leave it open. The same
-# event nouns decide whether a generic outcome describes a comparison, so the two
-# paths cannot drift apart.
-_COMPARISON_EVENT_NOUNS = (
-    r"comparisons?|compared|versus|vs\.?|benchmarks?|trials?|studies|study|"
-    r"experiments?|tests?|evaluations?|analys[ie]s|rounds?|runs?|replications?|"
-    r"follow-ups?"
-)
 _PARTIAL_RESULT_FRAME = re.compile(rf"(?i)\b(?:{_COMPARISON_EVENT_NOUNS})\b")
 
 
 def _has_unframed_partial_win(sentence: str, following: str = "") -> bool:
-    """Whether a sentence reports a win only for a named subset of the comparison.
-
-    "The final benchmark found A won on the small sample" does not establish the
-    overall standing: the win is scoped to a subset and no part of its own claim
-    says "overall". Such a sentence leaves the comparison unresolved instead of
-    settling it. Rejected mentions (negated, hedged, hypothetical, separate
-    experiment) and a retracted result cannot open the comparison either.
-    """
+    """Whether a sentence reports a win only for a named subset of the comparison."""
     if not _PARTIAL_RESULT_FRAME.search(sentence):
         return False
     for match in _DECISIVE_WIN.finditer(sentence):
@@ -1635,17 +1460,7 @@ def _split_comparison_result(
     spans: list[tuple[int, int]],
     markers: list[tuple[int, int]],
 ) -> bool:
-    """Whether an unresolved comparison reports advantages on both sides.
-
-    "A was 40% faster than B, but B was 30% cheaper" names no overall winner, so the
-    comparison is unresolved even without the word "inconclusive". A decisive result
-    that follows the split still settles it, so the open claim is positional: a
-    final win before the split ("A beat B in the final benchmark. Later, A was 40%
-    faster than B, but B was more accurate") does not cancel the later trade-off,
-    while the same win after it does. A win scoped to a subset of a named comparison
-    or experiment without an overall frame ("the final benchmark found A won on the
-    small sample") leaves the same question open.
-    """
+    """Whether an unresolved comparison reports advantages on both sides."""
     open_claims: list[tuple[int, int]] = []
     for index, (start, end) in enumerate(spans):
         sentence = text[start:end]
@@ -1672,11 +1487,7 @@ def _split_comparison_result(
 
 
 def _is_split_win(sentence: str, wins: list[re.Match[str]]) -> bool:
-    """Whether one sentence reports wins in different scopes ("A won X, but B won Y").
-
-    Coordinated wins with no overall framing describe a split result, not a
-    decisive outcome; they must not cancel an explicit no-winner verdict.
-    """
+    """Whether one sentence reports wins in different scopes ("A won X, but B won Y")."""
     if len(wins) < 2 or _OVERALL_MARKER.search(sentence):
         return False
     between = sentence[wins[0].start() : wins[-1].end()]
@@ -1688,11 +1499,7 @@ def _decisive_sentence_indexes(
     spans: list[tuple[int, int]],
     wins_by_sentence: list[list[tuple[re.Match[str], int]]],
 ) -> dict[int, list[int]]:
-    """Sentence indexes per source that state a non-split decisive win.
-
-    Precomputing this keeps a document with many verdict mentions linear instead of
-    rescanning every later sentence for each one.
-    """
+    """Sentence indexes per source that state a non-split decisive win."""
     indexes: dict[int, list[int]] = {}
     for index, wins in enumerate(wins_by_sentence):
         by_source: dict[int, list[re.Match[str]]] = {}
@@ -1715,12 +1522,7 @@ def _has_later_decisive_win(
     floor: int,
     mention_source: int,
 ) -> bool:
-    """Whether a sentence at or after ``index`` states a decisive comparison result.
-
-    ``floor`` is the end of the verdict mention: a win stated before the verdict in
-    the same sentence ("although A won the small sample, the comparison was
-    inconclusive") does not supersede the verdict that follows it.
-    """
+    """Whether a sentence at or after ``index`` states a decisive comparison result."""
     sentence_start, sentence_end = spans[index]
     own = [
         match
@@ -1739,18 +1541,16 @@ _NULL_DIFFERENCE = re.compile(
     r"(?i)^no\s+(?:meaningful|significant|clear|measurable|statistically\s+significant)?"
     r"\s*difference\b"
 )
-# "Mixed results are common in A/B testing" describes a general phenomenon, not
-# this source's verdict. The predicate must follow the phrase so "the results were
-# mixed because the samples differed" stays a result.
+# "Mixed results are common in A/B testing" describes a general phenomenon, not this source's
+# verdict.
 _GENERIC_PHENOMENON = re.compile(
     r"(?i)\b(?:mixed|inconclusive|contradictory|conflicting)\s+"
     r"(?:results?|findings?)\s+(?:are|were|is|was)\s+"
     r"(?:common|typical|expected|normal|usual|frequent|likely|rare|widespread|"
     r"unsurprising)\b"
 )
-# Generic Russian/Ukrainian outcome nouns describe uncertainty about anything
-# ("результат лечения", "результат анализа крови") unless the sentence names the
-# comparison or experiment that produced them.
+# Generic Russian/Ukrainian outcome nouns describe uncertainty about anything unless the sentence
+# names the comparison or experiment they belong to.
 _CYRILLIC_GENERIC_RESULT = re.compile(
     r"(?i)\b(?:результат\w*|вывод\w*|итог\w*|исход\w*|результат\w*|"
     r"виснов\w*|підсум\w*)\b"
@@ -1763,16 +1563,14 @@ _CYRILLIC_COMPARISON_CONTEXT = re.compile(
     r"замір\w*|метод\w*|підхід\w*|варіант\w*|модел\w*|алгоритм\w*|"
     r"A/B|а/б)\b"
 )
-# "The results were mixed" is this source's verdict when the sentence names the
-# comparison or experiment that produced it. The generic result nouns are excluded
-# from the subject list, otherwise every verdict sentence would qualify itself.
+# "The results were mixed" is this source's verdict when the sentence names the comparison or
+# experiment that produced it.
 _COMPARISON_SUBJECT = re.compile(
     rf"(?i)\b(?:{_COMPARISON_EVENT_NOUNS}|methods?|approaches?|models?|systems?|"
     r"tools?|strategies|strategy|algorithms?|techniques?|baselines?|variants?|"
     r"options?|configurations?|agents?|prompts?|samples?|datasets?|workloads?)\b"
 )
-# A domain scope is what makes an English generic result unrelated: "mixed across
-# industries" and "survey results were mixed" describe a population, not two
+# A domain scope makes an English generic result unrelated: it describes a population, not two
 # alternatives measured against each other.
 _DOMAIN_SCOPE = re.compile(
     r"(?i)\b(?:surveys?|polls?|questionnaires?|respondents|industr(?:y|ies)|"
@@ -1785,12 +1583,7 @@ _ENGLISH_GENERIC_RESULT = re.compile(r"(?i)\b(?:results?|findings?|outcomes?)\b"
 def _unrelated_null_difference(
     text: str, spans: list[tuple[int, int]], sentence_index: int, match: re.Match[str]
 ) -> bool:
-    """Whether "no difference" describes an unrelated attribute, not a comparison.
-
-    A measured attribute alone ("no difference in time zones between servers") is
-    not a comparison of approaches. The sentence must name a comparison, experiment,
-    method, or alternative for the null result to be a verdict.
-    """
+    """Whether "no difference" describes an unrelated attribute, not a comparison."""
     if not _NULL_DIFFERENCE.search(match.group()):
         return False
     sentence_start, sentence_end = spans[sentence_index]
@@ -1804,14 +1597,7 @@ def _unrelated_null_difference(
 def _unrelated_generic_result(
     text: str, spans: list[tuple[int, int]], starts: list[int], match: re.Match[str]
 ) -> bool:
-    """Whether a generic outcome noun describes something other than a comparison.
-
-    "Результат лечения был неопределённым" is uncertainty about a treatment, not a
-    no-winner verdict. "Результат сравнения был неопределённым" names the comparison
-    and keeps the verdict. An English generic result needs both a non-comparison
-    domain ("across industries", "survey results") and no comparison subject; a bare
-    "the results were mixed" stays the source's verdict.
-    """
+    """Whether a generic outcome noun describes something other than a comparison."""
     sentence_index = _sentence_at(spans, starts, match.start())
     if sentence_index is None:
         return False
@@ -1838,26 +1624,24 @@ def _background_verdict(
     if sentence_index is None:
         return _PRIOR_WORK.search(_clause_before(text, match.start())) is not None
     sentence_start, sentence_end = spans[sentence_index]
-    # A generic statement ("mixed results are common in A/B testing") describes a
-    # phenomenon, not this source's verdict. Only the first clause after the match
-    # is inspected, so a separate specific verdict joined by a semicolon stays.
+    # A generic statement ("mixed results are common in A/B testing") describes a phenomenon, not
+    # this source's verdict.
     clause_tail = re.split(r"[.;:,!?]", text[match.end() : sentence_end], maxsplit=1)[0]
     if _GENERIC_PHENOMENON.search(f"{match.group()}{clause_tail}"):
         return True
-    # The meta phrase may sit in an earlier clause of the same sentence
-    # ("объясняется, почему …"), but it must introduce this exact clause.
+    # The meta phrase may sit in an earlier clause of the same sentence ("объясняется, почему …"),
+    # but it must introduce this exact clause.
     prefix = text[sentence_start : match.start()]
     if _PRIOR_WORK.search(_clause_before(text, match.start())):
         return True
-    # A meta verb may introduce this clause across a comma ("объясняется,
-    # почему …"), but it must not reach across a contrast or a semicolon.
+    # A meta verb may introduce this clause across a comma ("объясняется, почему …"), but it must
+    # not reach across a contrast or a semicolon.
     meta_tail = prefix.rsplit(";", 1)[-1]
     meta_scope = _CONTRAST_COORDINATOR.split(meta_tail)[-1]
     if _META_WHY_BEFORE.search(meta_scope):
         return True
-    # "explains how X works and why mixed results are common" keeps both embedded
-    # questions under the explanatory verb; the second question must be the last
-    # clause, so a following main claim is not swallowed by the same verb.
+    # "Explains how X works and why mixed results are common" keeps both embedded questions under
+    # the explanatory verb; a following main clause ends that scope.
     strong_scope = _STRONG_CONTRAST.split(meta_tail)[-1]
     if _META_VERB.search(strong_scope) and _META_COORDINATED.search(strong_scope):
         return True
@@ -1878,45 +1662,60 @@ def _named_alternative_labels(sentence: str) -> set[str]:
     for noun in _NAMED_ALTERNATIVE.finditer(sentence):
         run = _ALTERNATIVE_LABEL_RUN.match(sentence[noun.end() :])
         if run is not None:
-            labels.update(token.casefold() for token in _ALTERNATIVE_LABEL.findall(run.group()))
+            for token in _ALTERNATIVE_LABEL.findall(run.group()):
+                if token in _LABEL_CONJUNCTIONS:
+                    continue
+                label = token.casefold()
+                labels.add(_ALTERNATIVE_LABEL_ALIASES.get(label, label))
     return labels
 
 
-# The purpose's claim clause ends at a sentence break, a colon, a spaced dash, a
-# comma with a coordinator, or a coordinator that introduces a new subject
-# ("…cause and the team asked which one is better"). A coordinated noun phrase
-# ("between option A and option B") has no subject and stays inside the purpose.
-_COMPARISON_PURPOSE_BOUNDARY = re.compile(
+def _comparison_alternative_labels(scope: str) -> set[str]:
+    """Sides the scope compares: a named alternative or an "A/B" designator."""
+    labels = _named_alternative_labels(scope)
+    if _AB_LABELS.search(scope):
+        labels |= {"a", "b"}
+    return labels
+
+
+# A verdict's own clause ends at a sentence break, a colon, a spaced dash, a comma with a
+# coordinator, a subordinating attachment, or a coordinator that introduces a new subject.
+_COMPARISON_CLAUSE_BOUNDARY = re.compile(
     r"(?i)[.;!?\n]|:\s|\s[—–-]\s"
-    r"|,\s*(?:and|but|or|while|whereas|yet|however|then|so|и|но|а|однако|затем|поэтому)\b"
+    r"|,\s*(?:and|but|or|while|whereas|yet|however|then|so|though|although|which|with|"
+    r"и|но|а|однако|затем|поэтому|хотя|при\s+этом)\b"
     r"|\b(?:and|but|or|yet|so)\s+(?:the|a|an|this|that|these|those|there|we|they|it|"
     r"he|she|i|you|our|their|its|his|her)\b"
     r"|\b(?:и|но|а|однако|затем|поэтому)\s+(?:команда|исследовател\w*|автор\w*|"
     r"они|она|он|оно|это|эти|мы|вы|пользовател\w*|заказчик\w*)\b"
 )
+# A subordinating clause fronted before the verdict frames it but does not scope it, so the verdict
+# still belongs to the main clause.
+_FRONTED_SUBORDINATE_MARKER = (
+    r"(?:although|though|while|whereas|even\s+though|despite|"
+    r"хотя|несмотря\s+на\s+то\s+что|хоча|незважаючи\s+на\s+те\s+що)\b"
+)
+_FRONTED_VERDICT_SUBORDINATE = re.compile(
+    rf"(?i)^\s*{_FRONTED_SUBORDINATE_MARKER}[^,;:]{{0,160}},\s*"
+)
+# The same marker without the comma.
+_FRONTED_VERDICT_HEAD = re.compile(rf"(?i)^\s*{_FRONTED_SUBORDINATE_MARKER}")
 
 
 def _insufficiency_purpose(text: str, verdict: re.Match[str], sentence_end: int) -> str:
     """The complement that scopes the missing data ("the cause", "a winner")."""
-    # A purpose complement is a short clause. Bounding the tail keeps a verdict-heavy
-    # long sentence linear instead of rescanning the rest of the sentence per match.
+    # A purpose complement is a short clause. Bounding the tail keeps a verdict-heavy long sentence
+    # linear instead of rescanning the rest of the sentence per match.
     tail_end = min(sentence_end, verdict.end() + _CLAUSE_WINDOW)
     tail = text[verdict.end() : tail_end]
     purpose = _INSUFFICIENCY_PURPOSE_PREFIX.sub("", tail)
-    # A coordinated clause after the purpose is a separate claim: "to determine the
-    # cause, and the team asked whether …" must not lend its comparison to the
-    # purpose. A comma inside the purpose phrase ("a clear, single winner") stays.
-    return _COMPARISON_PURPOSE_BOUNDARY.split(purpose, maxsplit=1)[0].strip()
+    # A coordinated clause after the purpose is a separate claim: "to determine the cause, and the
+    # team asked whether …" must not lend its comparison to the purpose.
+    return _COMPARISON_CLAUSE_BOUNDARY.split(purpose, maxsplit=1)[0].strip()
 
 
 def _purpose_selects_a_comparison_outcome(purpose: str) -> bool:
-    """Whether the purpose itself selects the outcome, not an attribute of one.
-
-    A comparison noun nested in a possessive, causal, explanatory or measurement
-    phrase ("the winner's margin", "why the winning approach worked", "the cause of
-    the winning approach's advantage") describes an already-established outcome, so
-    the missing data is not about which side won.
-    """
+    """Whether the purpose itself selects the outcome, not an attribute of one."""
     for match in _INSUFFICIENCY_COMPARISON_OUTCOME.finditer(purpose):
         if _ATTRIBUTIVE_OUTCOME_TAIL.match(purpose, match.end()):
             continue
@@ -1932,23 +1731,119 @@ def _insufficiency_names_a_comparison(
     sentence_index: int | None,
     verdict: re.Match[str],
 ) -> bool:
-    """Whether "not enough data" is about the outcome of a real comparison.
-
-    The missing data must be scoped to the comparison outcome ("pick a winner",
-    "which one is better"). A comparison mentioned elsewhere in the sentence — an
-    explanatory "explains how a comparison works", a temporal "comparison with last
-    year", a metric inside "the cause of the improvement in accuracy" — states
-    ordinary uncertainty about a fact, not a no-winner verdict. When the phrase has
-    no purpose complement ("…; данных недостаточно."), the verdict stands only when
-    the same sentence names two concrete alternatives.
-    """
+    """Whether "not enough data" is about the outcome of a real comparison."""
     if sentence_index is None:
         return False
     purpose = _insufficiency_purpose(text, verdict, spans[sentence_index][1])
     if purpose:
         return _purpose_selects_a_comparison_outcome(purpose)
     start, end = spans[sentence_index]
-    return len(_named_alternative_labels(text[start:end])) >= 2
+    return len(_comparison_alternative_labels(text[start:end])) >= 2
+
+
+def _comparison_clause_end(text: str, start: int, limit: int) -> int:
+    """Where the clause that starts at ``start`` ends, within ``limit``."""
+    boundary = _COMPARISON_CLAUSE_BOUNDARY.search(text, start, limit)
+    return boundary.start() if boundary is not None else limit
+
+
+# The predicate that completes the head on the line above a wrap: a copula or auxiliary, or a
+# Russian negation that carries the verb ("Не выявило победителя").
+_CLAUSE_PREDICATE = (
+    r"(?:is|was|were|are|be|been|being|remains?|remained|seems?|seemed|proves?|proved|"
+    r"did|do|does|has|have|had|will|would|shall|should|can|could|may|might|must|"
+    r"не|ни|нет|был\w*|будет|будут|остал\w*|остаёт\w*|остают\w*|выявил\w*|показал\w*|"
+    r"дал\w*|дала|дали|стал\w*|оказал\w*|являет\w*|являют\w*|снизил\w*|сократил\w*)"
+)
+# A label run that continues the sides the line above left open: "A and B", "C и D", "A/B".
+_CLAUSE_LABEL_RUN = r"(?:and|or|versus|vs\.?|than|и|или|чем)"
+# An opening that cannot begin a header: a designator that hands the clause to another label or to
+# the predicate, a conjunction, or the predicate itself. These are closed grammatical classes, so
+# the boundary does not depend on which noun a pasted title happens to end with.
+_CLAUSE_CONTINUATION = re.compile(
+    rf"(?i)^(?:"
+    rf"(?:[a-zа-я]|\d+|[#№]\s*\d+)(?![\w])\s*(?:[/,—–-]|{_CLAUSE_LABEL_RUN}\b|\b{_CLAUSE_PREDICATE}\b)"
+    rf"|{_CLAUSE_LABEL_RUN}\b"
+    rf"|{_CLAUSE_PREDICATE}\b"
+    r")"
+)
+
+
+def _fragment_start(text: str, start: int, verdict: re.Match[str]) -> int:
+    """Where the verdict's own hard-wrapped line begins.
+
+    A pasted title, a PDF heading or a reshared link sits on its own line above the verdict and is
+    no part of its clause. A hard wrap inside flowing prose is not that boundary: the next line
+    continues the clause's subject — with a side label, a conjunction or the predicate itself — so
+    the head on the line above stays in the clause. A lowercase opening is a continuation too.
+    """
+    fragment = start
+    for wrap in _LINE_BREAK.finditer(text, start, verdict.end()):
+        rest = text[wrap.end() : verdict.end()]
+        stripped = rest.lstrip(" \t\r")
+        if not stripped[:1].isupper() or _CLAUSE_CONTINUATION.match(stripped) is not None:
+            continue
+        fragment = wrap.end() + len(rest) - len(stripped)
+    return fragment
+
+
+def _fronted_verdict_start(text: str, start: int, verdict: re.Match[str]) -> int | None:
+    """The nearest fragment or hard-wrap start that opens a fronted subordinate."""
+    candidates = [start]
+    candidates.extend(match.end() for match in _LINE_BREAK.finditer(text, start, verdict.end()))
+    # The marker may begin inside the verdict phrase (a header noun glued to it by the wrap), so
+    # the candidates run to the phrase end; the nearest one wins.
+    for candidate in reversed(candidates):
+        if _FRONTED_VERDICT_HEAD.match(text[candidate : verdict.end()]) is not None:
+            return candidate
+    return None
+
+
+def _verdict_comparison_scope(
+    text: str,
+    verdict: re.Match[str],
+) -> tuple[set[str], set[str], int]:
+    """The sides and measured areas the verdict's own clause names, and its end.
+
+    The clause is read across hard line wraps; terminal marks and paragraph breaks bound it, and a
+    header on its own line above the verdict does not scope it.
+    """
+    start, end = _sentence_bounds_around(text, verdict)
+    limit = end
+    start = _fragment_start(text, start, verdict)
+    # A header noun glued to the phrase by the wrap stays outside the clause with the rest of
+    # its line.
+    verdict_text = text[max(verdict.start(), start) : verdict.end()]
+    fronted_start = _fronted_verdict_start(text, start, verdict)
+    if fronted_start is not None:
+        segment = text[fronted_start : verdict.end()]
+        stripped = _FRONTED_VERDICT_SUBORDINATE.sub("", segment)
+        if stripped != segment:
+            # The fronted subordinate closes before the verdict: the verdict's clause is the
+            # main clause, and its end is where the claim begins.
+            sentence = stripped
+            head = _COMPARISON_CLAUSE_BOUNDARY.split(
+                _FRONTED_VERDICT_SUBORDINATE.sub("", text[fronted_start : verdict.start()])
+            )[-1]
+            clause_end = _comparison_clause_end(text, verdict.end(), limit)
+            claim_start = clause_end
+            clause = f"{head}{verdict_text}{text[verdict.end() : clause_end]}"
+        else:
+            # The verdict stands inside the fronted subordinate: the subordinate is its
+            # clause, and the comma that closes it starts the main clause (the claim).
+            sentence = ""
+            comma = text.find(",", verdict.end(), limit)
+            clause_end = comma if comma >= 0 else limit
+            claim_start = clause_end + 1 if comma >= 0 else clause_end
+            clause = text[fronted_start:clause_end]
+    else:
+        sentence = text[start : verdict.start()]
+        head = _COMPARISON_CLAUSE_BOUNDARY.split(sentence)[-1]
+        clause_end = _comparison_clause_end(text, verdict.end(), limit)
+        claim_start = clause_end
+        clause = f"{head}{verdict_text}{text[verdict.end() : clause_end]}"
+    labels = _comparison_alternative_labels(clause) or _comparison_alternative_labels(sentence)
+    return labels, _metric_families(clause), claim_start
 
 
 def _explicit_verdict(
@@ -1956,14 +1851,7 @@ def _explicit_verdict(
     spans: list[tuple[int, int]],
     markers: list[tuple[int, int]],
 ) -> bool | None:
-    """Whether an explicit no-winner verdict stands.
-
-    ``True`` when one survives, ``False`` when a later decisive win supersedes a
-    verdict the evidence actually stands behind, and ``None`` when no current
-    verdict stands: only background, negated, retracted, or unrelated mentions. The
-    distinction matters because ``False`` settles the comparison, while a mention
-    that never states this source's verdict must still let the split inference run.
-    """
+    """Whether an explicit no-winner verdict stands."""
     starts = [start for start, _ in spans]
     wins_by_sentence: list[list[tuple[re.Match[str], int]]] | None = None
     decisive_indexes: dict[int, list[int]] = {}
@@ -1974,32 +1862,25 @@ def _explicit_verdict(
         # The negation may be part of the matched phrase ("were not inconclusive").
         if _NEGATED_INCONCLUSIVE.search(_clause_before(text, match.start()) + match.group()):
             continue
-        # A title or evidence that states a measured change after the verdict is a
-        # stronger claim: the source measured a result where the earlier comparison
-        # was open. The verdict cannot override it, whatever its scope.
-        # The claim that follows the verdict may report a plain result the source
-        # measured; a result scoped to another experiment or compared with a named
-        # side ("A cut latency by 40% compared with the previous version") leaves the
-        # verdict standing.
-        if _measured_change_in_tail(text, match):
+        # A measured change after the verdict reports a result the source observed.
+        sentence_index = _sentence_at(spans, starts, match.start())
+        comparison_labels, comparison_metrics, claim_start = _verdict_comparison_scope(text, match)
+        if _measured_change_in_tail(text, comparison_labels, comparison_metrics, claim_start):
             superseded = True
             continue
-        # "В тендере победителя нет" and "no winner was announced in the election"
-        # name an event, not a method comparison.
+        # "В тендере победителя нет" and "no winner was announced in the election" name an event,
+        # not a method comparison.
         if _event_scoped_verdict(text, spans, starts, match):
             continue
-        sentence_index = _sentence_at(spans, starts, match.start())
-        # "There is not enough evidence to determine the cause" is uncertainty about a
-        # fact; the phrase is a comparison verdict only when the missing data is
-        # scoped to a comparison outcome ("pick a winner").
+        # "Not enough evidence to determine the cause" is uncertainty about a fact; it is a
+        # comparison verdict only when the missing data scopes the comparison.
         if needs_comparison and not _insufficiency_names_a_comparison(
             text, spans, sentence_index, match
         ):
             continue
         if _background_verdict(text, spans, starts, match):
-            # "Prior studies reported mixed results" or "the article explains why
-            # mixed results are common" describes the literature or the topic; it
-            # is not the current source's verdict.
+            # "Prior studies reported mixed results" or "the article explains why mixed results are
+            # common" describes the literature or the topic; it is not the current source's verdict.
             continue
         if _RETRACTED_VERDICT.search(text[match.end() :]):
             continue
@@ -2030,38 +1911,22 @@ def _explicit_verdict(
 
 
 def states_inconclusive_comparison(text: str) -> bool:
-    """Whether the captured evidence leaves an unresolved comparison.
-
-    A negated mention ("the results were not inconclusive") cancels only itself.
-    A later decisive win supersedes the verdict only when it belongs to the same
-    comparison and source: a hypothetical ("whether A outperformed B"), a hedged
-    possibility, a retracted win, a split win in another scope, or a win in a
-    separate experiment must not turn an open comparison into a settled one. A
-    verdict that only reports prior work or explains a phenomenon is background,
-    not this source's conclusion. An explicitly retracted inconclusive conclusion
-    is also not a verdict the source still stands behind. A comparison that reports
-    an advantage on each side without naming a winner is unresolved even when the
-    word "inconclusive" never appears, and a trade-off stated after a decisive win
-    reopens the comparison that the earlier result appeared to settle.
-    """
+    """Whether the captured evidence leaves an unresolved comparison."""
     folded = _fold(text)
     spans = _sentence_spans(folded)
     markers = _source_markers(folded)
     explicit = _explicit_verdict(folded, spans, markers)
     if explicit is True:
         return True
-    # A later trade-off outlives an earlier decisive win ("A beat B in the final
-    # benchmark. Later, A was 40% faster than B, but B was more accurate"), so the
-    # split inference runs even when the verdict itself was superseded.
+    # A later trade-off outlives an earlier decisive win ("A beat B in the final benchmark. Later,
+    # A was 40% faster than B, but B was more accurate"), so the split inference runs even when
+    # the verdict itself was superseded.
     return _split_comparison_result(folded, spans, markers)
 
 
 def has_multiple_sources(metadata: Mapping[str, object]) -> bool:
-    """Whether more than one source actually contributed evidence.
-
-    ``source_count`` includes sources whose extraction failed. A single available
-    source must still receive the no-winner hint and repair even when the Item was
-    composed from several requested sources.
+    """Whether more than one source actually contributed evidence. ``source_count`` includes sources
+    whose extraction failed.
     """
     successful = metadata.get("successful_source_count")
     if type(successful) is int:
@@ -2076,12 +1941,7 @@ def has_multiple_sources(metadata: Mapping[str, object]) -> bool:
 
 
 def title_states_inconclusive(title: str) -> bool:
-    """Whether a title already states the verdict; the suffix is then a no-op.
-
-    A title that only lists both measured results is not a verdict: the repair
-    exists to add the explicit no-winner statement, so the split inference is not
-    used here.
-    """
+    """Whether a title already states the verdict; the suffix is then a no-op."""
     folded = _fold(title)
     if _explicit_verdict(folded, _sentence_spans(folded), _source_markers(folded)) is True:
         return True
@@ -2092,13 +1952,7 @@ def title_states_inconclusive(title: str) -> bool:
     )
 
 
-# A title that lists a trade-off can still close with the standing the comparison
-# reached. The evidence path accepts "In the end, A won" only with its comma, because
-# a sentence-initial phrase frames whatever follows it; a title drops the comma
-# ("…; in the end A won"), so the title scan reads these openers without one. The
-# overall adverbs ("overall", "on average") already come from `_OVERALL_RESULT`. A
-# false positive only exposes a win to the claim-scoped guards below, which still
-# require a real unscoped win before the title is replaced.
+# A title that lists a trade-off can still close with the standing the comparison reached.
 _TITLE_RESULT_OPENER = re.compile(
     r"(?i)\b(?:in\s+the\s+end|in\s+the\s+final\s+analysis|ultimately|all\s+in\s+all|"
     r"at\s+the\s+end\s+of\s+the\s+day|when\s+all\s+is\s+said\s+and\s+done|"
@@ -2115,63 +1969,25 @@ def _title_closes_trade_off(title: str) -> bool:
 
 
 def title_claims_comparison_winner(title: str) -> bool:
-    """Whether a title asserts that one compared side came out ahead.
-
-    The deterministic repair uses this to keep two contradictory conclusions out of
-    one title. The evidence detectors answer the opposite question ("does the
-    source settle the comparison?"), so their frame requirement would miss an
-    ordinary "A won the benchmark"; this scan instead applies the shared rejection
-    filters to every decisive mention. A split claim ("A won on speed, but B won on
-    stability") reports a trade-off rather than an overall winner, and a win scoped
-    to a subset ("A won the small sample", "A won on accuracy in the final
-    benchmark") stays partial even inside a final round, while a subset in the
-    neighbouring claim belongs to that other win and leaves this one overall ("A won
-    the benchmark; B was faster on the small sample"). A split title that ends
-    with the standing it reached ("…; overall A won", "…; in the end A won") closes
-    the trade-off, so that closing win is read as the overall result. A final or
-    overall round is a frame instead, so "A won the final benchmark" and "The final
-    benchmark showed A won" claim the overall standing. A negated, hedged or
-    hypothetical mention claims no winner, and an event outcome ("Acme won the
-    tender", "Тендер выиграла компания Acme") settles an award or a race, not a
-    comparison of sides.
-    """
+    """Whether a title asserts that one compared side came out ahead."""
     folded = _fold(title)
-    # A trade-off keeps its measured detail and receives the verdict; appending to a
-    # title that also states the overall winner would keep both conclusions (COR-16-07).
     if _split_claim(folded) and not _title_closes_trade_off(folded):
         return False
     for match in _DECISIVE_WIN.finditer(folded):
         if match.group("directional") is not None:
             continue
         clause = clause_before(folded, match.start())
-        # Read every guard on the win's own claim: its clause, the win and its
-        # object up to the next punctuation. An event noun or a separate experiment
-        # in another claim ("A, an award-winning tool, won the benchmark", "…; the
-        # award went to B") describes something else and must not decide how this
-        # win is read (GATE-16-02).
+        # Read every guard on the win's own claim: its clause, the win and its object up to the next
+        # punctuation.
         claim = _claim_window(folded, clause, match)
-        # An event win is reported with the same verbs as a comparison win in Russian
-        # and Ukrainian, where no object lookahead can reject it; only a claim that
-        # names a compared side keeps the comparison reading.
+        # An event win uses the same verbs as a comparison win in Russian and Ukrainian, where no
+        # object lookahead can reject it; only a claim naming a compared side keeps the win.
         if _EVENT_NOUN_ANY_CASE.search(claim) and not _names_compared_sides(claim):
             continue
         if _win_mention_rejected(folded, clause, match, separate_scope=claim):
             continue
-        # The evidence path's frame/limit fork: a final or overall round is a frame,
-        # a named subset is a limit the frame cannot override (GATE-16-01). The subset
-        # is read inside this win's own claim: a scope that belongs to the neighbouring
-        # claim about the other side ("A won the benchmark; B was faster on the small
-        # sample") describes that other side's win, and reading it here made an
-        # unscoped win look partial, so the repair appended the verdict beside "A won"
-        # (GATE-16-06).
-        if _PARTIAL_WIN_SCOPE.search(claim):
-            overall = (
-                _OVERALL_RESULT.search(claim)
-                if _LIMITING_WIN_SCOPE.search(claim)
-                else _OVERALL_MARKER.search(claim)
-            )
-            if not overall:
-                continue
+        if not _overall_win(scope=claim, claim=claim, marker_text=claim):
+            continue
         return True
     return False
 
@@ -2197,16 +2013,7 @@ def _language_hint(text: str) -> str | None:
 def inconclusive_title_language(
     title: str, response_language: str | None = None, evidence: str = ""
 ) -> str | None:
-    """The language the repair will write the verdict in; ``None`` means none.
-
-    The title script and evidence wording are only a fallback for callers without
-    profile context; the title wins so a Russian answer keeps a Russian suffix even
-    beside English evidence. When no response language or recognizable translation
-    is available, return no language rather than inserting English into another
-    language's title. The same language also selects the coordination, negation and
-    function words the title trim may rely on, so Spanish "en" is never read as the
-    Dutch coordinator "en".
-    """
+    """The language the repair will write the verdict in; ``None`` means none."""
     language = (response_language or "").split("-")[0].casefold()
     if language in _INCONCLUSIVE_SUFFIX:
         return language
@@ -2214,8 +2021,8 @@ def inconclusive_title_language(
         return None
     hint = _language_hint(title)
     if hint == "ru" and _UKRAINIAN.search(evidence):
-        # A Ukrainian title can look Russian until its text provides a marker;
-        # the evidence disambiguates the shared Cyrillic script.
+        # A Ukrainian title can look Russian until its text provides a marker; the evidence
+        # disambiguates the shared Cyrillic script.
         hint = "uk"
     if hint is None:
         hint = _language_hint(evidence)
@@ -2231,21 +2038,13 @@ def inconclusive_title_suffix(
 
 
 def inconclusive_title_statement(language: str) -> str:
-    """The verdict as a standalone title, for a title that must be replaced.
-
-    ``language`` comes from ``inconclusive_title_language``, so the replacement
-    stays in the actual response language; capitalizing the first letter lets it
-    stand alone as the title instead of a cut-off continuation.
-    """
+    """The verdict as a standalone title, for a title that must be replaced."""
     verdict = _INCONCLUSIVE_SUFFIX[language].removeprefix("; ")
     return verdict[:1].upper() + verdict[1:]
 
 
-# A measured change ("cut latency by 30%", "снизил задержку на 30%") reports a result
-# the source observed, in the same way a decisive win does: a verb of change, the
-# quantity the comparison reports, and a percentage or ratio that measures it. A
-# percentage alone is not enough — "costs increased by 30%" moves a figure in every
-# document and answers no comparison.
+# A measured change reports a result the source observed, like a decisive win: a verb of change, the
+# quantity the comparison reports, and a percentage or ratio that measures it.
 _CHANGE_HEAD = re.compile(
     r"(?i)\b(?:cut|cuts|cutting|reduced|reduces|lowered|lowers|decreased|"
     r"accelerated|sped|improved|improves|raised|raises|increased|increases|"
@@ -2253,16 +2052,31 @@ _CHANGE_HEAD = re.compile(
     r"снизил\w*|сократил\w*|ускорил\w*|увеличил\w*|повысил\w*|уменьшил\w*|"
     r"зменшил\w*|скоротив\w*|прискорив\w*)\b"
 )
-# The quantity a comparison reports: a latency, accuracy or cost per request. A
-# cheaper licence or a vendor price is not it, and a Russian "время ответа" names
-# the same quantity as "latency".
-_METRIC = re.compile(
-    r"(?i)\b(?:latency|p\d{2}|throughput|accuracy|precision|recall|f1|speed|"
-    r"errors?|failures?|retries?|timeouts?|memory|cpu|tokens?|runtime|quality|"
-    r"задержк\w*|пропускн\w*|точност\w*|ошиб\w*|помил\w*|памят\w*|"
-    r"стоимост\w*|вартост\w*|токен\w*|врем\w*|"
-    r"(?:час\w*)\s+(?:ответа|отклика|видповід\w*))\b"
-)
+# The quantity a comparison reports: a latency, accuracy or cost per request.
+_METRIC_FAMILIES = {
+    "latency": re.compile(
+        # A bare "время" is a temporal word ("во время теста"), not a measured quantity; only "время
+        # ответа" or "час відповіді" names the same thing as latency.
+        r"(?i)\b(?:latency|p\d{2}|speed|runtime|задержк\w*|"
+        r"(?:врем\w*|час\w*)\s+(?:ответа|отклика|обработки|выполнени\w*|видповід\w*))\b"
+    ),
+    "throughput": re.compile(r"(?i)\b(?:throughput|пропускн\w*)\b"),
+    "accuracy": re.compile(r"(?i)\b(?:accuracy|precision|recall|f1|точност\w*)\b"),
+    "reliability": re.compile(r"(?i)\b(?:errors?|failures?|retries?|timeouts?|ошиб\w*|помил\w*)\b"),
+    "resources": re.compile(r"(?i)\b(?:memory|cpu|памят\w*)\b"),
+    "tokens": re.compile(r"(?i)\b(?:tokens?|токен\w*)\b"),
+    "cost": re.compile(r"(?i)\b(?:стоимост\w*|вартост\w*)\b"),
+    "quality": re.compile(r"(?i)\bquality\b"),
+}
+
+
+def _metric_families(text: str) -> set[str]:
+    """Measured quantities a text names, one family per quantity."""
+    return {
+        family for family, pattern in _METRIC_FAMILIES.items() if pattern.search(text) is not None
+    }
+
+
 _UNCOMPARED_PRICE = re.compile(
     r"(?i)\b(?:licen[cs]es?|subscriptions?|vendors?|suppliers?|лицензи\w*|"
     r"подписк\w*|підписк\w*|вендор\w*|поставщик\w*|постачальник\w*)\b"
@@ -2286,33 +2100,86 @@ _NEGATED_BEFORE_HEAD = re.compile(
     r"(?i)(?:\b(?:not|never|no|none|neither|nor|не|ни|никто|ничего|жодн\w*)\b|n't)"
     r"(?!\s*(?:only|just|merely)\b)[^.;!?]{0,40}$"
 )
+# The shared _LATER_RESULT_FRAME covers final/overall/follow-up results.
+_MEASURED_LATER_PHASE = re.compile(
+    r"(?i)\b(?:full|final|overall)\s+(?:\w+\s+){0,2}?rollouts?\b"
+    r"|\b(?:в|во|у|на|после|після)\s+"
+    r"(?:втор\w*|друг\w*|следующ\w*|наступн\w*)\s+"
+    r"(?:\w+\s+){0,2}?(?:раунд\w*|этап\w*|прогон\w*|замер\w*|тест\w*|"
+    r"испытан\w*|эксперимент\w*|дослід\w*|випробуван\w*)"
+    # "В полном прогоне" and "итоговый тест" name the later phase without an ordinal.
+    r"|\b(?:в|во|після|после)\s+(?:полн\w*|итогов\w*|підсумков\w*)"
+    r"(?:\s+\w+){0,2}?\s+(?:прогон\w*|тест\w*|замер\w*|раунд\w*|эксперимент\w*|"
+    r"испытан\w*|дослід\w*|випробуван\w*)"
+    # "Второй раунд показал" puts the phase in the subject, not after a preposition.
+    r"|\b(?:втор\w*|друг\w*|следующ\w*|наступн\w*)\s+"
+    r"(?:раунд\w*|этап\w*|прогон\w*|замер\w*)\s+(?:показа\w*|продемонстрир\w*|"
+    r"підтвердив\w*)"
+)
 
 
-def _measured_change_in_tail(text: str, verdict: re.Match[str]) -> bool:
-    """Whether the claim after the verdict measures a change of a compared quantity.
+def _measured_change_settles_comparison(
+    claim: str, comparison_labels: set[str], comparison_metrics: set[str]
+) -> bool:
+    """Whether a measured claim is a later result of the verdict's comparison."""
+    claim_labels = _named_alternative_labels(claim)
+    if not claim_labels:
+        return False
+    if comparison_labels and not (comparison_labels & claim_labels):
+        return False
+    claim_metrics = _metric_families(claim)
+    if comparison_metrics and not (comparison_metrics & claim_metrics):
+        return False
+    return (
+        _LATER_RESULT_FRAME.search(claim) is not None
+        or _MEASURED_LATER_PHASE.search(claim) is not None
+    )
 
-    The claim is the first piece between the verdict and its clause end, or the
-    claim after that boundary when the boundary closes the verdict's own clause
-    ("week one. The full rollout…" leaves the period inside the verdict sentence).
-    """
-    for boundary in CLAIM_CLAUSE_BREAK.finditer(
-        text, verdict.end(), verdict.end() + _CLAUSE_WINDOW
-    ):
-        claim = text[verdict.end() : boundary.start()]
-        if claim.strip() and _measured_change(claim):
-            return True
+
+# A measured claim is one predicate: the verb of change with the quantity and the amount it moves.
+_MEASURED_CLAIM_BREAK = re.compile(
+    r"(?i)[;!?\n]|:\s|\s[—–]\s"
+    r"|,\s*(?:and|but|or|yet|so|while|whereas|though|although|"
+    r"и|но|а|однако|затем|поэтому|хотя)\b"
+    r"|\b(?:and|but|or|yet|so)\s+(?:the|a|an|this|that|these|those|there|we|they|it|"
+    r"he|she|i|you|our|their|its|his|her)\b"
+)
+
+
+def _measured_claims(sentence: str) -> list[str]:
+    """The claims of one sentence that can measure a result: the sentence and its clauses."""
+    claims = [sentence]
+    boundaries = list(_MEASURED_CLAIM_BREAK.finditer(sentence))
+    if not boundaries:
+        return claims
+    start = 0
+    for boundary in boundaries:
+        clause = sentence[start : boundary.start()]
+        start = boundary.end()
+        if clause.strip():
+            claims.append(clause)
+    tail = sentence[start:]
+    if tail.strip():
+        claims.append(tail)
+    return claims
+
+
+def _measured_change_in_tail(
+    text: str, comparison_labels: set[str], comparison_metrics: set[str], claim_start: int
+) -> bool:
+    """Whether a claim after the verdict measures a later result of its comparison."""
+    window = text[claim_start : claim_start + _CLAUSE_WINDOW]
+    for start, end in _sentence_spans(window):
+        for claim in _measured_claims(window[start:end]):
+            if not _measured_change(claim):
+                continue
+            if _measured_change_settles_comparison(claim, comparison_labels, comparison_metrics):
+                return True
     return False
 
 
 def _measured_change(claim: str) -> bool:
-    """Whether one claim measures a change of the quantity the comparison reports.
-
-    A hedge, a hypothesis, a negation or a future frame describes an intention, not
-    a measurement, and a claim scoped to another experiment or measured against a
-    named side ("A cut latency by 40% compared with the previous version") keeps the
-    verdict standing. Each pattern reads only this claim, so the per-verdict cost
-    stays linear in the document.
-    """
+    """Whether one claim measures a change of a quantity a comparison can report."""
     head = _CHANGE_HEAD.search(claim)
     if head is None:
         return False
@@ -2324,6 +2191,6 @@ def _measured_change(claim: str) -> bool:
         return False
     if _FUTURE_CHANGE.search(claim) is not None:
         return False
-    if _AMOUNT.search(claim, head.end()) is None or _METRIC.search(claim) is None:
+    if _AMOUNT.search(claim, head.end()) is None or not _metric_families(claim):
         return False
     return _UNCOMPARED_PRICE.search(claim) is None

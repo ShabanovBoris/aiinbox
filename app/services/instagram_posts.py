@@ -9,6 +9,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.enums import ContentKind, SourceType
+from app.domain.language import detect_source_language
 from app.domain.models import NormalizedContent
 from app.errors import AppError
 from app.extractors.instagram import InstagramExtractor
@@ -61,7 +62,7 @@ def _project_post(
     caption: str,
 ) -> NormalizedContent | None:
     sections = []
-    has_transcript = has_visual = missing_video_visual = False
+    has_transcript = has_visual = has_video = missing_video_visual = False
     for part in progress["parts"]:
         transcript = evidence.get((part["key"], ContentKind.TRANSCRIPT))
         visual = evidence.get((part["key"], ContentKind.VISUAL_NOTES))
@@ -69,6 +70,9 @@ def _project_post(
             continue
         has_transcript |= bool(transcript)
         has_visual |= bool(visual)
+        # Declared carousel elements may never be extracted (budget exhausted,
+        # unavailable media); only extracted evidence makes the post a video source.
+        has_video |= part["kind"] == "video"
         missing_video_visual |= part["kind"] == "video" and not visual
         lines = [f"Элемент {part['position']} — {'фото' if part['kind'] == 'photo' else 'видео'}"]
         if transcript:
@@ -80,6 +84,9 @@ def _project_post(
     caption_only = not sections
     if caption_only and len(caption) < 40:
         return None
+    # A photo/carousel post follows the content language; an extracted video part
+    # switches it to the profile language, so the caption only votes when the post
+    # has no extracted video (a Reel's primary source is its transcript).
     return NormalizedContent(
         source_type=SourceType.INSTAGRAM,
         url=_canonical_post_url(source),
@@ -88,6 +95,7 @@ def _project_post(
         text=caption if caption_only else "\n\n".join(sections),
         source_context=caption if caption and not caption_only else None,
         duration_seconds=source.content_duration_seconds,
+        language=None if has_video else detect_source_language(caption),
         metadata={
             "caption_only": caption_only,
             "visual_only": has_visual and not has_transcript,
@@ -95,7 +103,7 @@ def _project_post(
             "instagram_post_visual": has_visual and not missing_video_visual,
             # A photo/carousel post follows the content language; only an
             # extracted video element switches it to the profile language.
-            "instagram_has_video": any(part["kind"] == "video" for part in progress["parts"]),
+            "instagram_has_video": has_video,
         },
     )
 
@@ -209,7 +217,7 @@ async def extract_post(
         )
     _save_progress(source, progress)
     vision = provider.capabilities.vision
-    language = (await get_profile(session, user_id)).preferred_language if vision else ""
+    notes_language = (await get_profile(session, user_id)).preferred_language if vision else ""
     await session.commit()
 
     for index, (part, element) in enumerate(zip(parts, post["elements"], strict=True)):
@@ -230,7 +238,7 @@ async def extract_post(
             evidence,
             checkpoints=checkpoints,
             clear_checkpoints=clear_checkpoints,
-            language=language,
+            notes_language=notes_language,
             caption=caption,
             vision=vision,
             frame_interval=frame_interval,
@@ -278,7 +286,7 @@ async def _extract_element(
     *,
     checkpoints: Callable[[str], Awaitable[STTCheckpoints]],
     clear_checkpoints: Callable[[str], Awaitable[None]],
-    language: str,
+    notes_language: str,
     caption: str,
     vision: bool,
     frame_interval: int,
@@ -381,7 +389,7 @@ async def _extract_element(
                             await provider.describe_images(
                                 images,
                                 context=(transcript or caption)[:1500] or None,
-                                preferred_language=language,
+                                preferred_language=notes_language,
                                 photo=photo,
                             )
                         ).strip()[:800]

@@ -295,7 +295,8 @@
         "summary_evidence_groups": [
           [
             "escaped defects",
-            "defects"
+            "defects",
+            "escaped defect rate"
           ],
           [
             "manual qa",

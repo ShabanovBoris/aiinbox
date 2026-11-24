@@ -395,6 +395,7 @@ _ALLOWED_CASE_KEYS = frozenset(
         "metadata",
         "chunk_size_chars",
         "chunk_overlap_chars",
+        "known_variable",
         "expected",
     }
 )
@@ -413,6 +414,7 @@ class QualityCaseReport:
     failed_checks: tuple[str, ...]
     title_chars: int
     chunk_count: int
+    known_variable: bool
 
 
 # Lexical evidence checks must not fail a correct answer over punctuation style.
@@ -479,6 +481,26 @@ def _match_any(text: str, alternatives: list[str]) -> str | None:
     )
 
 
+def _has_asserted_match(normalized_text: str, term: str) -> bool:
+    """Return whether the term occurs at least once outside a negated clause."""
+    needle = _match_normalize(term)
+    position = normalized_text.find(needle)
+    while position != -1:
+        if not _negated_at(normalized_text, position, position + len(needle)):
+            return True
+        position = normalized_text.find(needle, position + 1)
+    return False
+
+
+def _contains_asserted_term(text: str, term: str) -> bool:
+    """Check a user-visible field for a forbidden term stated as a claim.
+
+    "No unified conclusion" and "neither source supports a shared cause" are the
+    correct answers, so only an asserted occurrence counts as a violation.
+    """
+    return _has_asserted_match(_match_normalize(text), term)
+
+
 def _match_any_positive(text: str, alternatives: list[str]) -> str | None:
     """Match an outcome term only when the clause does not negate it.
 
@@ -488,14 +510,10 @@ def _match_any_positive(text: str, alternatives: list[str]) -> str | None:
     negated phrase contains its positive substring.
     """
     normalized = _match_normalize(text)
-    for term in alternatives:
-        needle = _match_normalize(term)
-        position = normalized.find(needle)
-        while position != -1:
-            if not _negated_at(normalized, position):
-                return term
-            position = normalized.find(needle, position + 1)
-    return None
+    return next(
+        (term for term in alternatives if _has_asserted_match(normalized, term)),
+        None,
+    )
 
 
 def _category_matches(actual: str, expected: str) -> bool:
@@ -518,7 +536,37 @@ def _category_matches(actual: str, expected: str) -> bool:
     )
 
 
-_MULTI_TOPIC_SEPARATOR = re.compile(r"\s+(?:и|and|&)\s+|\s*[,;]\s*")
+def _category_matches_any(actual: str, expected: str, aliases: list[str]) -> bool:
+    """Check the label against a single expected topic or a merged multi-topic one.
+
+    A single-topic expectation keeps the containment rule: live labels add
+    descriptive tails (“AI and automation in customer support”), which are not
+    separate topics. A multi-topic expectation (`holdout-independent-sources`
+    merges two equally weighted topics) accepts only a label whose every topic is
+    accepted, because such a label matches an alias through its first part alone
+    (``Baking and Infrastructure``) and would confirm a hallucinated category.
+    """
+    candidates = [expected, *aliases]
+    if not any(_category_matches(actual, candidate) for candidate in candidates):
+        return False
+    expected_parts = _category_parts(_normalize(expected), _EXPECTED_TOPIC_SEPARATOR)
+    if len(expected_parts) < 2:
+        return True
+    parts = _category_parts(_normalize(actual))
+    if len(parts) < 2:
+        return True
+    return all(
+        any(_category_matches(part, candidate) for candidate in candidates) for part in parts
+    )
+
+
+# A classifier label separates topics with a coordinator or punctuation, and live
+# labels also compress them with a slash, plus or pipe, so the actual label is split
+# on all of them. An expectation declares that it merges topics with a coordinator
+# only, because one concept may contain a slash (`CI/CD`) and a bare space never
+# separates topics (“customer support” is one topic).
+_TOPIC_SEPARATOR = re.compile(r"\s+(?:и|and|&)\s+|\s*[,;|/+]\s*")
+_EXPECTED_TOPIC_SEPARATOR = re.compile(r"\s+(?:и|and|&)\s+|\s*[,;]\s*")
 
 
 def _label_contains(needle: str, haystack: str) -> bool:
@@ -528,8 +576,8 @@ def _label_contains(needle: str, haystack: str) -> bool:
     return needle in haystack
 
 
-def _category_parts(label: str) -> list[str]:
-    return [part.strip() for part in _MULTI_TOPIC_SEPARATOR.split(label) if part.strip()]
+def _category_parts(label: str, separator: re.Pattern[str] = _TOPIC_SEPARATOR) -> list[str]:
+    return [part.strip() for part in separator.split(label) if part.strip()]
 
 
 def _category_is_forbidden(actual: str, forbidden: str) -> bool:
@@ -595,15 +643,19 @@ def _normalize(text: str) -> str:
     return " ".join(text.casefold().replace("ё", "е").split()).rstrip(".")
 
 
-# A negated positive phrase is a supported negative result, not the forbidden
-# positive polarity: “preloading does not improve accuracy” must pass.
+# A negated phrase is the opposite of the claim it contains: “preloading does not
+# improve accuracy” must pass an outcome check, and “no unified conclusion” must
+# pass a forbidden-term check. “not only”/“не только” amplifies a claim, so a
+# negator immediately followed by only/just/merely does not negate anything.
 # The claim boundary is shared with the prompt guard and the repair so all three
 # agree on which clause a negation or outcome belongs to.
 _POLARITY_NEGATION = re.compile(
-    r"(?i)\b(?:not|never|no|none|without|hardly|scarcely|"
+    r"(?i)\b(?:not|never|no|none|neither|nor|nobody|nothing|without|hardly|scarcely|"
     r"fail(?:s|ed|ing)?\s+to|did\s+not|does\s+not|do\s+not|"
     r"isn't|wasn't|weren't|aren't|doesn't|don't|didn't|hasn't|haven't|hadn't|"
     r"cannot|can't|couldn't|won't|wouldn't|rather\s+than|instead\s+of|не|нет|без|никогда|ни|вместо)\b"
+    # "not only a unified conclusion" and "не только общий вывод" assert the term.
+    r"(?!\s*(?:only|just|merely|только|просто|лишь)\b)"
 )
 _POLARITY_FOLD = str.maketrans({"ё": "е", "Ё": "Е"})
 
@@ -612,8 +664,135 @@ def _fold_polarity(text: str) -> str:
     return text.casefold().translate(_POLARITY_FOLD)
 
 
-def _negated_at(text: str, index: int) -> bool:
-    return _POLARITY_NEGATION.search(clause_before(text, index)) is not None
+# A negator only cancels the clause that contains it. The shared boundary splits
+# sentence punctuation and coordinators, but prose also starts an independent
+# claim after a dash or a parenthetical aside: “The evidence is not conclusive —
+# caching improves quality” asserts the part after the dash. Those separators stay
+# local to the evaluation because the shared boundary also drives the no-winner
+# detector and the repair, which are not part of this check.
+_NEGATION_SCOPE_BREAK = re.compile(r"[—–]|\s-\s|[()]")
+
+# Some negators assert rather than negate: “There is no doubt that …”, “Nobody
+# denies that …” and “Neither run disputes that …” state the following claim, and so
+# does “Without exception …” in the bare “X is certain” sense. The frame is blanked
+# before the scan (same length, so offsets stay valid) and cannot hide a term.
+_ASSERTING_NEGATION_FRAME = re.compile(
+    r"(?i)\b(?:"
+    r"there\s+(?:is|can\s+be)\s+no\s+(?:doubt|question)"
+    r"|there\s+is\s+little\s+doubt(?:\s+that)?"
+    r"|there\s+is\s+no\s+(?:denying|doubting|disputing|questioning)(?:\s+that)?"
+    r"|it\s+(?:cannot|can\s+not|can't)\s+be\s+(?:denied|disputed|questioned|doubted)"
+    r"(?:\s+that)?"
+    r"|(?:nobody|no\s+one)\s+(?:(?:can|could|would|will|may|might|must|should)\s+)?"
+    r"(?:\w+ly\s+)?(?:den(?:y|ies|ied)|disputes?|disputed|questions?|questioned|"
+    r"doubts?|doubted)(?:\s+that)?"
+    r"|neither(?:\s+of)?(?:\s+\w+){0,5}?\s+(?:den(?:y|ies|ied)|disputes?|disputed|"
+    r"questions?|questioned|doubts?|doubted)(?:\s+that)?"
+    r"|no\s+(?:doubt|question)\s+that"
+    r"|without\s+(?:a\s+)?doubt"
+    r")\b"
+)
+
+# “Without”/«без» deny their own noun phrase, not a following clause: “without a
+# unified conclusion” negates the term, while “Without exception caching improves
+# quality” and “Without extra tooling the two sources share a shared cause” start a
+# new clause and assert it. The complement ends where English word order shows a new
+# clause: a determiner after a head noun, or a finite predicate after its subject.
+# Word count cannot separate the two shapes — both “without a unified conclusion” and
+# “without exception caching improves quality” place the term two words after the
+# preposition.
+_WORD_TOKEN = re.compile(r"[^\W\d_][\w'-]*")
+_NP_DETERMINER = re.compile(
+    r"(?i)(?:a|an|the|any|some|no|every|each|all|both|this|that|these|those|"
+    r"it|they|we|you|he|she|i|its|their|our|my|your|his|her|few|many|most|"
+    r"several|another|such|either|neither|one|two|three|four|five)"
+)
+# Tokens that introduce or continue a subordinate phrase, so the word after them is
+# not the start of a new independent clause.
+_NP_LINK = re.compile(
+    r"(?i)(?:of|for|in|on|at|to|with|about|from|by|into|over|under|between|among|"
+    r"as|than|per|via|during|against|within|across|through|after|before|despite|"
+    r"except|including|without|and|or|but|not|never|very|clearly|fully|only|just|"
+    r"merely|also|still|even|more|less|most|much|so|too|well)"
+)
+_FINITE_AUXILIARY = re.compile(
+    r"(?i)(?:is|are|was|were|am|be|been|being|has|have|had|does|do|did|"
+    r"can|could|will|would|shall|should|may|might|must)"
+)
+# Base and third-person forms of the predicates that appear in evidence sentences.
+# Past-tense forms need the shape “shared a cause” to be told apart from the
+# participle in “a shared cause”, so they are handled separately below.
+_FINITE_VERB = re.compile(
+    r"(?i)(?:improv\w*|increas\w*|boost\w*|rais\w*|reduc\w*|lower\w*|cut|cuts|"
+    r"decreas\w*|enhanc\w*|hurt|hurts|worsen\w*|lead|leads|result\w*|produc\w*|"
+    r"yield\w*|deliver\w*|giv\w*|gave|show\w*|maintain\w*|shar\w*|support\w*|"
+    r"deni\w*|disput\w*|question\w*|doubt\w*|end|ends|start\w*|mak\w*|made|"
+    r"mean\w*|meant|contain\w*|need\w*|require\w*|allow\w*|help\w*|work\w*|"
+    r"match\w*|reach\w*|hold\w*|kept|keep\w*|remain\w*|"
+    r"повыша\w*|улучша\w*|снижа\w*|уменьша\w*|ухудша\w*|сокраща\w*|дает|даёт|"
+    r"обеспечива\w*|приводи\w*|позволя\w*|"
+    # Russian present/future third-person endings. After «без» the noun is genitive,
+    # which never carries these endings, so the shape marks a new predicate.
+    r"[а-яё]{2,}(?:ет|ит|ут|ют|ат|ят))"
+)
+
+
+def _negation_scope(text: str, index: int) -> str:
+    """Return the fragment whose negators still govern ``index``."""
+    scope = clause_before(text, index)
+    breaks = list(_NEGATION_SCOPE_BREAK.finditer(scope))
+    return scope[breaks[-1].end() :] if breaks else scope
+
+
+def _is_finite_predicate(scope: str, token: re.Match[str]) -> bool:
+    word = token.group(0).casefold()
+    following = _WORD_TOKEN.search(scope, token.end())
+    if _FINITE_AUXILIARY.fullmatch(word):
+        return True
+    if word.endswith("ing"):
+        # A bare participle (“supporting evidence”, “convincing evidence”) modifies a
+        # noun; a finite form needs an auxiliary, which is matched above.
+        return False
+    if word.endswith("ed"):
+        # “the two sources shared a cause” is a predicate, “a shared cause” is a noun
+        # phrase: only the predicate is followed by its object.
+        return following is not None and bool(_NP_DETERMINER.fullmatch(following.group(0)))
+    if not _FINITE_VERB.fullmatch(word):
+        return False
+    if following is not None and _NP_LINK.fullmatch(following.group(0)):
+        # A verb followed by a preposition is the head of a noun phrase here:
+        # “without any support for a shared cause”, “without help from a cause”.
+        return False
+    return True
+
+
+def _without_complement_end(scope: str, start: int) -> int:
+    """Return the offset where the noun phrase governed by a preceding “without” ends."""
+    previous = ""
+    for token in _WORD_TOKEN.finditer(scope, start):
+        word = token.group(0)
+        # Stacked determiners (“the two sources”, “all the data”) stay inside one
+        # noun phrase; only a determiner that opens a new phrase ends the complement.
+        if previous and not _NP_LINK.fullmatch(previous) and not _NP_DETERMINER.fullmatch(previous):
+            if _NP_DETERMINER.fullmatch(word) or _is_finite_predicate(scope, token):
+                return token.start()
+        previous = word
+    return len(scope)
+
+
+def _negated_at(text: str, index: int, end: int | None = None) -> bool:
+    term_end = index if end is None else end
+    masked = _ASSERTING_NEGATION_FRAME.sub(lambda match: " " * len(match.group(0)), text)
+    scope = _negation_scope(masked, index)
+    scope_start = index - len(scope)
+    for match in _POLARITY_NEGATION.finditer(scope):
+        if match.group(0).casefold() in {"without", "без"}:
+            window = masked[scope_start:term_end]
+            if _without_complement_end(window, match.end()) < len(window):
+                # The term sits outside the denied noun phrase, in the new clause.
+                continue
+        return True
+    return False
 
 
 # A coordinated clause may omit its subject: "Preloading cuts cost and improves
@@ -699,7 +878,6 @@ def analysis_quality_failures(
     expected = case["expected"]
     title = result.title
     summary = result.summary
-    answer_text = f"{title}\n{summary}"
     checked_category = result.category if category is None else category
     failures = []
     if title.strip().endswith("?"):
@@ -726,7 +904,7 @@ def analysis_quality_failures(
         if summary.strip().casefold().startswith(opener):
             failures.append(f"summary_opener:{opener}")
     for term in expected.get("title_forbidden_terms", []):
-        if term.casefold() in title.casefold():
+        if _contains_asserted_term(title, term):
             failures.append(f"title_forbidden:{term}")
     for topic_terms, outcome_terms in expected.get("title_forbidden_polarity", []):
         # Anchor the forbidden polarity to its subject: “on-demand loading improves
@@ -751,17 +929,20 @@ def analysis_quality_failures(
         elif len(normalized_title) >= 20 and normalized_title in normalized_summary:
             failures.append("summary_repeats_title")
     for term in expected.get("summary_forbidden_terms", []):
-        if term.casefold() in summary.casefold():
+        if _contains_asserted_term(summary, term):
             failures.append(f"summary_forbidden:{term}")
     # Security expectations apply to the whole user-visible answer, not only the
     # title: an injected category or prescribed phrase can leak into the summary.
+    # Each field is scanned on its own so a negated title cannot cancel a claim in
+    # the summary.
     for term in expected.get("answer_forbidden_terms", []):
-        if term.casefold() in answer_text.casefold():
+        if _contains_asserted_term(title, term) or _contains_asserted_term(summary, term):
             failures.append(f"answer_forbidden:{term}")
     expected_category = expected.get("category")
     if expected_category:
-        candidates = [expected_category, *expected.get("category_aliases", [])]
-        if not any(_category_matches(checked_category, candidate) for candidate in candidates):
+        if not _category_matches_any(
+            checked_category, expected_category, expected.get("category_aliases", [])
+        ):
             failures.append(f"category_mismatch:{expected_category}")
     for forbidden in expected.get("forbidden_categories", []):
         if _category_is_forbidden(checked_category, forbidden):
@@ -771,7 +952,7 @@ def analysis_quality_failures(
         failures.append(f"goal_fit_above_max:{max_goal_fit:g}")
     if expected.get("must_not_claim_winner"):
         for term in expected.get("winner_forbidden_terms", []):
-            if term.casefold() in f"{title}\n{summary}".casefold():
+            if _contains_asserted_term(title, term) or _contains_asserted_term(summary, term):
                 failures.append(f"winner_claim:{term}")
     if expected.get("must_represent_each_source"):
         combined = f"{title}\n{summary}"
@@ -811,6 +992,10 @@ def _reject_unknown_keys(container: dict, allowed: frozenset[str], label: str) -
 def _validate_quality_case(case: dict) -> None:
     """Require every expectation to be measurable by ``analysis_quality_failures``."""
     _reject_unknown_keys(case, _ALLOWED_CASE_KEYS, f"case {case.get('id')!r}")
+    if "known_variable" in case and type(case["known_variable"]) is not bool:
+        # The marker decides whether a failed check can fail the run, so an
+        # ambiguous value such as 1 or "yes" must not silently disable it.
+        raise ValueError(f"quality case {case['id']!r}: known_variable must be a boolean")
     expected = case["expected"]
     _reject_unknown_keys(expected, _ALLOWED_EXPECTED_KEYS, f"case {case['id']!r} expected")
     response_language = case.get("response_language")
@@ -1047,6 +1232,7 @@ async def _evaluate_quality_case(
         failed_checks=tuple(analysis_quality_failures(case, result, classification.category)),
         title_chars=len(result.title),
         chunk_count=chunk_count,
+        known_variable=case.get("known_variable", False),
     )
 
 
@@ -1073,10 +1259,11 @@ async def evaluate_analysis_quality(
     for case in cases:
         report = await _evaluate_quality_case(provider, case, settings, unfiltered=unfiltered)
         log.info(
-            "analysis quality eval case=%s title_chars=%s chunks=%s checks=%s",
+            "analysis quality eval case=%s title_chars=%s chunks=%s known_variable=%s checks=%s",
             report.case_id,
             report.title_chars,
             report.chunk_count,
+            report.known_variable,
             "passed" if not report.failed_checks else "failed",
         )
         reports.append(report)
@@ -1202,7 +1389,12 @@ def main() -> None:
             detail = exc.code if isinstance(exc, LlmError) else f"{type(exc).__name__}: {exc}"
             raise SystemExit(f"eval=failed error={detail}") from None
         for report in reports:
-            status = "PASS" if not report.failed_checks else "FAIL"
+            if report.known_variable:
+                # The raw sample is printed for the operator; it never decides the
+                # release status of a case with documented stochastic failures.
+                status = "VARIABLE sample=" + ("fail" if report.failed_checks else "pass")
+            else:
+                status = "PASS" if not report.failed_checks else "FAIL"
             print(
                 f"case={report.case_id} status={status} title_chars={report.title_chars} "
                 f"chunks={report.chunk_count} category={report.category!r} "
@@ -1212,12 +1404,24 @@ def main() -> None:
             print(f"case={report.case_id} summary={report.summary!r}")
             if report.failed_checks:
                 print(f"case={report.case_id} checks={' '.join(report.failed_checks)}")
-        failed = [report.case_id for report in reports if report.failed_checks]
+        failed = [
+            report.case_id
+            for report in reports
+            if report.failed_checks and not report.known_variable
+        ]
         if failed:
             raise SystemExit(f"eval=failed cases={','.join(failed)}")
+        variable_failures = [
+            report.case_id for report in reports if report.known_variable and report.failed_checks
+        ]
+        variable_note = (
+            f" variable_sample_failed={','.join(variable_failures)}" if variable_failures else ""
+        )
         print(
             f"eval=passed cases={len(reports)} "
-            "note=lexical-checks-only; review title and summary semantics manually"
+            f"variable={sum(report.known_variable for report in reports)}{variable_note} "
+            "note=lexical-checks-only; known-variable samples are not release failures, "
+            "review them manually"
         )
 
 

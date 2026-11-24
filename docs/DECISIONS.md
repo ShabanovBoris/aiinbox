@@ -1131,17 +1131,41 @@ results (“a larger trial found A superior”, “the follow-up showed B perfor
 better”) were not treated as decisive. A hedged forecast (“may no longer hold”)
 created a measured-reversal premise, and a hold in a different scope (“at normal
 load”) erased a reversal reported “under peak load”. The 300-character trim cut
-the condition off the end of a title instead of dropping leading clauses.
+the condition off the end of a title instead of dropping leading clauses. A
+paragraph followed by an attack attribution was protected unconditionally, so a
+real verdict directly above the report was blanked from the deterministic
+projection. Narrowing that rule exposed the opposite error: the protected
+paragraph was decided by a grammar of attribution forms, so each round of examples
+moved the boundary — a dated or long subject, a subject-first tail with an
+adverbial, a reporting verb outside the short list, or a clause of the source after
+the attribution flipped a real quotation into a source claim or a source claim into
+a quotation. Enumerating forms cannot satisfy “real quotations stay masked”,
+because that requirement is unbounded.
 
 Decision: two projections share one command grammar. `analysis_text_projection`
 is the model/evidence text used by prompt construction, chunking,
 `summarize_chunk` and the opt-in evaluation; it removes commands outside
 quotation/example spans and keeps a quoted attack example byte-identical. The
-prepared content always contains that projection. `analysis_signal_projection`
-replaces every quotation/example span with spaces (newlines and offsets are
-preserved), then applies the same grammar without exceptions; the prompt
+paragraph before an attack attribution stays an example only when it still
+contains a command or sits under a quotation label; the attribution alone does not
+protect it. `analysis_signal_projection` replaces every quotation and
+quotation/example span with spaces (newlines and offsets are preserved), then
+applies the same grammar without exceptions; the prompt
 no-winner hint, the reversal hint and the inconclusive repair read only that
-projection. A chunk checkpoint is keyed by the SHA-256 of the projected chunk, so
+projection. A quotation is the text between one matching pair of quotation marks
+(`"…"`, `“…”`, `‘…’`, `«…»`, `'…'`) and the marks are the only criterion: the
+words around the quote — an introduction, a speaker tail, an appositive remark,
+the source's own verdict — stay the source's text, so no introduction-or-tail
+grammar is guessed. The nearest closing mark decides the pair, so two separate
+quotes never merge; an intra-word (`comparison's`) apostrophe is not a mark, a
+post-word (`readers'`) apostrophe opens nothing, an opener stands at the paragraph
+start or right after whitespace or opening punctuation (`(`, `[`, `{`, `<`, `>`, a
+dash, a colon, `“`, `‘`, `«`) so a mark glued to a preceding character
+(`works."`) closes instead, an unpaired mark opens nothing and
+the scan continues past it, and a multi-line quotation inside one paragraph is
+masked whole, including its inner lines. The prepared
+content always contains the model projection. A chunk checkpoint is keyed by the
+SHA-256 of the projected chunk, so
 a checkpoint built from a distorted projection is recomputed in place while
 unaffected chunks are reused, and `summarize_chunk` does not filter an
 already-projected chunk twice. A later decisive win supersedes a verdict
@@ -1200,7 +1224,28 @@ no-winner suffix even when a different comparison has a winner — the conservat
 choice. A verdict or reversal stated only inside a blockquote, table or indented
 quotation produces no deterministic title suffix or hint, while the model still
 sees the quotation and may use it; an unquoted verdict keeps the previous
-behavior. A prior-work verdict no longer forces uncertainty, so a source that only
+behavior. An unquoted verdict in the paragraph directly above an attack report
+now keeps its hint and repair, because only the report itself is evidence of an
+example; a paragraph that mixes a verdict with a command is still masked whole. A
+real quotation keeps its protection whatever the attribution around it says, so a
+quoted verdict produces no hint or suffix, while a verdict or measurement outside
+the marks — in the same sentence as an appositive quote, after a speaker tail, in
+a parenthetical remark, or next to a second quote — stays the source's own claim
+and keeps driving the hint and repair. Multi-line paragraphs and inner lines of a
+quotation are masked without their own marks, so a quote that opens and closes
+around several lines hides all of them.
+The marks are also the boundary: the pair is searched inside one paragraph, so a
+quotation opened in one paragraph and closed in another masks nothing and stays
+evidence for the signals; a mark without a partner masks nothing as well, but the
+scan continues past it, so a later balanced pair in the same paragraph is still
+masked; an apostrophe after a plural possessive inside a single-quoted sentence
+(`'The authors'…'`, `‘The authors’…’`) can close that span early for the same
+reason. In those cases a quoted sentence can still fabricate a hint — the
+known direction of this boundary — while the alternative, a grammar of attribution
+forms, is what repeated review rounds showed cannot be closed. The attribution
+paragraph itself is masked in the signal projection as well: it reports the attack
+rather than stating the source's verdict.
+A prior-work verdict no longer forces uncertainty, so a source that only
 reviews prior mixed results without stating its own conclusion may miss the
 suffix; the same applies to a win limited to a named sub-scope or phrased with
 unrecognized words. Scope comparison is lexical: a later hold phrased with
@@ -1751,3 +1796,292 @@ item rather than an automatic removal. The primary corpus and the manual-only
 nature of the holdout stay unchanged, and generation quality still requires the
 live `eval-analysis-quality` run.
 
+## D-065 — A measured result must be bound to the comparison it settles
+
+Context: any measured change after an inconclusive verdict set `superseded = True`,
+so "The A/B test was inconclusive. After migrating the logging pipeline, the team
+cut API latency by 30%." lost the no-winner verdict even though the improvement
+belongs to another change and establishes no winner. D-057 already required a
+final/overall frame for a later measured result; the code did not check it. Reading
+the whole sentence before the verdict phrase then lent the verdict the sides and
+areas of an earlier clause: "Method C beat method D, but the A/B test was
+inconclusive. The full rollout showed method C cut latency by 30%." was settled by
+method C, a side of the other comparison.
+
+Decision: a measured claim settles an earlier verdict only when it passes the
+existing shape guards, names a compared side, is framed as a later phase of that
+comparison (`_LATER_RESULT_FRAME` or the measured-only `_MEASURED_LATER_PHASE`), and
+matches what the verdict's own clause compared:
+
+- the clause is the last clause before the verdict phrase — a fronted subordinate
+  ("While/Although/Хоча …") is stripped, and a comma with a coordinator or a
+  subordinating attachment (", and/but/though/which/with/хотя/при этом"), a sentence
+  break, a semicolon, a colon or a spaced dash ends it — plus the complement after the
+  verdict phrase ("…inconclusive on accuracy", "…for method A and method B in week
+  one");
+- the claim's sides must include one of the clause's sides. A clause that names no
+  side falls back to the sides named elsewhere in the same sentence ("Method A beat
+  method B, and the comparison was inconclusive"), because the verdict is about the
+  comparison that sentence introduced; the fallback never adds measured areas;
+- when the clause names measured areas, the claim must measure at least one of the
+  same areas (`_METRIC_FAMILIES`); areas are read from the clause only, and a verdict
+  that names none is not restricted, because most verdicts name none and their later
+  phases do settle them;
+- the claims are what follows the verdict's clause, not the verdict phrase: the
+  complement belongs to the verdict ("…inconclusive on accuracy; the full rollout
+  showed method A cut latency by 30%" keeps the verdict, because latency is not the
+  named area). A result joined to the clause still counts (", though the full rollout
+  showed method A cut latency by 30%"). When the verdict stands inside a fronted
+  subordinate, the subordinate is its clause and the main clause after the closing
+  comma is the claim: "Although the A/B test was inconclusive on accuracy, method A
+  cut latency by 30% in the full rollout" keeps the verdict, while the same sentence
+  without the named area lets the measured win settle it. A hard line wrap is not a
+  sentence break: the clause is bounded by terminal marks and paragraph breaks (LF and
+  CRLF), so it starts at the nearest boundary before the phrase and runs through the
+  complement after it. A wrap starts a new fragment when the line below opens a subject
+  of its own, so a pasted title, a PDF heading or a source header lends the verdict
+  neither sides nor areas, whatever noun it ends with ("A/B test", "Method C benchmark",
+  "Method C and method D test") and even when that noun is glued to the verdict phrase by
+  the wrap. The line below decides the boundary, not the line above: a continuation of
+  the same flowing sentence opens with a side label, a conjunction or the predicate
+  itself ("…the comparison of methods\nA and B was inconclusive", "Сравнение методов
+  A и B\nНе выявило победителя"), so the head on the line above stays in the clause and
+  the sides it names scope the verdict. A lowercase opening is a continuation too, an
+  uppercase noun or determiner starts the next subject, and the claim reads from the
+  clause end. A fronted subordinate ("Although …") may begin at a hard-wrapped line: the
+  subordinate itself is the clause when it contains the verdict, and the main clause
+  after its closing comma is the clause otherwise. A complement split by a line break
+  ("inconclusive on\naccuracy") still ends the clause early; that class and a split
+  measured result across a wrap are measured and tracked separately;
+- a claim is read as a whole sentence and then as each of its clauses that starts a
+  new subject (a punctuation break with a coordinator, or a coordinator followed by a
+  pronoun or a determiner), including the final fragment of a sentence without
+  terminal punctuation. A coordinated object list ("cut latency, cost, and error rate
+  by 30%") and a parenthetical aside ("did not, however, cut", "could, in theory,
+  cut") start no new subject, so the change verb, its metrics and their amount stay
+  one claim. A comma with "however" is therefore not a claim boundary: the aside
+  keeps the modality on its own verb, which is the narrower error.
+
+An `A/B`/`А/Б` designator names both sides, but only inside the verdict's clause: a
+claim reads sides from a spelled-out alternative noun ("method A", "approach A",
+"вариант Б"), so a later result about the A/B pipeline or test does not become a
+side of the earlier comparison. Cyrillic А/Б labels compare as the Latin A/B
+designation, and the designator also scopes the insufficiency path ("Сравнение A/B:
+данных недостаточно." is a verdict; pinned by a test). A lowercase Cyrillic "и"/"а"
+inside a label run is the conjunction that joins labels ("методы C и D"), not a third
+side, so two Russian label runs do not share a side through it; an uppercase "А" keeps
+its designation ("вариант А" is side A). A Russian latency area is "задержка" or
+"время ответа", not a bare "время": "во время теста" is a time frame.
+
+Reason: a metric improvement on its own does not answer an open comparison. A
+result about another change, another side, another measured area, or a plain result
+without a later-phase frame leaves the comparison unresolved; a weaker title is
+preferable to an unearned winner.
+
+Consequences: binding is lexical — a side or area named by a pronoun, a synonym or
+an unlisted metric is not matched and the verdict remains. `_MEASURED_LATER_PHASE`
+covers "full/final/overall rollout", a Russian or Ukrainian later round with its
+preposition, "в полном/итоговом прогоне" and "второй раунд показал", not every
+paraphrase. The clause complement and the sentence-prefix fallback both read inside
+`_CLAUSE_WINDOW` (400 characters), so a side named earlier in a very long
+unpunctuated sentence does not scope the verdict. A claim is read as a whole sentence
+first and then as each clause that starts its own subject, so a hedge or a negation
+in another sentence or clause ("The team might rerun the pilot, and the full rollout
+showed…", "…cut latency by 30%, but the team may repeat the test") does not reject a
+real measurement, while the same hedge inside the measuring clause ("might cut",
+"did not, however, cut") still does. The whole-sentence pass stays because a
+coordinated object list has no subject after its comma: read as clauses alone, the
+verb and the amounts of "cut latency, cost, and error rate by 30%" would be split
+apart.
+A hard wrap is read inside the same `_CLAUSE_WINDOW`: the clause stops at a terminal
+mark or an LF/CRLF paragraph break, and the fronted marker is looked for at the start of
+the verdict's fragment and at the start of every hard-wrapped line below it, so a header
+above the fragment neither scopes the verdict nor blocks the fronted branch. A complement
+or a split measured result broken by a line break is not joined across it; that class is
+measured separately.
+The measured-only frame does not affect decisive-win partiality ("won in the second
+round" stays partial).
+
+## D-066 — Instagram photo language comes from the caption, with an explicit abstention
+
+Context: `_project_post` built `NormalizedContent` without `language`, while
+`describe_images(..., preferred_language=profile.preferred_language)` wrote visual
+notes in the profile language into `content.text` and left the caption in
+`source_context`. For a photo post `response_language_for` therefore returned
+`None`, and the prompt asked the model to pick the primary language of mostly
+Russian generated text: an English caption on a Russian profile produced a
+Russian answer.
+
+Decision: `app/domain/language.detect_source_language` classifies the caption with
+`py3langid` after stripping URLs, hashtags and mentions. It publishes the top code
+only when the raw (unnormalized) log-posterior of that language exceeds the
+runner-up by at least 12 nats, and returns `None` for an empty caption or a `zxx`
+winner. `_project_post` publishes that value as `NormalizedContent.language` only
+when the post has no video part, using the same `has_video` value that becomes
+`metadata["instagram_has_video"]`. The caption language is not persisted; restore
+and refresh recompute it from the stored `DESCRIPTION` row.
+
+Reason: the caption is the only human-authored text of a photo post, so synthetic
+visual notes must not decide the answer language. `signals._language_hint` is
+built for verdict wording and misses ordinary captions ("Amazing coffee recipe"),
+while a script guess would invent `en` for any Latin caption. Markup is stripped
+because an English caption with Russian hashtags is otherwise classified as
+Russian. py3langid is unreliable on short captions and its normalized
+probabilities hide that: "Наконец-то пятница" scores 0.53 for Bulgarian and
+"Sunday morning vibes" 0.50 for Uzbek, because normalization rescales scores by
+the square root of the text length. The raw log-posterior gap grows with the
+actual evidence, so the 12-nat margin abstains on short and ambiguous captions
+(measured worst wrong gap across ru/en/uk/bg caption samples is ~7.5 nats) and
+still publishes ordinary captions ("Сегодня гуляли по набережной и пили кофе",
+"Rainy day in the city"). Abstaining beats a wrong explicit instruction. A Reel's
+primary source is its transcript, so its caption must not overwrite the schema
+language the model still decides for video.
+
+Consequences: `py3langid` and `numpy` are runtime dependencies (~4.6 MB wheel,
+~125–150 MB RSS once the model is lazily loaded). The first caption of a process
+pays a one-off model load of roughly 0.3 s inside the worker, later calls take well
+under a millisecond. Short, emoji-only and hashtag-only captions keep the
+content-primary fallback. A detected code outside `_INCONCLUSIVE_SUFFIX` makes
+`inconclusive_title_language` return `None`, so the deterministic repair leaves the
+title without a suffix instead of inventing one. Mixed-source Items keep their
+current rule: the caption language survives only for a single Instagram source.
+
+## D-067 — The quality eval checks negations, the classified category and known variability
+
+Context: the AIINBOX-18 gate found three evidence gaps in the eval, not in the
+product prompt. A correct two-source answer titled “no unified conclusion” failed
+`title_forbidden:unified` and `answer_forbidden:unified` because forbidden-term
+checks were literal substring searches; `_POLARITY_NEGATION` did not know
+`neither`/`nor` and read “not only” as negation; the primary `question-unanswered`
+case failed `winner_claim:caching improves quality` on “the evidence does not
+support that caching improves quality”. `holdout-independent-sources` had no
+category expectation although the eval already calls `classify_topic`. And some
+holdout cases failed on unchanged code often enough that a FAIL was not
+distinguishable from a regression.
+
+Decision: forbidden terms use the same clause-wise negation detector as outcome
+terms in all four lists (`title_forbidden_terms`, `summary_forbidden_terms`,
+`answer_forbidden_terms`, `winner_forbidden_terms`); `neither`, `nor`, `nobody`
+and `nothing` negate, a negator followed by `only`/`just`/`merely`/`только`/
+`просто`/`лишь` does not, and `answer`/`winner` scan title and summary
+independently so field boundaries reset the clause. Review narrowed the scope
+further: a dash, an en dash, a spaced hyphen or a parenthetical aside ends the
+clause, “without”/«без» deny only their noun-phrase complement, and asserting
+frames such as “there is no doubt that…”, “there is no question that…”, “there is no
+denying that…”, “it cannot be denied that…”, “nobody/no one can deny that…”,
+“neither of the two runs disputes that…” and
+“without doubt…” do not negate. The “without” complement has no word limit:
+review showed that a five-word threshold passed “Without exception caching improves
+quality” and failed the natural “without any clear supporting evidence for a unified
+conclusion”, although both shapes sit at the same distance from the preposition. The
+complement now ends where a new clause starts — a determiner after the head noun, a
+finite predicate after its subject, or a Russian third-person verb — so both
+directions are decided by structure instead of distance. A word that the verb list
+also matches stays a noun head when a preposition follows it, so “without any
+support for a shared cause”, “without any help from a shared cause” and “without any
+result from a shared cause” stay denied, and stacked determiners stay inside one
+phrase (“without a clear account of the two sources' shared cause”). The per-part
+category rule applies only when the expectation itself merges several topics with a
+coordinator or a comma/semicolon; then a multi-topic actual label must have every
+part covered, so `Baking and Infrastructure` fails `holdout-independent-sources`,
+while a single-topic expectation keeps the containment rule, because live labels add
+descriptive tails (the primary `general-ai` case accepts “AI and automation in
+customer support” for expected `ИИ`; the extra topic also stops producing a second
+`category_mismatch` for `kotlin-not-android`, which still fails
+`category_forbidden:Android-разработка`). A slash, plus or pipe inside an expected
+label stays part of the topic name (`CI/CD`), and the actual label is split on those
+separators as well.
+`holdout-independent-sources`
+declares `category="Кулинария и автомобили"` with aliases for the merged and
+single-topic labels observed live. The holdout equivalents added from live samples
+keep their object (`fail to cut time`, `not shorten time`, `not shorten onboarding
+time`, `not duration due to`, `account provisioning delay`, `provisioning delays
+timeline`, `due to manual provisioning`, `sqlite functions as`), while the older
+objectless absence and shortfall terms (`did not shorten`, `no improvement`,
+`unchanged`, `did not change`, `remained unchanged`, `no change`) remain a
+presence-only approximation: the term carries no object, so any title containing it
+passes that evidence group, while the measured figures are bound to the source only
+by the summary evidence groups. Cases with documented stochastic failure carry
+`known_variable: true`
+(`holdout-thesis`, `holdout-inconclusive-comparison`, `holdout-late-conclusion`,
+`holdout-transitive-decision`, `holdout-late-batch-result`,
+`holdout-supported-request`); the CLI prints
+`status=VARIABLE sample=pass|fail` and only failed stable cases produce a non-zero
+exit.
+
+Reason: the eval is evidence only if it fails real defects and passes correct
+answers. The multi-source holdout merges two equally weighted topics into one
+label, which PRODUCT_SPEC §12 allows (“основную тему”), while the primary
+`multi-source` case keeps forbidding the separate combined label `Kotlin и
+музыка`; changing the classifier or that contract is a different task. Retries
+were rejected as the primary mechanism: they do not make a stochastic case
+deterministic and can hide a regression behind one lucky sample.
+
+Consequences: negation detection stays lexical, so these remain approximations and
+require manual review: postfix negation (“a unified conclusion was not
+established”), a negated list whose second coordinated object is read as asserted
+(“no unified conclusion or shared cause”), a comma aside inside a predicate (“do
+not, as the authors note, share a cause” starts a new clause), a predicate whose
+form is outside the small verb list, a Russian nominative noun whose ending looks
+like a third-person verb, a “without” complement that is a `that`-clause or a subject
+plus gerund (“without evidence that the two sources share a shared cause”, “without
+the two sources sharing a shared cause”), a negated subject noun phrase before the
+claim (“no benchmark data hides that…”), a longer or postposed frame subject (“no
+reviewer denies…”, “the authors do not deny…”), and idioms that are not listed
+above. A negated mention of a security-style term now passes that check. The
+`known_variable` marker is case-level and hides
+the remaining checks of that case from the exit status, so the set stays small,
+is fixed by `_HOLDOUT_KNOWN_VARIABLE`, and its `sample`/`checks` are printed;
+removing the marker is required once the case becomes deterministic. The category
+aliases need periodic review when the model or taxonomy changes: add a live honest
+synonym of an accepted topic as an alias, keep the per-part rule for merged
+multi-topic expectations, and read a label whose tail describes the accepted topic
+as the same topic. A flip between two honest labels is closed by an alias before the
+marker is considered: `holdout-negative-goal` accepts the live `process improvement`
+topic, because the classifier may name the onboarding pilot instead of reusing the
+`Документация` hint; otherwise the stable case would exit non-zero on an honest
+label (`Process Improvement` against `Onboarding Process Improvement` on unchanged
+code). An unrelated label still fails `category_mismatch:Документация`, and a pytest
+regression pins both directions. Narrow live wordings were added to the evidence
+groups: the thesis
+“review delay” for “merge delay”, the onboarding “account provisioning delay”,
+“provisioning delays timeline”, “due to manual provisioning”, “not shorten
+onboarding time”, “not shorten time”, “not duration due to”, “fail(s) to
+cut/shorten time” and the
+hyphenated “nine-day duration” for the negative duration result, the batch “pull
+replenishment” for “pull rule” plus the condition phrased as “restocking” or as a
+loss with “if”, the conflict “saved costs” for the measured saving,
+“sqlite functions as” for “works as”, the inflected “suffices” for “sufficient” and,
+in the primary corpus, “escaped defect rate(s)” for “escaped defects”; each added
+wording keeps a negative control in pytest that attaches the result to another
+subject or object, while the older objectless shortfall terms stay presence-only as
+described above. No schema, migration or production behavior changes.
+
+## D-068 — Signals share one vocabulary per invariant; documentation states the guard
+
+Context: the signal layer and the title-repair tail had grown around individual
+review findings. The same experiment nouns, prior-work nouns, meta verbs, retraction
+verbs, scope qualifiers and negation constructors were written out in several
+places, and long review narratives in comments repeated what the tests and this file
+already state. A private case could drift from its twin without any test noticing.
+
+Decision: one constant per vocabulary, reused by every pattern that needs it
+(`_PRIOR_WORK_NOUNS`, `_META_VERBS`, `_RETRACT_VERBS`, `_COMPARISON_EVENT_NOUNS`,
+`_SCOPE_QUALIFIERS`; `_NEGATION_SHAPES` for the six negation constructions), and the
+frame/limit decision lives in one helper, `_overall_win`, for both the evidence path
+and the title path. Comments state the guard in one or two sentences; rationale lives
+here, in the tests and in `PRODUCT_SPEC`, not in duplicated review history.
+
+Consequences: the signal vocabulary and the repair tail keep their exact behaviour —
+the SPEC §31 verdict forms (including "unclear which approach is better", "evenly
+matched", "the current replication was inconclusive" and the question form),
+designators ("plan B", "#2", "method A") and every title/summary guard are unchanged;
+the 208,542-input differential shows no behaviour change. The repair tail also
+selects the member to keep in one pass instead of re-ranking on a truncated claim.
+A guard that is not expressed by the shape of a shared vocabulary stays next to it:
+"no" is left out of the English negation prefix because the reversal and limitation
+cues already read "no improvement" and "no degradation" as results, and widening the
+prefix would drop that member.
+A vocabulary shared by several patterns must be checked against each pattern's own
+guard when it changes: widening a shared list can make one path accept a case
+another path rejects.

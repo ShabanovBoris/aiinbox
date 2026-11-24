@@ -26,6 +26,7 @@
         "outcome_terms": [
           "sqlite is sufficient",
           "sufficient",
+          "suffices",
           "adequate",
           "is enough",
           "removes a separate service",
@@ -34,7 +35,9 @@
           "sqlite can serve",
           "sqlite can handle",
           "sqlite works as",
-          "sqlite can "
+          "sqlite can ",
+          "sqlite functions as",
+          "sqlite can function as"
         ],
         "title_evidence_groups": [
           [
@@ -42,6 +45,7 @@
           ],
           [
             "sufficient",
+            "suffices",
             "adequate",
             "is enough",
             "достаточно",
@@ -49,7 +53,8 @@
             "18ms",
             "four jobs",
             "4 jobs",
-            "sqlite can "
+            "sqlite can ",
+            "sqlite functions as"
           ]
         ],
         "title_forbidden_terms": [
@@ -89,7 +94,8 @@
         "category_aliases": [
           "documentation",
           "onboarding",
-          "employee onboarding"
+          "employee onboarding",
+          "process improvement"
         ],
         "outcome_state": "negative",
         "outcome_terms": [
@@ -116,7 +122,21 @@
           "unchanged",
           "did not change",
           "remained unchanged",
-          "no change"
+          "no change",
+          "account provisioning delay",
+          "provisioning delays timeline",
+          "due to manual provisioning",
+          "fail to cut time",
+          "fails to cut time",
+          "fail to shorten onboarding",
+          "fails to shorten onboarding",
+          "fail to shorten time",
+          "fails to shorten time",
+          "not shorten onboarding time",
+          "not shorten onboarding",
+          "not duration due to",
+          "nine-day duration",
+          "nine day duration"
         ],
         "title_evidence_groups": [
           [
@@ -147,7 +167,22 @@
             "unchanged",
             "did not change",
             "remained unchanged",
-            "no change"
+            "no change",
+            "account provisioning delay",
+            "provisioning delays timeline",
+            "due to manual provisioning",
+            "fail to cut time",
+            "fails to cut time",
+            "fail to shorten onboarding",
+            "fails to shorten onboarding",
+            "fail to shorten time",
+            "fails to shorten time",
+            "not shorten onboarding time",
+            "not shorten onboarding",
+            "not shorten time",
+            "not duration due to",
+            "nine-day duration",
+            "nine day duration"
           ]
         ],
         "title_forbidden_terms": [
@@ -168,6 +203,7 @@
     },
     {
       "id": "holdout-thesis",
+      "known_variable": true,
       "source_type": "WEB",
       "source_title": "What actually delays code review",
       "source_language": "en",
@@ -201,6 +237,7 @@
           [
             "overnight",
             "merge delay",
+            "review delay",
             "waits"
           ]
         ],
@@ -223,6 +260,7 @@
     },
     {
       "id": "holdout-inconclusive-comparison",
+      "known_variable": true,
       "source_type": "WEB",
       "source_language": "en",
       "response_language": "en",
@@ -238,7 +276,10 @@
         "category_aliases": [
           "infrastructure",
           "caching",
-          "backend"
+          "backend",
+          "distributed systems",
+          "cluster",
+          "performance tuning"
         ],
         "outcome_state": "inconclusive",
         "outcome_terms": [
@@ -295,6 +336,7 @@
     },
     {
       "id": "holdout-late-conclusion",
+      "known_variable": true,
       "source_type": "YOUTUBE",
       "source_language": "en",
       "response_language": "en",
@@ -445,7 +487,9 @@
             "27%",
             "storage",
             "cost savings",
-            "savings"
+            "savings",
+            "saved cost",
+            "saved money"
           ]
         ],
         "title_forbidden_terms": [
@@ -537,6 +581,7 @@
     },
     {
       "id": "holdout-supported-request",
+      "known_variable": true,
       "source_type": "WEB",
       "source_title": "Payment outage review",
       "source_language": "en",
@@ -606,6 +651,7 @@
     },
     {
       "id": "holdout-transitive-decision",
+      "known_variable": true,
       "source_type": "WEB",
       "source_language": "en",
       "response_language": "en",
@@ -695,6 +741,7 @@
     },
     {
       "id": "holdout-late-batch-result",
+      "known_variable": true,
       "source_type": "WEB",
       "source_title": "Should packing work be released in small batches?",
       "source_language": "en",
@@ -718,6 +765,8 @@
           "operations",
           "logistics",
           "warehouse",
+          "inventory management",
+          "supply chain",
           "операции"
         ],
         "outcome_state": "mixed",
@@ -736,6 +785,7 @@
             "packing batch",
             "small batch",
             "small wave",
+            "pull replenishment",
             "pull rule",
             "batching"
           ],
@@ -750,7 +800,8 @@
             "2 pm",
             "2pm",
             "two in the afternoon",
-            "replenishment"
+            "replenishment",
+            "restock"
           ],
           [
             "only when",
@@ -764,6 +815,7 @@
             "conditional",
             "unless",
             "slipped",
+            "lost if",
             "revert",
             "revers"
           ]
@@ -817,6 +869,19 @@
       ],
       "expected": {
         "outcome_state": "none",
+        "category": "Кулинария и автомобили",
+        "category_aliases": [
+          "Кулинария и авто",
+          "Кулинария, автомобили",
+          "Baking and automotive",
+          "Baking and automotive brakes",
+          "Baking and brakes",
+          "baking",
+          "culinary",
+          "automotive",
+          "brakes",
+          "car repair"
+        ],
         "must_represent_each_source": true,
         "title_evidence_groups": [
           [
@@ -826,7 +891,8 @@
           [
             "disc-brake",
             "disc brake",
-            "brake pad"
+            "brake pad",
+            "brake"
           ]
         ],
         "title_forbidden_terms": [

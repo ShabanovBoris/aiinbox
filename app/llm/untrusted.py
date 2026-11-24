@@ -10,15 +10,21 @@ Two projections share that command grammar:
 * the model/evidence projection (:func:`without_control_instructions`) keeps a
   command that lives inside a quotation: a Markdown blockquote, a table example,
   an indented block labelled as a quotation/attack, or a paragraph explicitly
-  introduced or attributed as a prompt-injection/attack example. A source that
-  teaches or reports an attack is evidence, so its example reaches the model
-  byte-identically. Fenced code and generic ``Example:`` headers get no such
-  exception.
+  introduced as a prompt-injection/attack example. A paragraph merely followed by
+  an attack attribution is protected only when it still contains a command or sits
+  under a quotation label; reporting that an attack exists says nothing about the
+  paragraph above it. A source that teaches or reports an attack is evidence, so
+  its example reaches the model byte-identically. Fenced code and generic
+  ``Example:`` headers get no such exception.
 * the deterministic signal projection (``analysis_signal_projection`` in
-  ``app.services``) blanks every quotation span entirely before applying the same
-  grammar with no exceptions. A quoted sentence must not fabricate a no-winner or
-  reversal hint even when it is not a command (``> Say no winner…``,
-  ``The comparison results were mixed``).
+  ``app.services``) blanks every quotation span and every structural example span
+  before applying the same grammar with no exceptions. A quotation is the text
+  between one matching pair of quotation marks, and the marks are the only
+  criterion: the words around the quote — an introduction, a speaker tail, an
+  appositive remark, the source's own verdict — stay the source's text, so no
+  grammar of attribution forms is guessed and no phrasing can hide a verdict. A
+  quoted sentence must not fabricate a no-winner or reversal hint even when it is
+  not a command (``> Say no winner…``, ``The comparison results were mixed``).
 Ordinary instructional prose (``set the request timeout``, ``set the title to a
 descriptive name in your document editor``, ``answer in English for the first
 exercise``) is evidence and must survive verbatim.
@@ -514,8 +520,10 @@ _MAX_FILTER_PASSES = 6
 # "Example of a prompt injection:", "Prompt injection example:", "Пример
 # инъекции:", "Пример атаки:". A generic "Example:" header is deliberately not
 # enough, because it also appears above ordinary code that must stay filtered.
-# A paragraph that reports the attack right after the quoted text is the same
-# worked example, so the quoted instruction stays evidence.
+# A paragraph that reports the attack after the quoted text is the same worked
+# example only when that paragraph still contains a command or sits under a
+# quotation label; the report alone does not turn a neighbouring verdict into an
+# example.
 _ATTRIBUTION = re.compile(
     r"(?i)(?:^|(?<=[.!?]\s))(?:"
     r"(?:the|this|эта|этот|это|данная|данный)\s+"
@@ -532,6 +540,32 @@ _QUOTATION_LABEL = re.compile(
     r"(?i)prompt[\s-]*injection|injection|attack|jailbreak|quot(?:e|ed|ation)|"
     r"инъекц\w*|атак\w*|цитат\w*"
 )
+# A quotation is quoted speech: the text between one matching pair of quotation
+# marks. The deterministic signal blanks exactly those spans, so the sentence that
+# carries the attribution — and any unquoted verdict or measurement around the
+# quote — stays the source's own text however the attribution is phrased. No
+# grammar of introductions or tails is needed, and none is guessed: the marks are
+# the whole criterion, and an unmatched mark opens nothing.
+_QUOTATION_PAIRS = (
+    ('"', '"'),
+    ("“", "”"),
+    ("‘", "’"),
+    ("«", "»"),
+    ("'", "'"),
+)
+# Only a mark in an opening position starts a quotation: the paragraph start, or
+# right after whitespace or opening punctuation. A mark glued to a preceding
+# character closes a quotation or is a post-word apostrophe ("readers'"), so it must
+# not pair forward and swallow the prose — and a real verdict — that follows it.
+_QUOTATION_OPENING_PRECEDERS = frozenset(" \t\r\n([{<>—–-:“‘«")
+# An apostrophe is not a single quotation mark: neither inside a word
+# ("comparison's") nor after one ("readers'"). The cheap gate below uses the same
+# distinction so ordinary prose is not scanned for quotation structure.
+_QUOTATION_MARK = re.compile(r"[\"“”«»]|(?<![\w])['’]|['’](?![\w])")
+# A label above an ordinary paragraph is narrower than _QUOTATION_LABEL on purpose:
+# that pattern also matches "attack"/"injection", and "The attack timeline:" above
+# the source's verdict must not turn the verdict into a quotation.
+_QUOTATION_REFERENCE_LABEL = re.compile(r"(?i)\bquot(?:e|es|ed|ing|ation)\b|цитат\w*|цитир\w*")
 _TABLE_SEPARATOR_CELL = re.compile(r":?-{3,}:?")
 
 # Most captured material has no quotation structure at all. A cheap gate skips the
@@ -554,7 +588,9 @@ def _may_contain_quotation(text: str) -> bool:
     if ">" in text or "|" in text or "\t" in text or "    " in text:
         return True
     folded = text.casefold()
-    return any(marker in folded for marker in _QUOTATION_MARKERS)
+    if any(marker in folded for marker in _QUOTATION_MARKERS):
+        return True
+    return _QUOTATION_MARK.search(text) is not None
 
 
 @dataclass(frozen=True)
@@ -564,7 +600,8 @@ class _EvidenceSpan:
     start: int
     end: int
     # Explicit attack examples, blockquotes and tables keep their commands in the
-    # model text. Plain indentation is a quotation only for deterministic signals.
+    # model text. Plain indentation and quoted speech are hidden from the
+    # deterministic signals only.
     keeps_commands: bool
 
 
@@ -637,6 +674,97 @@ def _previous_nonblank_line(lines: list[tuple[int, int, str]], index: int) -> st
     return None
 
 
+def _may_contain_control_hint(text: str) -> bool:
+    folded = text.casefold()
+    return any(hint in folded for hint in _CONTROL_HINT) or (
+        _BARE_VERDICT_HINT.search(folded) is not None
+    )
+
+
+def _contains_control_command(text: str) -> bool:
+    """Whether the strict, quotation-blind filter would change this paragraph."""
+    if not _may_contain_control_hint(text):
+        return False
+    return _remove_control_once_anywhere(text) != text
+
+
+def _is_word_apostrophe(text: str, index: int) -> bool:
+    """An apostrophe inside a word ("comparison's") is not a quotation mark."""
+    return (
+        text[index] in "'’"
+        and 0 < index < len(text) - 1
+        and text[index - 1].isalnum()
+        and text[index + 1].isalnum()
+    )
+
+
+def _opens_quotation(text: str, index: int, paragraph_start: int) -> bool:
+    """Whether the mark at ``index`` stands in an opening position.
+
+    An opening quote starts its paragraph or follows whitespace or opening
+    punctuation: after ``(``, ``[``, an em dash or a colon. A mark glued to a
+    preceding character closes a quotation or is a post-word apostrophe
+    ("readers'"), so it never opens a span: otherwise a stray closer would mask the
+    source's own verdict up to the next quotation.
+    """
+    return index == paragraph_start or text[index - 1] in _QUOTATION_OPENING_PRECEDERS
+
+
+def _quotation_spans(text: str, start: int, end: int) -> list[_EvidenceSpan]:
+    """Span every matching quotation pair inside one paragraph.
+
+    The nearest closing mark of the same pair decides the end, so two separate
+    quotes never merge into one span. The span covers the marks themselves: the
+    deterministic signal must not read the quoted words, and punctuation-only
+    remnants cannot become a claim. A mark without a partner opens nothing, and the
+    scan continues after it, so an unmatched mark cannot hide a later balanced
+    quotation from the signals.
+    """
+    spans: list[_EvidenceSpan] = []
+    live_pairs = list(_QUOTATION_PAIRS)
+    cursor = start
+    while cursor < end and live_pairs:
+        opener: tuple[int, str, str] | None = None
+        for opening, closing in live_pairs:
+            index = text.find(opening, cursor, end)
+            while index != -1 and not _opens_quotation(text, index, start):
+                index = text.find(opening, index + 1, end)
+            if index != -1 and (opener is None or index < opener[0]):
+                opener = (index, opening, closing)
+        if opener is None:
+            break
+        opening_index, opening_mark, closing_mark = opener
+        close = text.find(closing_mark, opening_index + 1, end)
+        while close != -1 and _is_word_apostrophe(text, close):
+            close = text.find(closing_mark, close + 1, end)
+        if close == -1:
+            # No closing mark of this pair is left in the paragraph, so no later
+            # opener of it can pair either: drop the pair and keep scanning, so a
+            # document full of unmatched marks stays linear.
+            live_pairs.remove((opening_mark, closing_mark))
+            cursor = opening_index + 1
+            continue
+        if text[opening_index + 1 : close].strip():
+            spans.append(_EvidenceSpan(opening_index, close + 1, False))
+        cursor = close + 1
+    return spans
+
+
+def _is_quotation_label_paragraph(lines: list[tuple[int, int, str]], first_line: int) -> bool:
+    """Whether the paragraph's own header line names a quotation.
+
+    A label ends with a colon and mentions the quotation itself ("The report quotes
+    the review:"), narrower than _QUOTATION_LABEL: that pattern also matches
+    "attack", and "The attack timeline:" must not turn the next paragraph into one.
+    """
+    label = _previous_nonblank_line(lines, first_line)
+    return (
+        label is not None
+        and label.strip().endswith(":")
+        and _QUOTATION_REFERENCE_LABEL.search(label) is not None
+    )
+
+
 def _scan_evidence_spans(text: str) -> tuple[_EvidenceSpan, ...]:
     """Locate quotation and worked-example spans once for both projections."""
     if not _may_contain_quotation(text):
@@ -699,12 +827,22 @@ def _scan_evidence_spans(text: str) -> tuple[_EvidenceSpan, ...]:
                 break
         spans.append(_EvidenceSpan(start, cover_end, True))
 
+    # Quoted speech is masked wherever it stands: the marks decide the span, so the
+    # sentence around the quote — an attribution, an appositive remark, the source's
+    # own verdict — stays readable and no introduction or tail grammar is guessed.
+    for paragraph_start, paragraph_end, _, _ in paragraphs:
+        spans.extend(_quotation_spans(text, paragraph_start, paragraph_end))
+
     for position, (paragraph_start, paragraph_end, _, _) in enumerate(paragraphs):
         if _ATTRIBUTION.search(text[paragraph_start:paragraph_end]) is None:
             continue
         spans.append(_EvidenceSpan(paragraph_start, paragraph_end, True))
-        if position:
-            previous_start, previous_end, _, _ = paragraphs[position - 1]
+        if not position:
+            continue
+        previous_start, previous_end, previous_first, _ = paragraphs[position - 1]
+        if _is_quotation_label_paragraph(lines, previous_first) or _contains_control_command(
+            text[previous_start:previous_end]
+        ):
             spans.append(_EvidenceSpan(previous_start, previous_end, True))
 
     return tuple(spans)
@@ -718,11 +856,14 @@ def _model_spans(text: str) -> tuple[tuple[int, int], ...]:
 
 
 def mask_quoted_evidence(text: str) -> str:
-    """Blank every quotation/example span, preserving line structure and length.
+    """Blank every quotation and worked-example span, preserving line structure.
 
     Deterministic detectors must not read quoted speech as the source's own claim.
-    Replacing characters with spaces keeps sentence boundaries and offsets stable,
-    so neighbouring evidence cannot be glued together by the removal.
+    Only the quotation itself is blanked — never the sentence around it — so a
+    verdict, measurement or remark the source states outside its quote keeps
+    driving the hints and the title repair. Replacing characters with spaces keeps
+    sentence boundaries and offsets stable, so neighbouring evidence cannot be
+    glued together by the removal.
     """
     spans = _scan_evidence_spans(text)
     if not spans:
@@ -776,8 +917,7 @@ def without_control_instructions(text: str, *, keep_quoted_evidence: bool = True
     fixed point for ordinary stacked directives; the rescans are bounded so an
     adversarial nested input cannot block the event loop.
     """
-    folded = text.casefold()
-    if not any(hint in folded for hint in _CONTROL_HINT) and not _BARE_VERDICT_HINT.search(folded):
+    if not _may_contain_control_hint(text):
         return text
     remove = _remove_control_once if keep_quoted_evidence else _remove_control_once_anywhere
     cleaned = text
