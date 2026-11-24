@@ -1925,3 +1925,113 @@ content-primary fallback. A detected code outside `_INCONCLUSIVE_SUFFIX` makes
 `inconclusive_title_language` return `None`, so the deterministic repair leaves the
 title without a suffix instead of inventing one. Mixed-source Items keep their
 current rule: the caption language survives only for a single Instagram source.
+## D-067 — The quality eval checks negations, the classified category and known variability
+
+Context: the AIINBOX-18 gate found three evidence gaps in the eval, not in the
+product prompt. A correct two-source answer titled “no unified conclusion” failed
+`title_forbidden:unified` and `answer_forbidden:unified` because forbidden-term
+checks were literal substring searches; `_POLARITY_NEGATION` did not know
+`neither`/`nor` and read “not only” as negation; the primary `question-unanswered`
+case failed `winner_claim:caching improves quality` on “the evidence does not
+support that caching improves quality”. `holdout-independent-sources` had no
+category expectation although the eval already calls `classify_topic`. And some
+holdout cases failed on unchanged code often enough that a FAIL was not
+distinguishable from a regression.
+
+Decision: forbidden terms use the same clause-wise negation detector as outcome
+terms in all four lists (`title_forbidden_terms`, `summary_forbidden_terms`,
+`answer_forbidden_terms`, `winner_forbidden_terms`); `neither`, `nor`, `nobody`
+and `nothing` negate, a negator followed by `only`/`just`/`merely`/`только`/
+`просто`/`лишь` does not, and `answer`/`winner` scan title and summary
+independently so field boundaries reset the clause. Review narrowed the scope
+further: a dash, an en dash, a spaced hyphen or a parenthetical aside ends the
+clause, “without”/«без» deny only their noun-phrase complement, and asserting
+frames such as “there is no doubt that…”, “there is no question that…”, “there is no
+denying that…”, “it cannot be denied that…”, “nobody/no one can deny that…”,
+“neither of the two runs disputes that…” and
+“without doubt…” do not negate. The “without” complement has no word limit:
+review showed that a five-word threshold passed “Without exception caching improves
+quality” and failed the natural “without any clear supporting evidence for a unified
+conclusion”, although both shapes sit at the same distance from the preposition. The
+complement now ends where a new clause starts — a determiner after the head noun, a
+finite predicate after its subject, or a Russian third-person verb — so both
+directions are decided by structure instead of distance. A word that the verb list
+also matches stays a noun head when a preposition follows it, so “without any
+support for a shared cause”, “without any help from a shared cause” and “without any
+result from a shared cause” stay denied, and stacked determiners stay inside one
+phrase (“without a clear account of the two sources' shared cause”). The per-part
+category rule applies only when the expectation itself merges several topics with a
+coordinator or a comma/semicolon; then a multi-topic actual label must have every
+part covered, so `Baking and Infrastructure` fails `holdout-independent-sources`,
+while a single-topic expectation keeps the containment rule, because live labels add
+descriptive tails (the primary `general-ai` case accepts “AI and automation in
+customer support” for expected `ИИ`; the extra topic also stops producing a second
+`category_mismatch` for `kotlin-not-android`, which still fails
+`category_forbidden:Android-разработка`). A slash, plus or pipe inside an expected
+label stays part of the topic name (`CI/CD`), and the actual label is split on those
+separators as well.
+`holdout-independent-sources`
+declares `category="Кулинария и автомобили"` with aliases for the merged and
+single-topic labels observed live. The holdout equivalents added from live samples
+keep their object (`fail to cut time`, `not shorten time`, `not shorten onboarding
+time`, `not duration due to`, `account provisioning delay`, `provisioning delays
+timeline`, `due to manual provisioning`, `sqlite functions as`), while the older
+objectless absence and shortfall terms (`did not shorten`, `no improvement`,
+`unchanged`, `did not change`, `remained unchanged`, `no change`) remain a
+presence-only approximation: the term carries no object, so any title containing it
+passes that evidence group, while the measured figures are bound to the source only
+by the summary evidence groups. Cases with documented stochastic failure carry
+`known_variable: true`
+(`holdout-thesis`, `holdout-inconclusive-comparison`, `holdout-late-conclusion`,
+`holdout-transitive-decision`, `holdout-late-batch-result`,
+`holdout-supported-request`); the CLI prints
+`status=VARIABLE sample=pass|fail` and only failed stable cases produce a non-zero
+exit.
+
+Reason: the eval is evidence only if it fails real defects and passes correct
+answers. The multi-source holdout merges two equally weighted topics into one
+label, which PRODUCT_SPEC §12 allows (“основную тему”), while the primary
+`multi-source` case keeps forbidding the separate combined label `Kotlin и
+музыка`; changing the classifier or that contract is a different task. Retries
+were rejected as the primary mechanism: they do not make a stochastic case
+deterministic and can hide a regression behind one lucky sample.
+
+Consequences: negation detection stays lexical, so these remain approximations and
+require manual review: postfix negation (“a unified conclusion was not
+established”), a negated list whose second coordinated object is read as asserted
+(“no unified conclusion or shared cause”), a comma aside inside a predicate (“do
+not, as the authors note, share a cause” starts a new clause), a predicate whose
+form is outside the small verb list, a Russian nominative noun whose ending looks
+like a third-person verb, a “without” complement that is a `that`-clause or a subject
+plus gerund (“without evidence that the two sources share a shared cause”, “without
+the two sources sharing a shared cause”), a negated subject noun phrase before the
+claim (“no benchmark data hides that…”), a longer or postposed frame subject (“no
+reviewer denies…”, “the authors do not deny…”), and idioms that are not listed
+above. A negated mention of a security-style term now passes that check. The
+`known_variable` marker is case-level and hides
+the remaining checks of that case from the exit status, so the set stays small,
+is fixed by `_HOLDOUT_KNOWN_VARIABLE`, and its `sample`/`checks` are printed;
+removing the marker is required once the case becomes deterministic. The category
+aliases need periodic review when the model or taxonomy changes: add a live honest
+synonym of an accepted topic as an alias, keep the per-part rule for merged
+multi-topic expectations, and read a label whose tail describes the accepted topic
+as the same topic. A flip between two honest labels is closed by an alias before the
+marker is considered: `holdout-negative-goal` accepts the live `process improvement`
+topic, because the classifier may name the onboarding pilot instead of reusing the
+`Документация` hint; otherwise the stable case would exit non-zero on an honest
+label (`Process Improvement` against `Onboarding Process Improvement` on unchanged
+code). An unrelated label still fails `category_mismatch:Документация`, and a pytest
+regression pins both directions. Narrow live wordings were added to the evidence
+groups: the thesis
+“review delay” for “merge delay”, the onboarding “account provisioning delay”,
+“provisioning delays timeline”, “due to manual provisioning”, “not shorten
+onboarding time”, “not shorten time”, “not duration due to”, “fail(s) to
+cut/shorten time” and the
+hyphenated “nine-day duration” for the negative duration result, the batch “pull
+replenishment” for “pull rule” plus the condition phrased as “restocking” or as a
+loss with “if”, the conflict “saved costs” for the measured saving,
+“sqlite functions as” for “works as”, the inflected “suffices” for “sufficient” and,
+in the primary corpus, “escaped defect rate(s)” for “escaped defects”; each added
+wording keeps a negative control in pytest that attaches the result to another
+subject or object, while the older objectless shortfall terms stay presence-only as
+described above. No schema, migration or production behavior changes.

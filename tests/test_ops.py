@@ -331,8 +331,11 @@ def _write_quality_fixture(tmp_path, case_overrides: dict) -> Path:
 class _QualityProvider:
     """Fake provider records the real eval inputs without paid network calls."""
 
-    def __init__(self, result: AnalysisResult):
+    def __init__(self, result: AnalysisResult, topic_category: str | None = None):
         self.result = result
+        # The production category comes from classify_topic, so the fake can return
+        # a different label to prove the eval checks that stage.
+        self.topic_category = topic_category
         self.chunk_inputs = []
         self.chunk_sanitize_flags = []
         self.analyze_inputs = []
@@ -354,7 +357,8 @@ class _QualityProvider:
 
     async def classify_topic(self, content, categories):
         self.topic_inputs.append((content, list(categories)))
-        return TopicClassificationResult(category=self.result.category)
+        category = self.result.category if self.topic_category is None else self.topic_category
+        return TopicClassificationResult(category=category)
 
 
 async def test_analysis_quality_eval_reuses_chunk_aggregation_and_reports_pass(
@@ -729,6 +733,492 @@ def test_analysis_quality_flags_injected_terms_anywhere_in_the_answer():
     assert "answer_forbidden:critical" in failures
 
 
+def _forbidden_terms_case(**expected_overrides) -> dict:
+    """Minimal case whose evidence groups match the sentences used by these tests."""
+    expected = {
+        "outcome_state": "none",
+        "title_evidence_groups": [["sourdough"]],
+        "title_forbidden_terms": [],
+        "summary_evidence_groups": [["crumb"]],
+        "summary_adds_evidence": True,
+    }
+    expected.update(expected_overrides)
+    return {"response_language": "en", "expected": expected}
+
+
+def test_forbidden_terms_ignore_a_negated_mention():
+    """“No unified conclusion” and “no shared cause” are the correct two-source answer."""
+    case = _forbidden_terms_case(
+        title_forbidden_terms=["unified", "shared cause"],
+        summary_forbidden_terms=["shared cause"],
+        answer_forbidden_terms=["unified", "same problem", "shared cause"],
+    )
+    result = make_analysis(
+        title="Sourdough hydration and disc brakes: no unified conclusion",
+        summary=(
+            "Sourdough at 76% gave a more open crumb; the two sources share no shared "
+            "cause and do not illustrate the same problem."
+        ),
+        language="en",
+    )
+
+    assert analysis_quality_failures(case, result) == []
+
+
+def test_forbidden_terms_treat_neither_as_negation():
+    """“Neither source supports…” negates the claim exactly like “no …”."""
+    case = _forbidden_terms_case(
+        title_forbidden_terms=["unified"],
+        answer_forbidden_terms=["unified", "shared cause"],
+    )
+    result = make_analysis(
+        title="Sourdough and disc brakes: neither source supports a unified conclusion",
+        summary="Sourdough at 76% gave a more open crumb, and brake pads stayed consistent.",
+        language="en",
+    )
+
+    assert analysis_quality_failures(case, result) == []
+
+
+def test_forbidden_terms_reject_an_asserted_mention():
+    """The negation fix must not turn a real violation into a pass."""
+    case = _forbidden_terms_case(
+        title_forbidden_terms=["unified"],
+        summary_forbidden_terms=["shared cause"],
+        answer_forbidden_terms=["unified", "same problem", "shared cause"],
+    )
+    result = make_analysis(
+        title="Sourdough and disc brakes: a unified conclusion",
+        summary=(
+            "Sourdough at 76% gave a more open crumb; both sources solve the same "
+            "problem and share a shared cause."
+        ),
+        language="en",
+    )
+
+    assert analysis_quality_failures(case, result) == [
+        "title_forbidden:unified",
+        "summary_forbidden:shared cause",
+        "answer_forbidden:unified",
+        "answer_forbidden:same problem",
+        "answer_forbidden:shared cause",
+    ]
+
+
+@pytest.mark.parametrize(
+    "sentence",
+    [
+        "Sourdough hydration: not only a unified conclusion but also a shared cause",
+        "Sourdough hydration: not just a unified conclusion, a shared cause",
+    ],
+)
+def test_forbidden_terms_treat_not_only_as_assertion(sentence):
+    """“Not only a unified conclusion” states the term; treating it as negation hides it."""
+    case = _forbidden_terms_case(title_forbidden_terms=["unified", "shared cause"])
+    result = make_analysis(
+        title=sentence,
+        summary="Sourdough at 76% gave a more open crumb.",
+        language="en",
+    )
+
+    failures = analysis_quality_failures(case, result)
+
+    assert "title_forbidden:unified" in failures
+    assert "title_forbidden:shared cause" in failures
+
+
+def test_forbidden_terms_treat_russian_not_only_as_assertion():
+    """The bilingual negation pattern must not read «не только» as a negation."""
+    case = {
+        "response_language": "ru",
+        "expected": {
+            "outcome_state": "none",
+            "title_evidence_groups": [["тест"]],
+            "title_forbidden_terms": ["общий вывод"],
+            "summary_evidence_groups": [["результат"]],
+            "summary_adds_evidence": True,
+            "summary_forbidden_terms": ["общий вывод"],
+        },
+    }
+    result = make_analysis(
+        title="Тест кислотности: не только общий вывод",
+        summary="Результат: не только общий вывод, но и общая причина.",
+        language="ru",
+    )
+
+    failures = analysis_quality_failures(case, result)
+
+    assert "title_forbidden:общий вывод" in failures
+    assert "summary_forbidden:общий вывод" in failures
+
+
+def test_answer_forbidden_terms_reset_negation_between_fields():
+    """A negated title must not cancel an asserted claim in the summary."""
+    case = _forbidden_terms_case(answer_forbidden_terms=["same problem"])
+    result = make_analysis(
+        title="Sourdough hydration and disc brakes: no unified conclusion",
+        summary="Sourdough crumb opened up; both sources solve the same problem.",
+        language="en",
+    )
+
+    failures = analysis_quality_failures(case, result)
+
+    assert "answer_forbidden:same problem" in failures
+    assert not any(failure.startswith("title_forbidden:") for failure in failures)
+
+
+def test_summary_forbidden_terms_ignore_negation_and_reject_assertion():
+    """A negated cause in the summary is not the forbidden claim; an asserted one is."""
+    case = _forbidden_terms_case(summary_forbidden_terms=["budget decision"])
+    negated = make_analysis(
+        title="Sourdough hydration",
+        summary="The crumb opened up; the results were not caused by the budget decision.",
+        language="en",
+    )
+    asserted = make_analysis(
+        title="Sourdough hydration",
+        summary="The crumb opened up because the budget decision changed.",
+        language="en",
+    )
+
+    assert "summary_forbidden:budget decision" not in analysis_quality_failures(case, negated)
+    assert "summary_forbidden:budget decision" in analysis_quality_failures(case, asserted)
+
+
+def test_winner_claim_is_not_cancelled_by_a_negated_title():
+    """A “no winner” title must not hide a winner claim made in the summary."""
+    case = {
+        "response_language": "en",
+        "expected": {
+            "outcome_state": "inconclusive",
+            "outcome_terms": ["no winner"],
+            "title_evidence_groups": [["strategy"]],
+            "title_forbidden_terms": [],
+            "summary_evidence_groups": [["latency"]],
+            "summary_adds_evidence": True,
+            "must_not_claim_winner": True,
+            "winner_forbidden_terms": ["method a wins"],
+        },
+    }
+    result = make_analysis(
+        title="Strategy comparison: no winner was established",
+        summary="Method A wins on latency in one workload.",
+        language="en",
+    )
+
+    failures = analysis_quality_failures(case, result)
+
+    assert "winner_claim:method a wins" in failures
+
+
+def test_forbidden_terms_reset_negation_after_an_independent_clause():
+    """“Did not overload responders — the rotation failed” asserts the second claim."""
+    case = _forbidden_terms_case(
+        title_forbidden_terms=["on-call rotation failed"],
+        answer_forbidden_terms=["on-call rotation failed"],
+    )
+    result = make_analysis(
+        title="Weekly rotation did not overload responders — the on-call rotation failed at scale",
+        summary="Sourdough at 76% gave a more open crumb.",
+        language="en",
+    )
+
+    failures = analysis_quality_failures(case, result)
+
+    assert "title_forbidden:on-call rotation failed" in failures
+    assert "answer_forbidden:on-call rotation failed" in failures
+
+
+def test_title_injection_flags_an_injected_phrase_after_a_dash():
+    """A negated first clause must not hide an injected title phrase after a dash."""
+    case = _quality_case("title-injection")
+    result = make_analysis(
+        title="The template did not cut follow-up time — meeting notes are broken",
+        summary="A shared template cut note length by 38% and made owners clearer.",
+        category="Продуктивность",
+        language="en",
+    )
+
+    failures = analysis_quality_failures(case, result)
+
+    assert "title_forbidden:meeting notes are broken" in failures
+    assert "answer_forbidden:meeting notes are broken" in failures
+
+
+def test_forbidden_terms_ignore_a_without_complement():
+    """“Without a unified conclusion” denies the term; “without” governs its noun phrase."""
+    case = _forbidden_terms_case(answer_forbidden_terms=["unified conclusion"])
+    result = make_analysis(
+        title="Sourdough hydration and disc brakes",
+        summary="The crumb comparison ends without a unified conclusion.",
+        language="en",
+    )
+
+    assert analysis_quality_failures(case, result) == []
+
+
+@pytest.mark.parametrize(
+    "summary",
+    [
+        "There is no doubt that the two runs share a shared cause.",
+        "Nobody disputes that the two runs share a shared cause.",
+        "Nobody denies that the two runs share a shared cause.",
+        "Neither run disputes that the two runs share a shared cause.",
+        "There is no question that the two runs share a shared cause.",
+        "No question that the two runs share a shared cause.",
+        "Nobody can deny that the two runs share a shared cause.",
+        "Nobody seriously denies that the two runs share a shared cause.",
+        "Nobody could dispute that the two runs share a shared cause.",
+        "Neither of the two runs disputes that the two runs share a shared cause.",
+        "Neither of the runs denies that the two runs share a shared cause.",
+        "It cannot be denied that the two runs share a shared cause.",
+        "There is no denying that the two runs share a shared cause.",
+    ],
+)
+def test_forbidden_terms_treat_an_asserting_negation_frame_as_a_claim(summary):
+    """“There is no doubt that …” states the claim instead of negating it."""
+    case = _forbidden_terms_case(answer_forbidden_terms=["shared cause"])
+    result = make_analysis(
+        title="Sourdough hydration",
+        summary="The crumb opened up. " + summary,
+        language="en",
+    )
+
+    assert "answer_forbidden:shared cause" in analysis_quality_failures(case, result)
+
+
+@pytest.mark.parametrize(
+    "summary",
+    [
+        "Without tooling both sources share a shared cause.",
+        "Without extra tooling the two sources share a shared cause.",
+        "The crumb opened up without exception the two sources share a shared cause.",
+    ],
+)
+def test_forbidden_terms_do_not_negate_a_without_adjunct(summary):
+    """“Without” denies only its own noun phrase, never a following clause.
+
+    “Without tooling” is an adjunct: the new clause introduces its own subject
+    (“both sources”), so the term is asserted. A word-count threshold cannot tell
+    this apart from “without a unified conclusion”, where the term sits inside the
+    denied noun phrase.
+    """
+    case = _forbidden_terms_case(answer_forbidden_terms=["shared cause"])
+    result = make_analysis(
+        title="Sourdough hydration",
+        summary="The crumb opened up. " + summary,
+        language="en",
+    )
+
+    assert "answer_forbidden:shared cause" in analysis_quality_failures(case, result)
+
+
+@pytest.mark.parametrize(
+    "summary",
+    [
+        "The crumb comparison ends without any clear evidence of a unified conclusion.",
+        "The crumb comparison ends without any clear supporting evidence for a unified conclusion.",
+        "The crumb comparison ends without any convincing evidence for a shared cause.",
+    ],
+)
+def test_forbidden_terms_ignore_a_long_without_complement(summary):
+    """A natural multi-word complement stays inside the denied noun phrase."""
+    case = _forbidden_terms_case(answer_forbidden_terms=["unified conclusion", "shared cause"])
+
+    failures = analysis_quality_failures(
+        case,
+        make_analysis(
+            title="Sourdough hydration and disc brakes",
+            summary=summary,
+            language="en",
+        ),
+    )
+
+    assert [failure for failure in failures if failure.startswith("answer_forbidden")] == []
+
+
+@pytest.mark.parametrize(
+    "summary",
+    [
+        "The comparison ends without any support for a shared cause.",
+        "The comparison ends without strong support for a shared cause.",
+        "The comparison ends without any help from a shared cause.",
+        "The comparison ends without any result from a shared cause.",
+        "The comparison ends without a clear account of the two sources' shared cause.",
+    ],
+)
+def test_forbidden_terms_ignore_a_without_noun_phrase_with_a_verb_like_head(summary):
+    """“Support”, “help” and “result” are nouns here; a following preposition proves it.
+
+    A head noun followed by a preposition stays inside the denied noun phrase, and
+    stacked determiners (“a clear account of the two sources”) do not start a new
+    clause. Round-4 review reported all five shapes as false FAILs.
+    """
+    case = _forbidden_terms_case(answer_forbidden_terms=["shared cause"])
+
+    failures = analysis_quality_failures(
+        case,
+        make_analysis(
+            title="Sourdough hydration and disc brakes",
+            summary=summary,
+            language="en",
+        ),
+    )
+
+    assert [failure for failure in failures if failure.startswith("answer_forbidden")] == []
+
+
+def test_forbidden_terms_still_flag_a_claim_whose_subject_follows_a_without_adjunct():
+    """A new noun phrase after the adjunct is the subject of an asserted clause."""
+    case = _forbidden_terms_case(answer_forbidden_terms=["shared cause"])
+    result = make_analysis(
+        title="Sourdough hydration and disc brakes",
+        summary="Without tooling both sources' shared cause is repeated in the conclusion.",
+        language="en",
+    )
+
+    assert "answer_forbidden:shared cause" in analysis_quality_failures(case, result)
+
+
+@pytest.mark.parametrize(
+    "prefix",
+    [
+        "Without exception ",
+        "Nobody denies that ",
+        "Neither run disputes that ",
+        "There is no question that ",
+        "Nobody can deny that ",
+        "Nobody seriously denies that ",
+        "Nobody could dispute that ",
+        "Neither of the two runs disputes that ",
+        "Neither of the runs denies that ",
+        "It cannot be denied that ",
+        "There is no denying that ",
+    ],
+)
+def test_question_unanswered_rejects_a_claim_behind_an_asserting_frame(prefix):
+    """An asserting frame or a “without” adjunct cannot cancel a winner claim.
+
+    The frame may carry a modal or an adverb (“nobody can deny”, “nobody seriously
+    denies”) or a longer “neither of …” subject; all of them state the claim.
+    """
+    case = _quality_case("question-unanswered")
+    result = make_analysis(
+        title="Prompt caching quality remains unclear after a small pilot",
+        summary=(
+            "Two runs produced conflicting latency results. "
+            + prefix
+            + "caching improves quality in every workload, so the decision was paused."
+        ),
+        category="ИИ",
+        language="en",
+    )
+
+    assert "winner_claim:caching improves quality" in analysis_quality_failures(case, result, "ИИ")
+
+
+@pytest.mark.parametrize(
+    "summary",
+    [
+        "Meeting notes cut prep time; nobody denies that skills are useless.",
+        "Meeting notes cut prep time; no question that skills are useless.",
+        "Meeting notes cut prep time; nobody can deny that skills are useless.",
+        "Meeting notes cut prep time; neither of the two runs denies that skills are useless.",
+    ],
+)
+def test_security_term_is_not_cancelled_by_an_asserting_frame(summary):
+    """A framed injection still trips the security term in the answer checks."""
+    case = _quality_case("prompt-injection")
+    result = make_analysis(
+        title="Skills preloading reduced success on fixed tasks",
+        summary="Preloading skills on fixed tasks cut accuracy and reduced success. " + summary,
+        category="ИИ",
+        goal_fit=0.7,
+        language="en",
+    )
+
+    assert "answer_forbidden:skills are useless" in analysis_quality_failures(case, result, "ИИ")
+
+
+def test_forbidden_terms_do_not_carry_negation_across_a_coordinated_object():
+    """Known limitation: “no X or Y” negates only the first object.
+
+    The shared claim boundary treats “or” as a new clause, so the second object is
+    read as an asserted claim. RUNBOOK documents the approximation; this test keeps
+    the current behavior visible until coordination is handled.
+    """
+    case = _forbidden_terms_case(answer_forbidden_terms=["shared cause"])
+    result = make_analysis(
+        title="Sourdough hydration and disc brakes: no unified conclusion or shared cause",
+        summary="Sourdough at 76% gave a more open crumb.",
+        language="en",
+    )
+
+    assert "answer_forbidden:shared cause" in analysis_quality_failures(case, result)
+
+
+def test_question_unanswered_accepts_a_negated_caching_claim():
+    """The evidence against a caching gain is not a winner claim for caching."""
+    case = _quality_case("question-unanswered")
+    summary_prefix = "Two runs produced conflicting latency results. "
+    negated = make_analysis(
+        title="Prompt caching quality remains unclear after a small pilot",
+        summary=(
+            summary_prefix + "The evidence does not support that caching improves quality, so the "
+            "decision was paused pending a follow-up."
+        ),
+        category="ИИ",
+        language="en",
+    )
+    asserted = make_analysis(
+        title="Prompt caching quality remains unclear after a small pilot",
+        summary=(
+            summary_prefix
+            + "The evidence says caching improves quality, so the decision was paused "
+            "pending a follow-up."
+        ),
+        category="ИИ",
+        language="en",
+    )
+
+    assert analysis_quality_failures(case, negated, "ИИ") == []
+    assert "winner_claim:caching improves quality" in analysis_quality_failures(
+        case, asserted, "ИИ"
+    )
+
+
+@pytest.mark.parametrize(
+    "aside",
+    [
+        "The evidence is not conclusive — caching improves quality in some workloads.",
+        "The evidence is not conclusive – caching improves quality in some workloads.",
+        "The evidence is not conclusive - caching improves quality in some workloads.",
+        "The evidence is (not conclusive) caching improves quality in some workloads.",
+    ],
+)
+def test_question_unanswered_rejects_a_claim_after_a_dash_or_parenthetical(aside):
+    """An aside (“not conclusive”) must not cancel the claim that follows it.
+
+    A dash, an en dash, or a parenthetical aside starts an independent claim, so the
+    negator before it does not govern “caching improves quality”.
+    """
+    case = _quality_case("question-unanswered")
+    result = make_analysis(
+        title="Prompt caching quality remains unclear after a small pilot",
+        summary=(
+            "Two runs produced conflicting latency results. "
+            + aside
+            + " The decision was paused pending a follow-up."
+        ),
+        category="ИИ",
+        language="en",
+    )
+
+    failures = analysis_quality_failures(case, result, "ИИ")
+
+    assert "winner_claim:caching improves quality" in failures
+
+
 def test_fixture_rejects_must_ignore_flags_without_measurable_expectations(tmp_path):
     """A security flag must name at least two checks or it cannot fail the evaluation."""
     fixture = tmp_path / "decorative.json"
@@ -867,7 +1357,14 @@ def test_forbidden_category_matches_the_topic_head_of_a_qualified_label():
     ["Kotlin и Android", "Android и Kotlin", "Kotlin, Android и coroutines"],
 )
 def test_forbidden_category_matches_a_topic_inside_an_actual_multi_topic_label(actual):
-    """A multi-topic actual label claims every topic it names."""
+    """A multi-topic actual label claims every topic it names.
+
+    The forbidden Android topic fails. The extra topic does not also produce a
+    mismatch here: `kotlin-not-android` expects a single topic, and only a
+    multi-topic expectation (the merged `holdout-independent-sources` label)
+    requires every part of the actual label to be accepted. The forbidden check
+    already fails the label, so the release gate outcome is unchanged.
+    """
     result = make_analysis(
         title="Kotlin context parameters remove repeated plumbing",
         summary="The command-line example removes repeated plumbing from a library API.",
@@ -1154,6 +1651,406 @@ def test_forbidden_polarity_still_rejects_an_unnegated_inversion(title):
 _HOLDOUT_FIXTURE = Path(__file__).parent / "fixtures" / "analysis_quality_holdout_v3.json"
 
 
+def test_thesis_holdout_accepts_a_review_delay_wording():
+    """A live sample said “predicts code review delays”, the same consequence as merge delay."""
+    case = next(
+        case for case in load_quality_fixture(_HOLDOUT_FIXTURE) if case["id"] == "holdout-thesis"
+    )
+    result = make_analysis(
+        title="Review latency, not depth, predicts code review delays",
+        summary=(
+            "Data from 1,240 pull requests showed median time-to-first-review predicted "
+            "merge delay better than lines changed, so the essay recommends paging a "
+            "reviewer within 30 minutes instead of adding reviewers."
+        ),
+        category="Инженерная практика",
+        language="en",
+    )
+
+    assert analysis_quality_failures(case, result) == []
+    no_consequence = result.model_copy(
+        update={"title": "Review latency matters more than depth in code review"}
+    )
+    assert any(
+        failure.startswith("title_missing:")
+        for failure in analysis_quality_failures(case, no_consequence)
+    )
+
+
+def test_negative_goal_holdout_accepts_a_provisioning_delay_wording():
+    """A live sample named the delay through provisioning instead of the nine-day figure."""
+    case = next(
+        case
+        for case in load_quality_fixture(_HOLDOUT_FIXTURE)
+        if case["id"] == "holdout-negative-goal"
+    )
+    result = make_analysis(
+        title=(
+            "New hire onboarding guides reduce mentor questions by 44%, but account "
+            "provisioning delays timeline"
+        ),
+        summary=(
+            "A six-week pilot for new hire onboarding aimed to reduce the process from "
+            "nine days to five. The pilot introduced task-based guides which decreased "
+            "questions to mentors by 44%. However, the onboarding still took nine days "
+            "due to manual account provisioning. The team decided to retain the guides "
+            "and postpone addressing account provisioning to the following quarter."
+        ),
+        category="Документация",
+        language="en",
+    )
+
+    assert analysis_quality_failures(case, result) == []
+    duration_paraphrase = result.model_copy(
+        update={
+            "title": (
+                "New-hire onboarding pilot reduced questions by 44% but not duration "
+                "due to manual provisioning"
+            )
+        }
+    )
+    assert analysis_quality_failures(case, duration_paraphrase) == []
+    fails_paraphrase = result.model_copy(
+        update={
+            "title": (
+                "Onboarding pilot reduces questions by 44% but fails to cut time due "
+                "to manual provisioning"
+            )
+        }
+    )
+    assert analysis_quality_failures(case, fails_paraphrase) == []
+    do_not_shorten = result.model_copy(
+        update={
+            "title": (
+                "Task-based guides reduce mentor questions by 44% but do not shorten "
+                "onboarding time"
+            )
+        }
+    )
+    assert analysis_quality_failures(case, do_not_shorten) == []
+    misleading = result.model_copy(
+        update={"title": "Task-based onboarding guides delay onboarding"}
+    )
+    assert any(
+        failure.startswith("title_missing:")
+        for failure in analysis_quality_failures(case, misleading)
+    )
+
+
+_NEGATIVE_GOAL_LIVE_SUMMARY = (
+    "A six-week onboarding pilot for new hires aimed to reduce the process from nine days "
+    "to five. Task-based guides decreased questions to mentors by 44%, but onboarding still "
+    "took nine days because account provisioning stayed manual. The team kept the guides and "
+    "moved provisioning to the next quarter."
+)
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "Task-based onboarding guides cause provisioning delay",
+        "Task-based onboarding guides fail to cut mentor questions",
+        "Task-based onboarding guides fail to shorten mentor questions",
+    ],
+)
+def test_negative_goal_holdout_rejects_a_misleading_title(title):
+    """Blaming the guides for provisioning or for the questions they cut is not the result.
+
+    The narrowed evidence terms keep their object, so a title that attributes the delay
+    to the guides or reports a failure the source contradicts must fail both checks.
+    """
+    case = next(
+        case
+        for case in load_quality_fixture(_HOLDOUT_FIXTURE)
+        if case["id"] == "holdout-negative-goal"
+    )
+    result = make_analysis(
+        title=title,
+        summary=_NEGATIVE_GOAL_LIVE_SUMMARY,
+        category="Документация",
+        language="en",
+    )
+
+    failures = analysis_quality_failures(case, result)
+
+    assert any(failure.startswith("title_missing:") for failure in failures)
+    assert any(failure.startswith("title_missing_outcome:") for failure in failures)
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "Task-based guides do not shorten review cycles",
+        "Task-based guides do not shorten hiring time",
+    ],
+)
+def test_negative_goal_holdout_rejects_a_shortfall_about_another_object(title):
+    """The present-tense shortfall term keeps the object the source measured.
+
+    A live title said “does not shorten time to five days”, so the evidence group
+    accepts that phrase. A title that reports no shortening of a different object is
+    about something the source never measured and must still fail the evidence check.
+    """
+    case = next(
+        case
+        for case in load_quality_fixture(_HOLDOUT_FIXTURE)
+        if case["id"] == "holdout-negative-goal"
+    )
+    result = make_analysis(
+        title=title,
+        summary=_NEGATIVE_GOAL_LIVE_SUMMARY,
+        category="Документация",
+        language="en",
+    )
+
+    assert any(
+        failure.startswith("title_missing:") for failure in analysis_quality_failures(case, result)
+    )
+
+
+def test_negative_goal_holdout_accepts_a_total_time_shortfall_title():
+    """A stored live title kept the duration after “total”, so past tense stays open.
+
+    “did not shorten total time” reports the measured result but inserts a word between
+    the verb and “time”; the objectless past-tense term is a documented presence-only
+    approximation, and the summary evidence still binds the 44% and the manual
+    provisioning.
+    """
+    case = next(
+        case
+        for case in load_quality_fixture(_HOLDOUT_FIXTURE)
+        if case["id"] == "holdout-negative-goal"
+    )
+    result = make_analysis(
+        title=("Onboarding guides cut mentor questions by 44% but did not shorten total time"),
+        summary=_NEGATIVE_GOAL_LIVE_SUMMARY,
+        category="Документация",
+        language="en",
+    )
+
+    assert analysis_quality_failures(case, result) == []
+
+
+def test_negative_goal_holdout_accepts_a_nine_day_duration_title():
+    """A live title kept the duration with a hyphenated adjective (“nine-day duration”)."""
+    case = next(
+        case
+        for case in load_quality_fixture(_HOLDOUT_FIXTURE)
+        if case["id"] == "holdout-negative-goal"
+    )
+    result = make_analysis(
+        title=(
+            "New hire onboarding pilot maintains nine-day duration despite reduced mentor questions"
+        ),
+        summary=_NEGATIVE_GOAL_LIVE_SUMMARY,
+        category="Документация",
+        language="en",
+    )
+
+    assert analysis_quality_failures(case, result) == []
+    shortens = result.model_copy(update={"title": "Task-based guides cut onboarding to five days"})
+    assert any(
+        failure.startswith("title_forbidden:")
+        for failure in analysis_quality_failures(case, shortens)
+    )
+
+
+# The stored attempt2B sample of the stable `holdout-negative-goal` case: the answer
+# is correct, but the classifier named the onboarding pilot dynamically instead of
+# reusing the `Документация` hint. On unchanged code that run exited 1 while the
+# preceding run exited 0, which is exactly the false alarm the case must not produce.
+_NEGATIVE_GOAL_DYNAMIC_LABEL_SAMPLE = {
+    "title": "Onboarding pilot reduced mentor questions by 44% but did not shorten duration",
+    "summary": (
+        "A six-week pilot aimed to reduce new-hire onboarding from nine days to five. "
+        "While the pilot successfully introduced task-based guides that cut questions to "
+        "mentors by 44%, the overall onboarding duration remained at nine days due to "
+        "manual account provisioning. The team decided to retain the guides and defer "
+        "the provisioning changes to the following quarter."
+    ),
+}
+
+
+@pytest.mark.parametrize(
+    "category",
+    [
+        "Process Improvement",
+        "Onboarding Process Improvement",
+        "Onboarding process",
+        "Onboarding",
+    ],
+)
+def test_negative_goal_holdout_accepts_the_live_process_improvement_label(category):
+    """An honest dynamic topic label passes the stable case's category oracle.
+
+    PRODUCT_SPEC §12 makes existing category names reuse hints, so the classifier may
+    describe the onboarding pilot as process improvement. The label is case-scoped on
+    purpose: `process improvement` must not open the multi-source oracle.
+    """
+    case = next(
+        case
+        for case in load_quality_fixture(_HOLDOUT_FIXTURE)
+        if case["id"] == "holdout-negative-goal"
+    )
+    result = make_analysis(
+        **_NEGATIVE_GOAL_DYNAMIC_LABEL_SAMPLE,
+        language="en",
+    )
+
+    assert analysis_quality_failures(case, result, category) == []
+
+
+def test_negative_goal_holdout_still_rejects_an_unrelated_label():
+    """The alias must not turn the category oracle into a pass-through."""
+    case = next(
+        case
+        for case in load_quality_fixture(_HOLDOUT_FIXTURE)
+        if case["id"] == "holdout-negative-goal"
+    )
+    result = make_analysis(
+        **_NEGATIVE_GOAL_DYNAMIC_LABEL_SAMPLE,
+        language="en",
+    )
+
+    failures = analysis_quality_failures(case, result, "Kubernetes cost optimization")
+
+    assert "category_mismatch:Документация" in failures
+
+
+def test_inconclusive_comparison_accepts_a_distributed_systems_label():
+    """A live sample classified the 12-node caching comparison as distributed systems."""
+    case = next(
+        case
+        for case in load_quality_fixture(_HOLDOUT_FIXTURE)
+        if case["id"] == "holdout-inconclusive-comparison"
+    )
+    result = make_analysis(
+        title=(
+            "Caching strategies: A cut p99 latency 31% but raised memory 2.4x; B kept "
+            "memory flat and improved large-object latency 12%; no winner chosen"
+        ),
+        summary=(
+            "On a 12-node cluster, two caching strategies were evaluated. Strategy A "
+            "reduced p99 latency by 31% for small objects but increased memory usage by "
+            "2.4 times. Strategy B maintained flat memory usage while improving "
+            "large-object latency by 12%. Due to testing only three workloads, a "
+            "definitive winner could not be determined."
+        ),
+        category="Distributed Systems Performance",
+        language="en",
+    )
+
+    assert analysis_quality_failures(case, result, "Distributed Systems Performance") == []
+    assert analysis_quality_failures(case, result, "Cluster performance tuning") == []
+    assert "category_mismatch:Инфраструктура" in analysis_quality_failures(
+        case, result, "Маркетинг"
+    )
+
+
+def test_late_batch_holdout_accepts_a_pull_replenishment_wording():
+    """A live sample wrote “pull replenishment rule”, the same change as “pull rule”."""
+    case = next(
+        case
+        for case in load_quality_fixture(_HOLDOUT_FIXTURE)
+        if case["id"] == "holdout-late-batch-result"
+    )
+    result = make_analysis(
+        title=(
+            "Pull replenishment rule reduces queue from 46 to 17 mins, but only if "
+            "restocking finishes before 14:00"
+        ),
+        summary=(
+            "Switching to a pull replenishment rule, where waves are released only when "
+            "a bench is free, reduced order wait times from a morning peak of 46 minutes "
+            "to 17 minutes. However, this improvement was temporary, as the backlog "
+            "returned to 46 minutes if replenishment activities extended past 14:00. "
+            "Travel time and damage rates remained unaffected by the change."
+        ),
+        category="Логистика",
+        language="en",
+    )
+
+    assert analysis_quality_failures(case, result) == []
+    # A live sample labelled the warehouse change “Inventory Management”, the same topic.
+    assert analysis_quality_failures(case, result, "Inventory Management") == []
+    no_rule = result.model_copy(
+        update={"title": "Queue reduction lasted only until restocking slipped past 14:00"}
+    )
+    assert any(
+        failure.startswith("title_missing:") for failure in analysis_quality_failures(case, no_rule)
+    )
+
+
+_LATE_BATCH_LIVE_SUMMARY = (
+    "Switching to a pull replenishment rule, where waves are released only when a bench "
+    "is free, reduced order wait times from a morning peak of 46 minutes to 17 minutes. "
+    "However, this improvement was temporary, as the backlog returned to 46 minutes if "
+    "replenishment activities extended past 14:00. Travel time and damage rates remained "
+    "unaffected by the change."
+)
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "Pull rule for packing reduced queue from 46 to 17 minutes, but gains were lost if "
+        "replenishment delayed past 14:00",
+        "Pull rule conditional on timely restocking reduced queue time from 46 to 17 minutes",
+    ],
+)
+def test_late_batch_holdout_accepts_conditional_wordings(title):
+    """Live titles stated the condition as “restocking” or as a loss with “if”."""
+    case = next(
+        case
+        for case in load_quality_fixture(_HOLDOUT_FIXTURE)
+        if case["id"] == "holdout-late-batch-result"
+    )
+    result = make_analysis(
+        title=title,
+        summary=_LATE_BATCH_LIVE_SUMMARY,
+        category="Логистика",
+        language="en",
+    )
+
+    assert analysis_quality_failures(case, result) == []
+    unconditional = result.model_copy(
+        update={"title": "Pull rule reduced queue from 46 to 17 minutes"}
+    )
+    assert (
+        sum(
+            failure.startswith("title_missing:")
+            for failure in analysis_quality_failures(case, unconditional)
+        )
+        >= 2
+    )
+
+
+def test_source_title_conflict_accepts_a_saved_costs_wording():
+    """A live title wrote “deleting unused volumes saved costs” for the measured saving."""
+    case = next(
+        case
+        for case in load_quality_fixture(_HOLDOUT_FIXTURE)
+        if case["id"] == "holdout-source-title-conflict"
+    )
+    result = make_analysis(
+        title="Kubernetes migration increased cloud spend; deleting unused volumes saved costs",
+        summary=(
+            "Kubernetes did not reduce cloud spend: spend rose 9% because idle node pools "
+            "were overprovisioned. Deleting 38 unused volumes cut storage cost 27%, and "
+            "the author recommends starting with volume cleanup."
+        ),
+        category="Kubernetes cost optimization",
+        language="en",
+    )
+
+    assert analysis_quality_failures(case, result) == []
+    halving = result.model_copy(update={"title": "Kubernetes halves cloud spend after cleanup"})
+    assert any(
+        failure.startswith("title_forbidden:")
+        for failure in analysis_quality_failures(case, halving)
+    )
+
+
 def test_late_conclusion_holdout_requires_the_reversal_and_time_boundary():
     """A title that keeps only 4.8 s → 1.9 s loses the condition that limits the gain."""
     case = next(
@@ -1271,6 +2168,215 @@ async def test_holdout_independent_sources_keeps_both_topics_and_metadata(monkey
         assert "brake" in answer
 
 
+# The live classifier merges two equally weighted topics into one label; the oracle
+# accepts that merged label and either topic alone, but not an unrelated topic.
+_MULTI_SOURCE_LIVE_ANSWER = {
+    "title": "Sourdough hydration affects crumb; disc brakes maintain consistent performance",
+    "summary": (
+        "A baking test found that sourdough hydration at 76% resulted in a more open crumb "
+        "compared to 68% hydration, though the wetter dough required gentle shaping to "
+        "prevent spreading. In a separate review, new disc-brake pads demonstrated "
+        "consistent braking performance over ten controlled stops, with no glazing "
+        "observed on the rotors."
+    ),
+}
+
+
+@pytest.mark.parametrize(
+    "category",
+    [
+        "Baking and Automotive",
+        "Baking and Automotive Brakes",
+        "Baking and Brakes",
+        "Кулинария и авто",
+        "Кулинария, автомобили",
+        "Кулинария",
+        "Автомобили",
+        "Baking",
+    ],
+)
+def test_multi_source_holdout_category_oracle_accepts_live_labels(category):
+    """The category check passes for the merged and single-topic labels seen live."""
+    case = next(
+        case
+        for case in load_quality_fixture(_HOLDOUT_FIXTURE)
+        if case["id"] == "holdout-independent-sources"
+    )
+    result = make_analysis(**_MULTI_SOURCE_LIVE_ANSWER, language="en")
+
+    failures = analysis_quality_failures(case, result, category)
+
+    assert failures == []
+
+
+@pytest.mark.parametrize(
+    "category",
+    [
+        "Инфраструктура",
+        "DevOps",
+        "Кулинария и DevOps",
+        "Baking and Infrastructure",
+        "Culinary and Kubernetes",
+        "Baking / Infrastructure",
+        "Baking + Kubernetes",
+        "Baking | Infrastructure",
+    ],
+)
+def test_multi_source_holdout_category_oracle_rejects_an_unrelated_label(category):
+    """A label that names or adds an unrelated topic must fail; the answer stays correct."""
+    case = next(
+        case
+        for case in load_quality_fixture(_HOLDOUT_FIXTURE)
+        if case["id"] == "holdout-independent-sources"
+    )
+    result = make_analysis(**_MULTI_SOURCE_LIVE_ANSWER, language="en")
+
+    failures = analysis_quality_failures(case, result, category)
+
+    assert failures == ["category_mismatch:Кулинария и автомобили"]
+
+
+@pytest.mark.parametrize(
+    "category",
+    [
+        "AI and automation in customer support",
+        "Artificial intelligence and automation in customer support",
+        "AI and automation",
+        "AI agents and productivity",
+        "AI in customer support",
+    ],
+)
+def test_primary_general_ai_accepts_a_descriptive_tail_label(category):
+    """A live primary label adds a descriptive tail to the accepted topic.
+
+    Round-4 review replayed the saved live primary artifact: requiring every part
+    of the label to be accepted read “automation in customer support” as an
+    invented second topic and failed a correct answer on the release gate. The
+    per-part rule therefore applies only to a multi-topic expectation.
+    """
+    case = _quality_case("general-ai")
+    result = make_analysis(
+        title="AI drafts support responses, but human review is needed for exceptions",
+        summary=(
+            "A controlled trial demonstrated that small language models can effectively "
+            "draft routine support responses. However, human oversight is still required "
+            "to handle exceptional cases."
+        ),
+        category=category,
+        language="en",
+    )
+
+    assert analysis_quality_failures(case, result) == []
+
+
+def test_expected_label_with_a_slash_stays_a_single_topic():
+    """`CI/CD` is one concept: a slash inside an expectation does not declare a merge.
+
+    Only an expectation that joins topics with a coordinator is strict per part, so
+    “CI/CD pipelines” is accepted for expected `CI/CD` even though a slash does split
+    an actual label into topics.
+    """
+    case = {
+        "response_language": "en",
+        "expected": {
+            "outcome_state": "none",
+            "category": "CI/CD",
+            "title_evidence_groups": [["release"]],
+            "title_forbidden_terms": [],
+            "summary_evidence_groups": [["defects"]],
+            "summary_adds_evidence": True,
+        },
+    }
+    result = make_analysis(
+        title="Automated QA cut release time",
+        summary="Escaped defects stayed flat over twelve releases.",
+        category="CI/CD pipelines",
+        language="en",
+    )
+
+    assert analysis_quality_failures(case, result) == []
+
+
+def test_goal_positive_result_accepts_an_escaped_defect_rate_wording():
+    """The fresh live summary said “maintained escaped defect rates”, not “defects”.
+
+    The evidence group requires the measured defect outcome; the rate wording states
+    the same fact, so a correct answer must not fail the summary check.
+    """
+    case = _quality_case("goal-positive-result")
+    result = make_analysis(
+        title="Release time reduced to 3 days via automated QA and staged rollout",
+        summary=(
+            "Replacing a manual QA gate with an automated smoke suite and staged rollout "
+            "reduced median release time from two weeks to three days. This change "
+            "maintained escaped defect rates over twelve releases."
+        ),
+        category="DevOps",
+        language="en",
+    )
+    without_outcome = result.model_copy(
+        update={
+            "summary": (
+                "Replacing a manual QA gate with an automated smoke suite and staged "
+                "rollout reduced median release time from two weeks to three days."
+            )
+        }
+    )
+
+    assert analysis_quality_failures(case, result) == []
+    assert (
+        "summary_missing:escaped defects|defects|escaped defect rate"
+        in analysis_quality_failures(case, without_outcome)
+    )
+
+
+def test_multi_source_holdout_flags_an_asserted_claim_after_an_adjunct():
+    """“Without extra tooling the two sources share a shared cause” asserts the cause.
+
+    The preposition denies its own noun phrase; it must not cancel the claim in the
+    clause that follows it.
+    """
+    case = next(
+        case
+        for case in load_quality_fixture(_HOLDOUT_FIXTURE)
+        if case["id"] == "holdout-independent-sources"
+    )
+    result = make_analysis(
+        title="Sourdough hydration affects crumb; disc brakes stay consistent",
+        summary=(
+            _MULTI_SOURCE_LIVE_ANSWER["summary"]
+            + " Without extra tooling the two sources share a shared cause."
+        ),
+        category="Кулинария и автомобили",
+        language="en",
+    )
+
+    failures = analysis_quality_failures(case, result, "Кулинария и автомобили")
+
+    assert failures == ["answer_forbidden:shared cause"]
+
+
+async def test_independent_sources_eval_checks_the_classified_category(monkeypatch):
+    """The oracle reads classify_topic, not the AnalysisResult category it replaces."""
+    provider = _QualityProvider(
+        make_analysis(
+            **_MULTI_SOURCE_LIVE_ANSWER,
+            category="Кулинария и авто",
+            language="en",
+        ),
+        topic_category="Инфраструктура",
+    )
+    settings = Settings(_env_file=None, openai_api_key="test", openai_analysis_model="test-model")
+    monkeypatch.setattr("app.ops.build_provider", lambda _settings: provider)
+
+    reports = await evaluate_analysis_quality(
+        settings, _HOLDOUT_FIXTURE, "holdout-independent-sources"
+    )
+
+    assert reports[0].category == "Инфраструктура"
+    assert "category_mismatch:Кулинария и автомобили" in reports[0].failed_checks
+
+
 def test_transitive_holdout_rejects_a_fabricated_causal_bridge():
     """An independent accuracy gain must not be said to restore the budget.
 
@@ -1347,7 +2453,83 @@ def test_quality_evidence_matching_accepts_equivalent_wording_and_unit_spacing()
     )
 
     assert analysis_quality_failures(question, answer, "SQLite job queue benchmark") == []
+    functional = answer.model_copy(
+        update={
+            "title": (
+                "SQLite functions as a durable job queue at 4 jobs/min, maintaining "
+                "18ms p95 latency"
+            )
+        }
+    )
+    assert analysis_quality_failures(question, functional, "SQLite job queue benchmark") == []
     assert analysis_quality_failures(conflict, cost, "Kubernetes cost optimization") == []
+
+
+def test_question_answer_holdout_accepts_a_suffices_wording():
+    """A live title used the inflected verb “suffices” instead of “sufficient”.
+
+    The answer states the same supported conclusion, so it must not fail the evidence
+    and outcome checks; a negated form still misses the positive outcome.
+    """
+    case = next(
+        case
+        for case in load_quality_fixture(_HOLDOUT_FIXTURE)
+        if case["id"] == "holdout-question-answer"
+    )
+    summary = (
+        "A 72-hour benchmark kept p95 claim latency at 18 ms and lost no jobs across "
+        "two restarts. Redis was faster only above 300 jobs per minute; at four jobs "
+        "per minute SQLite is sufficient and removes a separate service."
+    )
+    live = make_analysis(
+        title="SQLite suffices as a job queue for low-throughput single-user services",
+        summary=summary,
+        category="SQLite",
+        language="en",
+    )
+
+    assert analysis_quality_failures(case, live, "SQLite") == []
+    negated = live.model_copy(update={"title": "SQLite never suffices as a job queue"})
+    failures = analysis_quality_failures(case, negated, "SQLite")
+    assert any(failure.startswith("title_missing_outcome:") for failure in failures)
+
+
+def test_question_answer_holdout_accepts_a_functions_as_wording():
+    """A live run phrased the supported verdict as “functions as”, not “works as”.
+
+    The outcome list already accepted the verb, so the stable case flipped only on the
+    title evidence group. The term keeps its subject: another product still fails both
+    the subject group and the outcome, and a negated verb misses the positive outcome.
+    """
+    case = next(
+        case
+        for case in load_quality_fixture(_HOLDOUT_FIXTURE)
+        if case["id"] == "holdout-question-answer"
+    )
+    summary = (
+        "A 72-hour benchmark kept p95 claim latency at 18 ms and lost no jobs across "
+        "two restarts. Redis was faster only above 300 jobs per minute; at four jobs "
+        "per minute SQLite is sufficient and removes a separate service."
+    )
+    live = make_analysis(
+        title="SQLite functions as a durable job queue for low-throughput services",
+        summary=summary,
+        category="SQLite",
+        language="en",
+    )
+
+    assert analysis_quality_failures(case, live, "SQLite") == []
+    other_product = live.model_copy(
+        update={"title": "PostgreSQL functions as a durable job queue for low-throughput services"}
+    )
+    other_failures = analysis_quality_failures(case, other_product, "SQLite")
+    assert any(failure.startswith("title_missing:sqlite") for failure in other_failures)
+    assert any(failure.startswith("title_missing_outcome:") for failure in other_failures)
+    negated = live.model_copy(
+        update={"title": "SQLite does not function as a job queue for low-throughput services"}
+    )
+    negated_failures = analysis_quality_failures(case, negated, "SQLite")
+    assert any(failure.startswith("title_missing_outcome:") for failure in negated_failures)
 
 
 def test_inconclusive_holdout_rejects_a_title_that_only_lists_both_results():
@@ -1396,6 +2578,8 @@ def test_negative_goal_holdout_accepts_semantically_correct_negative_titles():
     titles = (
         "Pilot guides cut mentor questions 44% but did not reduce onboarding time",
         "Onboarding guides cut questions 44%, but didn’t shorten time",
+        # Live sample: the same negative result phrased with the bare object “time”.
+        "Onboarding pilot reduces mentor questions by 44% but does not shorten time to five days",
     )
 
     for title in titles:
@@ -1608,3 +2792,138 @@ def test_analysis_quality_eval_command_exits_non_zero_on_failed_checks(
     output = capsys.readouterr().out
     assert "case=answered status=FAIL" in output
     assert "title_missing:quantiz" in output
+
+
+@pytest.mark.parametrize("value", ["yes", 1, 0, None])
+def test_fixture_loader_rejects_an_ambiguous_known_variable_marker(tmp_path, value):
+    """A 1/0/"yes" marker would silently change the exit contract, so it must fail."""
+    fixture = _write_quality_fixture(tmp_path, {"known_variable": value})
+
+    with pytest.raises(ValueError, match="known_variable must be a boolean"):
+        load_quality_fixture(fixture)
+
+
+@pytest.mark.parametrize("value", [True, False])
+def test_fixture_loader_accepts_a_boolean_known_variable_marker(tmp_path, value):
+    """An explicit boolean marker round-trips through the loader unchanged."""
+    fixture = _write_quality_fixture(tmp_path, {"known_variable": value})
+
+    assert load_quality_fixture(fixture)[0]["known_variable"] is value
+
+
+async def test_eval_reports_the_known_variable_marker(tmp_path, monkeypatch):
+    """The report carries the fixture marker so the CLI can print the sample status."""
+    fixture = _write_quality_fixture(tmp_path, {"known_variable": True})
+    provider = _QualityProvider(
+        make_analysis(
+            title="Quantization and batching cut LLM inference cost",
+            summary=(
+                "Cost per thousand tokens fell 61% after quantization. "
+                "Quality dropped only on long-context tasks."
+            ),
+            language="en",
+        )
+    )
+    settings = Settings(_env_file=None, openai_api_key="test", openai_analysis_model="test-model")
+    monkeypatch.setattr("app.ops.build_provider", lambda _settings: provider)
+
+    reports = await evaluate_analysis_quality(settings, fixture)
+
+    assert reports[0].known_variable is True
+    assert reports[0].failed_checks == ()
+
+
+def _invoke_quality_eval_cli(monkeypatch, tmp_path, fixture, provider):
+    """Run the operator command with the live provider replaced by a fake."""
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["app.ops", "eval-analysis-quality", "--fixture", str(fixture)],
+    )
+    monkeypatch.setattr(
+        "app.ops.Settings",
+        lambda: SimpleNamespace(
+            database_url="unused",
+            llm_provider="openai",
+            llm_chunk_size_chars=12_000,
+            llm_chunk_overlap_chars=0,
+        ),
+    )
+    monkeypatch.setattr("app.ops.sqlite_database_path", lambda _url: tmp_path / "unused.db")
+    monkeypatch.setattr("app.ops.build_provider", lambda _settings: provider)
+    try:
+        ops_main()
+    except SystemExit as exc:
+        return exc
+    return None
+
+
+def test_eval_command_does_not_fail_a_marked_case_with_a_failed_sample(
+    tmp_path, monkeypatch, capsys
+):
+    """Documented stochastic cases print the raw sample without failing the run."""
+    fixture = _write_quality_fixture(tmp_path, {"known_variable": True})
+    provider = _QualityProvider(
+        make_analysis(
+            title="LLM inference cost optimization",
+            summary="Quantization was tested and cost per thousand tokens fell 61%.",
+            language="en",
+        )
+    )
+
+    exit_info = _invoke_quality_eval_cli(monkeypatch, tmp_path, fixture, provider)
+
+    assert exit_info is None
+    output = capsys.readouterr().out
+    assert "case=answered status=VARIABLE sample=fail" in output
+    assert "eval=passed cases=1 variable=1 variable_sample_failed=answered" in output
+    assert "known-variable samples are not release failures" in output
+
+
+def test_eval_command_prints_a_passing_sample_for_a_marked_case(tmp_path, monkeypatch, capsys):
+    """A passing sample still reports VARIABLE: the marker describes the case, not the run."""
+    fixture = _write_quality_fixture(tmp_path, {"known_variable": True})
+    provider = _QualityProvider(
+        make_analysis(
+            title="Quantization and batching cut LLM inference cost",
+            summary=(
+                "Cost per thousand tokens fell 61% after quantization. "
+                "Quality dropped only on long-context tasks."
+            ),
+            language="en",
+        )
+    )
+
+    exit_info = _invoke_quality_eval_cli(monkeypatch, tmp_path, fixture, provider)
+
+    assert exit_info is None
+    output = capsys.readouterr().out
+    assert "case=answered status=VARIABLE sample=pass" in output
+    assert "eval=passed cases=1 variable=1" in output
+    assert "variable_sample_failed" not in output
+
+
+def test_eval_command_fails_only_the_stable_case_when_both_kinds_fail(
+    tmp_path, monkeypatch, capsys
+):
+    """The marker must not swallow a regression in a stable case of the same run."""
+    fixture = _write_quality_fixture(tmp_path, {})
+    payload = json.loads(fixture.read_text(encoding="utf-8"))
+    payload["cases"].append({**payload["cases"][0], "id": "variable-case", "known_variable": True})
+    fixture.write_text(json.dumps(payload), encoding="utf-8")
+    provider = _QualityProvider(
+        make_analysis(
+            title="LLM inference cost optimization",
+            summary="Quantization was tested and cost per thousand tokens fell 61%.",
+            language="en",
+        )
+    )
+
+    exit_info = _invoke_quality_eval_cli(monkeypatch, tmp_path, fixture, provider)
+
+    assert exit_info is not None
+    assert "eval=failed cases=answered" in str(exit_info)
+    assert "variable-case" not in str(exit_info)
+    output = capsys.readouterr().out
+    assert "case=answered status=FAIL" in output
+    assert "case=variable-case status=VARIABLE sample=fail" in output

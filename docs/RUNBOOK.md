@@ -391,7 +391,12 @@ answer (`46 minutes` → `17 minutes` under the `14:00` replenishment condition)
 last chunk only, so a chunked run must show at least two chunks in the report.
 `holdout-independent-sources` is the two-source case: it stays in one chunk, carries
 `source_count` / `successful_source_count` into both LLM stages, and requires both
-independent topics in the answer without an invented shared cause. Prompt
+independent topics in the answer without an invented shared cause. It also declares a
+`category` oracle (`Кулинария и автомобили`) with aliases for the merged labels the
+live classifier returns (`Baking and Automotive`, `Baking and Automotive Brakes`,
+`Baking and Brakes`, `Кулинария и авто`) and for either single topic; an unrelated
+label such as `Инфраструктура` produces `category_mismatch`. The oracle reads the
+`classify_topic` result, not the category field of `AnalysisResult`. Prompt
 independence is enforced by the explicit registry in
 `tests/test_analysis_quality.py`: every holdout figure or phrase must appear in its
 own case and be absent from all three evaluation prompts and from the primary
@@ -457,8 +462,9 @@ repeat the title verbatim, forbidden summary terms/openers, the shared meta-open
 list in either title or summary (“This item covers…”, “The article examines…”,
 “The video discusses…”, “Автор рассказывает…”, “В видео рассматривается…”,
 “Статья посвящена…”), forbidden terms in the whole
-answer, response language, source language, category match and forbidden
-categories, injected `goal_fit`, winner claims for inconclusive material, coverage
+answer checked separately per field, response language, source language, category
+match and forbidden categories, injected `goal_fit`, winner claims for inconclusive
+material, coverage
 of every independent source, and that the title is a statement rather than a
 question. `response_language` accepts any 2–3-letter language tag; the automatic
 check is script-level (Cyrillic vs Latin), so German/Spanish cases reject a
@@ -470,17 +476,145 @@ requires at least two non-empty `distinct_topic_groups`. The fixture loader reje
 unknown keys, an `outcome_state` that contradicts `outcome_terms`, and decorative
 security or note flags. Category aliases may accept a broader label such as
 `Программирование`, `Productivity`, or `Internal policy` when manual review confirms
-it matches the material; review aliases periodically for category drift. Evidence
+it matches the material; review aliases periodically for category drift.
+`holdout-inconclusive-comparison` accepts the live labels `distributed systems`,
+`cluster` and `performance tuning` for the 12-node caching benchmark.
+`holdout-negative-goal` accepts `process improvement` (live `Process Improvement` and
+`Onboarding Process Improvement`) because the classifier may describe the onboarding
+pilot dynamically instead of reusing the `Документация` hint; an unrelated label such
+as `Kubernetes cost optimization` still reports `category_mismatch:Документация`, so
+the stable case keeps gating its evidence and negative-outcome checks. Evidence
 matching folds apostrophes, common contractions and measurement spellings
 (`didn’t`/`did not`, `18ms`/`18 ms`/`18 milliseconds`), so an equivalent answer is
-not failed on punctuation; it never broadens a different claim. Forbidden
+not failed on punctuation. Each live wording keeps the object it describes
+(`not shorten time`, `not shorten onboarding time`, `sqlite functions as`), so a
+title that attributes the result to another object still fails the
+missing-evidence check; the older objectless absence and shortfall terms
+(`did not shorten`, `no improvement`, `unchanged`, `did not change`,
+`remained unchanged`, `no change`) stay a documented presence-only approximation,
+and the measured figures are bound to the source only by the summary evidence
+groups. `holdout-thesis`
+also accepts “review delay” as the same consequence as “merge delay” (a live sample
+said “predicts code review delays”); `holdout-negative-goal` accepts the shortened
+negative forms that keep their object (“not shorten onboarding (time)”,
+“not shorten time”, “not duration due to”, “fail(s) to cut time”, “fail(s) to
+shorten onboarding/time”) and the named cause (“account provisioning delay”,
+“provisioning delays timeline”, “due to manual provisioning”), while a title that
+blames the guides themselves for a
+delay or reports questions the source says fell still fails both the evidence and
+the outcome check; a live negative wording belongs in both this case's outcome list
+and its title evidence group, because both express the same result; and
+`holdout-late-batch-result` accepts “pull replenishment” for “pull rule”, the
+condition phrased as “restocking” or as a loss with “if” (“gains were lost if
+replenishment delayed past 14:00”), `holdout-negative-goal` accepts the hyphenated
+“nine-day duration”, `holdout-source-title-conflict` accepts “saved costs” for the
+measured saving, `holdout-question-answer` accepts “sqlite functions as” for
+“works as” and the inflected “suffices” for “sufficient”, and the primary `goal-positive-result` accepts “escaped defect rate(s)”
+for “escaped defects”. A title
+that names review latency without any consequence, or the batch change without the
+measured result, still fails the missing-evidence check. Forbidden
 categories are checked against every part of a multi-topic label, so `Kotlin и
 Android` fails forbidden `Android-разработка`, while a single `Kotlin` does not
-claim the separate combined label `Kotlin и музыка`. `PASS` means those properties
+claim the separate combined label `Kotlin и музыка`. The per-part rule applies to
+the expected category only when the expectation itself merges several topics with a
+coordinator or a comma/semicolon: every topic of the actual label must then be an
+accepted topic, so `Baking and Infrastructure` fails `holdout-independent-sources`
+even though it starts with an accepted alias. The actual label is split on
+“и/and/&”, comma, semicolon, slash, plus and pipe; a label that joins two topics
+with a bare space is not split, which stays a documented approximation. A slash,
+plus or pipe inside an expected label is part of the topic name (`CI/CD` stays a
+single topic). A single-topic expectation keeps the containment rule, because live
+labels add descriptive tails that are not invented topics — the primary `general-ai`
+case accepts “AI and automation in customer support” and “AI agents and productivity”
+for expected `ИИ`. The extra topic therefore no longer produces a second
+`category_mismatch` for `kotlin-not-android` (“Kotlin и Android” fails
+`category_forbidden:Android-разработка` only), which keeps the release-gate outcome
+unchanged. Add an alias when a live label is an honest synonym of the accepted topic,
+and do not loosen the containment rule. `PASS` means those
+properties
 hold; it does not prove that a confident title is factually supported, and a correct
 paraphrase can miss an expected term. Review the printed title, summary, category and
-language semantically for every case before trusting the result. Any failed check
-prints `case=<id> checks=<...>` and the command exits non-zero.
+language semantically for every case before trusting the result.
+
+Forbidden-term checks are negation-aware for all four lists
+(`title_forbidden_terms`, `summary_forbidden_terms`, `answer_forbidden_terms`,
+`winner_forbidden_terms`). A term inside a negated clause states the correct
+answer, so “no unified conclusion”, “neither source supports a shared cause” and
+“the evidence does not support that caching improves quality” pass, while “not only
+a unified conclusion” and “не только общий вывод” assert the term and still fail.
+`answer_forbidden_terms` and `winner_forbidden_terms` scan the title and the summary
+separately, so a negation at the end of the title cannot cancel a claim in the
+summary. A negator only governs its own clause: a dash, an en dash, a spaced hyphen
+or a parenthetical aside starts an independent claim, so “the evidence is not
+conclusive — caching improves quality” and “the evidence is (not conclusive)
+caching improves quality” fail the winner check. “Without” and «без» deny their own
+noun phrase only, and the phrase ends where a new clause starts, not after a fixed
+number of words: a determiner after the head noun (“without tooling both sources
+share…”), a finite predicate after its subject (“without exception caching
+improves…”) or a Russian third-person verb (“без общих инструментов оба источника
+дают…”) begins an asserted clause, while a term inside the phrase stays denied
+(“without a unified conclusion”, “without any clear supporting evidence for a
+unified conclusion”). A head noun that a verb list also matches stays a noun when a
+preposition follows it (“without any support for a shared cause”, “without any help
+from a shared cause”, “without any result from a shared cause”), and stacked
+determiners stay inside one phrase (“without a clear account of the two sources'
+shared cause”). Frames that assert with a negator do not negate: “there is no
+doubt/question”, “there is little doubt”, “there is no denying|doubting|disputing|
+questioning”, “it cannot be denied|disputed|questioned|doubted (that)”, “nobody/no
+one (can|could|would|will|may|might|must|should) (seriously) denies|denied|disputes|
+disputed|questions|questioned|doubts|doubted”, “neither (of) … denies|denied|
+disputes|disputed|questions|questioned|doubts|doubted”, “no doubt/question that” and
+“without (a) doubt”. The detector stays
+lexical, so these remain documented approximations and require manual review:
+postfix negation (“a unified conclusion was not established”), a negated list whose
+second coordinated object is read as asserted (“no unified conclusion or shared
+cause”, “no X, Y, or Z”), a comma aside inside a predicate (“do not, as the authors
+note, share a cause” is read as a new clause), a predicate whose form is outside the
+small verb list, a Russian nominative noun whose ending looks like a third-person
+verb, a “without” complement that is a `that`-clause or a subject plus gerund
+(“without evidence that the two sources share a shared cause”, “without the two
+sources sharing a shared cause”), a negated subject noun phrase before the claim
+(“no benchmark data hides that…”), a longer or postposed frame subject (“no
+reviewer denies…”, “the authors do not deny…”), and idioms that are not
+listed above. The coordinator defect is pinned by
+`test_forbidden_terms_do_not_carry_negation_across_a_coordinated_object`; the
+`without` shapes and the asserting frames are pinned by
+`test_forbidden_terms_ignore_a_long_without_complement`,
+`test_forbidden_terms_ignore_a_without_noun_phrase_with_a_verb_like_head`,
+`test_forbidden_terms_still_flag_a_claim_whose_subject_follows_a_without_adjunct`,
+`test_forbidden_terms_do_not_negate_a_without_adjunct`,
+`test_question_unanswered_rejects_a_claim_behind_an_asserting_frame` and
+`test_security_term_is_not_cancelled_by_an_asserting_frame`.
+Cases whose live answer varies on unchanged code carry `"known_variable": true` in
+the fixture; the set is fixed by `_HOLDOUT_KNOWN_VARIABLE` in
+`tests/test_analysis_quality.py`: `holdout-thesis`, `holdout-inconclusive-comparison`,
+`holdout-late-conclusion`, `holdout-transitive-decision`, `holdout-late-batch-result`,
+`holdout-supported-request`.
+The batch case was added after identical code produced a passing run and a run whose
+title dropped every measured number; the comparison case after a run that restated
+`2.4x` as “quadrupled”, which the oracle rejects; the payment-outage case after two
+consecutive runs on unchanged code scored `goal_fit` 0.90 and 0.70, straddling its
+0.8 ceiling. A case is marked only after a run
+pair shows both outcomes on unchanged code, and the marker is removed once the case
+is deterministic. Before marking, check whether the flip is an honest label that the
+case simply does not accept: `holdout-negative-goal` stayed unmarked because its only
+flip (`Process Improvement` versus `Onboarding Process Improvement`) came from the
+dynamic topic label, so the fixture accepts that label and a pytest regression pins
+it; a marker would have hidden the case's evidence and negative-outcome checks.
+Such a marked case prints `status=VARIABLE sample=pass|fail`, and the raw
+sample never decides the run status; its other checks are still printed in
+`checks=...` for manual review. Stable cases keep `status=PASS|FAIL`, and any failed
+stable check prints `case=<id> checks=<...>` and exits non-zero with
+`eval=failed cases=...`. A successful run ends with
+`eval=passed cases=N variable=K`, plus `variable_sample_failed=<ids>` when a marked
+sample failed. A variable-only failure is not a release failure: review it and
+remove the marker once the case is deterministic.
+
+Live protocol for the holdout corpus: run the full fixture twice in a row after the
+offline suite is green. Both runs must agree on every case status (`PASS` for stable
+cases, `VARIABLE` for marked ones); the printed `sample=` values and the generated
+titles may differ. Record the provider, model and both runs when a change touches
+the prompt, the classifier or the holdout corpus.
 
 When the source explicitly states that no winner was established, the eval reports
 the title after the same deterministic verdict guard production applies: a title that

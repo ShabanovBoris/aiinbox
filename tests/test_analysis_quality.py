@@ -4638,6 +4638,20 @@ _HOLDOUT_PROMPT_FORBIDDEN_TERMS: dict[str, tuple[str, ...]] = {
 # `mixed-language-video`; they only have to stay out of the prompts.
 _LEGACY_PROMPT_FORBIDDEN_TERMS = ("71%", "84%")
 
+# Cases whose live answer varies between runs on unchanged code. The marker is
+# explicit and small: adding a case here hides its other checks from the exit
+# status, so it needs live evidence and a registry update.
+_HOLDOUT_KNOWN_VARIABLE = frozenset(
+    {
+        "holdout-thesis",
+        "holdout-inconclusive-comparison",
+        "holdout-late-conclusion",
+        "holdout-transitive-decision",
+        "holdout-late-batch-result",
+        "holdout-supported-request",
+    }
+)
+
 
 def test_holdout_corpus_is_independent_and_uses_production_chunking():
     """Live evidence must not reuse the prompt examples or the primary fixture."""
@@ -4699,6 +4713,27 @@ def test_holdout_corpus_is_independent_and_uses_production_chunking():
     # Two unrelated sources have no joint outcome, so no outcome term may be implied.
     assert expected["outcome_state"] == "none"
     assert not expected.get("outcome_terms")
+    # The eval must check the production topic-classification stage, not only the title.
+    assert expected["category"]
+    assert expected["category_aliases"]
+
+
+def test_holdout_known_variable_set_is_explicit():
+    """The stochastic set stays explicit: every other case must fail the run on a FAIL."""
+    holdout = load_quality_fixture(_HOLDOUT_PATH)
+    marked = {case["id"] for case in holdout if case.get("known_variable") is True}
+
+    assert marked == _HOLDOUT_KNOWN_VARIABLE
+    for case in holdout:
+        if case["id"] not in _HOLDOUT_KNOWN_VARIABLE:
+            assert "known_variable" not in case, f"{case['id']} is unexpectedly marked variable"
+
+
+def test_primary_corpus_has_no_known_variable_marker():
+    """The marker exists for holdout noise only; a primary case must always gate the run."""
+    primary = load_quality_fixture(_FIXTURE_PATH)
+
+    assert [case["id"] for case in primary if "known_variable" in case] == []
 
 
 @pytest.mark.parametrize(
