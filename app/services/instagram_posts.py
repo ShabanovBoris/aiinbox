@@ -87,7 +87,6 @@ def _project_post(
     # A photo/carousel post follows the content language; a video part switches it
     # to the profile language, so the caption only votes when the post has no video
     # (a Reel's primary source is its transcript).
-    has_video = any(part["kind"] == "video" for part in progress["parts"])
     return NormalizedContent(
         source_type=SourceType.INSTAGRAM,
         url=_canonical_post_url(source),
