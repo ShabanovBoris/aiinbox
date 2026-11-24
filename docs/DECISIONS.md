@@ -1835,11 +1835,24 @@ matches what the verdict's own clause compared:
   subordinate, the subordinate is its clause and the main clause after the closing
   comma is the claim: "Although the A/B test was inconclusive on accuracy, method A
   cut latency by 30% in the full rollout" keeps the verdict, while the same sentence
-  without the named area lets the measured win settle it. When the verdict phrase sits
-  on no recognised sentence (a line break wraps it without a terminal mark, as pasted
-  Telegram text, a PDF-page join or a web paragraph does), the verdict's own phrase is
-  its clause and the claim reads from its end — the detectors stay total on such
-  evidence instead of raising;
+  without the named area lets the measured win settle it. A hard line wrap is not a
+  sentence break: the clause is bounded by terminal marks and paragraph breaks (LF and
+  CRLF), so it starts at the nearest boundary before the phrase and runs through the
+  complement after it. A wrap starts a new fragment when the line below opens a subject
+  of its own, so a pasted title, a PDF heading or a source header lends the verdict
+  neither sides nor areas, whatever noun it ends with ("A/B test", "Method C benchmark",
+  "Method C and method D test") and even when that noun is glued to the verdict phrase by
+  the wrap. The line below decides the boundary, not the line above: a continuation of
+  the same flowing sentence opens with a side label, a conjunction or the predicate
+  itself ("…the comparison of methods\nA and B was inconclusive", "Сравнение методов
+  A и B\nНе выявило победителя"), so the head on the line above stays in the clause and
+  the sides it names scope the verdict. A lowercase opening is a continuation too, an
+  uppercase noun or determiner starts the next subject, and the claim reads from the
+  clause end. A fronted subordinate ("Although …") may begin at a hard-wrapped line: the
+  subordinate itself is the clause when it contains the verdict, and the main clause
+  after its closing comma is the clause otherwise. A complement split by a line break
+  ("inconclusive on\naccuracy") still ends the clause early; that class and a split
+  measured result across a wrap are measured and tracked separately;
 - a claim is read as a whole sentence and then as each of its clauses that starts a
   new subject (a punctuation break with a coordinator, or a coordinator followed by a
   pronoun or a determiner), including the final fragment of a sentence without
@@ -1880,6 +1893,12 @@ real measurement, while the same hedge inside the measuring clause ("might cut",
 coordinated object list has no subject after its comma: read as clauses alone, the
 verb and the amounts of "cut latency, cost, and error rate by 30%" would be split
 apart.
+A hard wrap is read inside the same `_CLAUSE_WINDOW`: the clause stops at a terminal
+mark or an LF/CRLF paragraph break, and the fronted marker is looked for at the start of
+the verdict's fragment and at the start of every hard-wrapped line below it, so a header
+above the fragment neither scopes the verdict nor blocks the fronted branch. A complement
+or a split measured result broken by a line break is not joined across it; that class is
+measured separately.
 The measured-only frame does not affect decisive-win partiality ("won in the second
 round" stays partial).
 ## D-066 — Instagram photo language comes from the caption, with an explicit abstention

@@ -2523,6 +2523,13 @@ def test_split_comparison_without_an_overall_winner_keeps_the_no_winner_hint(tex
     assert repaired.title == f"{title}; no winner was established"
 
 
+def test_a_wrapped_split_result_is_not_read_across_the_line_break():
+    """A split result is read by a separate mechanism and is not joined across a hard
+    wrap; this pins the AIINBOX-29 base.
+    """
+    assert states_inconclusive_comparison("A was 40% faster than B, but B was\nsmaller.") is False
+
+
 @pytest.mark.parametrize(
     "text",
     [
@@ -8993,8 +9000,9 @@ def test_a_claim_joined_to_the_verdict_clause_still_settles_a_matching_measureme
     ("text", "suffix"),
     [
         # A pasted message, a PDF page or a web paragraph wraps the verdict phrase onto
-        # a line without a terminal mark, so no sentence holds it. The verdict's own
-        # phrase is then its clause, and the claim reads from its end.
+        # a line without a terminal mark. The clause still reads from the nearest
+        # terminal or paragraph boundary, through its complement, and the claim reads
+        # from the clause end.
         (
             "The vendor comparison\n"
             "The team evaluated both caching layers and the results were\n"
@@ -9017,13 +9025,14 @@ def test_a_claim_joined_to_the_verdict_clause_still_settles_a_matching_measureme
         ),
     ],
 )
-def test_a_verdict_on_a_wrapped_line_reads_its_claim_from_the_verdict_phrase(text, suffix):
+def test_a_verdict_on_a_wrapped_line_reads_its_whole_clause(text, suffix):
     """A verdict phrase outside any recognised sentence still yields a verdict.
 
     Lines end a sentence here only at a terminal mark, so a verdict wrapped onto its
-    own line has no clause and no sentence around it. Reading the claim from the
-    verdict phrase keeps the public detectors total on multiline evidence and gives the
-    prompt flag and the repair suffix the same behavior as the single-line case.
+    own line has no sentence around it. Reading the clause from the nearest terminal or
+    paragraph boundary through its complement anyway keeps the public detectors total
+    on multiline evidence and gives the prompt flag and the repair suffix the same
+    behavior as the single-line case; a fronted subordinate may begin on a wrapped line.
     """
     content = NormalizedContent(source_type=SourceType.WEB, text=text, language="en")
     prompt = build_user_message(content, UserProfile(preferred_language="en"), [])
@@ -9036,6 +9045,334 @@ def test_a_verdict_on_a_wrapped_line_reads_its_claim_from_the_verdict_phrase(tex
     assert "INCONCLUSIVE COMPARISON IN SOURCE" in prompt
     assert repaired is not result
     assert repaired.title == f"Method A cut latency by 30%{suffix}"
+
+
+@pytest.mark.parametrize(
+    ("text", "title"),
+    [
+        (
+            "The A/B test was\ninconclusive on accuracy; the full rollout showed method A "
+            "cut latency by 30%.",
+            "Method A cut latency by 30%",
+        ),
+        (
+            "The comparison was\ninconclusive for method A and method B; the full rollout "
+            "showed method C cut latency by 30%.",
+            "Method C cut latency by 30%",
+        ),
+        (
+            "The team compared method A and method B\nand the comparison was inconclusive. "
+            "The full rollout showed method C cut latency by 30%.",
+            "Method C cut latency by 30%",
+        ),
+        (
+            "The vendor comparison\nAlthough the A/B test was inconclusive on accuracy, "
+            "method A cut latency by 30% in the full rollout.",
+            "Method A cut latency by 30%",
+        ),
+        (
+            "The vendor comparison\nAlthough the A/B test was\ninconclusive on accuracy, "
+            "method A cut latency by 30% in the full rollout.",
+            "Method A cut latency by 30%",
+        ),
+        (
+            "Method C and method D comparison\nAlthough the A/B test was inconclusive on "
+            "accuracy, method C raised accuracy by 30% in the full rollout.",
+            "Method C raised accuracy by 30%",
+        ),
+        (
+            "The vendor comparison\nAlthough method C looked promising, the A/B test was "
+            "inconclusive on accuracy; the full rollout showed method C raised accuracy by "
+            "30%.",
+            "Method C raised accuracy by 30%",
+        ),
+    ],
+)
+def test_a_wrapped_verdict_clause_reads_its_scope(text, title):
+    """A hard wrap is not a clause boundary: the clause reads its complement, the sides on
+    its previous line, and a fronted subordinate that starts on a wrapped line; header
+    text before the marker does not scope the verdict, and a subordinate that closes
+    before the verdict keeps its sides out of the clause.
+    """
+    content = NormalizedContent(source_type=SourceType.WEB, text=text, language="en")
+    prompt = build_user_message(content, UserProfile(preferred_language="en"), [])
+    result = make_analysis(title=title, language="en")
+
+    repaired = ensure_explicit_inconclusive_title(result, text, response_language="en")
+
+    assert states_inconclusive_comparison(text) is True
+    assert title_states_inconclusive(text) is True
+    assert "INCONCLUSIVE COMPARISON IN SOURCE" in prompt
+    assert repaired is not result
+    assert repaired.title == f"{title}; no winner was established"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "The A/B test was\ninconclusive on accuracy; the full rollout showed method A "
+        "raised accuracy by 30%.",
+        "Although the A/B test was\ninconclusive on accuracy, method A raised accuracy by "
+        "30% in the full rollout.",
+        "The vendor comparison\nAlthough the A/B test was inconclusive on accuracy, method A "
+        "raised accuracy by 30% in the full rollout.",
+        "The vendor comparison\nAlthough the A/B test was\ninconclusive on accuracy, method A "
+        "raised accuracy by 30% in the full rollout.",
+        "The vendor comparison\nAlthough method C looked promising, the A/B test was "
+        "inconclusive on accuracy; the full rollout showed method A raised accuracy by 30%.",
+        # The title is cut from the clause, not from the sentence: a claim on the same side and
+        # area still settles the verdict.
+        "A/B test\n"
+        "The A/B test was inconclusive on accuracy; the full rollout showed method A raised "
+        "accuracy by 30%.",
+    ],
+)
+def test_a_wrapped_verdict_still_settles_a_matching_measurement(text):
+    """Bounding the wrapped clause does not mute it: a claim on the same side and area
+    still settles the verdict, including inside a fronted subordinate preceded by a
+    hard-wrapped header, and a closed fronted subordinate does not lend its sides to the
+    main clause.
+    """
+    content = NormalizedContent(source_type=SourceType.WEB, text=text, language="en")
+    prompt = build_user_message(content, UserProfile(preferred_language="en"), [])
+    result = make_analysis(title="Method A raised accuracy by 30%", language="en")
+    assert states_inconclusive_comparison(text) is False
+    assert title_states_inconclusive(text) is False
+    assert "INCONCLUSIVE COMPARISON IN SOURCE" not in prompt
+    assert ensure_explicit_inconclusive_title(result, text, response_language="en") is result
+
+
+def test_wrapped_verdict_reads_lf_and_crlf_line_endings():
+    """An LF paragraph break and a CRLF paragraph break bound the verdict sentence
+    alike; a CRLF hard wrap still joins the clause.
+    """
+    paragraph = (
+        "Pilot: method C and method D differed\n"
+        "Team comments were positive\n\n"
+        "The test was inconclusive on accuracy; the full rollout showed method A "
+        "raised accuracy by 30%."
+    )
+    assert states_inconclusive_comparison(paragraph) is False
+    assert states_inconclusive_comparison(paragraph.replace("\n", "\r\n")) is False
+
+    positive = (
+        "The A/B test was\r\ninconclusive on accuracy; the full rollout showed method A "
+        "cut latency by 30%."
+    )
+    assert states_inconclusive_comparison(positive) is True
+
+
+@pytest.mark.parametrize(
+    ("text", "title", "language", "suffix"),
+    [
+        # The head of the verdict phrase stays on the first line; its continuation opens a
+        # capitalized side label.
+        (
+            "The comparison of methods\nA and B was inconclusive; the full rollout showed "
+            "method C cut latency by 30%.",
+            "Method C cut latency by 30%",
+            "en",
+            "; no winner was established",
+        ),
+        (
+            "The comparison of methods\nA versus B was inconclusive; the full rollout showed "
+            "method C cut latency by 30%.",
+            "Method C cut latency by 30%",
+            "en",
+            "; no winner was established",
+        ),
+        (
+            "The comparison of the two methods\nA and B was inconclusive; the full rollout "
+            "showed method C cut latency by 30%.",
+            "Method C cut latency by 30%",
+            "en",
+            "; no winner was established",
+        ),
+        (
+            "The comparison of methods\nA and B\nwas inconclusive; the full rollout showed "
+            "method C cut latency by 30%.",
+            "Method C cut latency by 30%",
+            "en",
+            "; no winner was established",
+        ),
+        # A Russian verdict splits the same way: before the side labels and before the verb.
+        (
+            "Сравнение методов\nC и D не выявило победителя. В полном прогоне методы A и B "
+            "снизили задержку на 30%.",
+            "Методы A и B снизили задержку на 30%",
+            "ru",
+            "; победитель не определён",
+        ),
+        (
+            "Сравнение методов A и B\nНе выявило победителя. В полном прогоне метод C снизил "
+            "задержку на 30%.",
+            "Метод C снизил задержку на 30%",
+            "ru",
+            "; победитель не определён",
+        ),
+    ],
+)
+def test_a_capitalized_continuation_inside_the_verdict_phrase_keeps_its_head(
+    text, title, language, suffix
+):
+    """A capitalized continuation of the verdict phrase is prose, not a header.
+
+    A side label or a verb may open the next line of a hard-wrapped sentence. Cutting
+    the clause there drops the head that names the sides, so a later measurement of
+    another side settles the verdict and the title keeps a winner the source never
+    established.
+    """
+    content = NormalizedContent(source_type=SourceType.WEB, text=text, language=language)
+    prompt = build_user_message(content, UserProfile(preferred_language=language), [])
+    result = make_analysis(title=title, language=language)
+
+    repaired = ensure_explicit_inconclusive_title(result, text, response_language=language)
+
+    assert states_inconclusive_comparison(text) is True
+    assert title_states_inconclusive(text) is True
+    assert "INCONCLUSIVE COMPARISON IN SOURCE" in prompt
+    assert repaired is not result
+    assert repaired.title == f"{title}{suffix}"
+
+
+@pytest.mark.parametrize(
+    ("text", "title"),
+    [
+        # A pasted title names one pair and the verdict below it another: the title's
+        # sides and areas stay out of the verdict's clause.
+        (
+            "Method C and method D comparison\n"
+            "The A/B test was inconclusive on accuracy; the full rollout showed method C "
+            "raised accuracy by 30%.",
+            "Method C raised accuracy by 30%",
+        ),
+        # The verdict itself begins on the line below a title; the clause starts there.
+        (
+            "A/B test results\n"
+            "The team compared method C and method D and the comparison was inconclusive; "
+            "the full rollout showed method A cut latency by 30%.",
+            "Method A cut latency by 30%",
+        ),
+        (
+            "Method C and method D comparison\n"
+            "The A/B test was inconclusive in week one. The full rollout showed method C "
+            "cut latency by 30%.",
+            "Method C cut latency by 30%",
+        ),
+    ],
+)
+def test_a_header_line_above_a_wrapped_verdict_does_not_scope_it(text, title):
+    """A header line above the verdict is no part of its clause.
+
+    A pasted title, a PDF heading or a reshared link sits on its own line above the
+    text. Reading it as part of the verdict's clause lends the verdict the header's
+    sides and areas, so a later measurement of a header side settles a verdict about
+    other sides and the title keeps a winner the source never established.
+    """
+    content = NormalizedContent(source_type=SourceType.WEB, text=text, language="en")
+    prompt = build_user_message(content, UserProfile(preferred_language="en"), [])
+    result = make_analysis(title=title, language="en")
+
+    repaired = ensure_explicit_inconclusive_title(result, text, response_language="en")
+
+    assert states_inconclusive_comparison(text) is True
+    assert title_states_inconclusive(text) is True
+    assert "INCONCLUSIVE COMPARISON IN SOURCE" in prompt
+    assert repaired is not result
+    assert repaired.title == f"{title}; no winner was established"
+
+
+@pytest.mark.parametrize(
+    ("text", "title"),
+    [
+        # A title names the pair it introduces in its own words; the verdict below it is
+        # about other sides and the title's sides stay out of its clause.
+        (
+            "A/B test\n"
+            "The team compared method C and method D and the comparison was inconclusive; "
+            "the full rollout showed method A cut latency by 30%.",
+            "Method A cut latency by 30%",
+        ),
+        (
+            "A/B test\r\n"
+            "The team compared method C and method D and the comparison was inconclusive; "
+            "the full rollout showed method A cut latency by 30%.",
+            "Method A cut latency by 30%",
+        ),
+        (
+            "Method C and method D test\n"
+            "The A/B test was inconclusive on accuracy; the full rollout showed method C "
+            "raised accuracy by 30%.",
+            "Method C raised accuracy by 30%",
+        ),
+        (
+            "The method C and method D study\n"
+            "The A/B test was inconclusive on accuracy; the full rollout showed method C "
+            "raised accuracy by 30%.",
+            "Method C raised accuracy by 30%",
+        ),
+        # The noun a title ends with does not decide the boundary: a title line names its own
+        # subject whatever its last word is.
+        *[
+            (
+                f"Method C {tail}\n"
+                "Method A beat method B, and the comparison was inconclusive. The full rollout "
+                "showed method C cut latency by 30%.",
+                "Method C cut latency by 30%",
+            )
+            for tail in (
+                "benchmark",
+                "test",
+                "analysis",
+                "evaluation",
+                "trial",
+                "study",
+                "run",
+                "notes",
+                "report",
+                "takeaways",
+            )
+        ],
+    ],
+)
+def test_a_title_line_that_names_a_side_does_not_scope_the_verdict(text, title):
+    """A title line above the verdict is no part of its clause, whatever it ends with.
+
+    The clause boundary is the title itself, not the noun that closes it: a title such as
+    "A/B test" or "Method C benchmark" names sides in its own right. Reading it as part of
+    the verdict's clause lends the verdict the title's sides, so a later measurement of a
+    title side settles a verdict about other sides and the title keeps a winner the source
+    never established.
+    """
+    content = NormalizedContent(source_type=SourceType.WEB, text=text, language="en")
+    prompt = build_user_message(content, UserProfile(preferred_language="en"), [])
+    result = make_analysis(title=title, language="en")
+
+    repaired = ensure_explicit_inconclusive_title(result, text, response_language="en")
+
+    assert states_inconclusive_comparison(text) is True
+    assert title_states_inconclusive(text) is True
+    assert "INCONCLUSIVE COMPARISON IN SOURCE" in prompt
+    assert repaired is not result
+    assert repaired.title == f"{title}; no winner was established"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Although the pilot was short, the A/B test was inconclusive on accuracy - the full "
+        "rollout showed method A raised accuracy by 30%.",
+        "The A/B test was inconclusive on accuracy - the full rollout showed method A raised "
+        "accuracy by 30%.",
+    ],
+)
+def test_a_fronted_subordinate_does_not_scope_an_inline_verdict(text):
+    """A closed fronted subordinate frames the verdict; it does not scope it.
+
+    The fronted clause names no side and no area, so the later measurement of method A
+    settles the verdict about A and B, exactly as it does without the subordinate.
+    """
+    assert states_inconclusive_comparison(text) is False
 
 
 @pytest.mark.parametrize(

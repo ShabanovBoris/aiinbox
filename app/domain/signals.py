@@ -840,6 +840,11 @@ _RETRACTED_VERDICT = re.compile(
 # A period between digits is a decimal point, so a measured value stays inside one sentence and the
 # label rule sees the whole number.
 _SENTENCE = re.compile(r"(?:(?:[^.!?\n])|(?:(?<=\d)\.(?=\d)))+(?:[.!?]+|$)")
+# A hard line wrap is whitespace, not a sentence break: pasted Telegram text, a PDF-page join and a
+# web paragraph wrap a sentence without a terminal mark. Only a terminal mark or an LF/CRLF
+# paragraph break ends the sentence around a verdict.
+_SENTENCE_BREAK = re.compile(r"[.!?]+(?!\d)|\n[ \t\r]*\n")
+_LINE_BREAK = re.compile(r"\n")
 
 
 def _fold(text: str) -> str:
@@ -951,6 +956,18 @@ def _sentence_at(spans: list[tuple[int, int]], starts: list[int], index: int) ->
         if start <= index < end:
             return position
     return None
+
+
+def _sentence_bounds_around(text: str, verdict: re.Match[str]) -> tuple[int, int]:
+    """The sentence around ``verdict``, bounded by ``_CLAUSE_WINDOW`` on each side."""
+    window_start = max(0, verdict.start() - _CLAUSE_WINDOW)
+    boundaries = list(_SENTENCE_BREAK.finditer(text, window_start, verdict.start()))
+    start = boundaries[-1].end() if boundaries else window_start
+    gap = text[start : verdict.start()]
+    start += len(gap) - len(gap.lstrip())
+    limit = min(len(text), verdict.end() + _CLAUSE_WINDOW)
+    after = _SENTENCE_BREAK.search(text, verdict.end(), limit)
+    return start, after.end() if after is not None else limit
 
 
 def _source_markers(text: str) -> list[tuple[int, int]]:
@@ -1730,37 +1747,101 @@ def _comparison_clause_end(text: str, start: int, limit: int) -> int:
     return boundary.start() if boundary is not None else limit
 
 
+# The predicate that completes the head on the line above a wrap: a copula or auxiliary, or a
+# Russian negation that carries the verb ("Не выявило победителя").
+_CLAUSE_PREDICATE = (
+    r"(?:is|was|were|are|be|been|being|remains?|remained|seems?|seemed|proves?|proved|"
+    r"did|do|does|has|have|had|will|would|shall|should|can|could|may|might|must|"
+    r"не|ни|нет|был\w*|будет|будут|остал\w*|остаёт\w*|остают\w*|выявил\w*|показал\w*|"
+    r"дал\w*|дала|дали|стал\w*|оказал\w*|являет\w*|являют\w*|снизил\w*|сократил\w*)"
+)
+# A label run that continues the sides the line above left open: "A and B", "C и D", "A/B".
+_CLAUSE_LABEL_RUN = r"(?:and|or|versus|vs\.?|than|и|или|чем)"
+# An opening that cannot begin a header: a designator that hands the clause to another label or to
+# the predicate, a conjunction, or the predicate itself. These are closed grammatical classes, so
+# the boundary does not depend on which noun a pasted title happens to end with.
+_CLAUSE_CONTINUATION = re.compile(
+    rf"(?i)^(?:"
+    rf"(?:[a-zа-я]|\d+|[#№]\s*\d+)(?![\w])\s*(?:[/,—–-]|{_CLAUSE_LABEL_RUN}\b|\b{_CLAUSE_PREDICATE}\b)"
+    rf"|{_CLAUSE_LABEL_RUN}\b"
+    rf"|{_CLAUSE_PREDICATE}\b"
+    r")"
+)
+
+
+def _fragment_start(text: str, start: int, verdict: re.Match[str]) -> int:
+    """Where the verdict's own hard-wrapped line begins.
+
+    A pasted title, a PDF heading or a reshared link sits on its own line above the verdict and is
+    no part of its clause. A hard wrap inside flowing prose is not that boundary: the next line
+    continues the clause's subject — with a side label, a conjunction or the predicate itself — so
+    the head on the line above stays in the clause. A lowercase opening is a continuation too.
+    """
+    fragment = start
+    for wrap in _LINE_BREAK.finditer(text, start, verdict.end()):
+        rest = text[wrap.end() : verdict.end()]
+        stripped = rest.lstrip(" \t\r")
+        if not stripped[:1].isupper() or _CLAUSE_CONTINUATION.match(stripped) is not None:
+            continue
+        fragment = wrap.end() + len(rest) - len(stripped)
+    return fragment
+
+
+def _fronted_verdict_start(text: str, start: int, verdict: re.Match[str]) -> int | None:
+    """The nearest fragment or hard-wrap start that opens a fronted subordinate."""
+    candidates = [start]
+    candidates.extend(match.end() for match in _LINE_BREAK.finditer(text, start, verdict.end()))
+    # The marker may begin inside the verdict phrase (a header noun glued to it by the wrap), so
+    # the candidates run to the phrase end; the nearest one wins.
+    for candidate in reversed(candidates):
+        if _FRONTED_VERDICT_HEAD.match(text[candidate : verdict.end()]) is not None:
+            return candidate
+    return None
+
+
 def _verdict_comparison_scope(
     text: str,
-    spans: list[tuple[int, int]],
-    sentence_index: int | None,
     verdict: re.Match[str],
 ) -> tuple[set[str], set[str], int]:
-    """The sides and measured areas the verdict's own clause names, and its end."""
-    if sentence_index is None:
-        # The verdict phrase sits on a line that _SENTENCE does not read as a sentence, so there is
-        # no clause around it and the scan falls back to the bounded window.
-        clause = verdict.group()
-        sentence = ""
-        clause_end = verdict.end()
-        claim_start = clause_end
-    else:
-        start, end = spans[sentence_index]
-        sentence = text[max(start, verdict.start() - _CLAUSE_WINDOW) : verdict.start()]
-        stripped = _FRONTED_VERDICT_SUBORDINATE.sub("", sentence)
-        limit = min(end, verdict.end() + _CLAUSE_WINDOW)
-        if stripped == sentence and _FRONTED_VERDICT_HEAD.match(sentence):
-            # The verdict stands inside a fronted subordinate: the subordinate is its clause, and
-            # the comma that closes it starts the main clause, which is where the claim begins.
+    """The sides and measured areas the verdict's own clause names, and its end.
+
+    The clause is read across hard line wraps; terminal marks and paragraph breaks bound it, and a
+    header on its own line above the verdict does not scope it.
+    """
+    start, end = _sentence_bounds_around(text, verdict)
+    limit = end
+    start = _fragment_start(text, start, verdict)
+    # A header noun glued to the phrase by the wrap stays outside the clause with the rest of
+    # its line.
+    verdict_text = text[max(verdict.start(), start) : verdict.end()]
+    fronted_start = _fronted_verdict_start(text, start, verdict)
+    if fronted_start is not None:
+        segment = text[fronted_start : verdict.end()]
+        stripped = _FRONTED_VERDICT_SUBORDINATE.sub("", segment)
+        if stripped != segment:
+            # The fronted subordinate closes before the verdict: the verdict's clause is the
+            # main clause, and its end is where the claim begins.
+            sentence = stripped
+            head = _COMPARISON_CLAUSE_BOUNDARY.split(
+                _FRONTED_VERDICT_SUBORDINATE.sub("", text[fronted_start : verdict.start()])
+            )[-1]
+            clause_end = _comparison_clause_end(text, verdict.end(), limit)
+            claim_start = clause_end
+            clause = f"{head}{verdict_text}{text[verdict.end() : clause_end]}"
+        else:
+            # The verdict stands inside the fronted subordinate: the subordinate is its
+            # clause, and the comma that closes it starts the main clause (the claim).
+            sentence = ""
             comma = text.find(",", verdict.end(), limit)
             clause_end = comma if comma >= 0 else limit
             claim_start = clause_end + 1 if comma >= 0 else clause_end
-            head = sentence
-        else:
-            head = _COMPARISON_CLAUSE_BOUNDARY.split(stripped)[-1]
-            clause_end = _comparison_clause_end(text, verdict.end(), limit)
-            claim_start = clause_end
-        clause = f"{head}{verdict.group()}{text[verdict.end() : clause_end]}"
+            clause = text[fronted_start:clause_end]
+    else:
+        sentence = text[start : verdict.start()]
+        head = _COMPARISON_CLAUSE_BOUNDARY.split(sentence)[-1]
+        clause_end = _comparison_clause_end(text, verdict.end(), limit)
+        claim_start = clause_end
+        clause = f"{head}{verdict_text}{text[verdict.end() : clause_end]}"
     labels = _comparison_alternative_labels(clause) or _comparison_alternative_labels(sentence)
     return labels, _metric_families(clause), claim_start
 
@@ -1783,9 +1864,7 @@ def _explicit_verdict(
             continue
         # A measured change after the verdict reports a result the source observed.
         sentence_index = _sentence_at(spans, starts, match.start())
-        comparison_labels, comparison_metrics, claim_start = _verdict_comparison_scope(
-            text, spans, sentence_index, match
-        )
+        comparison_labels, comparison_metrics, claim_start = _verdict_comparison_scope(text, match)
         if _measured_change_in_tail(text, comparison_labels, comparison_metrics, claim_start):
             superseded = True
             continue
