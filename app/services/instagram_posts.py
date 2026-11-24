@@ -84,9 +84,9 @@ def _project_post(
     caption_only = not sections
     if caption_only and len(caption) < 40:
         return None
-    # A photo/carousel post follows the content language; a video part switches it
-    # to the profile language, so the caption only votes when the post has no video
-    # (a Reel's primary source is its transcript).
+    # A photo/carousel post follows the content language; an extracted video part
+    # switches it to the profile language, so the caption only votes when the post
+    # has no extracted video (a Reel's primary source is its transcript).
     return NormalizedContent(
         source_type=SourceType.INSTAGRAM,
         url=_canonical_post_url(source),

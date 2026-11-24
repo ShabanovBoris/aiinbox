@@ -1901,6 +1901,7 @@ or a split measured result broken by a line break is not joined across it; that 
 measured separately.
 The measured-only frame does not affect decisive-win partiality ("won in the second
 round" stays partial).
+
 ## D-066 — Instagram photo language comes from the caption, with an explicit abstention
 
 Context: `_project_post` built `NormalizedContent` without `language`, while
@@ -1944,6 +1945,7 @@ content-primary fallback. A detected code outside `_INCONCLUSIVE_SUFFIX` makes
 `inconclusive_title_language` return `None`, so the deterministic repair leaves the
 title without a suffix instead of inventing one. Mixed-source Items keep their
 current rule: the caption language survives only for a single Instagram source.
+
 ## D-067 — The quality eval checks negations, the classified category and known variability
 
 Context: the AIINBOX-18 gate found three evidence gaps in the eval, not in the
