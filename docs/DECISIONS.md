@@ -2035,3 +2035,31 @@ in the primary corpus, “escaped defect rate(s)” for “escaped defects”; e
 wording keeps a negative control in pytest that attaches the result to another
 subject or object, while the older objectless shortfall terms stay presence-only as
 described above. No schema, migration or production behavior changes.
+## D-068 — Signals share one vocabulary per invariant; documentation states the guard
+
+Context: the signal layer and the title-repair tail had grown around individual
+review findings. The same experiment nouns, prior-work nouns, meta verbs, retraction
+verbs, scope qualifiers and negation constructors were written out in several
+places, and long review narratives in comments repeated what the tests and this file
+already state. A private case could drift from its twin without any test noticing.
+
+Decision: one constant per vocabulary, reused by every pattern that needs it
+(`_PRIOR_WORK_NOUNS`, `_META_VERBS`, `_RETRACT_VERBS`, `_COMPARISON_EVENT_NOUNS`,
+`_SCOPE_QUALIFIERS`; `_NEGATION_SHAPES` for the six negation constructions), and the
+frame/limit decision lives in one helper, `_overall_win`, for both the evidence path
+and the title path. Comments state the guard in one or two sentences; rationale lives
+here, in the tests and in `PRODUCT_SPEC`, not in duplicated review history.
+
+Consequences: the signal vocabulary and the repair tail keep their exact behaviour —
+the SPEC §31 verdict forms (including "unclear which approach is better", "evenly
+matched", "the current replication was inconclusive" and the question form),
+designators ("plan B", "#2", "method A") and every title/summary guard are unchanged;
+the 208,542-input differential shows no behaviour change. The repair tail also
+selects the member to keep in one pass instead of re-ranking on a truncated claim.
+A guard that is not expressed by the shape of a shared vocabulary stays next to it:
+"no" is left out of the English negation prefix because the reversal and limitation
+cues already read "no improvement" and "no degradation" as results, and widening the
+prefix would drop that member.
+A vocabulary shared by several patterns must be checked against each pattern's own
+guard when it changes: widening a shared list can make one path accept a case
+another path rejects.

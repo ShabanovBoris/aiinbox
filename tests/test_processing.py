@@ -12,7 +12,11 @@ from app.domain.models import (
     UserProfile,
 )
 from app.domain.priority import PriorityEngine
-from app.domain.signals import _INCONCLUSIVE_SUFFIX, has_multiple_sources
+from app.domain.signals import (
+    _INCONCLUSIVE_SUFFIX,
+    has_multiple_sources,
+    states_inconclusive_comparison,
+)
 from app.errors import AppError
 from app.llm.base import LlmError
 from app.llm.openai import build_user_message
@@ -20,6 +24,7 @@ from app.services.actions import apply_item_action
 from app.services.analysis import (
     CHUNK_SUMMARY_GENERATOR_VERSION,
     Analyzer,
+    _result_cue_text,
     bounded_chunk_aggregate,
     ensure_explicit_inconclusive_title,
     split_text,
@@ -949,6 +954,32 @@ def test_never_announced_winner_keeps_the_inconclusive_verdict(evidence):
     assert updated.title.endswith("; no winner was established")
 
 
+def test_a_subset_win_leaves_a_genuinely_inconclusive_comparison_open():
+    """A win only in a later sub-scope does not answer the explicit no-winner verdict."""
+    evidence = "The comparison was inconclusive. Later, A won in later rounds."
+    assert states_inconclusive_comparison(evidence) is True
+
+    result = make_analysis(
+        title="Strategy A cut latency 31% under peak load", summary="Детали.", language="en"
+    )
+    updated = ensure_explicit_inconclusive_title(result, evidence, response_language="en")
+
+    assert updated.title.endswith("; no winner was established")
+
+
+def test_an_overall_marker_lets_a_subset_win_settle_the_comparison():
+    """The overall outcome is what the subset win needs to close an open comparison."""
+    evidence = (
+        "The comparison was inconclusive. "
+        "A won in later rounds, and the overall results favoured A."
+    )
+    assert states_inconclusive_comparison(evidence) is False
+
+    result = make_analysis(title="Batching cut latency 40%", summary="Детали.", language="en")
+
+    assert ensure_explicit_inconclusive_title(result, evidence, response_language="en") is result
+
+
 def test_single_available_source_still_gets_the_no_winner_repair():
     """Two requested sources with one failed extraction are one evidence block."""
     metadata = {
@@ -981,6 +1012,21 @@ def test_inconclusive_guard_skips_independent_multi_source_evidence():
     assert updated is result
 
 
+def test_two_successful_sources_skip_the_no_winner_repair():
+    """Only a single available source gets the repair; two independent sources do not."""
+    metadata = {"source_count": 3, "successful_source_count": 2}
+    result = make_analysis(title="Strategy A cut latency 31%", summary="Детали.", language="en")
+
+    updated = ensure_explicit_inconclusive_title(
+        result,
+        "The comparison was inconclusive; no winner was established.",
+        response_language="en",
+        multi_source=has_multiple_sources(metadata),
+    )
+
+    assert updated is result
+
+
 def test_inconclusive_verdict_survives_the_title_schema_boundary():
     """A 290-character title still carries the required verdict inside 300."""
     result = make_analysis(title="A" * 290, summary="Measured detail.", language="en")
@@ -1000,8 +1046,11 @@ def test_title_cap_keeps_the_verdict_and_the_condition_that_scopes_it():
     """Trimming an over-long title must not cut the condition off the end."""
     body = (
         "A long background clause without a measured finding, "
-        "then the deployment notes, then batching cut latency 40%, "
-        "but the gain reversed under peak load"
+        "then the deployment notes, "
+        "then the review notes from the previous planning cycle, "
+        "then the migration notes, "
+        "then the vendor notes and the support summary, "
+        "then batching cut latency 40%, but the gain reversed under peak load"
     )
     result = make_analysis(title=body, summary="Measured detail.", language="en")
 
@@ -1016,6 +1065,13 @@ def test_title_cap_keeps_the_verdict_and_the_condition_that_scopes_it():
     assert "under peak load" in updated.title
     assert "batching cut latency 40%" in updated.title
     assert "latency 40%,; no winner" not in updated.title
+
+
+def test_english_no_is_not_read_as_a_negation_prefix():
+    """“no degradation” is a measured outcome; only “not”, “never” and “n't” invert a predicate."""
+    assert "no degradation" in _result_cue_text(
+        "the build showed no degradation in the staging region", "en"
+    )
 
 
 # The expected suffixes are written down independently of the production mapping so
