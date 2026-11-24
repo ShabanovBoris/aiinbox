@@ -2035,6 +2035,7 @@ in the primary corpus, “escaped defect rate(s)” for “escaped defects”; e
 wording keeps a negative control in pytest that attaches the result to another
 subject or object, while the older objectless shortfall terms stay presence-only as
 described above. No schema, migration or production behavior changes.
+
 ## D-068 — Signals share one vocabulary per invariant; documentation states the guard
 
 Context: the signal layer and the title-repair tail had grown around individual
